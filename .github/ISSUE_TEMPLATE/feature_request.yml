@@ -1,0 +1,40 @@
+name: Feature Request
+description: Suggest a new feature or enhancement.
+labels: ["type: enhancement", "status: needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before opening a feature request, please search existing issues to avoid duplicates.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of the feature you'd like.
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Why is this feature needed? What problem does it solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Have you considered any alternative solutions or workarounds?
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Links, mockups, references to other implementations, or anything else.
+    validations:
+      required: false
