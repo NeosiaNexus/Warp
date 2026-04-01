@@ -1,4 +1,4 @@
-/** Codecs for Minecraft protocol primitives — VarInt, VarLong, and buffer utilities. */
+/** Codecs for Minecraft protocol primitives — VarInt, VarLong, String, UUID, and byte arrays. */
 @NullMarked
 package dev.warp.protocol.codec;
 
