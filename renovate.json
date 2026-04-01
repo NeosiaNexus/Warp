@@ -1,0 +1,56 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommitTypeAll(chore)",
+    ":semanticCommitScope(deps)"
+  ],
+  "schedule": ["before 9am on monday"],
+  "timezone": "Europe/Paris",
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "description": "Group Netty packages",
+      "groupName": "Netty",
+      "matchPackagePrefixes": ["io.netty"]
+    },
+    {
+      "description": "Group Log4j packages",
+      "groupName": "Log4j",
+      "matchPackagePrefixes": ["org.apache.logging.log4j"]
+    },
+    {
+      "description": "Group Adventure packages",
+      "groupName": "Adventure",
+      "matchPackagePrefixes": ["net.kyori"]
+    },
+    {
+      "description": "Group testing dependencies and automerge",
+      "groupName": "testing",
+      "matchPackagePrefixes": ["org.junit", "org.mockito"],
+      "automerge": true
+    },
+    {
+      "description": "Group code quality tools",
+      "groupName": "code quality",
+      "matchPackagePatterns": ["errorprone", "nullaway", "spotless", "checkstyle"]
+    },
+    {
+      "description": "Automerge GitHub Actions updates",
+      "groupName": "GitHub Actions",
+      "matchManagers": ["github-actions"],
+      "automerge": true
+    },
+    {
+      "description": "Automerge patch updates (CI must pass)",
+      "matchUpdateTypes": ["patch"],
+      "automerge": true
+    },
+    {
+      "description": "Require manual review for major updates",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "labels": ["dependencies", "breaking"]
+    }
+  ]
+}
