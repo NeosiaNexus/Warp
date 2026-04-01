@@ -45,6 +45,7 @@ type(scope): description
 | `build` | Build system or dependency changes |
 | `ci` | CI/CD changes |
 | `chore` | Maintenance tasks |
+| `revert` | Reverts a previous commit |
 
 **Scopes** match module names: `api`, `protocol`, `proxy`, `jni`, `build`, `deps`, `project`.
 
@@ -53,7 +54,7 @@ type(scope): description
 - **Formatting** is enforced by Spotless (Google Java Format). Run `./gradlew spotlessApply` — never format manually.
 - **Null safety** — use `@NullMarked` at package level, `@Nullable` on individual fields/params (JSpecify).
 - **Javadoc** — all public types and methods must have Javadoc with `@param` and `@return` tags. Checkstyle enforces this.
-- **Imports** — four groups: `dev.warp` | `java` | `javax` | everything else. Spotless handles ordering.
+- **Imports** — four groups separated by blank lines: `dev.warp` | `java` | `javax` | everything else. Spotless handles ordering.
 
 ### Testing
 

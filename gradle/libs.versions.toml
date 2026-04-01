@@ -29,7 +29,6 @@ mockito = "5.23.0"
 
 # Build plugins
 shadow = "9.0.0"
-blossom = "2.2.0"
 
 [libraries]
 # Netty
@@ -94,6 +93,5 @@ testing = ["junit-jupiter", "mockito-core", "mockito-junit-jupiter"]
 
 [plugins]
 shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }
-blossom = { id = "net.kyori.blossom", version.ref = "blossom" }
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
 errorprone = { id = "net.ltgt.errorprone", version.ref = "errorprone-plugin" }
