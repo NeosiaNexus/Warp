@@ -2,6 +2,7 @@ plugins {
     id("warp.java-conventions")
     id("warp.spotless-conventions")
     id("warp.checkstyle-conventions")
+    id("warp.jacoco-conventions")
     id("warp.publish-conventions")
 }
 
