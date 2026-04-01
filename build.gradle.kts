@@ -10,3 +10,19 @@ allprojects {
     group = "dev.warp"
     version = warpVersion
 }
+
+// Install Git pre-commit hook on first build.
+val installGitHooks by tasks.registering {
+    val source = layout.projectDirectory.file("config/hooks/pre-commit")
+    val target = layout.projectDirectory.file(".git/hooks/pre-commit")
+    inputs.file(source)
+    outputs.file(target)
+    doLast {
+        source.asFile.copyTo(target.asFile, overwrite = true)
+        target.asFile.setExecutable(true)
+    }
+}
+
+tasks.register("build") {
+    dependsOn(installGitHooks)
+}

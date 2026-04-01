@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Pre-commit hook: reject commits with unformatted Java code.
+# Installed by: ./gradlew installGitHooks
+
+set -euo pipefail
+
+# Skip if no Java files are staged.
+STAGED_JAVA=$(git diff --cached --name-only --diff-filter=ACM | grep '\.java$' || true)
+if [ -z "$STAGED_JAVA" ]; then
+    exit 0
+fi
+
+echo "Spotless: checking formatting..."
+
+if ! ./gradlew spotlessCheck --quiet 2>&1; then
+    echo ""
+    echo "Commit rejected: code is not formatted."
+    echo "Run: ./gradlew spotlessApply"
+    exit 1
+fi
