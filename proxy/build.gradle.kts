@@ -13,6 +13,28 @@ application {
     mainClass = "dev.warp.proxy.WarpBootstrap"
 }
 
+val generateBuildInfo = tasks.register("generateBuildInfo") {
+    val outputDir = layout.buildDirectory.dir("generated/build-info")
+    val ver = project.version.toString()
+    val commit = providers.exec { commandLine("git", "rev-parse", "--short", "HEAD") }
+        .standardOutput.asText.map { it.trim() }
+    val branch = providers.exec { commandLine("git", "rev-parse", "--abbrev-ref", "HEAD") }
+        .standardOutput.asText.map { it.trim() }
+    inputs.property("version", ver)
+    inputs.property("gitCommit", commit)
+    inputs.property("gitBranch", branch)
+    outputs.dir(outputDir)
+    doLast {
+        val file = outputDir.get().file("warp-build.properties").asFile
+        file.parentFile.mkdirs()
+        file.writeText("version=${ver}\ngit.commit=${commit.get()}\ngit.branch=${branch.get()}\n")
+    }
+}
+
+sourceSets.main {
+    resources.srcDir(generateBuildInfo)
+}
+
 dependencies {
     implementation(project(":api"))
     implementation(project(":protocol"))

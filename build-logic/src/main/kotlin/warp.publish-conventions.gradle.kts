@@ -10,7 +10,7 @@ publishing {
             pom {
                 name = project.name
                 description = project.description
-                url = "https://github.com/PrimeMC/warp"
+                url = "https://github.com/NeosiaNexus/warp"
                 licenses {
                     license {
                         name = "GNU Affero General Public License v3.0"
@@ -18,9 +18,9 @@ publishing {
                     }
                 }
                 scm {
-                    connection = "scm:git:git://github.com/PrimeMC/warp.git"
-                    developerConnection = "scm:git:ssh://github.com/PrimeMC/warp.git"
-                    url = "https://github.com/PrimeMC/warp"
+                    connection = "scm:git:git://github.com/NeosiaNexus/warp.git"
+                    developerConnection = "scm:git:ssh://github.com/NeosiaNexus/warp.git"
+                    url = "https://github.com/NeosiaNexus/warp"
                 }
             }
         }
