@@ -1,6 +1,7 @@
 plugins {
     id("warp.java-conventions")
     id("warp.spotless-conventions")
+    id("warp.checkstyle-conventions")
 }
 
 description = "Warp JNI — native bindings for compression and cryptography"

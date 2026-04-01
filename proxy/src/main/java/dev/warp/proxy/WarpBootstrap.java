@@ -26,7 +26,11 @@ public final class WarpBootstrap {
 
   private WarpBootstrap() {}
 
-  /** Launches the Warp proxy. */
+  /**
+   * Launches the Warp proxy.
+   *
+   * @param args command-line arguments (currently unused)
+   */
   public static void main(String[] args) {
     new WarpServer().start();
   }

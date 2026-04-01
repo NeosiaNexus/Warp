@@ -195,22 +195,37 @@ public final class ProtocolVersion implements Comparable<ProtocolVersion> {
    *
    * <p>When multiple game versions share a protocol ID (e.g. 1.20 / 1.20.1 = 763), the
    * <em>first</em> registered version is returned.
+   *
+   * @param protocolId the wire protocol ID to look up
+   * @return the matching version, or {@code null} if unknown
    */
   public static @Nullable ProtocolVersion byProtocolId(int protocolId) {
     return BY_PROTOCOL.get(protocolId);
   }
 
-  /** Returns the newest supported version (1.21.4 at the time of writing). */
+  /**
+   * Returns the newest supported version (1.21.4 at the time of writing).
+   *
+   * @return the latest registered protocol version
+   */
   public static ProtocolVersion latest() {
     return VERSIONS.getLast();
   }
 
-  /** Returns the oldest supported version (1.7.2 at the time of writing). */
+  /**
+   * Returns the oldest supported version (1.7.2 at the time of writing).
+   *
+   * @return the earliest registered protocol version
+   */
   public static ProtocolVersion oldest() {
     return VERSIONS.getFirst();
   }
 
-  /** Returns an unmodifiable list of all registered versions in chronological order. */
+  /**
+   * Returns an unmodifiable list of all registered versions in chronological order.
+   *
+   * @return all registered versions
+   */
   public static List<ProtocolVersion> values() {
     return Collections.unmodifiableList(VERSIONS);
   }
@@ -219,12 +234,20 @@ public final class ProtocolVersion implements Comparable<ProtocolVersion> {
   // Accessors
   // ---------------------------------------------------------------------------
 
-  /** Returns the numeric protocol ID sent on the wire during handshake. */
+  /**
+   * Returns the numeric protocol ID sent on the wire during handshake.
+   *
+   * @return the protocol ID
+   */
   public int protocol() {
     return protocol;
   }
 
-  /** Returns the human-readable game version string (e.g. {@code "1.21.4"}). */
+  /**
+   * Returns the human-readable game version string (e.g. {@code "1.21.4"}).
+   *
+   * @return the game version name
+   */
   public String name() {
     return name;
   }
@@ -235,18 +258,30 @@ public final class ProtocolVersion implements Comparable<ProtocolVersion> {
 
   /**
    * Returns {@code true} if this version's protocol ID is strictly greater than {@code other}'s.
+   *
+   * @param other the version to compare against
+   * @return {@code true} if this version is newer
    */
   public boolean isNewerThan(ProtocolVersion other) {
     return this.protocol > other.protocol;
   }
 
-  /** Returns {@code true} if this version's protocol ID is strictly less than {@code other}'s. */
+  /**
+   * Returns {@code true} if this version's protocol ID is strictly less than {@code other}'s.
+   *
+   * @param other the version to compare against
+   * @return {@code true} if this version is older
+   */
   public boolean isOlderThan(ProtocolVersion other) {
     return this.protocol < other.protocol;
   }
 
   /**
    * Returns {@code true} if this version's protocol ID falls within {@code [min, max]} inclusive.
+   *
+   * @param min the lower bound (inclusive)
+   * @param max the upper bound (inclusive)
+   * @return {@code true} if this version is between {@code min} and {@code max}
    */
   public boolean isBetween(ProtocolVersion min, ProtocolVersion max) {
     return this.protocol >= min.protocol && this.protocol <= max.protocol;
@@ -255,6 +290,8 @@ public final class ProtocolVersion implements Comparable<ProtocolVersion> {
   /**
    * Returns {@code true} if this version supports the {@link ProtocolState#CONFIGURATION} state,
    * introduced in Minecraft 1.20.2 (protocol 764).
+   *
+   * @return {@code true} if the configuration state is supported
    */
   public boolean supportsConfigurationState() {
     return this.protocol >= CONFIGURATION_MIN_PROTOCOL;

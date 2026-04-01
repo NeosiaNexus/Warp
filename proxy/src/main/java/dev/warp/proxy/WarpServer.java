@@ -53,7 +53,11 @@ public final class WarpServer implements Warp {
     this(new InetSocketAddress("0.0.0.0", 25577));
   }
 
-  /** Creates a server that will bind to the given address. */
+  /**
+   * Creates a server that will bind to the given address.
+   *
+   * @param bindAddress the address and port to listen on
+   */
   public WarpServer(InetSocketAddress bindAddress) {
     this.bindAddress = bindAddress;
   }
