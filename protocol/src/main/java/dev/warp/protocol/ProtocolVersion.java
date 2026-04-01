@@ -160,6 +160,10 @@ public final class ProtocolVersion implements Comparable<ProtocolVersion> {
   public static final ProtocolVersion MINECRAFT_1_21_3 = register(768, "1.21.3");
   public static final ProtocolVersion MINECRAFT_1_21_4 = register(769, "1.21.4");
 
+  /** Cached unmodifiable view of all registered versions. */
+  private static final List<ProtocolVersion> UNMODIFIABLE_VERSIONS =
+      Collections.unmodifiableList(VERSIONS);
+
   /**
    * The minimum protocol ID that supports the {@link ProtocolState#CONFIGURATION} state, introduced
    * in Minecraft 1.20.2.
@@ -227,7 +231,7 @@ public final class ProtocolVersion implements Comparable<ProtocolVersion> {
    * @return all registered versions
    */
   public static List<ProtocolVersion> values() {
-    return Collections.unmodifiableList(VERSIONS);
+    return UNMODIFIABLE_VERSIONS;
   }
 
   // ---------------------------------------------------------------------------
@@ -285,6 +289,32 @@ public final class ProtocolVersion implements Comparable<ProtocolVersion> {
    */
   public boolean isBetween(ProtocolVersion min, ProtocolVersion max) {
     return this.protocol >= min.protocol && this.protocol <= max.protocol;
+  }
+
+  /**
+   * Returns {@code true} if this version's protocol ID is greater than or equal to {@code other}'s.
+   *
+   * <p>Equivalent to {@code !isOlderThan(other)}, but reads more naturally in codec version
+   * branching: {@code if (version.isAtLeast(MINECRAFT_1_19_3))}.
+   *
+   * @param other the version to compare against
+   * @return {@code true} if this version is the same or newer
+   */
+  public boolean isAtLeast(ProtocolVersion other) {
+    return this.protocol >= other.protocol;
+  }
+
+  /**
+   * Returns {@code true} if this version's protocol ID is less than or equal to {@code other}'s.
+   *
+   * <p>Equivalent to {@code !isNewerThan(other)}, but reads more naturally in codec version
+   * branching.
+   *
+   * @param other the version to compare against
+   * @return {@code true} if this version is the same or older
+   */
+  public boolean isAtMost(ProtocolVersion other) {
+    return this.protocol <= other.protocol;
   }
 
   /**
