@@ -17,6 +17,9 @@ gradle-app.setting
 *.swp
 *~
 
+# Claude Code (local overrides — not committed)
+.claude/settings.local.json
+
 # Java
 *.class
 hs_err_pid*

@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew *)",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git branch*)",
+      "Bash(git tag*)",
+      "Bash(gh run *)",
+      "Bash(gh pr *)",
+      "Bash(gh issue *)",
+      "Bash(gh release *)",
+      "Bash(java -version)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git push --force*)",
+      "Bash(git reset --hard*)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && ./gradlew spotlessCheck --quiet 2>&1 || echo 'Spotless check failed. Run: ./gradlew spotlessApply'",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}
