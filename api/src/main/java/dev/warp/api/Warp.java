@@ -42,7 +42,7 @@ public interface Warp {
   /**
    * Returns the proxy version string.
    *
-   * @return the version string (e.g. {@code "0.1.0-SNAPSHOT"})
+   * @return the version string (e.g. {@code "0.1.0-beta.2"})
    */
   String version();
 }
