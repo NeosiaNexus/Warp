@@ -38,6 +38,7 @@ public final class WarpProvider {
   /**
    * Returns the global {@link Warp} instance.
    *
+   * @return the singleton Warp API instance
    * @throws IllegalStateException if the proxy has not yet been initialised
    */
   public static Warp get() {
@@ -54,6 +55,7 @@ public final class WarpProvider {
    *
    * <p><b>Internal use only.</b> Plugin code must never call this method.
    *
+   * @param warp the Warp API implementation to register
    * @throws IllegalStateException if an instance has already been set
    */
   public static void set(Warp warp) {

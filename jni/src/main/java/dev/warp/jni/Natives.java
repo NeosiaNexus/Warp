@@ -21,12 +21,20 @@ public final class Natives {
 
   private Natives() {}
 
-  /** Returns {@code true} if native compression (libdeflate) is available on this platform. */
+  /**
+   * Returns whether native compression (libdeflate) is available on this platform.
+   *
+   * @return {@code true} if native compression can be used
+   */
   public static boolean isNativeCompressionAvailable() {
     return false; // TODO: implement native library loading
   }
 
-  /** Returns {@code true} if native crypto (OpenSSL/BoringSSL) is available on this platform. */
+  /**
+   * Returns whether native crypto (OpenSSL/BoringSSL) is available on this platform.
+   *
+   * @return {@code true} if native crypto can be used
+   */
   public static boolean isNativeCryptoAvailable() {
     return false; // TODO: implement native library loading
   }

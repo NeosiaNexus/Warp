@@ -39,6 +39,10 @@ package dev.warp.api;
  */
 public interface Warp {
 
-  /** Returns the proxy version string (e.g. {@code "0.1.0-SNAPSHOT"}). */
+  /**
+   * Returns the proxy version string.
+   *
+   * @return the version string (e.g. {@code "0.1.0-SNAPSHOT"})
+   */
   String version();
 }
