@@ -111,6 +111,42 @@ public final class McByteArray {
   }
 
   // ---------------------------------------------------------------------------
+  // Short-prefixed (1.7.x wire format)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Reads a byte array with an unsigned-short length prefix (Minecraft 1.7.x wire format).
+   *
+   * @param buf the buffer to read from
+   * @param maxSize the maximum array size
+   * @return the decoded byte array
+   * @throws DecoderException if the array is malformed or exceeds the size limit
+   */
+  public static byte[] readShortPrefixed(ByteBuf buf, int maxSize) {
+    int length = buf.readUnsignedShort();
+    if (length > maxSize) {
+      throw TOO_LARGE;
+    }
+    if (!buf.isReadable(length)) {
+      throw NOT_ENOUGH_DATA;
+    }
+    byte[] array = new byte[length];
+    buf.readBytes(array);
+    return array;
+  }
+
+  /**
+   * Writes a byte array with an unsigned-short length prefix (Minecraft 1.7.x wire format).
+   *
+   * @param buf the buffer to write to
+   * @param array the byte array to encode
+   */
+  public static void writeShortPrefixed(ByteBuf buf, byte[] array) {
+    buf.writeShort(array.length);
+    buf.writeBytes(array);
+  }
+
+  // ---------------------------------------------------------------------------
   // Size
   // ---------------------------------------------------------------------------
 

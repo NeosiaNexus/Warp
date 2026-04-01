@@ -269,6 +269,42 @@ class McByteArrayTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Short-prefixed (1.7.x)
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("readShortPrefixed / writeShortPrefixed")
+  class ShortPrefixed {
+
+    @Test
+    @DisplayName("should roundtrip short-prefixed byte array")
+    void roundtrip() {
+      byte[] data = {0x01, 0x02, 0x03, 0x04};
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        McByteArray.writeShortPrefixed(buf, data);
+        assertEquals(2 + 4, buf.readableBytes()); // short prefix (2) + data (4)
+        assertArrayEquals(data, McByteArray.readShortPrefixed(buf, 256));
+      } finally {
+        buf.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should reject oversized short-prefixed array")
+    void oversized() {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        buf.writeShort(100); // claim 100 bytes
+        buf.writeZero(100);
+        assertThrows(DecoderException.class, () -> McByteArray.readShortPrefixed(buf, 10));
+      } finally {
+        buf.release();
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Roundtrip
   // ---------------------------------------------------------------------------
 
