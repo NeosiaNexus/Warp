@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.0-beta.4](https://github.com/NeosiaNexus/Warp/compare/v0.1.0-beta.3...v0.1.0-beta.4) (2026-04-07)
+
+
+### Features
+
+* **protocol:** add protocol versions up to 26.1.1 ([28fa0a8](https://github.com/NeosiaNexus/Warp/commit/28fa0a82ea17c80cc7f5c554298dbd399acf2152))
+* **proxy:** add connection pipeline and server list ping ([#19](https://github.com/NeosiaNexus/Warp/issues/19)) ([e385032](https://github.com/NeosiaNexus/Warp/commit/e385032087e94eb68f24d7a02760593c023cde04))
+
 ## [0.1.0-beta.3](https://github.com/NeosiaNexus/Warp/compare/v0.1.0-beta.2...v0.1.0-beta.3) (2026-04-07)
 
 
