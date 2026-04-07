@@ -159,6 +159,19 @@ public final class ProtocolVersion implements Comparable<ProtocolVersion> {
   public static final ProtocolVersion MINECRAFT_1_21_2 = register(768, "1.21.2");
   public static final ProtocolVersion MINECRAFT_1_21_3 = register(768, "1.21.3");
   public static final ProtocolVersion MINECRAFT_1_21_4 = register(769, "1.21.4");
+  public static final ProtocolVersion MINECRAFT_1_21_5 = register(770, "1.21.5");
+  public static final ProtocolVersion MINECRAFT_1_21_6 = register(771, "1.21.6");
+  public static final ProtocolVersion MINECRAFT_1_21_7 = register(772, "1.21.7");
+  public static final ProtocolVersion MINECRAFT_1_21_8 = register(772, "1.21.8");
+  public static final ProtocolVersion MINECRAFT_1_21_9 = register(773, "1.21.9");
+  public static final ProtocolVersion MINECRAFT_1_21_10 = register(773, "1.21.10");
+  public static final ProtocolVersion MINECRAFT_1_21_11 = register(774, "1.21.11");
+
+  // ---------------------------------------------------------------------------
+  // 26.x (new Mojang versioning scheme — year.drop.hotfix)
+  // ---------------------------------------------------------------------------
+  public static final ProtocolVersion MINECRAFT_26_1 = register(775, "26.1");
+  public static final ProtocolVersion MINECRAFT_26_1_1 = register(775, "26.1.1");
 
   /** Cached unmodifiable view of all registered versions. */
   private static final List<ProtocolVersion> UNMODIFIABLE_VERSIONS =
