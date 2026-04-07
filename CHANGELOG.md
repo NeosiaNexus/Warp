@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.0-beta.5](https://github.com/NeosiaNexus/Warp/compare/v0.1.0-beta.4...v0.1.0-beta.5) (2026-04-07)
+
+
+### Features
+
+* **proxy:** add login flow, backend connection, and blind forwarding pipeline ([#21](https://github.com/NeosiaNexus/Warp/issues/21)) ([b5c66da](https://github.com/NeosiaNexus/Warp/commit/b5c66da9489159a45a912c56880ec95367d71199))
+
 ## [0.1.0-beta.4](https://github.com/NeosiaNexus/Warp/compare/v0.1.0-beta.3...v0.1.0-beta.4) (2026-04-07)
 
 
