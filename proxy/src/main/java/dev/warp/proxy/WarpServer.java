@@ -18,9 +18,15 @@ package dev.warp.proxy;
 
 import dev.warp.api.Warp;
 import dev.warp.api.WarpProvider;
+import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.connection.ServerChannelInitializer;
+import dev.warp.proxy.connection.ServerLoginContext;
 
 import java.net.InetSocketAddress;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.NoSuchAlgorithmException;
+import java.util.zip.Deflater;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.PooledByteBufAllocator;
@@ -31,7 +37,9 @@ import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.WriteBufferWaterMark;
 import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.ServerSocketChannel;
+import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.channel.socket.nio.NioSocketChannel;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -64,6 +72,12 @@ public final class WarpServer implements Warp {
    */
   private static final int IP_TOS_LOW_LATENCY = 0x18;
 
+  /** RSA key size for Minecraft encryption handshake (matches vanilla). */
+  private static final int RSA_KEY_SIZE = 1024;
+
+  /** Default compression threshold in bytes. Packets >= this size are compressed. */
+  private static final int DEFAULT_COMPRESSION_THRESHOLD = 256;
+
   // ---------------------------------------------------------------------------
   // Instance fields
   // ---------------------------------------------------------------------------
@@ -78,6 +92,9 @@ public final class WarpServer implements Warp {
 
   /** The bound server channel, used for graceful shutdown. */
   private @Nullable Channel serverChannel;
+
+  /** The detected transport info, needed for outbound connections. */
+  private @Nullable TransportInfo transportInfo;
 
   private volatile boolean running;
 
@@ -113,7 +130,10 @@ public final class WarpServer implements Warp {
         WarpBuildInfo.GIT_COMMIT,
         WarpBuildInfo.GIT_BRANCH);
 
+    ServerLoginContext loginContext = createLoginContext();
+
     TransportInfo transport = detectTransport();
+    this.transportInfo = transport;
     this.bossGroup = new MultiThreadIoEventLoopGroup(1, transport.ioFactory());
     this.workerGroup = new MultiThreadIoEventLoopGroup(transport.ioFactory());
 
@@ -121,7 +141,7 @@ public final class WarpServer implements Warp {
         new ServerBootstrap()
             .group(bossGroup, workerGroup)
             .channel(transport.serverChannelClass())
-            .childHandler(new ServerChannelInitializer())
+            .childHandler(new ServerChannelInitializer(loginContext))
             // TCP_NODELAY: disable Nagle — critical for game traffic. BungeeCord misses this.
             .childOption(ChannelOption.TCP_NODELAY, true)
             // SO_KEEPALIVE: detect dead connections at the TCP level.
@@ -200,6 +220,55 @@ public final class WarpServer implements Warp {
   // ---------------------------------------------------------------------------
 
   /**
+   * Returns the worker event loop group for creating outbound connections (backend).
+   *
+   * @return the worker group
+   * @throws IllegalStateException if the server has not started
+   */
+  public MultiThreadIoEventLoopGroup workerGroup() {
+    if (workerGroup == null) {
+      throw new IllegalStateException("Server has not started");
+    }
+    return workerGroup;
+  }
+
+  /**
+   * Returns the client socket channel class matching the detected transport.
+   *
+   * @return the channel class for outbound connections
+   * @throws IllegalStateException if the server has not started
+   */
+  public Class<? extends SocketChannel> clientChannelClass() {
+    if (transportInfo == null) {
+      throw new IllegalStateException("Server has not started");
+    }
+    return transportInfo.clientChannelClass();
+  }
+
+  /**
+   * Creates the server-wide login context with RSA keypair and authentication configuration.
+   *
+   * <p>TODO: Read online-mode, compression settings from config file once implemented.
+   */
+  private static ServerLoginContext createLoginContext() {
+    KeyPairGenerator gen;
+    try {
+      gen = KeyPairGenerator.getInstance("RSA");
+    } catch (NoSuchAlgorithmException e) {
+      throw new AssertionError("RSA not available", e);
+    }
+    gen.initialize(RSA_KEY_SIZE);
+    KeyPair rsaKeyPair = gen.generateKeyPair();
+
+    return new ServerLoginContext(
+        rsaKeyPair,
+        true, // online mode
+        DEFAULT_COMPRESSION_THRESHOLD,
+        Deflater.DEFAULT_COMPRESSION,
+        new MojangSessionService());
+  }
+
+  /**
    * Detects the best available Netty I/O transport for the current platform.
    *
    * <p>Tries epoll (Linux), then kqueue (macOS), then falls back to NIO. Detection uses reflection
@@ -216,10 +285,13 @@ public final class WarpServer implements Warp {
                 Class.forName("io.netty.channel.epoll.EpollIoHandler")
                     .getMethod("newFactory")
                     .invoke(null);
-        Class<? extends ServerSocketChannel> channelClass =
+        Class<? extends ServerSocketChannel> serverClass =
             (Class<? extends ServerSocketChannel>)
                 Class.forName("io.netty.channel.epoll.EpollServerSocketChannel");
-        return new TransportInfo(factory, channelClass);
+        Class<? extends SocketChannel> clientClass =
+            (Class<? extends SocketChannel>)
+                Class.forName("io.netty.channel.epoll.EpollSocketChannel");
+        return new TransportInfo(factory, serverClass, clientClass);
       }
     } catch (ReflectiveOperationException | UnsatisfiedLinkError e) {
       logger.trace("Epoll not available", e);
@@ -234,17 +306,21 @@ public final class WarpServer implements Warp {
                 Class.forName("io.netty.channel.kqueue.KQueueIoHandler")
                     .getMethod("newFactory")
                     .invoke(null);
-        Class<? extends ServerSocketChannel> channelClass =
+        Class<? extends ServerSocketChannel> serverClass =
             (Class<? extends ServerSocketChannel>)
                 Class.forName("io.netty.channel.kqueue.KQueueServerSocketChannel");
-        return new TransportInfo(factory, channelClass);
+        Class<? extends SocketChannel> clientClass =
+            (Class<? extends SocketChannel>)
+                Class.forName("io.netty.channel.kqueue.KQueueSocketChannel");
+        return new TransportInfo(factory, serverClass, clientClass);
       }
     } catch (ReflectiveOperationException | UnsatisfiedLinkError e) {
       logger.trace("KQueue not available", e);
     }
 
     logger.info("Using NIO transport (native transport unavailable)");
-    return new TransportInfo(NioIoHandler.newFactory(), NioServerSocketChannel.class);
+    return new TransportInfo(
+        NioIoHandler.newFactory(), NioServerSocketChannel.class, NioSocketChannel.class);
   }
 
   /**
@@ -279,11 +355,14 @@ public final class WarpServer implements Warp {
   }
 
   /**
-   * Holds the detected I/O transport factory and corresponding server channel class.
+   * Holds the detected I/O transport factory and corresponding channel classes.
    *
    * @param ioFactory the Netty I/O handler factory for event loops
    * @param serverChannelClass the server socket channel class matching the transport
+   * @param clientChannelClass the client socket channel class matching the transport
    */
   private record TransportInfo(
-      IoHandlerFactory ioFactory, Class<? extends ServerSocketChannel> serverChannelClass) {}
+      IoHandlerFactory ioFactory,
+      Class<? extends ServerSocketChannel> serverChannelClass,
+      Class<? extends SocketChannel> clientChannelClass) {}
 }

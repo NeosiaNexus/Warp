@@ -87,4 +87,28 @@ public interface SessionHandler {
    * does nothing.
    */
   default void disconnected() {}
+
+  /**
+   * Called when a batch of inbound reads completes (maps to Netty's {@code channelReadComplete}).
+   *
+   * <p>Implementations that forward packets to another channel should flush the target channel
+   * here, enabling Netty's natural write batching: {@code write()} per packet during {@code
+   * channelRead}, one {@code flush()} during {@code channelReadComplete}. This reduces syscalls
+   * from N to 1 for a batch of N packets.
+   *
+   * <p>The default implementation does nothing, which is correct for non-forwarding handlers
+   * (handshake, status, login).
+   */
+  default void readComplete() {}
+
+  /**
+   * Called when the channel's writability changes (maps to Netty's {@code
+   * channelWritabilityChanged}).
+   *
+   * <p>Implementations that forward packets should use this for back-pressure: when the target
+   * channel becomes unwritable, disable auto-read on the source channel to stop buffering.
+   *
+   * <p>The default implementation does nothing, which is correct for non-forwarding handlers.
+   */
+  default void writabilityChanged() {}
 }
