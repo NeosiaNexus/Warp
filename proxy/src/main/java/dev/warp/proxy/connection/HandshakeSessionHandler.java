@@ -52,9 +52,11 @@ final class HandshakeSessionHandler implements SessionHandler {
   private static final int LOGIN_NEXT_STATE = 2;
 
   private final MinecraftConnection connection;
+  private final ServerLoginContext loginContext;
 
-  HandshakeSessionHandler(MinecraftConnection connection) {
+  HandshakeSessionHandler(MinecraftConnection connection, ServerLoginContext loginContext) {
     this.connection = connection;
+    this.loginContext = loginContext;
   }
 
   @Override
@@ -85,12 +87,16 @@ final class HandshakeSessionHandler implements SessionHandler {
         connection.setSessionHandler(new StatusSessionHandler(connection));
       }
       case LOGIN_NEXT_STATE -> {
-        // Login is not yet implemented — close with a log message.
-        logger.info(
-            "Login attempt from {} (protocol {}), login not yet implemented",
-            connection.channel().remoteAddress(),
-            handshake.protocolVersion());
-        connection.close();
+        if (version == null) {
+          logger.warn(
+              "Unsupported protocol version {} from {}",
+              handshake.protocolVersion(),
+              connection.channel().remoteAddress());
+          connection.close();
+          return;
+        }
+        connection.setState(ProtocolState.LOGIN);
+        connection.setSessionHandler(new LoginSessionHandler(connection, loginContext));
       }
       default -> {
         logger.warn(

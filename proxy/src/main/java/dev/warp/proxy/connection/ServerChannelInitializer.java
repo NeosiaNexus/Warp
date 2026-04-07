@@ -56,11 +56,23 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
   /** Read timeout — closes idle connections. */
   public static final String READ_TIMEOUT = "read-timeout";
 
+  /** Cipher decoder — AES/CFB8 stream decryption, installed during login. */
+  public static final String CIPHER_DECODER = "cipher-decoder";
+
+  /** Cipher encoder — AES/CFB8 stream encryption, installed during login. */
+  public static final String CIPHER_ENCODER = "cipher-encoder";
+
   /** Frame decoder — splits TCP stream into VarInt-length-prefixed frames. */
   public static final String FRAME_DECODER = "frame-decoder";
 
   /** Frame encoder — prepends VarInt length prefix to outgoing frames. */
   public static final String FRAME_ENCODER = "frame-encoder";
+
+  /** Compression decoder — decompresses frames after SetCompression, installed during login. */
+  public static final String COMPRESSION_DECODER = "compression-decoder";
+
+  /** Compression encoder — compresses and frames outgoing data, replaces frame-encoder. */
+  public static final String COMPRESSION_ENCODER = "compression-encoder";
 
   /** Minecraft decoder — deserializes frames into typed packets or blind-forwards raw buffers. */
   public static final String MINECRAFT_DECODER = "minecraft-decoder";
@@ -76,6 +88,21 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
 
   /** Read timeout duration for idle connections before handshake/status. */
   private static final int READ_TIMEOUT_SECONDS = 30;
+
+  private final ServerLoginContext loginContext;
+
+  // ---------------------------------------------------------------------------
+  // Constructor
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Creates a new server channel initializer.
+   *
+   * @param loginContext the server-wide login configuration
+   */
+  public ServerChannelInitializer(ServerLoginContext loginContext) {
+    this.loginContext = loginContext;
+  }
 
   // ---------------------------------------------------------------------------
   // Channel initialisation
@@ -107,6 +134,6 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
         .addLast(CONNECTION_HANDLER, connection);
 
     // Start with the handshake handler.
-    connection.setSessionHandler(new HandshakeSessionHandler(connection));
+    connection.setSessionHandler(new HandshakeSessionHandler(connection, loginContext));
   }
 }

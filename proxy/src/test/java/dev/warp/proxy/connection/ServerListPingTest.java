@@ -29,8 +29,12 @@ import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
+import dev.warp.proxy.auth.MojangSessionService;
 
 import java.nio.charset.StandardCharsets;
+import java.security.KeyPairGenerator;
+import java.security.NoSuchAlgorithmException;
+import java.util.zip.Deflater;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -128,14 +132,19 @@ class ServerListPingTest {
   class HandshakeEdgeCases {
 
     @Test
-    @DisplayName("should close connection on login attempt (nextState=2)")
-    void loginNotImplemented() {
+    @DisplayName("should transition to LOGIN state on login attempt (nextState=2)")
+    void loginAccepted() {
       EmbeddedChannel ch = createFullPipeline();
 
       writeFramedHandshake(ch, ProtocolVersion.MINECRAFT_1_21_4.protocol(), "localhost", 25577, 2);
 
       ch.runPendingTasks();
-      assertFalse(ch.isActive(), "Channel should close on login attempt");
+      assertTrue(ch.isActive(), "Channel should remain open for login");
+
+      // Verify the decoder transitioned to LOGIN state.
+      MinecraftDecoder decoder = ch.pipeline().get(MinecraftDecoder.class);
+      assertNotNull(decoder);
+      assertEquals(ProtocolState.LOGIN, decoder.state());
     }
 
     @Test
@@ -304,7 +313,7 @@ class ServerListPingTest {
 
   /** Creates a full Netty pipeline using {@link ServerChannelInitializer}. */
   private static EmbeddedChannel createFullPipeline() {
-    ServerChannelInitializer init = new ServerChannelInitializer();
+    ServerChannelInitializer init = new ServerChannelInitializer(createTestLoginContext());
     EmbeddedChannel ch = new EmbeddedChannel();
     // Manually trigger initChannel since EmbeddedChannel doesn't invoke ChannelInitializer
     // the same way as a real ServerBootstrap.
@@ -346,5 +355,21 @@ class ServerListPingTest {
     packetData.release();
 
     ch.writeInbound(frame);
+  }
+
+  /** Creates a test {@link ServerLoginContext} for pipeline initialisation. */
+  private static ServerLoginContext createTestLoginContext() {
+    try {
+      KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
+      gen.initialize(1024);
+      return new ServerLoginContext(
+          gen.generateKeyPair(),
+          false, // offline mode for tests
+          -1, // compression disabled
+          Deflater.DEFAULT_COMPRESSION,
+          new MojangSessionService());
+    } catch (NoSuchAlgorithmException e) {
+      throw new AssertionError("RSA not available", e);
+    }
   }
 }

@@ -104,10 +104,26 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
   }
 
   @Override
+  public void channelReadComplete(ChannelHandlerContext ctx) {
+    if (sessionHandler != null) {
+      sessionHandler.readComplete();
+    }
+    ctx.fireChannelReadComplete();
+  }
+
+  @Override
   public void channelInactive(ChannelHandlerContext ctx) {
     if (sessionHandler != null) {
       sessionHandler.disconnected();
     }
+  }
+
+  @Override
+  public void channelWritabilityChanged(ChannelHandlerContext ctx) {
+    if (sessionHandler != null) {
+      sessionHandler.writabilityChanged();
+    }
+    ctx.fireChannelWritabilityChanged();
   }
 
   @Override
@@ -151,6 +167,34 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
    */
   public void writeAndClose(Packet packet) {
     channel.writeAndFlush(packet).addListener(ChannelFutureListener.CLOSE);
+  }
+
+  /**
+   * Writes a raw {@link ByteBuf} to the channel without flushing (blind forwarding hot path).
+   *
+   * <p>The buffer bypasses {@link dev.warp.protocol.netty.MinecraftEncoder MinecraftEncoder} via
+   * Netty's type dispatch — {@code MessageToByteEncoder<Packet>} only handles {@code Packet}
+   * instances. Zero allocation, zero deserialization.
+   *
+   * @param buf the raw packet buffer (caller transfers ownership)
+   */
+  public void writeBlind(ByteBuf buf) {
+    var unused = channel.write(buf, channel.voidPromise());
+  }
+
+  /** Flushes the channel. Called from {@code readComplete()} for write batching. */
+  public void flush() {
+    channel.flush();
+  }
+
+  /**
+   * Sets auto-read on the channel. Used for back-pressure: when the target channel becomes
+   * unwritable, auto-read is disabled on the source channel to stop reading.
+   *
+   * @param autoRead {@code true} to enable, {@code false} to disable
+   */
+  public void setAutoRead(boolean autoRead) {
+    channel.config().setAutoRead(autoRead);
   }
 
   /** Closes the channel gracefully. */
