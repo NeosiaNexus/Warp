@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.0-beta.3](https://github.com/NeosiaNexus/Warp/compare/v0.1.0-beta.2...v0.1.0-beta.3) (2026-04-07)
+
+
+### Features
+
+* **protocol:** add high-performance VarInt and VarLong codecs ([#13](https://github.com/NeosiaNexus/Warp/issues/13)) ([ba70085](https://github.com/NeosiaNexus/Warp/commit/ba70085732f4b1ca2ff86fbf4ca6ac891901bc1c))
+* **protocol:** add MinecraftDecoder and MinecraftEncoder Netty handlers ([#18](https://github.com/NeosiaNexus/Warp/issues/18)) ([cf3ee73](https://github.com/NeosiaNexus/Warp/commit/cf3ee73ed3a6b98ee933da1fdc5a9cf5099ac9a6))
+* **protocol:** add packet definitions, codecs, and registry ([#17](https://github.com/NeosiaNexus/Warp/issues/17)) ([f9e1a7d](https://github.com/NeosiaNexus/Warp/commit/f9e1a7d3106a367fdbf97e6dfc2c2838b6d1694b))
+* **protocol:** add packet frame codec and compression handlers ([#16](https://github.com/NeosiaNexus/Warp/issues/16)) ([134f5b5](https://github.com/NeosiaNexus/Warp/commit/134f5b5c674312426fe60b5f3ef636acca318673))
+* **protocol:** add String, UUID, and byte array codecs ([#15](https://github.com/NeosiaNexus/Warp/issues/15)) ([1d41b96](https://github.com/NeosiaNexus/Warp/commit/1d41b9620ab426221b98f8da9ba3afc0145f80c3))
+
 ## [0.1.0-beta.2](https://github.com/NeosiaNexus/warp/compare/v0.1.0-beta.1...v0.1.0-beta.2) (2026-04-01)
 
 
