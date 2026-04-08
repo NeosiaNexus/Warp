@@ -74,6 +74,12 @@ public final class ConnectedPlayer {
   /** Guards against concurrent or duplicate {@link #disconnect()} calls. */
   private final AtomicBoolean disconnected = new AtomicBoolean();
 
+  /**
+   * Guards against double-fire of {@link #scheduleBackendFailure()} (e.g. handleDisconnect +
+   * channelInactive).
+   */
+  private final AtomicBoolean fallbackScheduled = new AtomicBoolean();
+
   // ---------------------------------------------------------------------------
   // Immutable identity
   // ---------------------------------------------------------------------------
@@ -483,6 +489,7 @@ public final class ConnectedPlayer {
       switching = false;
       pendingSwitchTarget = null;
       failedFallbackServers = null;
+      fallbackScheduled.set(false);
     }
   }
 
@@ -538,6 +545,9 @@ public final class ConnectedPlayer {
    * (volatile reads) and posts {@link #handleBackendFailure(String)} to the client event loop.
    */
   void scheduleBackendFailure() {
+    if (!fallbackScheduled.compareAndSet(false, true)) {
+      return;
+    }
     ServerInfo target = pendingSwitchTarget;
     String failedName = target != null ? target.name() : currentServerName;
     clientConnection.channel().eventLoop().execute(() -> handleBackendFailure(failedName));
