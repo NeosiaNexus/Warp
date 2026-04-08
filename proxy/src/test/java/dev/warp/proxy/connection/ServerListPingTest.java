@@ -37,6 +37,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
+import java.util.List;
 import java.util.Map;
 import java.util.zip.Deflater;
 
@@ -369,7 +370,10 @@ class ServerListPingTest {
       gen.initialize(1024);
       // Server registry and worker group are unused for status ping tests.
       ServerRegistry registry =
-          new ServerRegistry(Map.of("lobby", new InetSocketAddress("localhost", 25565)), "lobby");
+          new ServerRegistry(
+              Map.of("lobby", new InetSocketAddress("localhost", 25565)),
+              "lobby",
+              List.of("lobby"));
       return new ServerLoginContext(
           gen.generateKeyPair(),
           false, // offline mode for tests

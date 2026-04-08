@@ -18,6 +18,7 @@ package dev.warp.proxy.connection;
 
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
+import dev.warp.protocol.packet.config.ClientInformation;
 
 import io.netty.buffer.ByteBuf;
 
@@ -38,8 +39,11 @@ final class SwitchWaitSessionHandler implements SessionHandler {
 
   @Override
   public void handle(Packet packet) {
-    // Client may send ClientInformation proactively during CONFIG wait.
-    // The new backend will request fresh information after the switch.
+    if (packet instanceof ClientInformation clientInfo) {
+      // Client sends settings proactively on CONFIG entry. Cache them for replay
+      // to the new backend — no forwarding here since the backend isn't connected yet.
+      player.cacheClientSettings(clientInfo);
+    }
   }
 
   @Override

@@ -20,6 +20,7 @@ import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.config.AcknowledgeFinishConfiguration;
+import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.play.KeepAlive;
 
 import io.netty.buffer.ByteBuf;
@@ -55,6 +56,9 @@ final class ClientConfigSessionHandler implements SessionHandler {
         "Client CONFIG handle: {} for {}", packet.getClass().getSimpleName(), player.username());
     if (packet instanceof KeepAlive keepAlive) {
       player.handleKeepAliveResponse(keepAlive.id());
+    } else if (packet instanceof ClientInformation clientInfo) {
+      player.cacheClientSettings(clientInfo);
+      backendConnection.write(clientInfo);
     } else if (packet instanceof AcknowledgeFinishConfiguration) {
       handleAcknowledgeFinish();
     }

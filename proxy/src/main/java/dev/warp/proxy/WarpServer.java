@@ -262,7 +262,8 @@ public final class WarpServer implements Warp {
     MojangSessionService service = new MojangSessionService();
     this.sessionService = service;
 
-    ServerRegistry serverRegistry = new ServerRegistry(config.servers(), config.defaultServer());
+    ServerRegistry serverRegistry =
+        new ServerRegistry(config.servers(), config.defaultServer(), config.fallbackOrder());
 
     return new ServerLoginContext(
         rsaKeyPair,

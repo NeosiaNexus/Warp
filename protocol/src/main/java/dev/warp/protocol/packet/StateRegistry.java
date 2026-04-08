@@ -40,6 +40,7 @@ import static dev.warp.protocol.packet.VersionMapping.map;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.packet.config.AcknowledgeFinishConfiguration;
+import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.config.FinishConfiguration;
 import dev.warp.protocol.packet.handshake.Handshake;
@@ -227,6 +228,8 @@ public final class StateRegistry {
         .put(
             PacketDirection.SERVERBOUND,
             PacketRegistry.builder()
+                .register(
+                    ClientInformation.class, ClientInformation.CODEC, map(0x00, MINECRAFT_1_20_2))
                 .register(
                     AcknowledgeFinishConfiguration.class,
                     AcknowledgeFinishConfiguration.CODEC,

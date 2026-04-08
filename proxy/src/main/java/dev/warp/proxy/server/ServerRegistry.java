@@ -19,10 +19,13 @@ package dev.warp.proxy.server;
 import dev.warp.api.server.ServerInfo;
 
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 import org.jspecify.annotations.Nullable;
 
@@ -36,15 +39,21 @@ public final class ServerRegistry {
 
   private final Map<String, ServerInfo> servers;
   private final ServerInfo defaultServer;
+  private final List<ServerInfo> fallbackOrder;
 
   /**
-   * Creates a registry from a map of server name to address and a default server name.
+   * Creates a registry from a map of server name to address, a default server name, and a fallback
+   * order list.
    *
    * @param servers map of server name to address (at least one entry required)
    * @param defaultServerName the name of the default server (must exist in the map)
+   * @param fallbackServerNames ordered list of fallback server names (must all exist in the map)
    * @throws IllegalArgumentException if the map is empty or the default server is not found
    */
-  public ServerRegistry(Map<String, InetSocketAddress> servers, String defaultServerName) {
+  public ServerRegistry(
+      Map<String, InetSocketAddress> servers,
+      String defaultServerName,
+      List<String> fallbackServerNames) {
     if (servers.isEmpty()) {
       throw new IllegalArgumentException("At least one server must be configured");
     }
@@ -66,6 +75,15 @@ public final class ServerRegistry {
               + servers.keySet());
     }
     this.defaultServer = resolved;
+
+    List<ServerInfo> fallback = new ArrayList<>(fallbackServerNames.size());
+    for (String name : fallbackServerNames) {
+      ServerInfo info = this.servers.get(name.toLowerCase(Locale.ROOT));
+      if (info != null) {
+        fallback.add(info);
+      }
+    }
+    this.fallbackOrder = List.copyOf(fallback);
   }
 
   /**
@@ -94,5 +112,24 @@ public final class ServerRegistry {
    */
   public Collection<ServerInfo> allServers() {
     return servers.values();
+  }
+
+  /**
+   * Returns the first fallback server not in the excluded set.
+   *
+   * <p>Iterates the configured {@code fallback-order} and returns the first server whose name is
+   * not in {@code excludedServers}. Returns {@code null} if all fallback servers have been
+   * excluded.
+   *
+   * @param excludedServers server names to skip (lowercase)
+   * @return the next fallback server, or {@code null} if none available
+   */
+  public @Nullable ServerInfo nextFallback(Set<String> excludedServers) {
+    for (ServerInfo server : fallbackOrder) {
+      if (!excludedServers.contains(server.name())) {
+        return server;
+      }
+    }
+    return null;
   }
 }

@@ -18,6 +18,7 @@ package dev.warp.proxy.connection;
 
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
+import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.config.FinishConfiguration;
 import dev.warp.protocol.packet.play.KeepAlive;
@@ -57,6 +58,16 @@ final class BackendConfigSessionHandler implements SessionHandler {
   @Override
   public void activated() {
     logger.debug("BackendConfigSessionHandler activated for {}", player.username());
+
+    // Replay cached client settings to the new backend before the client resumes.
+    // The backend needs the player's locale, view distance, skin parts, etc. immediately.
+    // The client may also resend settings during CONFIG; receiving them twice is harmless —
+    // the backend simply overwrites its state with each update.
+    ClientInformation cached = player.cachedClientSettings();
+    if (cached != null) {
+      backendConnection.writeAndFlush(cached);
+    }
+
     // Install client config handler immediately so the client can respond to KnownPacks,
     // PluginMessages, etc. as soon as the backend starts sending configuration data.
     // Without this, the client would still have the LoginSessionHandler active and would
@@ -103,8 +114,7 @@ final class BackendConfigSessionHandler implements SessionHandler {
   @Override
   public void disconnected() {
     logger.info("Backend disconnected during configuration for player {}", player.username());
-    player.setSwitching(false);
-    player.disconnect();
+    player.scheduleBackendFailure();
   }
 
   // ---------------------------------------------------------------------------
@@ -128,8 +138,8 @@ final class BackendConfigSessionHandler implements SessionHandler {
   }
 
   private void handleDisconnect() {
-    logger.info("Backend disconnected player {} during configuration", player.username());
-    player.disconnect();
+    logger.info("Backend kicked player {} during configuration", player.username());
+    player.scheduleBackendFailure();
   }
 
   @Override
