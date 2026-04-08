@@ -70,6 +70,10 @@ final class BackendPlaySessionHandler implements SessionHandler {
 
   @Override
   public void disconnected() {
+    if (player.isSwitching()) {
+      logger.debug("Old backend disconnected during server switch for {}", player.username());
+      return;
+    }
     logger.info("Backend disconnected for player {}", player.username());
     // TODO: Try fallback server before disconnecting the player.
     player.disconnect();
@@ -123,6 +127,12 @@ final class BackendPlaySessionHandler implements SessionHandler {
 
   @Override
   public void handleBlind(ByteBuf buf) {
+    // During a server switch, the old backend may still send PLAY packets after the
+    // client has entered CONFIG state. Drop them to avoid "unknown packet ID" on the client.
+    if (player.isSwitching()) {
+      buf.release();
+      return;
+    }
     if (player.clientConnection().channel().isActive()) {
       player.clientConnection().writeBlind(buf);
     } else {
@@ -171,8 +181,9 @@ final class BackendPlaySessionHandler implements SessionHandler {
   }
 
   private void handleStartConfiguration() {
-    // TODO: Implement re-configuration flow for server switching.
-    // For now, forward to client.
+    // Backend requests reconfiguration (e.g. registry reload).
+    // Forward to client — the AcknowledgeConfiguration from the client will be
+    // forwarded back to the backend via ClientPlaySessionHandler.
     player.clientConnection().writeAndFlush(new StartConfiguration());
   }
 
@@ -182,6 +193,9 @@ final class BackendPlaySessionHandler implements SessionHandler {
   }
 
   private void forwardToClient(Packet packet) {
+    if (player.isSwitching()) {
+      return;
+    }
     // Use write() without flush — readComplete() will flush the batch.
     player.clientConnection().write(packet);
   }

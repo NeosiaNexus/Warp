@@ -16,6 +16,8 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.server.ServerInfo;
+import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
@@ -34,6 +36,9 @@ import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
 import dev.warp.protocol.packet.play.Transfer;
+import dev.warp.proxy.server.ServerRegistry;
+
+import java.util.stream.Collectors;
 
 import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
@@ -68,6 +73,7 @@ final class ClientPlaySessionHandler implements SessionHandler {
 
   @Override
   public void activated() {
+    player.switchComplete();
     player.startKeepAliveTask();
   }
 
@@ -178,8 +184,47 @@ final class ClientPlaySessionHandler implements SessionHandler {
   }
 
   private void handleChatCommand(ChatCommand chatCommand) {
-    // TODO: Intercept proxy commands (e.g. /server, /warp). For now, forward all.
+    String command = chatCommand.command();
+    if (command.equals("server") || command.startsWith("server ")) {
+      handleServerCommand(command.length() > 7 ? command.substring(7).trim() : "");
+      return;
+    }
     forwardToBackend(chatCommand);
+  }
+
+  private void handleServerCommand(String args) {
+    ServerRegistry registry = player.loginContext().serverRegistry();
+
+    if (args.isEmpty()) {
+      // List servers and current server.
+      String current = player.currentServerName();
+      String list =
+          registry.allServers().stream()
+              .map(s -> s.name().equals(current) ? "[" + s.name() + "]" : s.name())
+              .collect(Collectors.joining(", "));
+      player
+          .clientConnection()
+          .writeAndFlush(
+              new SystemChatMessage(
+                  dev.warp.protocol.packet.TextComponent.plainText(
+                      "Servers: " + list, player.protocolVersion()),
+                  false));
+      return;
+    }
+
+    ServerInfo target = registry.getServer(args);
+    if (target == null) {
+      player
+          .clientConnection()
+          .writeAndFlush(
+              new SystemChatMessage(
+                  dev.warp.protocol.packet.TextComponent.plainText(
+                      "Unknown server: " + args, player.protocolVersion()),
+                  false));
+      return;
+    }
+
+    player.switchServer(target);
   }
 
   private void handleClientSettings(PlayClientSettings settings) {
@@ -194,8 +239,43 @@ final class ClientPlaySessionHandler implements SessionHandler {
 
   private void handleAcknowledgeConfiguration() {
     // Client acknowledges re-entering configuration state.
-    // TODO: Implement for server switching (transition to CONFIG). For now, forward.
-    forwardToBackend(new AcknowledgeConfiguration());
+    ServerInfo target = player.pendingSwitchTarget();
+    if (target != null && player.isSwitching()) {
+      // Proxy-initiated server switch.
+      player.onSwitchAcknowledged(target);
+    } else {
+      // Backend-initiated reconfiguration (e.g. data pack reload).
+      // Transition both sides to CONFIG state and relay config packets.
+      handleBackendReconfiguration();
+    }
+  }
+
+  private void handleBackendReconfiguration() {
+    BackendConnection backend = player.backendConnection();
+    if (backend == null || !backend.isActive()) {
+      return;
+    }
+    MinecraftConnection backendConn = backend.connection();
+
+    // Transition client to CONFIG and install relay handler.
+    player.clientConnection().setState(ProtocolState.CONFIGURATION);
+    player
+        .clientConnection()
+        .setSessionHandler(new ClientConfigSessionHandler(player, backendConn));
+
+    // Transition backend to CONFIG and forward the acknowledgment.
+    backendConn
+        .channel()
+        .eventLoop()
+        .execute(
+            () -> {
+              if (!backendConn.channel().isActive()) {
+                return;
+              }
+              backendConn.writeAndFlush(new AcknowledgeConfiguration());
+              backendConn.setState(ProtocolState.CONFIGURATION);
+              backendConn.setSessionHandler(new BackendConfigSessionHandler(player, backendConn));
+            });
   }
 
   private void forwardToBackend(Packet packet) {

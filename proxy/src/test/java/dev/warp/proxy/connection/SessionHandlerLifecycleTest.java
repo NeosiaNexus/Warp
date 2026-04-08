@@ -100,12 +100,14 @@ class SessionHandlerLifecycleTest {
     backendConn = extractConnection(backendChannel);
 
     GameProfile profile = new GameProfile(UUID.randomUUID(), "TestPlayer", List.of());
+    ServerLoginContext loginContext = mock(ServerLoginContext.class);
     player =
         new ConnectedPlayer(
             clientConn,
             ProtocolVersion.MINECRAFT_1_21_4,
             profile,
-            new InetSocketAddress("127.0.0.1", 25565));
+            new InetSocketAddress("127.0.0.1", 25565),
+            loginContext);
 
     BackendConnection backend = createTestBackendConnection(backendConn);
     player.setBackendConnection(backend);

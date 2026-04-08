@@ -32,6 +32,7 @@ import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_20_2;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_20_3;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_20_5;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_21_2;
+import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_21_4;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_7_2;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_8;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_9;
@@ -322,8 +323,7 @@ public final class StateRegistry {
                     ChatCommand.class,
                     ChatCommand.CODEC,
                     map(0x04, MINECRAFT_1_19_3),
-                    map(0x05, MINECRAFT_1_20_5),
-                    map(0x06, MINECRAFT_1_21_2))
+                    map(0x05, MINECRAFT_1_20_5))
                 .register(
                     AcknowledgeConfiguration.class,
                     AcknowledgeConfiguration.CODEC,
@@ -363,7 +363,8 @@ public final class StateRegistry {
                     map(0x27, MINECRAFT_1_19_4),
                     map(0x28, MINECRAFT_1_20_2),
                     map(0x2B, MINECRAFT_1_20_5),
-                    map(0x2D, MINECRAFT_1_21_2))
+                    map(0x2D, MINECRAFT_1_21_2),
+                    map(0x2F, MINECRAFT_1_21_4))
                 .build());
 
     directionMap(ProtocolState.PLAY)

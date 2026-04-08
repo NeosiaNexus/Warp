@@ -22,7 +22,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
 
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -52,7 +54,8 @@ public final class WarpConfig {
 
   private static final String DEFAULT_BIND = "0.0.0.0:25577";
   private static final boolean DEFAULT_ONLINE_MODE = true;
-  private static final String DEFAULT_BACKEND_ADDRESS = "localhost:25565";
+  private static final String DEFAULT_SERVER_NAME = "lobby";
+  private static final String DEFAULT_SERVER_ADDRESS = "localhost:25565";
   private static final String DEFAULT_FORWARDING_MODE = "velocity";
   private static final String DEFAULT_SECRET_FILE = "forwarding.secret";
   private static final int DEFAULT_COMPRESSION_THRESHOLD = 256;
@@ -70,7 +73,8 @@ public final class WarpConfig {
 
   private final InetSocketAddress bind;
   private final boolean onlineMode;
-  private final InetSocketAddress backendAddress;
+  private final Map<String, InetSocketAddress> servers;
+  private final String defaultServer;
   private final ForwardingMode forwardingMode;
   private final byte[] forwardingSecret;
   private final int compressionThreshold;
@@ -83,14 +87,16 @@ public final class WarpConfig {
   private WarpConfig(
       InetSocketAddress bind,
       boolean onlineMode,
-      InetSocketAddress backendAddress,
+      Map<String, InetSocketAddress> servers,
+      String defaultServer,
       ForwardingMode forwardingMode,
       byte[] forwardingSecret,
       int compressionThreshold,
       int compressionLevel) {
     this.bind = bind;
     this.onlineMode = onlineMode;
-    this.backendAddress = backendAddress;
+    this.servers = Map.copyOf(servers);
+    this.defaultServer = defaultServer;
     this.forwardingMode = forwardingMode;
     this.forwardingSecret = forwardingSecret;
     this.compressionThreshold = compressionThreshold;
@@ -136,9 +142,15 @@ public final class WarpConfig {
 
     boolean onlineMode = root.node("online-mode").getBoolean(DEFAULT_ONLINE_MODE);
 
-    InetSocketAddress backendAddress =
-        parseAddress(
-            root.node("backend", "address").getString(DEFAULT_BACKEND_ADDRESS), "backend.address");
+    // Parse server list.
+    Map<String, InetSocketAddress> servers = parseServers(root);
+    String defaultServer =
+        root.node("default-server").getString(DEFAULT_SERVER_NAME).toLowerCase(Locale.ROOT);
+
+    if (!servers.containsKey(defaultServer)) {
+      throw new ConfigurationException(
+          "default-server '" + defaultServer + "' not found in servers list: " + servers.keySet());
+    }
 
     String modeStr = root.node("forwarding", "mode").getString(DEFAULT_FORWARDING_MODE);
     ForwardingMode forwardingMode = parseForwardingMode(modeStr);
@@ -167,7 +179,8 @@ public final class WarpConfig {
         new WarpConfig(
             bind,
             onlineMode,
-            backendAddress,
+            servers,
+            defaultServer,
             forwardingMode,
             forwardingSecret,
             compressionThreshold,
@@ -200,12 +213,21 @@ public final class WarpConfig {
   }
 
   /**
-   * Returns the backend server address.
+   * Returns the configured backend servers (name to address mapping).
    *
-   * @return the backend address
+   * @return unmodifiable map of server name to address
    */
-  public InetSocketAddress backendAddress() {
-    return backendAddress;
+  public Map<String, InetSocketAddress> servers() {
+    return servers;
+  }
+
+  /**
+   * Returns the name of the default server players connect to on join.
+   *
+   * @return the default server name
+   */
+  public String defaultServer() {
+    return defaultServer;
   }
 
   /**
@@ -265,6 +287,41 @@ public final class WarpConfig {
       throw new ConfigurationException(field + " port must be 1-65535, got " + port);
     }
     return new InetSocketAddress(host, port);
+  }
+
+  private static Map<String, InetSocketAddress> parseServers(CommentedConfigurationNode root)
+      throws ConfigurationException {
+    CommentedConfigurationNode serversNode = root.node("servers");
+    Map<String, InetSocketAddress> servers = new LinkedHashMap<>();
+
+    if (!serversNode.virtual() && serversNode.isMap()) {
+      for (var entry : serversNode.childrenMap().entrySet()) {
+        String name = entry.getKey().toString().toLowerCase(Locale.ROOT);
+        String addressStr = entry.getValue().node("address").getString();
+        if (addressStr == null || addressStr.isBlank()) {
+          throw new ConfigurationException(
+              "Server '" + name + "' is missing an address in servers configuration");
+        }
+        servers.put(name, parseAddress(addressStr, "servers." + name + ".address"));
+      }
+    }
+
+    // Fallback: if no servers block, check legacy backend.address.
+    if (servers.isEmpty()) {
+      String legacyAddress = root.node("backend", "address").getString();
+      if (legacyAddress != null && !legacyAddress.isBlank()) {
+        servers.put(DEFAULT_SERVER_NAME, parseAddress(legacyAddress, "backend.address"));
+      }
+    }
+
+    if (servers.isEmpty()) {
+      // Use built-in default.
+      servers.put(
+          DEFAULT_SERVER_NAME,
+          parseAddress(DEFAULT_SERVER_ADDRESS, "servers." + DEFAULT_SERVER_NAME + ".address"));
+    }
+
+    return servers;
   }
 
   private static ForwardingMode parseForwardingMode(String value) throws ConfigurationException {
@@ -339,10 +396,16 @@ public final class WarpConfig {
         # Disable only for development or offline-mode networks.
         online-mode = true
 
-        # The backend Minecraft server to connect players to.
-        backend {
-          address = "localhost:25565"
+        # Backend servers. Each entry has a unique name and an address.
+        # Players connect to the default-server on join.
+        servers {
+          lobby {
+            address = "localhost:25565"
+          }
         }
+
+        # The server players are sent to when they first connect.
+        default-server = "lobby"
 
         # How the proxy forwards player identity to the backend.
         # The backend must be configured to accept this forwarding mode.
@@ -378,7 +441,10 @@ public final class WarpConfig {
     logger.info("Configuration loaded:");
     logger.info("  bind: {}", config.bind);
     logger.info("  online-mode: {}", config.onlineMode);
-    logger.info("  backend: {}", config.backendAddress);
+    logger.info("  default-server: {}", config.defaultServer);
+    for (var entry : config.servers.entrySet()) {
+      logger.info("  server '{}': {}", entry.getKey(), entry.getValue());
+    }
     logger.info("  forwarding: {}", config.forwardingMode.name().toLowerCase(Locale.ROOT));
     logger.info(
         "  compression: threshold={}, level={}",

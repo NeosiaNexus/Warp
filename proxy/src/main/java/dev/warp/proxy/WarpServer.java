@@ -22,6 +22,7 @@ import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.config.WarpConfig;
 import dev.warp.proxy.connection.ServerChannelInitializer;
 import dev.warp.proxy.connection.ServerLoginContext;
+import dev.warp.proxy.server.ServerRegistry;
 
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -261,13 +262,15 @@ public final class WarpServer implements Warp {
     MojangSessionService service = new MojangSessionService();
     this.sessionService = service;
 
+    ServerRegistry serverRegistry = new ServerRegistry(config.servers(), config.defaultServer());
+
     return new ServerLoginContext(
         rsaKeyPair,
         config.onlineMode(),
         config.compressionThreshold(),
         config.compressionLevel(),
         service,
-        config.backendAddress(),
+        serverRegistry,
         config.forwardingMode(),
         config.forwardingSecret(),
         workerGroup(),

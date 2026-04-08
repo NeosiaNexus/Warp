@@ -16,8 +16,13 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.server.ServerInfo;
+import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.packet.TextComponent;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.StartConfiguration;
+import dev.warp.protocol.packet.play.SystemChatMessage;
 
 import java.net.InetSocketAddress;
 import java.util.List;
@@ -70,6 +75,7 @@ public final class ConnectedPlayer {
   private final String username;
   private final List<dev.warp.protocol.packet.login.LoginSuccess.Property> profileProperties;
   private final InetSocketAddress remoteAddress;
+  private final ServerLoginContext loginContext;
 
   // ---------------------------------------------------------------------------
   // Mutable state
@@ -77,6 +83,9 @@ public final class ConnectedPlayer {
 
   private volatile @Nullable BackendConnection backendConnection;
   private volatile int entityId;
+  private volatile @Nullable String currentServerName;
+  private volatile boolean switching;
+  private volatile @Nullable ServerInfo pendingSwitchTarget;
 
   // KeepAlive state (accessed from client event loop only)
   private long keepAliveSentTime;
@@ -93,13 +102,15 @@ public final class ConnectedPlayer {
       MinecraftConnection clientConnection,
       ProtocolVersion protocolVersion,
       GameProfile profile,
-      InetSocketAddress remoteAddress) {
+      InetSocketAddress remoteAddress,
+      ServerLoginContext loginContext) {
     this.clientConnection = clientConnection;
     this.protocolVersion = protocolVersion;
     this.uuid = profile.uuid();
     this.username = profile.name();
     this.profileProperties = profile.properties();
     this.remoteAddress = remoteAddress;
+    this.loginContext = loginContext;
   }
 
   // ---------------------------------------------------------------------------
@@ -205,6 +216,187 @@ public final class ConnectedPlayer {
   }
 
   // ---------------------------------------------------------------------------
+  // Current server
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the name of the server the player is currently connected to.
+   *
+   * @return the current server name, or {@code null} during initial connection
+   */
+  public @Nullable String currentServerName() {
+    return currentServerName;
+  }
+
+  /**
+   * Sets the name of the server the player is connected to.
+   *
+   * @param name the server name
+   */
+  void setCurrentServerName(@Nullable String name) {
+    this.currentServerName = name;
+  }
+
+  /**
+   * Returns whether a server switch is in progress.
+   *
+   * @return {@code true} if switching
+   */
+  public boolean isSwitching() {
+    return switching;
+  }
+
+  /**
+   * Sets the switching state. Used by handlers to clear the flag on failure.
+   *
+   * @param switching the new switching state
+   */
+  void setSwitching(boolean switching) {
+    this.switching = switching;
+  }
+
+  /**
+   * Returns the server login context (shared server-wide configuration).
+   *
+   * @return the login context
+   */
+  ServerLoginContext loginContext() {
+    return loginContext;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Server switching
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Initiates a server switch to the given target server.
+   *
+   * <p>This sends {@link StartConfiguration} to the client, starting the PLAY → CONFIG → PLAY
+   * transition. The actual reconnection happens in {@link #onSwitchAcknowledged(ServerInfo)} when
+   * the client acknowledges the reconfiguration.
+   *
+   * <p>Must be called from the client event loop thread.
+   *
+   * @param target the target server to switch to
+   */
+  void switchServer(ServerInfo target) {
+    if (switching) {
+      sendSystemMessage("Already switching servers.");
+      return;
+    }
+    if (target.name().equals(currentServerName)) {
+      sendSystemMessage("Already connected to " + target.name() + ".");
+      return;
+    }
+
+    switching = true;
+    this.pendingSwitchTarget = target;
+    logger.info("Switching {} from '{}' to '{}'", username, currentServerName, target.name());
+
+    // Send StartConfiguration to trigger PLAY → CONFIG transition on the client.
+    clientConnection.writeAndFlush(new StartConfiguration());
+  }
+
+  /**
+   * Called when the client acknowledges the reconfiguration request during a server switch.
+   *
+   * <p>Transitions the client to CONFIGURATION state, disconnects the old backend, and connects to
+   * the new backend. The rest of the switch flows naturally through the existing handler chain:
+   * backend login → CONFIG relay (blind-forwarded) → PLAY.
+   *
+   * @param target the target server
+   */
+  void onSwitchAcknowledged(ServerInfo target) {
+    // Transition client to CONFIG state and pause reads until the new backend is ready.
+    clientConnection.setState(ProtocolState.CONFIGURATION);
+    clientConnection.setAutoRead(false);
+    clientConnection.setSessionHandler(new SwitchWaitSessionHandler(this));
+
+    // Disconnect old backend. The old handler's disconnected() checks isSwitching()
+    // and will not trigger a player disconnect.
+    BackendConnection oldBackend = this.backendConnection;
+    this.backendConnection = null;
+    if (oldBackend != null) {
+      oldBackend.disconnect();
+    }
+
+    // Connect to the new backend.
+    var unused =
+        BackendConnection.connect(
+                loginContext.workerGroup(),
+                loginContext.channelClass(),
+                this,
+                target.address(),
+                loginContext.forwardingSecret())
+            .whenComplete(
+                (backend, ex) ->
+                    clientConnection
+                        .channel()
+                        .eventLoop()
+                        .execute(
+                            () -> {
+                              if (!clientConnection.channel().isActive()) {
+                                switching = false;
+                                if (backend != null) {
+                                  backend.disconnect();
+                                }
+                                return;
+                              }
+                              if (ex != null) {
+                                logger.error(
+                                    "Failed to switch {} to server '{}'",
+                                    username,
+                                    target.name(),
+                                    ex);
+                                switching = false;
+                                disconnect();
+                                return;
+                              }
+                              this.backendConnection = backend;
+                              // currentServerName is updated in switchComplete() when the
+                              // CONFIG → PLAY transition finishes, not here — the player is
+                              // not yet playing on the new server during login/config.
+                              // switching remains true until ClientPlaySessionHandler.activated()
+                              // fires after the CONFIG → PLAY transition completes.
+                              // BackendLoginSessionHandler.activated() fires next, sending
+                              // Handshake + LoginStart. The rest flows naturally through the
+                              // existing handler chain.
+                            }));
+  }
+
+  /**
+   * Marks the server switch as complete.
+   *
+   * <p>Called by {@link ClientPlaySessionHandler#activated()} when the client enters PLAY state
+   * after a switch (or initial connection — idempotent).
+   */
+  void switchComplete() {
+    if (switching) {
+      ServerInfo target = pendingSwitchTarget;
+      if (target != null) {
+        currentServerName = target.name();
+      }
+      logger.info("Server switch complete: {} is now on '{}'", username, currentServerName);
+      switching = false;
+      pendingSwitchTarget = null;
+    }
+  }
+
+  /**
+   * Returns the pending switch target, or {@code null} if no switch is in progress.
+   *
+   * @return the pending switch target
+   */
+  @Nullable ServerInfo pendingSwitchTarget() {
+    return pendingSwitchTarget;
+  }
+
+  private void sendSystemMessage(String message) {
+    byte[] raw = TextComponent.plainText(message, protocolVersion);
+    clientConnection.writeAndFlush(new SystemChatMessage(raw, false));
+  }
+
+  // ---------------------------------------------------------------------------
   // KeepAlive system
   // ---------------------------------------------------------------------------
 
@@ -213,6 +405,9 @@ public final class ConnectedPlayer {
     if (keepAliveTask != null) {
       keepAliveTask.cancel(false);
     }
+    // Reset keepalive state to prevent false timeouts after server switch.
+    // An in-flight keepalive response may have been swallowed during the switch.
+    keepAliveOutstanding = false;
     keepAliveTask =
         clientConnection
             .channel()

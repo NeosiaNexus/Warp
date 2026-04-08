@@ -125,6 +125,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
   @Override
   public void disconnected() {
     logger.info("Backend disconnected during login for player {}", player.username());
+    player.setSwitching(false);
     player.disconnect();
   }
 
