@@ -75,8 +75,7 @@ final class BackendPlaySessionHandler implements SessionHandler {
       return;
     }
     logger.info("Backend disconnected for player {}", player.username());
-    // TODO: Try fallback server before disconnecting the player.
-    player.disconnect();
+    player.scheduleBackendFailure();
   }
 
   // ---------------------------------------------------------------------------
@@ -99,7 +98,7 @@ final class BackendPlaySessionHandler implements SessionHandler {
       case SystemChatMessage chatMessage -> forwardToClient(chatMessage);
       case StartConfiguration ignored -> handleStartConfiguration();
       case Transfer transfer -> forwardToClient(transfer);
-      case BundleDelimiter delimiter -> forwardToClient(delimiter);
+      case BundleDelimiter delimiter -> handleBundleDelimiter(delimiter);
       case PlayPluginMessage pluginMessage -> handlePluginMessage(pluginMessage);
       case TabCompleteResponse response -> forwardToClient(response);
       // Serverbound packets should never arrive from a backend — silently ignore.
@@ -175,9 +174,8 @@ final class BackendPlaySessionHandler implements SessionHandler {
 
   @SuppressWarnings("unused")
   private void handleDisconnect(PlayDisconnect disconnect) {
-    logger.info("Backend disconnected player {} during play", player.username());
-    // TODO: Try fallback server. For now, disconnect the client.
-    player.disconnect();
+    logger.info("Backend kicked player {} during play", player.username());
+    player.scheduleBackendFailure();
   }
 
   private void handleStartConfiguration() {
@@ -185,6 +183,11 @@ final class BackendPlaySessionHandler implements SessionHandler {
     // Forward to client — the AcknowledgeConfiguration from the client will be
     // forwarded back to the backend via ClientPlaySessionHandler.
     player.clientConnection().writeAndFlush(new StartConfiguration());
+  }
+
+  private void handleBundleDelimiter(BundleDelimiter delimiter) {
+    player.toggleBundle();
+    forwardToClient(delimiter);
   }
 
   private void handlePluginMessage(PlayPluginMessage pluginMessage) {

@@ -20,12 +20,18 @@ import dev.warp.api.server.ServerInfo;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.packet.TextComponent;
+import dev.warp.protocol.packet.config.ClientInformation;
+import dev.warp.protocol.packet.config.ConfigDisconnect;
+import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 
 import java.net.InetSocketAddress;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadLocalRandom;
@@ -62,6 +68,9 @@ public final class ConnectedPlayer {
   /** Maximum time to wait for a KeepAlive response before disconnecting. */
   private static final long KEEP_ALIVE_TIMEOUT_MS = 30_000;
 
+  /** Maximum time for a CONFIG phase transition (server switch) to complete. */
+  private static final long SWITCH_TIMEOUT_MS = 30_000;
+
   /** Guards against concurrent or duplicate {@link #disconnect()} calls. */
   private final AtomicBoolean disconnected = new AtomicBoolean();
 
@@ -86,6 +95,21 @@ public final class ConnectedPlayer {
   private volatile @Nullable String currentServerName;
   private volatile boolean switching;
   private volatile @Nullable ServerInfo pendingSwitchTarget;
+  private volatile @Nullable ClientInformation cachedClientSettings;
+
+  /** Servers that failed during the current fallback chain. Reset on successful switch. */
+  private @Nullable Set<String> failedFallbackServers;
+
+  /**
+   * Whether the client is inside a bundle session (between two {@link
+   * dev.warp.protocol.packet.play.BundleDelimiter BundleDelimiter} packets). Terminal packets like
+   * {@link StartConfiguration} must NOT be sent inside a bundle — the client will crash with
+   * "Terminal message received in bundle".
+   */
+  private volatile boolean bundleInProgress;
+
+  /** Timeout for CONFIG phase completion. Cancelled on {@link #switchComplete()}. */
+  private volatile @Nullable ScheduledFuture<?> switchTimeoutTask;
 
   // KeepAlive state (accessed from client event loop only)
   private long keepAliveSentTime;
@@ -237,6 +261,38 @@ public final class ConnectedPlayer {
     this.currentServerName = name;
   }
 
+  // ---------------------------------------------------------------------------
+  // Client settings cache
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Caches the latest client settings for replay during server switches.
+   *
+   * <p>Called when the client sends {@link ClientInformation} during CONFIG or {@link
+   * dev.warp.protocol.packet.play.PlayClientSettings PlayClientSettings} during PLAY. The cached
+   * value is replayed to new backends in {@link BackendConfigSessionHandler#activated()} to ensure
+   * the backend always receives the player's current settings, even if the client does not resend
+   * them during a server switch.
+   *
+   * @param settings the client settings to cache
+   */
+  void cacheClientSettings(ClientInformation settings) {
+    this.cachedClientSettings = settings;
+  }
+
+  /**
+   * Returns the most recent client settings, or {@code null} if none have been received.
+   *
+   * @return the cached settings, or {@code null}
+   */
+  @Nullable ClientInformation cachedClientSettings() {
+    return cachedClientSettings;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Switch state
+  // ---------------------------------------------------------------------------
+
   /**
    * Returns whether a server switch is in progress.
    *
@@ -262,6 +318,14 @@ public final class ConnectedPlayer {
    */
   ServerLoginContext loginContext() {
     return loginContext;
+  }
+
+  /**
+   * Toggles the bundle session state. Called by {@link BackendPlaySessionHandler} when a {@link
+   * dev.warp.protocol.packet.play.BundleDelimiter BundleDelimiter} is forwarded to the client.
+   */
+  void toggleBundle() {
+    this.bundleInProgress = !this.bundleInProgress;
   }
 
   // ---------------------------------------------------------------------------
@@ -293,6 +357,14 @@ public final class ConnectedPlayer {
     this.pendingSwitchTarget = target;
     logger.info("Switching {} from '{}' to '{}'", username, currentServerName, target.name());
 
+    // Close any active bundle session before sending the terminal StartConfiguration.
+    // Sending a terminal packet inside an open bundle crashes the client with
+    // "Terminal message received in bundle" (Velocity #1384).
+    if (bundleInProgress) {
+      clientConnection.write(new BundleDelimiter());
+      bundleInProgress = false;
+    }
+
     // Send StartConfiguration to trigger PLAY → CONFIG transition on the client.
     clientConnection.writeAndFlush(new StartConfiguration());
   }
@@ -312,6 +384,25 @@ public final class ConnectedPlayer {
     clientConnection.setAutoRead(false);
     clientConnection.setSessionHandler(new SwitchWaitSessionHandler(this));
 
+    // Start a timeout watchdog. If the switch doesn't complete within SWITCH_TIMEOUT_MS,
+    // disconnect the player. Prevents infinite "Reconfiguring..." hangs (Velocity #1741).
+    cancelSwitchTimeout();
+    switchTimeoutTask =
+        clientConnection
+            .channel()
+            .eventLoop()
+            .schedule(
+                () -> {
+                  if (switching) {
+                    logger.warn(
+                        "Server switch timed out for {} after {}ms", username, SWITCH_TIMEOUT_MS);
+                    switching = false;
+                    disconnectWithReason("Server switch timed out.");
+                  }
+                },
+                SWITCH_TIMEOUT_MS,
+                TimeUnit.MILLISECONDS);
+
     // Disconnect old backend. The old handler's disconnected() checks isSwitching()
     // and will not trigger a player disconnect.
     BackendConnection oldBackend = this.backendConnection;
@@ -321,6 +412,17 @@ public final class ConnectedPlayer {
     }
 
     // Connect to the new backend.
+    connectToBackend(target);
+  }
+
+  /**
+   * Connects to the given backend server.
+   *
+   * <p>Used by both initial server switches and fallback retries. On success, the natural handler
+   * chain takes over (BackendLoginSessionHandler → BackendConfigSessionHandler → PLAY). On failure,
+   * {@link #handleBackendFailure(String)} is called to try the next fallback.
+   */
+  private void connectToBackend(ServerInfo target) {
     var unused =
         BackendConnection.connect(
                 loginContext.workerGroup(),
@@ -337,6 +439,7 @@ public final class ConnectedPlayer {
                             () -> {
                               if (!clientConnection.channel().isActive()) {
                                 switching = false;
+                                failedFallbackServers = null;
                                 if (backend != null) {
                                   backend.disconnect();
                                 }
@@ -344,12 +447,11 @@ public final class ConnectedPlayer {
                               }
                               if (ex != null) {
                                 logger.error(
-                                    "Failed to switch {} to server '{}'",
+                                    "Failed to connect {} to server '{}'",
                                     username,
                                     target.name(),
                                     ex);
-                                switching = false;
-                                disconnect();
+                                handleBackendFailure(target.name());
                                 return;
                               }
                               this.backendConnection = backend;
@@ -372,6 +474,7 @@ public final class ConnectedPlayer {
    */
   void switchComplete() {
     if (switching) {
+      cancelSwitchTimeout();
       ServerInfo target = pendingSwitchTarget;
       if (target != null) {
         currentServerName = target.name();
@@ -379,6 +482,15 @@ public final class ConnectedPlayer {
       logger.info("Server switch complete: {} is now on '{}'", username, currentServerName);
       switching = false;
       pendingSwitchTarget = null;
+      failedFallbackServers = null;
+    }
+  }
+
+  private void cancelSwitchTimeout() {
+    ScheduledFuture<?> task = switchTimeoutTask;
+    if (task != null) {
+      task.cancel(false);
+      switchTimeoutTask = null;
     }
   }
 
@@ -394,6 +506,111 @@ public final class ConnectedPlayer {
   private void sendSystemMessage(String message) {
     byte[] raw = TextComponent.plainText(message, protocolVersion);
     clientConnection.writeAndFlush(new SystemChatMessage(raw, false));
+  }
+
+  /**
+   * Sends a disconnect reason to the client and then disconnects.
+   *
+   * <p>Sends the appropriate disconnect packet based on the current protocol state (CONFIG or
+   * PLAY).
+   */
+  private void disconnectWithReason(String reason) {
+    if (clientConnection.channel().isActive()) {
+      byte[] raw = TextComponent.plainText(reason, protocolVersion);
+      ProtocolState state = clientConnection.decoder().state();
+      if (state == ProtocolState.CONFIGURATION) {
+        clientConnection.writeAndFlush(new ConfigDisconnect(raw));
+      } else {
+        clientConnection.writeAndFlush(new PlayDisconnect(raw));
+      }
+    }
+    disconnect();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Fallback handling
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Schedules fallback handling on the client event loop.
+   *
+   * <p>Safe to call from any thread. Resolves the failed server name from the current switch state
+   * (volatile reads) and posts {@link #handleBackendFailure(String)} to the client event loop.
+   */
+  void scheduleBackendFailure() {
+    ServerInfo target = pendingSwitchTarget;
+    String failedName = target != null ? target.name() : currentServerName;
+    clientConnection.channel().eventLoop().execute(() -> handleBackendFailure(failedName));
+  }
+
+  /**
+   * Handles a backend failure by attempting to connect to the next fallback server.
+   *
+   * <p>If a server switch is in progress ({@code switching = true}), the client is already in
+   * CONFIG state and the proxy connects directly to the next fallback backend. If no switch is in
+   * progress, a normal server switch is initiated via {@link #switchServer(ServerInfo)}.
+   *
+   * <p>Must be called on the client event loop.
+   *
+   * @param failedServerName the name of the server that failed, or {@code null}
+   */
+  void handleBackendFailure(@Nullable String failedServerName) {
+    if (failedFallbackServers == null) {
+      failedFallbackServers = new HashSet<>();
+    }
+    if (failedServerName != null) {
+      failedFallbackServers.add(failedServerName);
+    }
+    // Also exclude the server the player was on before any switch started.
+    if (currentServerName != null) {
+      failedFallbackServers.add(currentServerName);
+    }
+
+    ServerInfo fallback = loginContext.serverRegistry().nextFallback(failedFallbackServers);
+
+    if (fallback == null) {
+      logger.info("No fallback server available for {}, disconnecting", username);
+      failedFallbackServers = null;
+      switching = false;
+      disconnectWithReason("Could not connect to any available server.");
+      return;
+    }
+
+    if (switching) {
+      // Already in CONFIG state — directly connect to the fallback backend.
+      logger.info("Switch failed for {}, trying fallback '{}'", username, fallback.name());
+      connectToFallbackDuringSwitch(fallback);
+    } else {
+      // In PLAY state — use the normal switch mechanism.
+      logger.info("Backend failed for {}, switching to fallback '{}'", username, fallback.name());
+      sendSystemMessage("Connecting to " + fallback.name() + "...");
+      switchServer(fallback);
+    }
+  }
+
+  /**
+   * Connects to a fallback server during an active server switch.
+   *
+   * <p>The client is already in CONFIG state. This method ensures the client is in a clean wait
+   * state, disconnects any lingering backend, and connects to the fallback. The natural handler
+   * chain (login → CONFIG → PLAY) takes over from there.
+   */
+  private void connectToFallbackDuringSwitch(ServerInfo target) {
+    pendingSwitchTarget = target;
+
+    // Reset client to a clean wait state. Auto-read may have been re-enabled by
+    // a prior BackendConfigSessionHandler.activated() before the backend died.
+    clientConnection.setAutoRead(false);
+    clientConnection.setSessionHandler(new SwitchWaitSessionHandler(this));
+
+    // Disconnect any lingering backend connection.
+    BackendConnection oldBackend = this.backendConnection;
+    this.backendConnection = null;
+    if (oldBackend != null) {
+      oldBackend.disconnect();
+    }
+
+    connectToBackend(target);
   }
 
   // ---------------------------------------------------------------------------
@@ -488,6 +705,7 @@ public final class ConnectedPlayer {
       return;
     }
     cancelKeepAliveTask();
+    cancelSwitchTimeout();
     clientConnection.close();
     BackendConnection backend = this.backendConnection;
     if (backend != null) {

@@ -20,6 +20,7 @@ import dev.warp.api.server.ServerInfo;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
+import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatCommand;
@@ -228,7 +229,18 @@ final class ClientPlaySessionHandler implements SessionHandler {
   }
 
   private void handleClientSettings(PlayClientSettings settings) {
-    // Forward to backend. Client settings caching for server switch is future work.
+    // Cache as ClientInformation for replay during server switches.
+    player.cacheClientSettings(
+        new ClientInformation(
+            settings.locale(),
+            settings.viewDistance(),
+            settings.chatMode(),
+            settings.chatColors(),
+            settings.displayedSkinParts(),
+            settings.mainHand(),
+            settings.enableTextFiltering(),
+            settings.allowServerListings(),
+            settings.particleStatus()));
     forwardToBackend(settings);
   }
 

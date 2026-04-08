@@ -22,7 +22,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -75,6 +77,7 @@ public final class WarpConfig {
   private final boolean onlineMode;
   private final Map<String, InetSocketAddress> servers;
   private final String defaultServer;
+  private final List<String> fallbackOrder;
   private final ForwardingMode forwardingMode;
   private final byte[] forwardingSecret;
   private final int compressionThreshold;
@@ -89,6 +92,7 @@ public final class WarpConfig {
       boolean onlineMode,
       Map<String, InetSocketAddress> servers,
       String defaultServer,
+      List<String> fallbackOrder,
       ForwardingMode forwardingMode,
       byte[] forwardingSecret,
       int compressionThreshold,
@@ -97,6 +101,7 @@ public final class WarpConfig {
     this.onlineMode = onlineMode;
     this.servers = Map.copyOf(servers);
     this.defaultServer = defaultServer;
+    this.fallbackOrder = List.copyOf(fallbackOrder);
     this.forwardingMode = forwardingMode;
     this.forwardingSecret = forwardingSecret;
     this.compressionThreshold = compressionThreshold;
@@ -152,6 +157,8 @@ public final class WarpConfig {
           "default-server '" + defaultServer + "' not found in servers list: " + servers.keySet());
     }
 
+    List<String> fallbackOrder = parseFallbackOrder(root, servers, defaultServer);
+
     String modeStr = root.node("forwarding", "mode").getString(DEFAULT_FORWARDING_MODE);
     ForwardingMode forwardingMode = parseForwardingMode(modeStr);
 
@@ -181,6 +188,7 @@ public final class WarpConfig {
             onlineMode,
             servers,
             defaultServer,
+            fallbackOrder,
             forwardingMode,
             forwardingSecret,
             compressionThreshold,
@@ -228,6 +236,18 @@ public final class WarpConfig {
    */
   public String defaultServer() {
     return defaultServer;
+  }
+
+  /**
+   * Returns the ordered list of fallback server names.
+   *
+   * <p>When a backend disconnects a player, the proxy tries each server in this list (skipping the
+   * server that failed) until one accepts the connection. If all fail, the player is disconnected.
+   *
+   * @return unmodifiable list of fallback server names
+   */
+  public List<String> fallbackOrder() {
+    return fallbackOrder;
   }
 
   /**
@@ -324,6 +344,39 @@ public final class WarpConfig {
     return servers;
   }
 
+  private static List<String> parseFallbackOrder(
+      CommentedConfigurationNode root,
+      Map<String, InetSocketAddress> servers,
+      String defaultServer) {
+    CommentedConfigurationNode fallbackNode = root.node("fallback-order");
+
+    if (fallbackNode.virtual()
+        || (fallbackNode.isList() && fallbackNode.childrenList().isEmpty())) {
+      // Not configured — default to [defaultServer].
+      return List.of(defaultServer);
+    }
+
+    List<String> result = new ArrayList<>();
+    for (var child : fallbackNode.childrenList()) {
+      String name = child.getString();
+      if (name == null || name.isBlank()) {
+        continue;
+      }
+      String key = name.toLowerCase(Locale.ROOT);
+      if (!servers.containsKey(key)) {
+        logger.warn("fallback-order references unknown server '{}', skipping", name);
+        continue;
+      }
+      result.add(key);
+    }
+
+    if (result.isEmpty()) {
+      logger.warn("fallback-order is empty after validation, defaulting to [{}]", defaultServer);
+      return List.of(defaultServer);
+    }
+    return result;
+  }
+
   private static ForwardingMode parseForwardingMode(String value) throws ConfigurationException {
     try {
       return ForwardingMode.valueOf(value.toUpperCase(Locale.ROOT));
@@ -407,6 +460,11 @@ public final class WarpConfig {
         # The server players are sent to when they first connect.
         default-server = "lobby"
 
+        # Servers tried in order when a player is kicked from their current server.
+        # The failed server is skipped. If all fail, the player is disconnected.
+        # Defaults to [default-server] if omitted.
+        fallback-order = ["lobby"]
+
         # How the proxy forwards player identity to the backend.
         # The backend must be configured to accept this forwarding mode.
         forwarding {
@@ -445,6 +503,7 @@ public final class WarpConfig {
     for (var entry : config.servers.entrySet()) {
       logger.info("  server '{}': {}", entry.getKey(), entry.getValue());
     }
+    logger.info("  fallback-order: {}", config.fallbackOrder);
     logger.info("  forwarding: {}", config.forwardingMode.name().toLowerCase(Locale.ROOT));
     logger.info(
         "  compression: threshold={}, level={}",

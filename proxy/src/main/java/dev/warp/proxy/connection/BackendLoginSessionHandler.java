@@ -125,8 +125,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
   @Override
   public void disconnected() {
     logger.info("Backend disconnected during login for player {}", player.username());
-    player.setSwitching(false);
-    player.disconnect();
+    player.scheduleBackendFailure();
   }
 
   // ---------------------------------------------------------------------------
@@ -180,7 +179,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
   @SuppressWarnings("UnusedVariable")
   private void handleLoginDisconnect(LoginDisconnect packet) {
     logger.info("Backend rejected login for player {}", player.username());
-    player.disconnect();
+    player.scheduleBackendFailure();
   }
 
   // ---------------------------------------------------------------------------

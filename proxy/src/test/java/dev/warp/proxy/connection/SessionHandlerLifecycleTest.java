@@ -25,6 +25,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
@@ -34,9 +35,11 @@ import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.PacketDirection;
+import dev.warp.proxy.server.ServerRegistry;
 
 import java.net.InetSocketAddress;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -101,6 +104,11 @@ class SessionHandlerLifecycleTest {
 
     GameProfile profile = new GameProfile(UUID.randomUUID(), "TestPlayer", List.of());
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
+    // Provide a real ServerRegistry with empty fallback so handleBackendFailure disconnects.
+    ServerRegistry registry =
+        new ServerRegistry(
+            Map.of("lobby", new InetSocketAddress("localhost", 25565)), "lobby", List.of());
+    when(loginContext.serverRegistry()).thenReturn(registry);
     player =
         new ConnectedPlayer(
             clientConn,
