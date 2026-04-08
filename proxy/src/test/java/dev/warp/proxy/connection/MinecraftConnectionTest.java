@@ -149,8 +149,8 @@ class MinecraftConnectionTest {
     }
 
     @Test
-    @DisplayName("should call disconnected() on old handler when replacing")
-    void disconnectedOnReplace() {
+    @DisplayName("should call deactivated() on old handler when replacing")
+    void deactivatedOnReplace() {
       EmbeddedChannel ch = createChannel();
       MinecraftConnection conn = getConnection(ch);
 
@@ -158,10 +158,12 @@ class MinecraftConnectionTest {
       RecordingHandler second = new RecordingHandler();
 
       conn.setSessionHandler(first);
+      assertFalse(first.isDeactivated());
       assertFalse(first.isDisconnected());
 
       conn.setSessionHandler(second);
-      assertTrue(first.isDisconnected(), "Old handler should be notified of disconnect");
+      assertTrue(first.isDeactivated(), "Old handler should be notified of deactivation");
+      assertFalse(first.isDisconnected(), "Old handler should NOT be notified of disconnect");
       assertTrue(second.isActivated(), "New handler should be activated");
       ch.finishAndReleaseAll();
     }
@@ -231,6 +233,7 @@ class MinecraftConnectionTest {
     private final List<Packet> packets = new ArrayList<>();
     private final List<ByteBuf> blindBuffers = new ArrayList<>();
     private boolean activated;
+    private boolean deactivated;
     private boolean disconnected;
 
     @Override
@@ -250,6 +253,11 @@ class MinecraftConnectionTest {
     }
 
     @Override
+    public void deactivated() {
+      deactivated = true;
+    }
+
+    @Override
     public void disconnected() {
       disconnected = true;
     }
@@ -264,6 +272,10 @@ class MinecraftConnectionTest {
 
     boolean isActivated() {
       return activated;
+    }
+
+    boolean isDeactivated() {
+      return deactivated;
     }
 
     boolean isDisconnected() {

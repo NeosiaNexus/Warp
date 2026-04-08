@@ -60,14 +60,17 @@ final class BackendLoginSessionHandler implements SessionHandler {
   private final ConnectedPlayer player;
   private final MinecraftConnection backendConnection;
   private final InetSocketAddress serverAddress;
+  private final byte[] forwardingSecret;
 
   BackendLoginSessionHandler(
       ConnectedPlayer player,
       MinecraftConnection backendConnection,
-      InetSocketAddress serverAddress) {
+      InetSocketAddress serverAddress,
+      byte[] forwardingSecret) {
     this.player = player;
     this.backendConnection = backendConnection;
     this.serverAddress = serverAddress;
+    this.forwardingSecret = forwardingSecret;
   }
 
   // ---------------------------------------------------------------------------
@@ -122,6 +125,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
   @Override
   public void disconnected() {
     logger.info("Backend disconnected during login for player {}", player.username());
+    player.disconnect();
   }
 
   // ---------------------------------------------------------------------------
@@ -144,14 +148,13 @@ final class BackendLoginSessionHandler implements SessionHandler {
   }
 
   private void handleLoginPluginRequest(LoginPluginRequest request) {
-    if (PlayerForwarding.VELOCITY_CHANNEL.equals(request.channel())) {
+    if (PlayerForwarding.VELOCITY_CHANNEL.equals(request.channel())
+        && forwardingSecret.length > 0) {
       // Velocity modern forwarding — build and sign the forwarding payload.
-      // TODO: Make forwarding secret configurable (requires config file).
-      byte[] forwardingSecret = new byte[0]; // Placeholder — must be configured.
       byte[] payload = PlayerForwarding.buildVelocityForwardingData(player, forwardingSecret);
       backendConnection.writeAndFlush(new LoginPluginResponse(request.messageId(), true, payload));
     } else {
-      // Unknown plugin channel — respond with failure.
+      // Unknown plugin channel or forwarding disabled — respond with failure.
       backendConnection.writeAndFlush(new LoginPluginResponse(request.messageId(), false, null));
     }
   }
@@ -197,7 +200,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
               if (!clientConn.channel().isActive()) {
                 return;
               }
-              clientConn.setSessionHandler(new ClientPlaySessionHandler(player, clientConn));
+              clientConn.setSessionHandler(new ClientPlaySessionHandler(player));
             });
   }
 }

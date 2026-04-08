@@ -25,6 +25,7 @@ import java.util.UUID;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -55,6 +56,9 @@ public final class ConnectedPlayer {
 
   /** Maximum time to wait for a KeepAlive response before disconnecting. */
   private static final long KEEP_ALIVE_TIMEOUT_MS = 30_000;
+
+  /** Guards against concurrent or duplicate {@link #disconnect()} calls. */
+  private final AtomicBoolean disconnected = new AtomicBoolean();
 
   // ---------------------------------------------------------------------------
   // Immutable identity
@@ -204,8 +208,11 @@ public final class ConnectedPlayer {
   // KeepAlive system
   // ---------------------------------------------------------------------------
 
-  /** Starts the periodic KeepAlive task on the client event loop. */
+  /** Starts the periodic KeepAlive task on the client event loop. Idempotent. */
   void startKeepAliveTask() {
+    if (keepAliveTask != null) {
+      keepAliveTask.cancel(false);
+    }
     keepAliveTask =
         clientConnection
             .channel()
@@ -280,8 +287,11 @@ public final class ConnectedPlayer {
   // Disconnect
   // ---------------------------------------------------------------------------
 
-  /** Disconnects the player from both client and backend. */
+  /** Disconnects the player from both client and backend. Idempotent and thread-safe. */
   public void disconnect() {
+    if (!disconnected.compareAndSet(false, true)) {
+      return;
+    }
     cancelKeepAliveTask();
     clientConnection.close();
     BackendConnection backend = this.backendConnection;

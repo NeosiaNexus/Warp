@@ -16,21 +16,13 @@
  */
 package dev.warp.proxy.connection;
 
-import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
-import dev.warp.protocol.packet.config.AcknowledgeFinishConfiguration;
-import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
-import dev.warp.protocol.packet.config.ConfigPacket;
-import dev.warp.protocol.packet.config.ConfigPluginMessage;
 import dev.warp.protocol.packet.config.FinishConfiguration;
-import dev.warp.protocol.packet.config.KnownPacks;
-import dev.warp.protocol.packet.config.RegistryData;
-import dev.warp.protocol.packet.config.ResourcePackPush;
-import dev.warp.protocol.packet.config.ServerData;
 import dev.warp.protocol.packet.play.KeepAlive;
 
+import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -59,45 +51,55 @@ final class BackendConfigSessionHandler implements SessionHandler {
   }
 
   // ---------------------------------------------------------------------------
+  // Lifecycle
+  // ---------------------------------------------------------------------------
+
+  @Override
+  public void activated() {
+    logger.debug("BackendConfigSessionHandler activated for {}", player.username());
+    // Install client config handler immediately so the client can respond to KnownPacks,
+    // PluginMessages, etc. as soon as the backend starts sending configuration data.
+    // Without this, the client would still have the LoginSessionHandler active and would
+    // drop any CONFIG-state packets.
+    MinecraftConnection clientConn = player.clientConnection();
+    clientConn
+        .channel()
+        .eventLoop()
+        .execute(
+            () -> {
+              if (!clientConn.channel().isActive()) {
+                logger.warn(
+                    "Client channel inactive when installing ConfigHandler for {}",
+                    player.username());
+                return;
+              }
+              logger.debug("Installing ClientConfigSessionHandler for {}", player.username());
+              clientConn.setSessionHandler(
+                  new ClientConfigSessionHandler(player, backendConnection));
+            });
+  }
+
+  // ---------------------------------------------------------------------------
   // Packet handling
   // ---------------------------------------------------------------------------
 
   @Override
   public void handle(Packet packet) {
-    // KeepAlive is a PlayPacket registered in CONFIG state — handle it first.
+    logger.trace(
+        "Backend CONFIG handle: {} for {}", packet.getClass().getSimpleName(), player.username());
     if (packet instanceof KeepAlive keepAlive) {
-      // Echo back to backend immediately — proxy handles backend keepalives.
       backendConnection.writeAndFlush(keepAlive);
-      return;
-    }
-
-    if (!(packet instanceof ConfigPacket configPacket)) {
-      logger.warn(
-          "Unexpected packet in backend CONFIG state: {}", packet.getClass().getSimpleName());
-      return;
-    }
-
-    switch (configPacket) {
-      case RegistryData registryData -> forwardToClient(registryData);
-      case KnownPacks knownPacks -> forwardToClient(knownPacks);
-      case ServerData serverData -> forwardToClient(serverData);
-      case ResourcePackPush resourcePack -> forwardToClient(resourcePack);
-      case ConfigPluginMessage pluginMessage -> forwardToClient(pluginMessage);
-      case FinishConfiguration ignored -> handleFinishConfiguration();
-      case ConfigDisconnect disconnect -> handleDisconnect(disconnect);
-      // Serverbound packets should never arrive from a backend.
-      case AcknowledgeFinishConfiguration ignored -> {
-        /* protocol violation, ignore */
-      }
-      case ClientInformation ignored -> {
-        /* protocol violation, ignore */
-      }
+    } else if (packet instanceof FinishConfiguration) {
+      handleFinishConfiguration();
+    } else if (packet instanceof ConfigDisconnect) {
+      handleDisconnect();
     }
   }
 
   @Override
   public void disconnected() {
     logger.info("Backend disconnected during configuration for player {}", player.username());
+    player.disconnect();
   }
 
   // ---------------------------------------------------------------------------
@@ -105,8 +107,8 @@ final class BackendConfigSessionHandler implements SessionHandler {
   // ---------------------------------------------------------------------------
 
   private void handleFinishConfiguration() {
-    // Schedule client-side mutations on the client's event loop — the current code
-    // runs on the backend event loop, which may be a different thread.
+    // Forward FinishConfiguration to the client. ClientConfigSessionHandler is already
+    // installed (see activated()) and will handle the client's AcknowledgeFinishConfiguration.
     MinecraftConnection clientConn = player.clientConnection();
     clientConn
         .channel()
@@ -117,21 +119,18 @@ final class BackendConfigSessionHandler implements SessionHandler {
                 return;
               }
               clientConn.writeAndFlush(new FinishConfiguration());
-              clientConn.setState(ProtocolState.CONFIGURATION);
-              clientConn.setSessionHandler(
-                  new ClientConfigSessionHandler(player, backendConnection));
             });
   }
 
-  @SuppressWarnings("unused")
-  private void handleDisconnect(ConfigDisconnect disconnect) {
+  private void handleDisconnect() {
     logger.info("Backend disconnected player {} during configuration", player.username());
     player.disconnect();
   }
 
-  private void forwardToClient(Packet packet) {
-    // Use write() without flush — readComplete() will flush the batch.
-    player.clientConnection().write(packet);
+  @Override
+  public void handleBlind(ByteBuf buf) {
+    logger.trace("Backend→client blind {} bytes for {}", buf.readableBytes(), player.username());
+    player.clientConnection().writeBlind(buf);
   }
 
   @Override

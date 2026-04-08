@@ -81,20 +81,22 @@ public final class BackendConnection {
    * @param channelClass the socket channel class matching the transport
    * @param player the connected player (used to initialise the backend pipeline)
    * @param serverAddress the backend server address
+   * @param forwardingSecret the shared HMAC secret for Velocity modern forwarding
    * @return a future that completes with the backend connection
    */
   public static CompletableFuture<BackendConnection> connect(
       EventLoopGroup workerGroup,
       Class<? extends Channel> channelClass,
       ConnectedPlayer player,
-      InetSocketAddress serverAddress) {
+      InetSocketAddress serverAddress,
+      byte[] forwardingSecret) {
 
     CompletableFuture<BackendConnection> future = new CompletableFuture<>();
 
     new Bootstrap()
         .group(workerGroup)
         .channel(channelClass)
-        .handler(new BackendChannelInitializer(player, serverAddress))
+        .handler(new BackendChannelInitializer(player))
         .option(ChannelOption.TCP_NODELAY, true)
         .option(ChannelOption.SO_KEEPALIVE, true)
         .option(ChannelOption.IP_TOS, IP_TOS_LOW_LATENCY)
@@ -108,6 +110,11 @@ public final class BackendConnection {
                   if (channelFuture.isSuccess()) {
                     Channel ch = channelFuture.channel();
                     MinecraftConnection conn = ch.pipeline().get(MinecraftConnection.class);
+                    // Set session handler AFTER TCP connect succeeds — activated()
+                    // sends Handshake + LoginStart, which requires an active channel.
+                    conn.setSessionHandler(
+                        new BackendLoginSessionHandler(
+                            player, conn, serverAddress, forwardingSecret));
                     future.complete(new BackendConnection(conn, serverAddress));
                   } else {
                     future.completeExceptionally(channelFuture.cause());

@@ -30,7 +30,9 @@ import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.proxy.auth.MojangSessionService;
+import dev.warp.proxy.config.ForwardingMode;
 
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
@@ -358,16 +360,23 @@ class ServerListPingTest {
   }
 
   /** Creates a test {@link ServerLoginContext} for pipeline initialisation. */
+  @SuppressWarnings("NullAway") // Backend fields unused in status ping tests
   private static ServerLoginContext createTestLoginContext() {
     try {
       KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
       gen.initialize(1024);
+      // Backend address and worker group are unused for status ping tests.
       return new ServerLoginContext(
           gen.generateKeyPair(),
           false, // offline mode for tests
           -1, // compression disabled
           Deflater.DEFAULT_COMPRESSION,
-          new MojangSessionService());
+          new MojangSessionService(),
+          new InetSocketAddress("localhost", 25565),
+          ForwardingMode.NONE,
+          new byte[0],
+          null, // no worker group needed for status tests
+          null); // no channel class needed for status tests
     } catch (NoSuchAlgorithmException e) {
       throw new AssertionError("RSA not available", e);
     }

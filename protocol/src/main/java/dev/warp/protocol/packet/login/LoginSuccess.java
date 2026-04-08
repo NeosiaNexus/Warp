@@ -108,7 +108,9 @@ public record LoginSuccess(
           }
 
           boolean strictErrorHandling =
-              version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5) && buf.readBoolean();
+              version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5)
+                  && version.isOlderThan(ProtocolVersion.MINECRAFT_1_21_2)
+                  && buf.readBoolean();
 
           return new LoginSuccess(uuid, username, properties, strictErrorHandling);
         }
@@ -135,7 +137,8 @@ public record LoginSuccess(
             }
           }
 
-          if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5)) {
+          if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5)
+              && version.isOlderThan(ProtocolVersion.MINECRAFT_1_21_2)) {
             buf.writeBoolean(packet.strictErrorHandling());
           }
         }
