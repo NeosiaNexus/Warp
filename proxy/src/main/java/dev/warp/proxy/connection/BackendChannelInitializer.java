@@ -24,7 +24,6 @@ import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.packet.PacketDirection;
 
-import java.net.InetSocketAddress;
 import java.util.concurrent.TimeUnit;
 
 import io.netty.channel.Channel;
@@ -50,11 +49,9 @@ final class BackendChannelInitializer extends ChannelInitializer<Channel> {
   private static final int READ_TIMEOUT_SECONDS = 30;
 
   private final ConnectedPlayer player;
-  private final InetSocketAddress serverAddress;
 
-  BackendChannelInitializer(ConnectedPlayer player, InetSocketAddress serverAddress) {
+  BackendChannelInitializer(ConnectedPlayer player) {
     this.player = player;
-    this.serverAddress = serverAddress;
   }
 
   @Override
@@ -81,6 +78,7 @@ final class BackendChannelInitializer extends ChannelInitializer<Channel> {
         .addLast(ServerChannelInitializer.MINECRAFT_ENCODER, encoder)
         .addLast(ServerChannelInitializer.CONNECTION_HANDLER, connection);
 
-    connection.setSessionHandler(new BackendLoginSessionHandler(player, connection, serverAddress));
+    // Do NOT set session handler here — the channel is not yet connected.
+    // BackendConnection.connect() will set it after TCP connect succeeds.
   }
 }

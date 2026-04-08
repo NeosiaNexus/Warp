@@ -81,10 +81,19 @@ public interface SessionHandler {
   default void activated() {}
 
   /**
-   * Called when the connection is closed or the handler is replaced.
+   * Called when this handler is replaced by another handler on the same connection.
    *
-   * <p>Use this to release resources (cancel timers, clean up state). The default implementation
-   * does nothing.
+   * <p>The connection is still alive when this is called. Use this to release handler-specific
+   * resources (cancel timers, clear state) that were acquired in {@link #activated()}. The default
+   * implementation does nothing.
+   */
+  default void deactivated() {}
+
+  /**
+   * Called when the connection is closed (channel becomes inactive).
+   *
+   * <p>The channel is no longer active when this is called. Use this to tear down associated
+   * connections and release resources. The default implementation does nothing.
    */
   default void disconnected() {}
 

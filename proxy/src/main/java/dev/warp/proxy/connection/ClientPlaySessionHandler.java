@@ -58,7 +58,7 @@ final class ClientPlaySessionHandler implements SessionHandler {
 
   private final ConnectedPlayer player;
 
-  ClientPlaySessionHandler(ConnectedPlayer player, MinecraftConnection clientConnection) {
+  ClientPlaySessionHandler(ConnectedPlayer player) {
     this.player = player;
   }
 
@@ -72,12 +72,13 @@ final class ClientPlaySessionHandler implements SessionHandler {
   }
 
   @Override
-  public void disconnected() {
+  public void deactivated() {
     player.cancelKeepAliveTask();
-    BackendConnection backend = player.backendConnection();
-    if (backend != null) {
-      backend.disconnect();
-    }
+  }
+
+  @Override
+  public void disconnected() {
+    player.disconnect();
   }
 
   // ---------------------------------------------------------------------------

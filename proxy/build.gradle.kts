@@ -63,6 +63,7 @@ dependencies {
     // Utilities
     implementation(libs.caffeine)
     implementation(libs.gson)
+    implementation(libs.configurate.hocon)
 
     // Native crypto
     implementation(libs.netty.tcnative.boringssl)

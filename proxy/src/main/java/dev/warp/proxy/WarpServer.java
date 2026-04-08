@@ -19,14 +19,13 @@ package dev.warp.proxy;
 import dev.warp.api.Warp;
 import dev.warp.api.WarpProvider;
 import dev.warp.proxy.auth.MojangSessionService;
+import dev.warp.proxy.config.WarpConfig;
 import dev.warp.proxy.connection.ServerChannelInitializer;
 import dev.warp.proxy.connection.ServerLoginContext;
 
-import java.net.InetSocketAddress;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
-import java.util.zip.Deflater;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.PooledByteBufAllocator;
@@ -75,14 +74,11 @@ public final class WarpServer implements Warp {
   /** RSA key size for Minecraft encryption handshake (matches vanilla). */
   private static final int RSA_KEY_SIZE = 1024;
 
-  /** Default compression threshold in bytes. Packets >= this size are compressed. */
-  private static final int DEFAULT_COMPRESSION_THRESHOLD = 256;
-
   // ---------------------------------------------------------------------------
   // Instance fields
   // ---------------------------------------------------------------------------
 
-  private final InetSocketAddress bindAddress;
+  private final WarpConfig config;
 
   /** Netty boss group — accepts incoming connections. */
   private @Nullable MultiThreadIoEventLoopGroup bossGroup;
@@ -96,20 +92,18 @@ public final class WarpServer implements Warp {
   /** The detected transport info, needed for outbound connections. */
   private @Nullable TransportInfo transportInfo;
 
+  /** The Mojang session service, kept for lifecycle management. */
+  private @Nullable MojangSessionService sessionService;
+
   private volatile boolean running;
 
-  /** Creates a server that will bind to {@code 0.0.0.0:25577}. */
-  public WarpServer() {
-    this(new InetSocketAddress("0.0.0.0", 25577));
-  }
-
   /**
-   * Creates a server that will bind to the given address.
+   * Creates a server with the given configuration.
    *
-   * @param bindAddress the address and port to listen on
+   * @param config the proxy configuration
    */
-  public WarpServer(InetSocketAddress bindAddress) {
-    this.bindAddress = bindAddress;
+  public WarpServer(WarpConfig config) {
+    this.config = config;
   }
 
   // ---------------------------------------------------------------------------
@@ -130,12 +124,12 @@ public final class WarpServer implements Warp {
         WarpBuildInfo.GIT_COMMIT,
         WarpBuildInfo.GIT_BRANCH);
 
-    ServerLoginContext loginContext = createLoginContext();
-
     TransportInfo transport = detectTransport();
     this.transportInfo = transport;
     this.bossGroup = new MultiThreadIoEventLoopGroup(1, transport.ioFactory());
     this.workerGroup = new MultiThreadIoEventLoopGroup(transport.ioFactory());
+
+    ServerLoginContext loginContext = createLoginContext(transport);
 
     ServerBootstrap bootstrap =
         new ServerBootstrap()
@@ -161,14 +155,14 @@ public final class WarpServer implements Warp {
     applySoReusePort(bootstrap, transport);
 
     try {
-      this.serverChannel = bootstrap.bind(bindAddress).sync().channel();
+      this.serverChannel = bootstrap.bind(config.bind()).sync().channel();
     } catch (InterruptedException e) {
       shutdownEventLoops();
       Thread.currentThread().interrupt();
       throw new RuntimeException("Interrupted while binding server", e);
     } catch (Exception e) {
       shutdownEventLoops();
-      throw new RuntimeException("Failed to bind to " + bindAddress, e);
+      throw new RuntimeException("Failed to bind to " + config.bind(), e);
     }
 
     Runtime.getRuntime().addShutdownHook(new Thread(this::stop, "warp-shutdown"));
@@ -177,7 +171,7 @@ public final class WarpServer implements Warp {
     registerProvider();
 
     this.running = true;
-    logger.info("Warp is listening on {}", bindAddress);
+    logger.info("Warp is listening on {}", config.bind());
   }
 
   /** Gracefully shuts down the server channel and Netty event loops. */
@@ -192,6 +186,10 @@ public final class WarpServer implements Warp {
       serverChannel.close().awaitUninterruptibly();
     }
     shutdownEventLoops();
+
+    if (sessionService != null) {
+      sessionService.close();
+    }
 
     logger.info("Warp has been stopped.");
   }
@@ -246,11 +244,11 @@ public final class WarpServer implements Warp {
   }
 
   /**
-   * Creates the server-wide login context with RSA keypair and authentication configuration.
+   * Creates the server-wide login context with RSA keypair and configuration values.
    *
-   * <p>TODO: Read online-mode, compression settings from config file once implemented.
+   * @param transport the detected transport for channel class resolution
    */
-  private static ServerLoginContext createLoginContext() {
+  private ServerLoginContext createLoginContext(TransportInfo transport) {
     KeyPairGenerator gen;
     try {
       gen = KeyPairGenerator.getInstance("RSA");
@@ -260,12 +258,20 @@ public final class WarpServer implements Warp {
     gen.initialize(RSA_KEY_SIZE);
     KeyPair rsaKeyPair = gen.generateKeyPair();
 
+    MojangSessionService service = new MojangSessionService();
+    this.sessionService = service;
+
     return new ServerLoginContext(
         rsaKeyPair,
-        true, // online mode
-        DEFAULT_COMPRESSION_THRESHOLD,
-        Deflater.DEFAULT_COMPRESSION,
-        new MojangSessionService());
+        config.onlineMode(),
+        config.compressionThreshold(),
+        config.compressionLevel(),
+        service,
+        config.backendAddress(),
+        config.forwardingMode(),
+        config.forwardingSecret(),
+        workerGroup(),
+        transport.clientChannelClass());
   }
 
   /**

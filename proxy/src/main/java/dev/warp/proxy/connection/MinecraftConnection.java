@@ -128,8 +128,9 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   @Override
   public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+    // Always log — do not gate on isActive() which can swallow critical errors.
+    logger.error("Exception in pipeline for {}", channel.remoteAddress(), cause);
     if (ctx.channel().isActive()) {
-      logger.error("Exception in pipeline for {}", channel.remoteAddress(), cause);
       var unused = ctx.close();
     }
   }
@@ -179,7 +180,11 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
    * @param buf the raw packet buffer (caller transfers ownership)
    */
   public void writeBlind(ByteBuf buf) {
-    var unused = channel.write(buf, channel.voidPromise());
+    if (channel.isActive()) {
+      var unused = channel.write(buf, channel.voidPromise());
+    } else {
+      buf.release();
+    }
   }
 
   /** Flushes the channel. Called from {@code readComplete()} for write batching. */
@@ -213,7 +218,7 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
    */
   public void setSessionHandler(SessionHandler handler) {
     if (this.sessionHandler != null) {
-      this.sessionHandler.disconnected();
+      this.sessionHandler.deactivated();
     }
     this.sessionHandler = handler;
     handler.activated();

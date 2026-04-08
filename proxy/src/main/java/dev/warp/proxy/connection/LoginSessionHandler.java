@@ -25,6 +25,7 @@ import dev.warp.protocol.netty.CompressionDecoder;
 import dev.warp.protocol.netty.CompressionEncoder;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
+import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.login.EncryptionRequest;
 import dev.warp.protocol.packet.login.EncryptionResponse;
 import dev.warp.protocol.packet.login.LoginAcknowledged;
@@ -35,10 +36,12 @@ import dev.warp.protocol.packet.login.LoginPluginResponse;
 import dev.warp.protocol.packet.login.LoginStart;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.login.SetCompression;
+import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.proxy.auth.AuthenticationException;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ServerHash;
 
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
@@ -115,6 +118,7 @@ final class LoginSessionHandler implements SessionHandler {
   private LoginState state = LoginState.AWAITING_LOGIN_START;
   private @Nullable String username;
   private byte @Nullable [] verifyToken;
+  private @Nullable GameProfile authenticatedProfile;
 
   // ---------------------------------------------------------------------------
   // Constructor
@@ -132,6 +136,11 @@ final class LoginSessionHandler implements SessionHandler {
   @Override
   public void handle(Packet packet) {
     if (!(packet instanceof LoginPacket loginPacket)) {
+      if (state == LoginState.COMPLETE) {
+        // Client may send CONFIG packets (e.g., brand) before the backend handler is installed.
+        // Silently drop them — the backend will request them during configuration.
+        return;
+      }
       logger.warn("Unexpected packet in LOGIN state: {}", packet.getClass().getSimpleName());
       connection.close();
       return;
@@ -229,6 +238,7 @@ final class LoginSessionHandler implements SessionHandler {
   }
 
   private void handleLoginAcknowledged() {
+    logger.info("LoginAcknowledged received from {}, state={}", username, state);
     if (state != LoginState.AWAITING_LOGIN_ACKNOWLEDGED) {
       disconnect("Unexpected LoginAcknowledged");
       return;
@@ -237,8 +247,22 @@ final class LoginSessionHandler implements SessionHandler {
     state = LoginState.COMPLETE;
     connection.setState(ProtocolState.CONFIGURATION);
 
-    // TODO: Create ConnectedPlayer and connect to backend (Phase 5+)
-    logger.info("Player {} login acknowledged, transitioning to CONFIGURATION", username);
+    GameProfile profile = this.authenticatedProfile;
+    if (profile == null) {
+      disconnect("Internal error");
+      return;
+    }
+    initiateBackendConnection(profile);
+  }
+
+  @Override
+  public void deactivated() {
+    logger.debug("LoginSessionHandler replaced for: {} (state={})", username, state);
+  }
+
+  @Override
+  public void disconnected() {
+    logger.info("Client disconnected during login: {} (state={})", username, state);
   }
 
   @SuppressWarnings("unused")
@@ -332,6 +356,8 @@ final class LoginSessionHandler implements SessionHandler {
   }
 
   private void completeLogin(GameProfile profile) {
+    this.authenticatedProfile = profile;
+
     // Enable compression (must send SetCompression BEFORE installing handlers).
     enableCompression();
 
@@ -353,8 +379,7 @@ final class LoginSessionHandler implements SessionHandler {
       // Pre-1.20.2: transition directly to PLAY.
       state = LoginState.COMPLETE;
       connection.setState(ProtocolState.PLAY);
-      // TODO: Create ConnectedPlayer and connect to backend (Phase 5+)
-      logger.info("Player {} transitioned directly to PLAY (pre-1.20.2)", profile.name());
+      initiateBackendConnection(profile);
     }
   }
 
@@ -405,6 +430,56 @@ final class LoginSessionHandler implements SessionHandler {
   }
 
   // ---------------------------------------------------------------------------
+  // Backend connection
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Creates a {@link ConnectedPlayer} and initiates a connection to the backend server.
+   *
+   * <p>The backend connection runs asynchronously. On success, the player is linked to the backend
+   * and KeepAlive starts. On failure, the client is disconnected with an error message.
+   */
+  private void initiateBackendConnection(GameProfile profile) {
+    InetSocketAddress remoteAddr = (InetSocketAddress) connection.channel().remoteAddress();
+    ConnectedPlayer player = new ConnectedPlayer(connection, clientVersion(), profile, remoteAddr);
+
+    logger.info("Connecting {} to backend {}", profile.name(), loginContext.backendAddress());
+
+    var unused =
+        BackendConnection.connect(
+                loginContext.workerGroup(),
+                loginContext.channelClass(),
+                player,
+                loginContext.backendAddress(),
+                loginContext.forwardingSecret())
+            .whenComplete(
+                (backend, ex) ->
+                    connection
+                        .channel()
+                        .eventLoop()
+                        .execute(
+                            () -> {
+                              if (!connection.channel().isActive()) {
+                                // Client disconnected while we were connecting to backend.
+                                if (backend != null) {
+                                  backend.disconnect();
+                                }
+                                return;
+                              }
+                              if (ex != null) {
+                                logger.error(
+                                    "Failed to connect {} to backend {}",
+                                    profile.name(),
+                                    loginContext.backendAddress(),
+                                    ex);
+                                disconnect("Could not connect to backend server");
+                                return;
+                              }
+                              player.setBackendConnection(backend);
+                            }));
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
@@ -419,7 +494,17 @@ final class LoginSessionHandler implements SessionHandler {
         connection.channel().remoteAddress(),
         reason);
     byte[] rawReason = encodeTextComponent(reason, clientVersion());
-    connection.writeAndClose(new LoginDisconnect(rawReason));
+    // Use the correct disconnect packet for the current protocol state.
+    // After handleLoginAcknowledged, the decoder is in CONFIGURATION.
+    // After completeLogin (pre-1.20.2), the decoder is in PLAY.
+    // LoginDisconnect only encodes in LOGIN state.
+    Packet disconnectPacket =
+        switch (connection.decoder().state()) {
+          case HANDSHAKE, STATUS, LOGIN -> new LoginDisconnect(rawReason);
+          case CONFIGURATION -> new ConfigDisconnect(rawReason);
+          case PLAY -> new PlayDisconnect(rawReason);
+        };
+    connection.writeAndClose(disconnectPacket);
   }
 
   /**

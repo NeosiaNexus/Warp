@@ -17,11 +17,16 @@
 package dev.warp.proxy.connection;
 
 import dev.warp.proxy.auth.MojangSessionService;
+import dev.warp.proxy.config.ForwardingMode;
 
+import java.net.InetSocketAddress;
 import java.security.KeyPair;
 
+import io.netty.channel.Channel;
+import io.netty.channel.EventLoopGroup;
+
 /**
- * Server-wide login configuration shared across all client connections.
+ * Server-wide configuration shared across all client connections.
  *
  * <p>Created once during server startup and injected into {@link ServerChannelInitializer}. Using a
  * record rather than injecting {@link dev.warp.proxy.WarpServer WarpServer} directly keeps session
@@ -32,13 +37,24 @@ import java.security.KeyPair;
  * @param compressionThreshold the compression threshold in bytes, or {@code -1} to disable
  * @param compressionLevel the zlib compression level (0–9 or {@code -1} for default)
  * @param sessionService the Mojang session service for online-mode authentication
+ * @param backendAddress the backend Minecraft server address
+ * @param forwardingMode the player info forwarding mode
+ * @param forwardingSecret the shared HMAC secret for Velocity modern forwarding
+ * @param workerGroup the Netty worker event loop group for outbound connections
+ * @param channelClass the socket channel class matching the detected transport
  */
+@SuppressWarnings("ArrayRecordComponent") // forwardingSecret is treated as immutable
 public record ServerLoginContext(
     KeyPair rsaKeyPair,
     boolean onlineMode,
     int compressionThreshold,
     int compressionLevel,
-    MojangSessionService sessionService) {
+    MojangSessionService sessionService,
+    InetSocketAddress backendAddress,
+    ForwardingMode forwardingMode,
+    byte[] forwardingSecret,
+    EventLoopGroup workerGroup,
+    Class<? extends Channel> channelClass) {
 
   /** Validates configuration invariants. */
   public ServerLoginContext {

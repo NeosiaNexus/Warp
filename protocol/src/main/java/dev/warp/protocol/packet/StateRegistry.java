@@ -39,14 +39,8 @@ import static dev.warp.protocol.packet.VersionMapping.map;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.packet.config.AcknowledgeFinishConfiguration;
-import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
-import dev.warp.protocol.packet.config.ConfigPluginMessage;
 import dev.warp.protocol.packet.config.FinishConfiguration;
-import dev.warp.protocol.packet.config.KnownPacks;
-import dev.warp.protocol.packet.config.RegistryData;
-import dev.warp.protocol.packet.config.ResourcePackPush;
-import dev.warp.protocol.packet.config.ServerData;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.login.EncryptionRequest;
 import dev.warp.protocol.packet.login.EncryptionResponse;
@@ -218,24 +212,25 @@ public final class StateRegistry {
   // Configuration — all since 1.20.2 (protocol 764)
   // ---------------------------------------------------------------------------
 
+  /**
+   * Registers only the CONFIG packets the proxy needs to intercept. Everything else is
+   * blind-forwarded as raw bytes — faster, more resilient to protocol changes, and impossible to
+   * corrupt through decode/re-encode cycles.
+   *
+   * <p>Intercepted clientbound: Disconnect, FinishConfiguration, KeepAlive. Intercepted
+   * serverbound: AcknowledgeFinishConfiguration, KeepAlive. All other CONFIG packets (RegistryData,
+   * KnownPacks, PluginMessage, etc.) pass through as opaque ByteBufs via {@code handleBlind()}.
+   */
   private static void registerConfiguration() {
     directionMap(ProtocolState.CONFIGURATION)
         .put(
             PacketDirection.SERVERBOUND,
             PacketRegistry.builder()
                 .register(
-                    ClientInformation.class, ClientInformation.CODEC, map(0x00, MINECRAFT_1_20_2))
-                .register(
-                    ConfigPluginMessage.class,
-                    ConfigPluginMessage.CODEC,
-                    map(0x01, MINECRAFT_1_20_2),
-                    map(0x02, MINECRAFT_1_20_5))
-                .register(
                     AcknowledgeFinishConfiguration.class,
                     AcknowledgeFinishConfiguration.CODEC,
                     map(0x02, MINECRAFT_1_20_2),
                     map(0x03, MINECRAFT_1_20_5))
-                .register(KnownPacks.class, KnownPacks.CODEC, map(0x07, MINECRAFT_1_20_5))
                 .register(
                     KeepAlive.class,
                     KeepAlive.CODEC,
@@ -248,11 +243,6 @@ public final class StateRegistry {
             PacketDirection.CLIENTBOUND,
             PacketRegistry.builder()
                 .register(
-                    ConfigPluginMessage.class,
-                    ConfigPluginMessage.CODEC,
-                    map(0x00, MINECRAFT_1_20_2),
-                    map(0x01, MINECRAFT_1_20_5))
-                .register(
                     ConfigDisconnect.class,
                     ConfigDisconnect.CODEC,
                     map(0x01, MINECRAFT_1_20_2),
@@ -262,22 +252,6 @@ public final class StateRegistry {
                     FinishConfiguration.CODEC,
                     map(0x02, MINECRAFT_1_20_2),
                     map(0x03, MINECRAFT_1_20_5))
-                .register(
-                    RegistryData.class,
-                    RegistryData.CODEC,
-                    map(0x05, MINECRAFT_1_20_2),
-                    map(0x07, MINECRAFT_1_20_5))
-                .register(
-                    ResourcePackPush.class,
-                    ResourcePackPush.CODEC,
-                    map(0x06, MINECRAFT_1_20_2),
-                    map(0x09, MINECRAFT_1_20_5))
-                .register(
-                    ServerData.class,
-                    ServerData.CODEC,
-                    map(0x04, MINECRAFT_1_20_2),
-                    map(0x06, MINECRAFT_1_20_5))
-                .register(KnownPacks.class, KnownPacks.CODEC, map(0x0E, MINECRAFT_1_20_5))
                 .register(
                     KeepAlive.class,
                     KeepAlive.CODEC,

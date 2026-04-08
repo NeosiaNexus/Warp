@@ -20,17 +20,9 @@ import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.config.AcknowledgeFinishConfiguration;
-import dev.warp.protocol.packet.config.ClientInformation;
-import dev.warp.protocol.packet.config.ConfigDisconnect;
-import dev.warp.protocol.packet.config.ConfigPacket;
-import dev.warp.protocol.packet.config.ConfigPluginMessage;
-import dev.warp.protocol.packet.config.FinishConfiguration;
-import dev.warp.protocol.packet.config.KnownPacks;
-import dev.warp.protocol.packet.config.RegistryData;
-import dev.warp.protocol.packet.config.ResourcePackPush;
-import dev.warp.protocol.packet.config.ServerData;
 import dev.warp.protocol.packet.play.KeepAlive;
 
+import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -59,50 +51,18 @@ final class ClientConfigSessionHandler implements SessionHandler {
 
   @Override
   public void handle(Packet packet) {
-    // KeepAlive is a PlayPacket registered in CONFIG state.
+    logger.trace(
+        "Client CONFIG handle: {} for {}", packet.getClass().getSimpleName(), player.username());
     if (packet instanceof KeepAlive keepAlive) {
-      // Client KeepAlive during config — validate against our pending ID.
       player.handleKeepAliveResponse(keepAlive.id());
-      return;
-    }
-
-    if (!(packet instanceof ConfigPacket configPacket)) {
-      logger.warn(
-          "Unexpected packet in client CONFIG state: {}", packet.getClass().getSimpleName());
-      return;
-    }
-
-    switch (configPacket) {
-      case AcknowledgeFinishConfiguration ignored -> handleAcknowledgeFinish();
-      case ClientInformation clientInfo -> forwardToBackend(clientInfo);
-      case ConfigPluginMessage pluginMessage -> forwardToBackend(pluginMessage);
-      case KnownPacks knownPacks -> forwardToBackend(knownPacks);
-      // Clientbound packets should never arrive from a client.
-      case FinishConfiguration ignored -> {
-        /* protocol violation, ignore */
-      }
-      case RegistryData ignored -> {
-        /* protocol violation, ignore */
-      }
-      case ResourcePackPush ignored -> {
-        /* protocol violation, ignore */
-      }
-      case ServerData ignored -> {
-        /* protocol violation, ignore */
-      }
-      case ConfigDisconnect ignored -> {
-        /* protocol violation, ignore */
-      }
+    } else if (packet instanceof AcknowledgeFinishConfiguration) {
+      handleAcknowledgeFinish();
     }
   }
 
   @Override
   public void disconnected() {
-    // Client disconnected during configuration.
-    BackendConnection backend = player.backendConnection();
-    if (backend != null) {
-      backend.disconnect();
-    }
+    player.disconnect();
   }
 
   // ---------------------------------------------------------------------------
@@ -112,9 +72,7 @@ final class ClientConfigSessionHandler implements SessionHandler {
   private void handleAcknowledgeFinish() {
     // Transition client side to PLAY (we are on the client event loop already).
     player.clientConnection().setState(ProtocolState.PLAY);
-    player
-        .clientConnection()
-        .setSessionHandler(new ClientPlaySessionHandler(player, player.clientConnection()));
+    player.clientConnection().setSessionHandler(new ClientPlaySessionHandler(player));
 
     // Schedule backend-side mutations on the backend's event loop.
     backendConnection
@@ -132,9 +90,10 @@ final class ClientConfigSessionHandler implements SessionHandler {
             });
   }
 
-  private void forwardToBackend(Packet packet) {
-    // Use write() without flush — readComplete() will flush the batch.
-    backendConnection.write(packet);
+  @Override
+  public void handleBlind(ByteBuf buf) {
+    logger.trace("Client→backend blind {} bytes for {}", buf.readableBytes(), player.username());
+    backendConnection.writeBlind(buf);
   }
 
   @Override

@@ -16,13 +16,23 @@
  */
 package dev.warp.proxy;
 
+import dev.warp.proxy.config.ConfigurationException;
+import dev.warp.proxy.config.WarpConfig;
+
+import java.nio.file.Path;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Bootstrap entry point for the Warp proxy.
  *
- * <p>Creates a {@link WarpServer} and delegates lifecycle management to it. This class exists
- * solely to house {@code main} — all real logic lives in {@link WarpServer}.
+ * <p>Loads configuration, creates a {@link WarpServer}, and delegates lifecycle management to it.
+ * This class exists solely to house {@code main} — all real logic lives in {@link WarpServer}.
  */
 public final class WarpBootstrap {
+
+  private static final Logger logger = LoggerFactory.getLogger(WarpBootstrap.class);
 
   private WarpBootstrap() {}
 
@@ -32,6 +42,15 @@ public final class WarpBootstrap {
    * @param args command-line arguments (currently unused)
    */
   public static void main(String[] args) {
-    new WarpServer().start();
+    WarpConfig config;
+    try {
+      config = WarpConfig.load(Path.of("."));
+    } catch (ConfigurationException e) {
+      logger.error("Failed to load configuration: {}", e.getMessage());
+      System.exit(1);
+      return; // unreachable, but keeps the compiler happy
+    }
+
+    new WarpServer(config).start();
   }
 }
