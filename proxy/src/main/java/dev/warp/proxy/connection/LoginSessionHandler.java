@@ -441,16 +441,18 @@ final class LoginSessionHandler implements SessionHandler {
    */
   private void initiateBackendConnection(GameProfile profile) {
     InetSocketAddress remoteAddr = (InetSocketAddress) connection.channel().remoteAddress();
-    ConnectedPlayer player = new ConnectedPlayer(connection, clientVersion(), profile, remoteAddr);
+    ConnectedPlayer player =
+        new ConnectedPlayer(connection, clientVersion(), profile, remoteAddr, loginContext);
 
-    logger.info("Connecting {} to backend {}", profile.name(), loginContext.backendAddress());
+    var defaultServer = loginContext.serverRegistry().defaultServer();
+    logger.info("Connecting {} to server '{}'", profile.name(), defaultServer.name());
 
     var unused =
         BackendConnection.connect(
                 loginContext.workerGroup(),
                 loginContext.channelClass(),
                 player,
-                loginContext.backendAddress(),
+                defaultServer.address(),
                 loginContext.forwardingSecret())
             .whenComplete(
                 (backend, ex) ->
@@ -468,14 +470,15 @@ final class LoginSessionHandler implements SessionHandler {
                               }
                               if (ex != null) {
                                 logger.error(
-                                    "Failed to connect {} to backend {}",
+                                    "Failed to connect {} to server '{}'",
                                     profile.name(),
-                                    loginContext.backendAddress(),
+                                    defaultServer.name(),
                                     ex);
                                 disconnect("Could not connect to backend server");
                                 return;
                               }
                               player.setBackendConnection(backend);
+                              player.setCurrentServerName(defaultServer.name());
                             }));
   }
 

@@ -18,8 +18,8 @@ package dev.warp.proxy.connection;
 
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.config.ForwardingMode;
+import dev.warp.proxy.server.ServerRegistry;
 
-import java.net.InetSocketAddress;
 import java.security.KeyPair;
 
 import io.netty.channel.Channel;
@@ -37,7 +37,7 @@ import io.netty.channel.EventLoopGroup;
  * @param compressionThreshold the compression threshold in bytes, or {@code -1} to disable
  * @param compressionLevel the zlib compression level (0–9 or {@code -1} for default)
  * @param sessionService the Mojang session service for online-mode authentication
- * @param backendAddress the backend Minecraft server address
+ * @param serverRegistry the registry of backend servers
  * @param forwardingMode the player info forwarding mode
  * @param forwardingSecret the shared HMAC secret for Velocity modern forwarding
  * @param workerGroup the Netty worker event loop group for outbound connections
@@ -50,7 +50,7 @@ public record ServerLoginContext(
     int compressionThreshold,
     int compressionLevel,
     MojangSessionService sessionService,
-    InetSocketAddress backendAddress,
+    ServerRegistry serverRegistry,
     ForwardingMode forwardingMode,
     byte[] forwardingSecret,
     EventLoopGroup workerGroup,

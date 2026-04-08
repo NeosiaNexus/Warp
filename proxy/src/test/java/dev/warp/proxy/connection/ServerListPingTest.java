@@ -31,11 +31,13 @@ import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.config.ForwardingMode;
+import dev.warp.proxy.server.ServerRegistry;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
+import java.util.Map;
 import java.util.zip.Deflater;
 
 import io.netty.buffer.ByteBuf;
@@ -365,14 +367,16 @@ class ServerListPingTest {
     try {
       KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
       gen.initialize(1024);
-      // Backend address and worker group are unused for status ping tests.
+      // Server registry and worker group are unused for status ping tests.
+      ServerRegistry registry =
+          new ServerRegistry(Map.of("lobby", new InetSocketAddress("localhost", 25565)), "lobby");
       return new ServerLoginContext(
           gen.generateKeyPair(),
           false, // offline mode for tests
           -1, // compression disabled
           Deflater.DEFAULT_COMPRESSION,
           new MojangSessionService(),
-          new InetSocketAddress("localhost", 25565),
+          registry,
           ForwardingMode.NONE,
           new byte[0],
           null, // no worker group needed for status tests

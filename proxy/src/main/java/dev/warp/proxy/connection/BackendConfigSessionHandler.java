@@ -76,6 +76,10 @@ final class BackendConfigSessionHandler implements SessionHandler {
               logger.debug("Installing ClientConfigSessionHandler for {}", player.username());
               clientConn.setSessionHandler(
                   new ClientConfigSessionHandler(player, backendConnection));
+              // Ensure auto-read is enabled. During a server switch, auto-read is paused
+              // while waiting for the new backend to reach CONFIG. This is idempotent for
+              // initial connections where auto-read was never paused.
+              clientConn.setAutoRead(true);
             });
   }
 
@@ -99,6 +103,7 @@ final class BackendConfigSessionHandler implements SessionHandler {
   @Override
   public void disconnected() {
     logger.info("Backend disconnected during configuration for player {}", player.username());
+    player.setSwitching(false);
     player.disconnect();
   }
 
