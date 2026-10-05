@@ -48,15 +48,16 @@ import org.slf4j.LoggerFactory;
 /**
  * Handles packets from the client in PLAY state (SERVERBOUND).
  *
- * <p>Most client packets are blind-forwarded to the backend as raw {@link ByteBuf} — zero
- * deserialization, zero allocation. Only the ~15 proxy-critical packet types are decoded and
- * handled.
+ * <p>Most client packets are blind-forwarded to the backend as the frames they arrived in — no
+ * deserialization, no allocation, and compressed frames keep their original bytes once verified.
+ * Only the handful of packet types the proxy acts on are decoded.
  *
  * <h3>Hot path</h3>
  *
- * <p>{@link #handleBlind(ByteBuf)} is the hot path. It forwards raw buffers directly to the backend
- * channel via {@link MinecraftConnection#writeBlind(ByteBuf)}. Combined with write batching (one
- * {@code flush()} per {@code channelReadComplete}), this gives optimal throughput.
+ * <p>{@link #handleBlind(ByteBuf)} is the hot path. It hands each frame to {@link
+ * MinecraftConnection#forward}, which writes it to the backend verbatim whenever the backend
+ * accepts it. Combined with write batching (one {@code flush()} per {@code channelReadComplete}),
+ * this gives optimal throughput.
  */
 final class ClientPlaySessionHandler implements SessionHandler {
 
@@ -144,7 +145,7 @@ final class ClientPlaySessionHandler implements SessionHandler {
   public void handleBlind(ByteBuf buf) {
     BackendConnection backend = player.backendConnection();
     if (backend != null && backend.isActive()) {
-      backend.connection().writeBlind(buf);
+      backend.connection().forward(buf, player.clientConnection());
     } else {
       buf.release();
     }

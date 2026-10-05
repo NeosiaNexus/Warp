@@ -270,6 +270,7 @@ public final class WarpServer implements Warp {
         config.onlineMode(),
         config.compressionThreshold(),
         config.compressionLevel(),
+        config.compressionPassthrough(),
         service,
         serverRegistry,
         config.forwardingMode(),

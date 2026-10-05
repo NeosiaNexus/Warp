@@ -18,9 +18,6 @@ package dev.warp.proxy.connection;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
-import dev.warp.protocol.compress.JavaCompressor;
-import dev.warp.protocol.netty.CompressionDecoder;
-import dev.warp.protocol.netty.CompressionEncoder;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.handshake.Handshake;
@@ -36,9 +33,10 @@ import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.login.SetCompression;
 
 import java.net.InetSocketAddress;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.Deflater;
 
-import io.netty.channel.ChannelPipeline;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -56,6 +54,13 @@ import org.slf4j.LoggerFactory;
 final class BackendLoginSessionHandler implements SessionHandler {
 
   private static final Logger logger = LoggerFactory.getLogger(BackendLoginSessionHandler.class);
+
+  /**
+   * Backends already warned about compression settings that defeat passthrough — logged once per
+   * address for the lifetime of the proxy, not once per login.
+   */
+  private static final Set<InetSocketAddress> COMPRESSION_ADVICE_GIVEN =
+      ConcurrentHashMap.newKeySet();
 
   private final ConnectedPlayer player;
   private final MinecraftConnection backendConnection;
@@ -134,17 +139,48 @@ final class BackendLoginSessionHandler implements SessionHandler {
 
   private void handleSetCompression(SetCompression packet) {
     int threshold = packet.threshold();
-    ChannelPipeline pipeline = backendConnection.channel().pipeline();
+    if (threshold < 0) {
+      return; // vanilla never sends a negative threshold; treat it as "stay uncompressed"
+    }
+    ServerLoginContext context = player.loginContext();
+    backendConnection.enableCompression(
+        threshold, Deflater.DEFAULT_COMPRESSION, true, context.compressionPassthrough());
 
-    pipeline.addBefore(
-        ServerChannelInitializer.MINECRAFT_DECODER,
-        ServerChannelInitializer.COMPRESSION_DECODER,
-        new CompressionDecoder(threshold, new JavaCompressor(Deflater.DEFAULT_COMPRESSION)));
+    int playerThreshold = context.compressionThreshold();
+    if (context.compressionPassthrough()
+        && playerThreshold >= 0
+        && threshold != playerThreshold
+        && COMPRESSION_ADVICE_GIVEN.add(serverAddress)) {
+      logger.warn(
+          "Backend {} compresses packets from {} bytes but players use {}: packets between the two"
+              + " thresholds are re-encoded instead of forwarded as-is. Set"
+              + " network-compression-threshold={} on the backend for full compression"
+              + " passthrough.",
+          serverAddress,
+          threshold,
+          playerThreshold,
+          playerThreshold);
+    }
+  }
 
-    pipeline.replace(
-        ServerChannelInitializer.FRAME_ENCODER,
-        ServerChannelInitializer.COMPRESSION_ENCODER,
-        new CompressionEncoder(threshold, new JavaCompressor(Deflater.DEFAULT_COMPRESSION)));
+  /**
+   * Warns once per backend when it sends uncompressed packets to players who receive compressed
+   * ones: the proxy then has to compress every large packet itself — the single most expensive
+   * thing a proxy can do — instead of forwarding the backend's compressed bytes.
+   */
+  private void adviseIfBackendUncompressed() {
+    ServerLoginContext context = player.loginContext();
+    if (context.compressionPassthrough()
+        && context.compressionThreshold() >= 0
+        && backendConnection.decoder().decompressor() == null
+        && COMPRESSION_ADVICE_GIVEN.add(serverAddress)) {
+      logger.warn(
+          "Backend {} has compression disabled, so Warp must compress its traffic for every player."
+              + " Set network-compression-threshold={} on the backend: Warp then forwards its"
+              + " compressed packets without recompressing them.",
+          serverAddress,
+          context.compressionThreshold());
+    }
   }
 
   private void handleLoginPluginRequest(LoginPluginRequest request) {
@@ -162,6 +198,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
   @SuppressWarnings("UnusedVariable")
   private void handleLoginSuccess(LoginSuccess loginSuccess) {
     ProtocolVersion version = player.protocolVersion();
+    adviseIfBackendUncompressed();
 
     if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
       // Send LoginAcknowledged and transition to CONFIGURATION.

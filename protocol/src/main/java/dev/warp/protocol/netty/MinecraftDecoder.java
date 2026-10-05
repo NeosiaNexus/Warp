@@ -19,6 +19,8 @@ package dev.warp.protocol.netty;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.VarInt;
+import dev.warp.protocol.compress.DeflatePeek;
+import dev.warp.protocol.compress.FrameDecompressor;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketCodec;
 import dev.warp.protocol.packet.PacketDirection;
@@ -34,36 +36,43 @@ import io.netty.handler.codec.MessageToMessageDecoder;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Decodes framed Minecraft protocol buffers into typed {@link Packet} objects, or passes
- * unregistered packets through as raw {@link ByteBuf} for blind forwarding.
+ * Turns complete wire frames into typed {@link Packet}s for the few packets the proxy inspects, and
+ * passes every other frame through <b>untouched — compressed or not</b>.
  *
- * <p>This handler sits after {@link FrameDecoder} and (optionally) {@link CompressionDecoder} in
- * the inbound pipeline. Each input {@link ByteBuf} contains a complete, decompressed packet: {@code
- * [VarInt: Packet ID][Payload]}.
+ * <p>Sits directly after {@link FrameDecoder}, whose frames carry their length prefix. When the
+ * connection uses compression ({@link #enableCompression}), this handler also owns decompression,
+ * because the decision it exists to make — inspect or forward? — needs the packet ID, and a
+ * compressed frame hides the ID inside its zlib stream.
  *
- * <h3>Blind forwarding (zero allocation)</h3>
+ * <h3>Per-frame decision</h3>
  *
- * <p>When a packet ID has no registered codec (i.e. {@link PacketRegistry#lookup} returns {@code
- * null}), the entire buffer — including the packet ID bytes — is forwarded as a retained slice. No
- * wrapper object is allocated. Downstream, {@link MinecraftEncoder} extends {@link
- * io.netty.handler.codec.MessageToByteEncoder MessageToByteEncoder&lt;Packet&gt;} and will
- * naturally bypass raw {@link ByteBuf} messages via Netty's type dispatch. This gives zero-cost
- * passthrough for the ~90% of PLAY-state packets the proxy does not inspect.
+ * <ol>
+ *   <li>Read the packet ID: directly for uncompressed frames; with {@link DeflatePeek} for
+ *       compressed ones (no inflation), or by inflating when the frame must be verified first.
+ *   <li>If the registry has a decode codec for that ID in the current state and version, decode it
+ *       (inflating if needed) and emit the {@link Packet}.
+ *   <li>Otherwise emit the <b>original frame</b> as a {@link ByteBuf} — length prefix, Data Length
+ *       and payload exactly as received — so the relay can write it to the other connection
+ *       verbatim. No inflate, no deflate, no copy, no allocation.
+ * </ol>
  *
- * <h3>Improvements over Velocity</h3>
+ * <h3>Trusted vs. untrusted peers</h3>
+ *
+ * <p>Frames from a backend are peeked and forwarded without inflation (see {@link
+ * #enableCompression}). Frames from a player are always inflated before being forwarded, so the
+ * proxy — not the backend — absorbs malformed or lying streams, and the decompression budget
+ * applies to them. Serverbound compressed traffic is rare and small, so this costs little; the
+ * original compressed bytes are still forwarded when the backend accepts them, skipping the
+ * re-deflate.
+ *
+ * <h3>Other guarantees</h3>
  *
  * <ul>
- *   <li><b>Boundary validation</b> — after every successful decode, the handler verifies that the
- *       codec consumed <em>all</em> bytes in the buffer. Trailing bytes indicate a codec bug or
- *       malformed packet and throw immediately, preventing silent stream corruption.
- *   <li><b>Dead-channel guard</b> — skips decode if the channel is no longer active, avoiding
- *       wasted CPU on stale connections (same defense as {@link FrameDecoder}).
- *   <li><b>Zero-allocation blind forwarding</b> — Velocity wraps unknown packets in an object; Warp
- *       fires the raw {@link ByteBuf} directly, producing zero garbage on the hot path.
- *   <li><b>Cached registry</b> — the {@link PacketRegistry} reference is cached and recomputed only
- *       on state transitions, eliminating two {@code HashMap.get()} calls per packet.
- *   <li><b>Rich exception context</b> — every error includes the packet ID (hex), packet class
- *       name, and current protocol state for fast production debugging.
+ *   <li><b>Boundary validation</b> — a decoded packet must consume its whole payload.
+ *   <li><b>Dead-channel guard</b> — frames still queued after the channel closed are dropped.
+ *   <li><b>O(1) lookup</b> — packet ID → codec is a plain array access, recomputed only on state or
+ *       version changes.
+ *   <li><b>Rich exception context</b> — packet ID, packet class and protocol state in every error.
  * </ul>
  */
 public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
@@ -89,11 +98,22 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
   private ProtocolState state;
   private ProtocolVersion version;
 
-  /**
-   * Cached registry for the current (state, direction) pair. Recomputed on {@link #setState} to
-   * avoid {@link StateRegistry#get} + direction lookup on every packet.
-   */
+  /** Registry for the current (state, direction) pair, recomputed on {@link #setState}. */
   private PacketRegistry registry;
+
+  /** Compression state, or {@code null} while the connection is uncompressed. */
+  private @Nullable FrameDecompressor decompressor;
+
+  /** Whether compressed frames are peeked (trusted peer) rather than inflated before forwarding. */
+  private boolean peekCompressedFrames;
+
+  /**
+   * The last frame forwarded after being inflated anyway, and its inflated packet bytes — kept
+   * until the next frame so a relay that must re-encode it does not inflate it a second time.
+   */
+  private @Nullable ByteBuf inflatedFrame;
+
+  private @Nullable ByteBuf inflatedPacket;
 
   // ---------------------------------------------------------------------------
   // Constructor
@@ -120,34 +140,116 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
   // ---------------------------------------------------------------------------
 
   @Override
-  protected void decode(ChannelHandlerContext ctx, ByteBuf buf, List<Object> out) {
-    // Dead-channel guard: short-circuit if the connection closed but a queued buffer
-    // is still being drained. Unlike FrameDecoder (which must skip cumulated bytes),
-    // MessageToMessageDecoder receives discrete messages — simply returning is safe;
-    // the framework releases the input buffer.
+  protected void decode(ChannelHandlerContext ctx, ByteBuf frame, List<Object> out) {
+    releaseInflated(); // a frame that was not re-encoded by now never will be
+
+    // Dead-channel guard: a closed connection may still have queued frames; drop them.
     if (!ctx.channel().isActive()) {
       return;
     }
 
-    int readerStart = buf.readerIndex();
-    int packetId = VarInt.read(buf);
-
-    if (packetId < 0) {
-      throw NEGATIVE_PACKET_ID;
-    }
-
-    // O(1) lookup — registry is cached, version comparison is array-indexed.
-    @Nullable PacketCodec<?> codec = registry.lookup(version, packetId);
-
-    if (codec == null) {
-      // Blind forwarding: rewind to include the packet ID bytes, then forward the
-      // entire buffer as a zero-copy retained slice. No wrapper object is allocated.
-      buf.readerIndex(readerStart);
-      out.add(buf.readRetainedSlice(buf.readableBytes()));
+    VarInt.skip(frame); // outer length prefix — the frame is complete by construction
+    FrameDecompressor inflater = decompressor;
+    if (inflater == null) {
+      decodeUncompressed(frame, out);
       return;
     }
 
-    // Deserialize the known packet.
+    int dataLength = VarInt.read(frame);
+    if (dataLength == 0) {
+      decodeUncompressed(frame, out);
+      return;
+    }
+
+    inflater.checkHeader(dataLength, frame.readableBytes());
+    if (peekCompressedFrames) {
+      int packetId = inflater.peekPacketId(frame);
+      if (packetId != DeflatePeek.UNKNOWN && registry.lookup(version, packetId) == null) {
+        forward(frame, out);
+        return;
+      }
+    }
+
+    ByteBuf packet = inflater.inflate(ctx.alloc(), frame, dataLength);
+    boolean handedOver = false;
+    try {
+      int packetId = readPacketId(packet);
+      PacketCodec<?> codec = registry.lookup(version, packetId);
+      if (codec == null) {
+        // Verified, but not inspected: forward the original compressed bytes, and keep the
+        // inflated ones in case the other connection cannot take the frame as it is.
+        inflatedFrame = frame;
+        inflatedPacket = packet.readerIndex(0);
+        handedOver = true;
+        forward(frame, out);
+        return;
+      }
+      out.add(decodePacket(codec, packetId, packet));
+    } finally {
+      if (!handedOver) {
+        packet.release();
+      }
+    }
+  }
+
+  /**
+   * Hands over the inflated packet bytes of {@code frame}, if this decoder inflated that exact
+   * frame before forwarding it. The identity check means a mismatch can only cost a second inflate,
+   * never deliver another frame's bytes.
+   *
+   * <p>Only valid while {@code frame} is being dispatched: the bytes are dropped when the next
+   * frame is decoded. The proxy forwards synchronously from its pipeline tail, so this always holds
+   * there.
+   *
+   * @param frame a frame this decoder emitted
+   * @return {@code [Packet ID][Payload]} owned by the caller, or {@code null}
+   */
+  public @Nullable ByteBuf takeInflatedPacket(ByteBuf frame) {
+    ByteBuf packet = inflatedPacket;
+    if (packet == null || frame != inflatedFrame) {
+      return null;
+    }
+    inflatedFrame = null;
+    inflatedPacket = null;
+    return packet;
+  }
+
+  private void releaseInflated() {
+    ByteBuf packet = inflatedPacket;
+    if (packet != null) {
+      inflatedFrame = null;
+      inflatedPacket = null;
+      packet.release();
+    }
+  }
+
+  /** Decodes or forwards a frame whose packet bytes start at the reader index, uncompressed. */
+  private void decodeUncompressed(ByteBuf frame, List<Object> out) {
+    int packetId = readPacketId(frame);
+    PacketCodec<?> codec = registry.lookup(version, packetId);
+    if (codec == null) {
+      forward(frame, out);
+      return;
+    }
+    out.add(decodePacket(codec, packetId, frame));
+  }
+
+  /** Emits the complete original frame, length prefix included, for verbatim forwarding. */
+  private static void forward(ByteBuf frame, List<Object> out) {
+    frame.readerIndex(0);
+    // The base class releases the input after decode(); the retain hands ownership downstream.
+    out.add(frame.retain());
+  }
+
+  private static int readPacketId(ByteBuf buf) {
+    int packetId = VarInt.read(buf);
+    if (packetId < 0) {
+      throw NEGATIVE_PACKET_ID;
+    }
+    return packetId;
+  }
+
+  private Packet decodePacket(PacketCodec<?> codec, int packetId, ByteBuf buf) {
     Packet packet;
     try {
       packet = codec.decode(buf, version);
@@ -155,10 +257,8 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
       throw new DecoderException(
           "Failed to decode packet 0x" + Integer.toHexString(packetId) + " in state " + state, e);
     }
-
-    // Boundary validation: verify the codec consumed every byte. Trailing bytes mean
-    // either a buggy codec or a malformed packet — continuing would silently desync
-    // the stream. Velocity does not perform this check.
+    // Boundary validation: trailing bytes mean a buggy codec or a malformed packet — continuing
+    // would silently desync the stream. Velocity does not perform this check.
     if (buf.isReadable()) {
       throw new DecoderException(
           "Packet 0x"
@@ -170,13 +270,54 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
               + " trailing bytes in state "
               + state);
     }
+    return packet;
+  }
 
-    out.add(packet);
+  // ---------------------------------------------------------------------------
+  // Lifecycle
+  // ---------------------------------------------------------------------------
+
+  @Override
+  public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
+    releaseInflated();
+    FrameDecompressor inflater = decompressor;
+    if (inflater != null) {
+      decompressor = null;
+      inflater.close();
+    }
+    super.handlerRemoved(ctx);
   }
 
   // ---------------------------------------------------------------------------
   // State management — called from the event loop thread during transitions
   // ---------------------------------------------------------------------------
+
+  /**
+   * Switches this connection to compressed frames ({@code [Data Length][payload]} after the length
+   * prefix), effective from the next frame.
+   *
+   * @param decompressor validates and inflates compressed payloads; closed with this handler
+   * @param peekCompressedFrames {@code true} to forward uninspected compressed frames without
+   *     inflating them — only for trusted peers (backends); {@code false} to inflate, and thereby
+   *     verify, every compressed frame before forwarding it
+   */
+  public void enableCompression(FrameDecompressor decompressor, boolean peekCompressedFrames) {
+    FrameDecompressor previous = this.decompressor;
+    this.decompressor = decompressor;
+    this.peekCompressedFrames = peekCompressedFrames;
+    if (previous != null) {
+      previous.close();
+    }
+  }
+
+  /**
+   * Returns the decompressor of this connection, if compression is enabled.
+   *
+   * @return the decompressor, or {@code null} while uncompressed
+   */
+  public @Nullable FrameDecompressor decompressor() {
+    return decompressor;
+  }
 
   /**
    * Updates the protocol state and recomputes the cached registry.

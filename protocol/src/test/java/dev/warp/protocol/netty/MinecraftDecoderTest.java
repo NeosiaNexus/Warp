@@ -28,6 +28,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.VarInt;
+import dev.warp.protocol.compress.FrameDecompressor;
+import dev.warp.protocol.compress.JavaCompressor;
+import dev.warp.protocol.compress.PacketCompressor;
+import dev.warp.protocol.compress.ZlibStreams;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.handshake.Handshake;
@@ -37,8 +41,10 @@ import dev.warp.protocol.packet.status.StatusRequest;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
+import java.util.zip.DataFormatException;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.DecoderException;
@@ -77,7 +83,7 @@ class MinecraftDecoderTest {
       buf.writeShort(25565); // port
       VarInt.write(buf, 2); // next state = login
 
-      assertTrue(ch.writeInbound(buf));
+      assertTrue(ch.writeInbound(Frames.framed(buf)));
 
       Object out = ch.readInbound();
       assertInstanceOf(Handshake.class, out);
@@ -103,7 +109,7 @@ class MinecraftDecoderTest {
       ByteBuf buf = Unpooled.buffer();
       VarInt.write(buf, 0x00);
 
-      assertTrue(ch.writeInbound(buf));
+      assertTrue(ch.writeInbound(Frames.framed(buf)));
 
       Object out = ch.readInbound();
       assertInstanceOf(StatusRequest.class, out);
@@ -125,7 +131,7 @@ class MinecraftDecoderTest {
       VarInt.write(buf, 0x27);
       buf.writeLong(0xDEADBEEFCAFEBABEL);
 
-      assertTrue(ch.writeInbound(buf));
+      assertTrue(ch.writeInbound(Frames.framed(buf)));
 
       Object out = ch.readInbound();
       assertInstanceOf(KeepAlive.class, out);
@@ -147,7 +153,7 @@ class MinecraftDecoderTest {
       VarInt.write(buf, 0x00);
       VarInt.write(buf, 42);
 
-      assertTrue(ch.writeInbound(buf));
+      assertTrue(ch.writeInbound(Frames.framed(buf)));
 
       Object out = ch.readInbound();
       assertInstanceOf(KeepAlive.class, out);
@@ -168,7 +174,7 @@ class MinecraftDecoderTest {
       ByteBuf buf = Unpooled.buffer();
       VarInt.write(buf, 0x00);
 
-      assertTrue(ch.writeInbound(buf));
+      assertTrue(ch.writeInbound(Frames.framed(buf)));
 
       Object out = ch.readInbound();
       assertInstanceOf(BundleDelimiter.class, out);
@@ -186,7 +192,7 @@ class MinecraftDecoderTest {
   class BlindForwarding {
 
     @Test
-    @DisplayName("should forward unregistered packet ID as raw ByteBuf in PLAY state")
+    @DisplayName("should forward an unregistered packet as its complete frame in PLAY state")
     void unregisteredPacketId() {
       MinecraftDecoder decoder =
           new MinecraftDecoder(
@@ -201,7 +207,7 @@ class MinecraftDecoderTest {
 
       int expectedSize = buf.readableBytes();
 
-      assertTrue(ch.writeInbound(buf));
+      assertTrue(ch.writeInbound(Frames.framed(buf)));
 
       // Output should be a raw ByteBuf, NOT a Packet
       Object out = ch.readInbound();
@@ -209,7 +215,8 @@ class MinecraftDecoderTest {
       assertFalse(out instanceof Packet);
 
       ByteBuf forwarded = (ByteBuf) out;
-      // Should contain the full buffer: packet ID VarInt + payload
+      // The complete frame: length prefix, then packet ID VarInt + payload
+      assertEquals(expectedSize, VarInt.read(forwarded));
       assertEquals(expectedSize, forwarded.readableBytes());
 
       // Verify contents: packet ID 0x7F is 1 byte, then the payload
@@ -241,12 +248,13 @@ class MinecraftDecoderTest {
 
       int expectedSize = buf.readableBytes();
 
-      assertTrue(ch.writeInbound(buf));
+      assertTrue(ch.writeInbound(Frames.framed(buf)));
 
       Object out = ch.readInbound();
       assertInstanceOf(ByteBuf.class, out);
 
       ByteBuf forwarded = (ByteBuf) out;
+      assertEquals(expectedSize, VarInt.read(forwarded));
       assertEquals(expectedSize, forwarded.readableBytes());
       forwarded.release();
 
@@ -265,16 +273,195 @@ class MinecraftDecoderTest {
       ByteBuf buf = Unpooled.buffer();
       VarInt.write(buf, 0x7E);
 
-      assertTrue(ch.writeInbound(buf));
+      assertTrue(ch.writeInbound(Frames.framed(buf)));
 
       Object out = ch.readInbound();
       assertInstanceOf(ByteBuf.class, out);
 
       ByteBuf forwarded = (ByteBuf) out;
+      assertEquals(1, VarInt.read(forwarded)); // length prefix
       assertEquals(1, forwarded.readableBytes()); // just the VarInt packet ID
       forwarded.release();
 
       assertFalse(ch.finish());
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Compressed connections
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("compressed connections")
+  class CompressedConnections {
+
+    private static final int THRESHOLD = 256;
+    private static final int UNREGISTERED_ID = 0x7F;
+    private static final int KEEP_ALIVE_ID_1_21_4 = 0x27;
+
+    @Test
+    @DisplayName(
+        "should forward an uninspected compressed frame byte for byte without inflating it")
+    void forwardsWithoutInflating() {
+      EmbeddedChannel ch =
+          compressedChannel(PacketDirection.CLIENTBOUND, new RefusingCompressor(), true);
+      ByteBuf frame = Frames.compressed(Frames.packet(UNREGISTERED_ID, new byte[2000]), 6);
+      byte[] wire = ByteBufUtil.getBytes(frame);
+
+      assertTrue(ch.writeInbound(frame));
+
+      assertArrayEquals(wire, Frames.drain(ch.readInbound()));
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName(
+        "should verify untrusted frames by inflating them, then forward the original bytes")
+    void verifiesUntrustedFrames() {
+      CountingCompressor compressor = new CountingCompressor();
+      EmbeddedChannel ch = compressedChannel(PacketDirection.SERVERBOUND, compressor, false);
+      ByteBuf frame = Frames.compressed(Frames.packet(UNREGISTERED_ID, new byte[2000]), 6);
+      byte[] wire = ByteBufUtil.getBytes(frame);
+
+      assertTrue(ch.writeInbound(frame));
+
+      assertArrayEquals(wire, Frames.drain(ch.readInbound()));
+      assertEquals(1, compressor.inflations);
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should inflate and decode a compressed packet the proxy inspects")
+    void decodesInspectedPacket() {
+      EmbeddedChannel ch =
+          compressedChannel(PacketDirection.CLIENTBOUND, new CountingCompressor(), true);
+      byte[] keepAlive = Frames.packet(KEEP_ALIVE_ID_1_21_4, new byte[] {0, 0, 0, 0, 0, 0, 0, 42});
+
+      assertTrue(ch.writeInbound(Frames.compressed(keepAlive, 6)));
+
+      Object out = ch.readInbound();
+      assertInstanceOf(KeepAlive.class, out);
+      assertEquals(42L, ((KeepAlive) out).id());
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should inflate when the packet id cannot be peeked, and still forward verbatim")
+    void inflatesWhenPeekDeclines() {
+      CountingCompressor compressor = new CountingCompressor();
+      EmbeddedChannel ch = compressedChannel(PacketDirection.CLIENTBOUND, compressor, true);
+      byte[] packet = Frames.packet(UNREGISTERED_ID, new byte[300]);
+      ByteBuf frame =
+          Frames.compressedClaiming(packet.length, ZlibStreams.withEmptyStoredBlocks(packet, 16));
+      byte[] wire = ByteBufUtil.getBytes(frame);
+
+      assertTrue(ch.writeInbound(frame));
+
+      assertArrayEquals(wire, Frames.drain(ch.readInbound()));
+      assertEquals(1, compressor.inflations);
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should forward uncompressed frames of a compressed connection verbatim")
+    void forwardsUncompressedFrames() {
+      EmbeddedChannel ch =
+          compressedChannel(PacketDirection.CLIENTBOUND, new RefusingCompressor(), true);
+      ByteBuf frame = Frames.uncompressed(Frames.packet(UNREGISTERED_ID, new byte[] {1, 2, 3}));
+      byte[] wire = ByteBufUtil.getBytes(frame);
+
+      assertTrue(ch.writeInbound(frame));
+
+      assertArrayEquals(wire, Frames.drain(ch.readInbound()));
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should reject a frame declaring more than DEFLATE can produce")
+    void rejectsImpossibleDeclaredSize() {
+      EmbeddedChannel ch =
+          compressedChannel(PacketDirection.CLIENTBOUND, new RefusingCompressor(), true);
+      byte[] tiny = Frames.zlib(new byte[300], 6);
+
+      assertThrows(
+          DecoderException.class,
+          () -> ch.writeInbound(Frames.compressedClaiming(8_000_000, tiny)));
+      ch.finishAndReleaseAll();
+    }
+
+    private static EmbeddedChannel compressedChannel(
+        PacketDirection direction, PacketCompressor compressor, boolean peek) {
+      MinecraftDecoder decoder =
+          new MinecraftDecoder(direction, ProtocolVersion.MINECRAFT_1_21_4, ProtocolState.PLAY);
+      decoder.enableCompression(
+          new FrameDecompressor(
+              THRESHOLD,
+              direction == PacketDirection.SERVERBOUND,
+              FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE,
+              compressor),
+          peek);
+      return new EmbeddedChannel(decoder);
+    }
+  }
+
+  @Nested
+  @DisplayName("encode-only packets")
+  class EncodeOnlyPackets {
+
+    @Test
+    @DisplayName("should forward encode-only packets instead of decoding them")
+    void forwardsEncodeOnlyPackets() {
+      MinecraftDecoder decoder =
+          new MinecraftDecoder(
+              PacketDirection.CLIENTBOUND, ProtocolVersion.MINECRAFT_1_21_4, ProtocolState.PLAY);
+      EmbeddedChannel ch = new EmbeddedChannel(decoder);
+      // System chat (0x73 since 1.21.2): the proxy sends it, but never needs to read it.
+      ByteBuf frame = Frames.plain(Frames.packet(0x73, new byte[] {0x08, 0x00, 0x01, 0x41, 0x00}));
+      byte[] wire = ByteBufUtil.getBytes(frame);
+
+      assertTrue(ch.writeInbound(frame));
+
+      assertArrayEquals(wire, Frames.drain(ch.readInbound()));
+      assertFalse(ch.finish());
+    }
+  }
+
+  /** Fails the test if the decoder inflates anything. */
+  private static final class RefusingCompressor implements PacketCompressor {
+    @Override
+    public void inflate(ByteBuf source, ByteBuf destination, int uncompressedSize) {
+      throw new AssertionError("frame must be forwarded without inflating");
+    }
+
+    @Override
+    public void deflate(ByteBuf source, ByteBuf destination) {
+      throw new AssertionError("decoder must not deflate");
+    }
+
+    @Override
+    public void close() {}
+  }
+
+  /** Counts inflations, delegating to the JDK's zlib. */
+  private static final class CountingCompressor implements PacketCompressor {
+    private final JavaCompressor delegate = new JavaCompressor(6);
+    private int inflations;
+
+    @Override
+    public void inflate(ByteBuf source, ByteBuf destination, int uncompressedSize)
+        throws DataFormatException {
+      inflations++;
+      delegate.inflate(source, destination, uncompressedSize);
+    }
+
+    @Override
+    public void deflate(ByteBuf source, ByteBuf destination) throws DataFormatException {
+      delegate.deflate(source, destination);
+    }
+
+    @Override
+    public void close() {
+      delegate.close();
     }
   }
 
@@ -299,7 +486,8 @@ class MinecraftDecoderTest {
       VarInt.write(buf, 0x00);
       buf.writeByte(0xFF); // trailing byte — should trigger validation failure
 
-      DecoderException ex = assertThrows(DecoderException.class, () -> ch.writeInbound(buf));
+      DecoderException ex =
+          assertThrows(DecoderException.class, () -> ch.writeInbound(Frames.framed(buf)));
       String msg = Objects.requireNonNull(ex.getMessage());
       assertTrue(msg.contains("trailing bytes"));
       assertTrue(msg.contains("StatusRequest"));
@@ -319,7 +507,7 @@ class MinecraftDecoderTest {
       ByteBuf buf = Unpooled.buffer();
       VarInt.write(buf, 0x00);
 
-      assertTrue(ch.writeInbound(buf));
+      assertTrue(ch.writeInbound(Frames.framed(buf)));
       assertInstanceOf(StatusRequest.class, ch.readInbound());
 
       assertFalse(ch.finish());
@@ -353,7 +541,7 @@ class MinecraftDecoderTest {
       handshakeBuf.writeShort(25565);
       VarInt.write(handshakeBuf, 1); // next state = status
 
-      assertTrue(ch.writeInbound(handshakeBuf));
+      assertTrue(ch.writeInbound(Frames.framed(handshakeBuf)));
       assertInstanceOf(Handshake.class, ch.readInbound());
 
       // Switch to STATUS state
@@ -364,7 +552,7 @@ class MinecraftDecoderTest {
       ByteBuf statusBuf = Unpooled.buffer();
       VarInt.write(statusBuf, 0x00);
 
-      assertTrue(ch.writeInbound(statusBuf));
+      assertTrue(ch.writeInbound(Frames.framed(statusBuf)));
       assertInstanceOf(StatusRequest.class, ch.readInbound());
 
       assertFalse(ch.finish());
@@ -418,13 +606,14 @@ class MinecraftDecoderTest {
 
       // writeInbound may return false or throw depending on Netty version,
       // but no Packet should appear in the inbound queue.
+      ByteBuf frame = Frames.framed(buf);
       try {
-        ch.writeInbound(buf);
+        ch.writeInbound(frame);
       } catch (Exception ignored) {
-        // Channel is closed — write may fail. Ensure the buffer is released to
+        // Channel is closed — write may fail. Ensure the frame is released to
         // prevent leaks if the pipeline did not process it.
-        if (buf.refCnt() > 0) {
-          buf.release();
+        if (frame.refCnt() > 0) {
+          frame.release();
         }
       }
 
@@ -452,7 +641,7 @@ class MinecraftDecoderTest {
       ByteBuf buf = Unpooled.buffer();
       VarInt.write(buf, -1);
 
-      assertThrows(DecoderException.class, () -> ch.writeInbound(buf));
+      assertThrows(DecoderException.class, () -> ch.writeInbound(Frames.framed(buf)));
       ch.finish();
     }
 
@@ -472,7 +661,8 @@ class MinecraftDecoderTest {
       VarInt.write(buf, 0x00);
       // no payload — truncated
 
-      DecoderException ex = assertThrows(DecoderException.class, () -> ch.writeInbound(buf));
+      DecoderException ex =
+          assertThrows(DecoderException.class, () -> ch.writeInbound(Frames.framed(buf)));
       String msg = Objects.requireNonNull(ex.getMessage());
       assertTrue(msg.contains("0x0"));
       assertTrue(msg.contains("HANDSHAKE"));
@@ -512,7 +702,7 @@ class MinecraftDecoderTest {
               ProtocolVersion.MINECRAFT_1_21_4,
               ProtocolState.HANDSHAKE);
       EmbeddedChannel decoderCh = new EmbeddedChannel(decoder);
-      assertTrue(decoderCh.writeInbound(wire));
+      assertTrue(decoderCh.writeInbound(Frames.framed(wire)));
 
       Object out = decoderCh.readInbound();
       assertInstanceOf(Handshake.class, out);
@@ -550,7 +740,7 @@ class MinecraftDecoderTest {
       MinecraftDecoder decoder =
           new MinecraftDecoder(PacketDirection.CLIENTBOUND, version, ProtocolState.PLAY);
       EmbeddedChannel decoderCh = new EmbeddedChannel(decoder);
-      assertTrue(decoderCh.writeInbound(wire));
+      assertTrue(decoderCh.writeInbound(Frames.framed(wire)));
 
       Object out = decoderCh.readInbound();
       assertInstanceOf(KeepAlive.class, out);

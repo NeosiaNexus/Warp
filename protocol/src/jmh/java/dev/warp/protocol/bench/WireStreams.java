@@ -17,6 +17,7 @@
 package dev.warp.protocol.bench;
 
 import dev.warp.protocol.codec.VarInt;
+import dev.warp.protocol.compress.FrameDecompressor;
 import dev.warp.protocol.compress.JavaCompressor;
 import dev.warp.protocol.netty.CipherDecoder;
 import dev.warp.protocol.netty.CompressionDecoder;
@@ -119,14 +120,23 @@ public final class WireStreams {
     }
     channel.pipeline().addLast(new FrameDecoder());
     if (threshold >= 0) {
+      // A 1.17.1+ client: no below-threshold validation.
       channel
           .pipeline()
           .addLast(
-              new CompressionDecoder(threshold, new JavaCompressor(Deflater.DEFAULT_COMPRESSION)));
+              new CompressionDecoder(
+                  new FrameDecompressor(
+                      threshold,
+                      false,
+                      FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE,
+                      new JavaCompressor(Deflater.DEFAULT_COMPRESSION))));
     }
     channel.writeInbound(stream);
     List<ByteBuf> packets = new ArrayList<>();
     for (ByteBuf packet = channel.readInbound(); packet != null; packet = channel.readInbound()) {
+      if (threshold < 0) {
+        VarInt.skip(packet); // frames carry their length prefix
+      }
       packets.add(packet);
     }
     channel.finishAndReleaseAll();

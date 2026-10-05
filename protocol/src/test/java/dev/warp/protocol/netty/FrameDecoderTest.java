@@ -29,6 +29,7 @@ import dev.warp.protocol.codec.VarInt;
 import java.util.Arrays;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.DecoderException;
@@ -57,7 +58,7 @@ class FrameDecoderTest {
       in.writeBytes(payload);
 
       assertTrue(ch.writeInbound(in));
-      assertContentEquals(payload, ch.readInbound());
+      assertFrame(payload, ch.readInbound());
       assertNull(ch.readInbound());
       assertFalse(ch.finish());
     }
@@ -73,7 +74,7 @@ class FrameDecoderTest {
       in.writeBytes(payload);
 
       assertTrue(ch.writeInbound(in));
-      assertContentEquals(payload, ch.readInbound());
+      assertFrame(payload, ch.readInbound());
       assertFalse(ch.finish());
     }
 
@@ -88,10 +89,7 @@ class FrameDecoderTest {
 
       assertTrue(ch.writeInbound(in));
 
-      ByteBuf out = ch.readInbound();
-      assertNotNull(out);
-      assertEquals(size, out.readableBytes());
-      out.release();
+      assertFrameLength(size, ch.readInbound());
       assertFalse(ch.finish());
     }
 
@@ -110,8 +108,8 @@ class FrameDecoderTest {
 
       assertTrue(ch.writeInbound(in));
 
-      assertContentEquals(p1, ch.readInbound());
-      assertContentEquals(p2, ch.readInbound());
+      assertFrame(p1, ch.readInbound());
+      assertFrame(p2, ch.readInbound());
       assertNull(ch.readInbound());
       assertFalse(ch.finish());
     }
@@ -127,7 +125,7 @@ class FrameDecoderTest {
       in.writeBytes(payload);
 
       assertTrue(ch.writeInbound(in));
-      assertContentEquals(payload, ch.readInbound());
+      assertFrame(payload, ch.readInbound());
       assertNull(ch.readInbound());
       assertFalse(ch.finish());
     }
@@ -143,10 +141,51 @@ class FrameDecoderTest {
 
       assertTrue(ch.writeInbound(in));
 
-      ByteBuf out = ch.readInbound();
-      assertNotNull(out);
-      assertEquals(size, out.readableBytes());
-      out.release();
+      assertFrameLength(size, ch.readInbound());
+      assertFalse(ch.finish());
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Wire frame output
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("wire frame output")
+  class WireFrameOutput {
+
+    @Test
+    @DisplayName("should emit complete frames positioned at their length prefix")
+    void emitsCompleteFrames() {
+      EmbeddedChannel ch = new EmbeddedChannel(new FrameDecoder());
+      ByteBuf in = Unpooled.buffer();
+      in.writeByte(3).writeBytes(new byte[] {7, 8, 9});
+      in.writeByte(1).writeByte(42);
+
+      assertTrue(ch.writeInbound(in));
+
+      ByteBuf first = ch.readInbound();
+      assertEquals(0, first.readerIndex());
+      assertArrayEquals(new byte[] {3, 7, 8, 9}, ByteBufUtil.getBytes(first));
+      first.release();
+      ByteBuf second = ch.readInbound();
+      assertArrayEquals(new byte[] {1, 42}, ByteBufUtil.getBytes(second));
+      second.release();
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should keep padded length prefixes byte for byte (Minestom, Velocity)")
+    void keepsPaddedPrefix() {
+      EmbeddedChannel ch = new EmbeddedChannel(new FrameDecoder());
+      // Length 5 written as a padded 3-byte VarInt, as Minestom and Velocity do.
+      byte[] wire = {(byte) 0x85, (byte) 0x80, 0x00, 1, 2, 3, 4, 5};
+
+      assertTrue(ch.writeInbound(Unpooled.wrappedBuffer(wire)));
+
+      ByteBuf frame = ch.readInbound();
+      assertArrayEquals(wire, ByteBufUtil.getBytes(frame));
+      frame.release();
       assertFalse(ch.finish());
     }
   }
@@ -171,7 +210,7 @@ class FrameDecoderTest {
       // Total: 4 bytes → branchless path
 
       assertTrue(ch.writeInbound(in));
-      assertContentEquals(payload, ch.readInbound());
+      assertFrame(payload, ch.readInbound());
       assertFalse(ch.finish());
     }
 
@@ -202,10 +241,7 @@ class FrameDecoderTest {
       // Total 3 bytes → safe path (branchless requires ≥ 4)
 
       assertTrue(ch.writeInbound(in));
-      ByteBuf out = ch.readInbound();
-      assertNotNull(out);
-      assertEquals(2, out.readableBytes());
-      out.release();
+      assertFrameLength(2, ch.readInbound());
       assertFalse(ch.finish());
     }
   }
@@ -233,10 +269,7 @@ class FrameDecoderTest {
       part2.writeZero(128);
       assertTrue(ch.writeInbound(part2));
 
-      ByteBuf out = ch.readInbound();
-      assertNotNull(out);
-      assertEquals(128, out.readableBytes());
-      out.release();
+      assertFrameLength(128, ch.readInbound());
       assertFalse(ch.finish());
     }
 
@@ -255,10 +288,7 @@ class FrameDecoderTest {
       // Remaining 5 bytes
       assertTrue(ch.writeInbound(Unpooled.wrappedBuffer(new byte[5])));
 
-      ByteBuf out = ch.readInbound();
-      assertNotNull(out);
-      assertEquals(10, out.readableBytes());
-      out.release();
+      assertFrameLength(10, ch.readInbound());
       assertFalse(ch.finish());
     }
 
@@ -285,10 +315,7 @@ class FrameDecoderTest {
 
       varint.release();
 
-      ByteBuf out = ch.readInbound();
-      assertNotNull(out);
-      assertEquals(length, out.readableBytes());
-      out.release();
+      assertFrameLength(length, ch.readInbound());
       assertFalse(ch.finish());
     }
 
@@ -345,7 +372,7 @@ class FrameDecoderTest {
       ByteBuf wire = encoder.readOutbound();
 
       assertTrue(decoder.writeInbound(wire));
-      assertContentEquals(payload, decoder.readInbound());
+      assertFrame(payload, decoder.readInbound());
 
       assertFalse(encoder.finish());
       assertFalse(decoder.finish());
@@ -356,11 +383,21 @@ class FrameDecoderTest {
   // Helpers
   // ---------------------------------------------------------------------------
 
-  private static void assertContentEquals(byte[] expected, ByteBuf actual) {
-    assertNotNull(actual);
-    byte[] bytes = new byte[actual.readableBytes()];
-    actual.readBytes(bytes);
+  /** Asserts a complete frame: its length prefix, then {@code expected} as the payload. */
+  private static void assertFrame(byte[] expected, ByteBuf frame) {
+    assertNotNull(frame);
+    assertEquals(expected.length, VarInt.read(frame));
+    byte[] bytes = new byte[frame.readableBytes()];
+    frame.readBytes(bytes);
     assertArrayEquals(expected, bytes);
-    actual.release();
+    frame.release();
+  }
+
+  /** Asserts a complete frame whose length prefix and payload are both {@code payloadLength}. */
+  private static void assertFrameLength(int payloadLength, ByteBuf frame) {
+    assertNotNull(frame);
+    assertEquals(payloadLength, VarInt.read(frame));
+    assertEquals(payloadLength, frame.readableBytes());
+    frame.release();
   }
 }

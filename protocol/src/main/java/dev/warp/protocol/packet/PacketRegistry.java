@@ -30,23 +30,30 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>A registry is scoped to a single (state, direction) pair — for example, "Login Serverbound."
  * Instances are created via the {@link Builder}, which accepts version-range registrations and
- * pre-computes per-protocol-ID arrays for O(1) hot-path lookups.
+ * pre-computes per-protocol arrays for O(1), allocation-free hot-path lookups.
  *
- * <p>When {@link #lookup(ProtocolVersion, int)} returns {@code null}, the packet ID is unregistered
- * and the caller should treat the frame as opaque bytes (blind forwarding).
+ * <p>A registration is either <b>decoded</b> ({@link Builder#register}) — the proxy inspects the
+ * packet when it receives it — or <b>encode-only</b> ({@link Builder#registerEncodeOnly}) — the
+ * proxy can send it but forwards received copies untouched. Encoding and decoding needs differ: the
+ * proxy must be able to <em>write</em> a system chat message, but has no reason to <em>read</em>
+ * the thousands a busy server sends. Keeping the decoded set minimal is what lets every other frame
+ * be forwarded in its original (possibly compressed) form.
+ *
+ * <p>When {@link #lookup(ProtocolVersion, int)} returns {@code null}, the caller must treat the
+ * frame as opaque bytes (blind forwarding).
  */
 public final class PacketRegistry {
 
-  /** Protocol ID → array of codecs indexed by packet ID. Null entries = unknown packet. */
-  private final Map<Integer, @Nullable PacketCodec<?>[]> codecsByProtocol;
+  /** Protocol number → codecs indexed by packet ID, decoded registrations only. */
+  private final @Nullable PacketCodec<?>[] @Nullable [] decodeByProtocol;
 
-  /** Protocol ID → (packet class → packet ID). */
-  private final Map<Integer, Map<Class<? extends Packet>, Integer>> idsByProtocol;
+  /** Protocol number → (packet class → packet ID), all registrations. */
+  private final @Nullable Map<Class<? extends Packet>, Integer>[] idsByProtocol;
 
   private PacketRegistry(
-      Map<Integer, @Nullable PacketCodec<?>[]> codecsByProtocol,
-      Map<Integer, Map<Class<? extends Packet>, Integer>> idsByProtocol) {
-    this.codecsByProtocol = codecsByProtocol;
+      @Nullable PacketCodec<?>[] @Nullable [] decodeByProtocol,
+      @Nullable Map<Class<? extends Packet>, Integer>[] idsByProtocol) {
+    this.decodeByProtocol = decodeByProtocol;
     this.idsByProtocol = idsByProtocol;
   }
 
@@ -55,18 +62,21 @@ public final class PacketRegistry {
   // ---------------------------------------------------------------------------
 
   /**
-   * Looks up the codec for a packet ID at the given protocol version.
+   * Looks up the codec used to decode a received packet ID at the given protocol version.
    *
-   * <p>Returns {@code null} if the packet ID is not registered for this version, which signals the
-   * caller to use blind forwarding (raw {@code ByteBuf} passthrough).
+   * <p>Returns {@code null} if the packet ID is not registered for decoding at this version —
+   * either unknown or encode-only — which signals the caller to forward the frame untouched.
    *
    * @param version the protocol version of the connection
    * @param packetId the packet ID read from the wire
-   * @return the codec, or {@code null} for unregistered (blind-forward) packets
+   * @return the codec, or {@code null} for frames the proxy does not inspect
    */
-  @SuppressWarnings("NullAway") // array elements are nullable by design
   public @Nullable PacketCodec<?> lookup(ProtocolVersion version, int packetId) {
-    @Nullable PacketCodec<?>[] codecs = codecsByProtocol.get(version.protocol());
+    int protocol = version.protocol();
+    if (protocol < 0 || protocol >= decodeByProtocol.length) {
+      return null;
+    }
+    @Nullable PacketCodec<?>[] codecs = decodeByProtocol[protocol];
     if (codecs == null || packetId < 0 || packetId >= codecs.length) {
       return null;
     }
@@ -82,7 +92,9 @@ public final class PacketRegistry {
    * @throws IllegalArgumentException if the packet type is not registered for this version
    */
   public int packetId(ProtocolVersion version, Class<? extends Packet> type) {
-    Map<Class<? extends Packet>, Integer> ids = idsByProtocol.get(version.protocol());
+    int protocol = version.protocol();
+    Map<Class<? extends Packet>, Integer> ids =
+        protocol >= 0 && protocol < idsByProtocol.length ? idsByProtocol[protocol] : null;
     if (ids == null) {
       throw new IllegalArgumentException(
           "No packets registered for protocol " + version.protocol());
@@ -116,13 +128,12 @@ public final class PacketRegistry {
    * approach (proven by Velocity and Gate) compactly handles ID changes across Minecraft versions.
    */
   public static final class Builder {
-
     private final List<Registration<?>> registrations = new ArrayList<>();
 
     Builder() {}
 
     /**
-     * Registers a packet type with its codec and version mappings.
+     * Registers a packet the proxy decodes when it receives it, and can encode.
      *
      * <p>Mappings should be in ascending version order. For a given protocol version, the last
      * mapping whose {@code minVersion} is at or below that version determines the packet ID.
@@ -135,6 +146,26 @@ public final class PacketRegistry {
      */
     public <T extends Packet> Builder register(
         Class<T> type, PacketCodec<T> codec, VersionMapping... mappings) {
+      return add(type, codec, mappings, true);
+    }
+
+    /**
+     * Registers a packet the proxy can encode but never decodes on receipt: received copies are
+     * forwarded as opaque frames, exactly like unregistered packets.
+     *
+     * @param type the packet class
+     * @param codec the codec for writing this packet
+     * @param mappings one or more version-to-ID mappings, in ascending version order
+     * @param <T> the packet type
+     * @return this builder
+     */
+    public <T extends Packet> Builder registerEncodeOnly(
+        Class<T> type, PacketCodec<T> codec, VersionMapping... mappings) {
+      return add(type, codec, mappings, false);
+    }
+
+    private <T extends Packet> Builder add(
+        Class<T> type, PacketCodec<T> codec, VersionMapping[] mappings, boolean decoded) {
       if (mappings.length == 0) {
         throw new IllegalArgumentException("At least one VersionMapping is required");
       }
@@ -143,7 +174,7 @@ public final class PacketRegistry {
           throw new IllegalArgumentException("VersionMappings must be in ascending version order");
         }
       }
-      registrations.add(new Registration<>(type, codec, mappings));
+      registrations.add(new Registration<>(type, codec, mappings, decoded));
       return this;
     }
 
@@ -152,13 +183,14 @@ public final class PacketRegistry {
      *
      * @return the built registry
      */
+    @SuppressWarnings({"unchecked", "rawtypes"}) // generic array creation
     public PacketRegistry build() {
-      // Working maps: protocolId → (packetId → Entry)
-      Map<Integer, Map<Integer, Entry>> workingCodecs = new HashMap<>();
-      // Working maps: protocolId → (class → packetId)
-      Map<Integer, Map<Class<? extends Packet>, Integer>> workingIds = new HashMap<>();
-
       List<ProtocolVersion> allVersions = ProtocolVersion.values();
+      int size = allVersions.stream().mapToInt(ProtocolVersion::protocol).max().orElse(-1) + 1;
+
+      // Working maps: protocol → (packetId → Entry) and protocol → (class → packetId).
+      Map<Integer, Map<Integer, Entry>> workingCodecs = new HashMap<>();
+      Map<Integer, Map<Class<? extends Packet>, Integer>> workingIds = new HashMap<>();
 
       for (Registration<?> reg : registrations) {
         for (ProtocolVersion version : allVersions) {
@@ -181,31 +213,31 @@ public final class PacketRegistry {
                     + ", cannot register "
                     + reg.type().getSimpleName());
           }
-          protocolCodecs.put(packetId, new Entry(reg.type(), reg.codec()));
+          protocolCodecs.put(packetId, new Entry(reg.type(), reg.codec(), reg.decoded()));
           workingIds.computeIfAbsent(protocol, k -> new HashMap<>()).put(reg.type(), packetId);
         }
       }
 
-      // Convert working maps to array-indexed form
-      Map<Integer, @Nullable PacketCodec<?>[]> codecArrays = new HashMap<>();
+      // Decode tables: array-indexed by protocol, then by packet ID. Encode-only entries stay null.
+      @Nullable PacketCodec<?>[][] decodeByProtocol = new PacketCodec<?>[Math.max(size, 0)][];
       for (var entry : workingCodecs.entrySet()) {
-        int protocol = entry.getKey();
-        Map<Integer, Entry> idToEntry = entry.getValue();
-        int maxId = idToEntry.keySet().stream().mapToInt(Integer::intValue).max().orElse(0);
-        @Nullable PacketCodec<?>[] array = new PacketCodec<?>[maxId + 1];
-        for (var e : idToEntry.entrySet()) {
-          array[e.getKey()] = e.getValue().codec();
+        int maxId = entry.getValue().keySet().stream().mapToInt(Integer::intValue).max().orElse(0);
+        @Nullable PacketCodec<?>[] codecs = new PacketCodec<?>[maxId + 1];
+        for (var e : entry.getValue().entrySet()) {
+          if (e.getValue().decoded()) {
+            codecs[e.getKey()] = e.getValue().codec();
+          }
         }
-        codecArrays.put(protocol, array);
+        decodeByProtocol[entry.getKey()] = codecs;
       }
 
-      // Make ID maps unmodifiable
-      Map<Integer, Map<Class<? extends Packet>, Integer>> finalIds = new HashMap<>();
+      // Encode tables: unmodifiable maps, array-indexed by protocol.
+      @Nullable Map<Class<? extends Packet>, Integer>[] idsByProtocol = new Map[Math.max(size, 0)];
       for (var entry : workingIds.entrySet()) {
-        finalIds.put(entry.getKey(), Map.copyOf(entry.getValue()));
+        idsByProtocol[entry.getKey()] = Map.copyOf(entry.getValue());
       }
 
-      return new PacketRegistry(Map.copyOf(codecArrays), Map.copyOf(finalIds));
+      return new PacketRegistry(decodeByProtocol, idsByProtocol);
     }
 
     /**
@@ -231,7 +263,7 @@ public final class PacketRegistry {
 
   @SuppressWarnings("ArrayRecordComponent")
   private record Registration<T extends Packet>(
-      Class<T> type, PacketCodec<T> codec, VersionMapping[] mappings) {}
+      Class<T> type, PacketCodec<T> codec, VersionMapping[] mappings, boolean decoded) {}
 
-  private record Entry(Class<? extends Packet> type, PacketCodec<?> codec) {}
+  private record Entry(Class<? extends Packet> type, PacketCodec<?> codec, boolean decoded) {}
 }

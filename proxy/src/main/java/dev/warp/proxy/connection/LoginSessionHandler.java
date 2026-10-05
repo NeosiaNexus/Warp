@@ -18,11 +18,8 @@ package dev.warp.proxy.connection;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
-import dev.warp.protocol.compress.JavaCompressor;
 import dev.warp.protocol.netty.CipherDecoder;
 import dev.warp.protocol.netty.CipherEncoder;
-import dev.warp.protocol.netty.CompressionDecoder;
-import dev.warp.protocol.netty.CompressionEncoder;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
@@ -410,23 +407,10 @@ final class LoginSessionHandler implements SessionHandler {
       return; // Compression disabled.
     }
 
-    // Send SetCompression BEFORE installing compression handlers — this packet is uncompressed.
+    // Send SetCompression BEFORE switching the pipeline — this packet is uncompressed.
     connection.writeAndFlush(new SetCompression(threshold));
-
-    int level = loginContext.compressionLevel();
-    ChannelPipeline pipeline = connection.channel().pipeline();
-
-    // Inbound: decompression between frame-decoder and minecraft-decoder.
-    pipeline.addBefore(
-        ServerChannelInitializer.MINECRAFT_DECODER,
-        ServerChannelInitializer.COMPRESSION_DECODER,
-        new CompressionDecoder(threshold, new JavaCompressor(level)));
-
-    // Outbound: compression-encoder replaces frame-encoder (combines compression + framing).
-    pipeline.replace(
-        ServerChannelInitializer.FRAME_ENCODER,
-        ServerChannelInitializer.COMPRESSION_ENCODER,
-        new CompressionEncoder(threshold, new JavaCompressor(level)));
+    connection.enableCompression(
+        threshold, loginContext.compressionLevel(), false, loginContext.compressionPassthrough());
   }
 
   // ---------------------------------------------------------------------------
