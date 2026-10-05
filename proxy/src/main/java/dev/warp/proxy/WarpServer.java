@@ -274,7 +274,6 @@ public final class WarpServer implements Warp {
         serverRegistry,
         config.forwardingMode(),
         config.forwardingSecret(),
-        workerGroup(),
         transport.clientChannelClass());
   }
 
