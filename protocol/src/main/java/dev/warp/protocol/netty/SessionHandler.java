@@ -34,7 +34,7 @@ import io.netty.buffer.ByteBuf;
  * requires editing the interface <em>and</em> every packet class. Worse, the default return value
  * ({@code false}) silently swallows unhandled packets — no compile-time safety.
  *
- * <p>Warp's approach relies on Java 21 sealed interfaces: each protocol state has a sealed packet
+ * <p>Warp's approach relies on Java sealed interfaces: each protocol state has a sealed packet
  * hierarchy (e.g. {@link dev.warp.protocol.packet.status.StatusPacket StatusPacket}).
  * Implementations of this interface use exhaustive {@code switch} expressions over the sealed
  * hierarchy, so the compiler rejects any handler that misses a packet type. The result is a

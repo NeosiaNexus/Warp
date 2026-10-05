@@ -22,6 +22,7 @@ errorprone-plugin = "4.2.0"
 nullaway = "0.13.1"
 spotless = "7.0.4"
 checkstyle = "13.3.0"
+jacoco = "0.8.15"
 
 # Testing
 junit = "5.12.2"

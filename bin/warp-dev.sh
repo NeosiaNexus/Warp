@@ -17,7 +17,8 @@ JVM_FLAGS=(
     # Logging: async
     -Dlog4j2.contextSelector=org.apache.logging.log4j.core.async.AsyncLoggerContextSelector
 
-    # Netty: paranoid leak detection in dev
+    # Netty: keep sun.misc.Unsafe (disabled by default on Java 25+), paranoid leak detection
+    --sun-misc-unsafe-memory-access=allow
     -Dio.netty.leakDetection.level=PARANOID
 
     # Debug

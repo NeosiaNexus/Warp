@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/NeosiaNexus/warp/actions/workflows/ci.yml/badge.svg)](https://github.com/NeosiaNexus/warp/actions/workflows/ci.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
-[![Java 21+](https://img.shields.io/badge/Java-21%2B-orange.svg)](https://adoptium.net/)
+[![Java 25+](https://img.shields.io/badge/Java-25%2B-orange.svg)](https://adoptium.net/)
 
-A high-performance, cloud-native Minecraft proxy built on Java 21 and Netty.
+A high-performance, cloud-native Minecraft proxy built on Java 25 and Netty.
 
 ## Why Warp
 
@@ -24,7 +24,7 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 
 ## Features
 
-- **Java 21** — virtual threads, sealed interfaces, pattern matching, ZGC
+- **Java 25 LTS** — virtual threads, sealed interfaces, pattern matching, generational ZGC
 - **Netty 4.2** — native epoll/kqueue transports, BoringSSL, zero-copy where possible
 - **Modular architecture** — clean separation between API, protocol, proxy, and native bindings
 - **Production-grade build** — ErrorProne + NullAway (null safety at compile time), Checkstyle, Spotless, JaCoCo
@@ -34,7 +34,7 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 
 ### Requirements
 
-- JDK 21+ ([Adoptium Temurin](https://adoptium.net/) recommended)
+- JDK 25+ ([Adoptium Temurin](https://adoptium.net/) recommended)
 - Git
 
 ### Build from source
