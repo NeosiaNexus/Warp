@@ -368,7 +368,7 @@ class ServerListPingTest {
     try {
       KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
       gen.initialize(1024);
-      // Server registry and worker group are unused for status ping tests.
+      // Server registry and channel class are unused for status ping tests.
       ServerRegistry registry =
           new ServerRegistry(
               Map.of("lobby", new InetSocketAddress("localhost", 25565)),
@@ -383,7 +383,6 @@ class ServerListPingTest {
           registry,
           ForwardingMode.NONE,
           new byte[0],
-          null, // no worker group needed for status tests
           null); // no channel class needed for status tests
     } catch (NoSuchAlgorithmException e) {
       throw new AssertionError("RSA not available", e);

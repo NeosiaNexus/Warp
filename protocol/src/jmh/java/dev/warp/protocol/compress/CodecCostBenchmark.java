@@ -83,6 +83,7 @@ import org.openjdk.jmh.annotations.Warmup;
       "-Xms2g",
       "-Xmx2g",
       "-XX:+AlwaysPreTouch",
+      "--sun-misc-unsafe-memory-access=allow",
       "-Dio.netty.leakDetection.level=disabled",
       EventLoopLikeExecutor.JMH_EXECUTOR,
       EventLoopLikeExecutor.JMH_EXECUTOR_CLASS

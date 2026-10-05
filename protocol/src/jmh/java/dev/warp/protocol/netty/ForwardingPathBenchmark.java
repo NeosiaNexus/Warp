@@ -176,7 +176,7 @@ public class ForwardingPathBenchmark {
   private long relayRead(ByteBuf read, @Nullable ByteBuf capture) {
     backendLeg.writeInbound(read.retainedDuplicate());
     for (Object msg = backendLeg.readInbound(); msg != null; msg = backendLeg.readInbound()) {
-      var unused = clientLeg.write(msg, clientLeg.voidPromise());
+      var _ = clientLeg.write(msg, clientLeg.voidPromise());
     }
     clientLeg.flush();
     long written = 0;

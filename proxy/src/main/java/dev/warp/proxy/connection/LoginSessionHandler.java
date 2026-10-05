@@ -449,7 +449,6 @@ final class LoginSessionHandler implements SessionHandler {
 
     var _ =
         BackendConnection.connect(
-                loginContext.workerGroup(),
                 loginContext.channelClass(),
                 player,
                 defaultServer.address(),

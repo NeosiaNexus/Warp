@@ -24,7 +24,6 @@ import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelOption;
-import io.netty.channel.EventLoopGroup;
 import io.netty.channel.WriteBufferWaterMark;
 
 /**
@@ -74,10 +73,15 @@ public final class BackendConnection {
   /**
    * Connects to a backend server asynchronously.
    *
+   * <p>The backend channel is registered on the <b>player's client event loop</b>, so both legs of
+   * a player's traffic are served by one thread. Forwarding a packet is then a plain method call
+   * into the other channel's pipeline: no cross-thread write task, no MPSC queue hand-off, no
+   * wakeup, and pooled buffers are released on the thread that allocated them. Velocity binds its
+   * backend connections the same way.
+   *
    * <p>The returned future completes when the TCP connection is established (not when the login
    * sequence finishes — that is handled by session handlers).
    *
-   * @param workerGroup the event loop group for the connection
    * @param channelClass the socket channel class matching the transport
    * @param player the connected player (used to initialise the backend pipeline)
    * @param serverAddress the backend server address
@@ -85,7 +89,6 @@ public final class BackendConnection {
    * @return a future that completes with the backend connection
    */
   public static CompletableFuture<BackendConnection> connect(
-      EventLoopGroup workerGroup,
       Class<? extends Channel> channelClass,
       ConnectedPlayer player,
       InetSocketAddress serverAddress,
@@ -94,7 +97,7 @@ public final class BackendConnection {
     CompletableFuture<BackendConnection> future = new CompletableFuture<>();
 
     new Bootstrap()
-        .group(workerGroup)
+        .group(player.clientConnection().channel().eventLoop())
         .channel(channelClass)
         .handler(new BackendChannelInitializer(player))
         .option(ChannelOption.TCP_NODELAY, true)

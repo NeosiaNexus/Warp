@@ -431,7 +431,6 @@ public final class ConnectedPlayer {
   private void connectToBackend(ServerInfo target) {
     var _ =
         BackendConnection.connect(
-                loginContext.workerGroup(),
                 loginContext.channelClass(),
                 this,
                 target.address(),

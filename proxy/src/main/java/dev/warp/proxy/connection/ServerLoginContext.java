@@ -23,7 +23,6 @@ import dev.warp.proxy.server.ServerRegistry;
 import java.security.KeyPair;
 
 import io.netty.channel.Channel;
-import io.netty.channel.EventLoopGroup;
 
 /**
  * Server-wide configuration shared across all client connections.
@@ -40,7 +39,6 @@ import io.netty.channel.EventLoopGroup;
  * @param serverRegistry the registry of backend servers
  * @param forwardingMode the player info forwarding mode
  * @param forwardingSecret the shared HMAC secret for Velocity modern forwarding
- * @param workerGroup the Netty worker event loop group for outbound connections
  * @param channelClass the socket channel class matching the detected transport
  */
 @SuppressWarnings("ArrayRecordComponent") // forwardingSecret is treated as immutable
@@ -53,7 +51,6 @@ public record ServerLoginContext(
     ServerRegistry serverRegistry,
     ForwardingMode forwardingMode,
     byte[] forwardingSecret,
-    EventLoopGroup workerGroup,
     Class<? extends Channel> channelClass) {
 
   /** Validates configuration invariants. */
