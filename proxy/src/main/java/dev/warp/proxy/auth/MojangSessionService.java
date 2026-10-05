@@ -46,18 +46,40 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>Uses {@link HttpClient} (Java 11+) — no external HTTP library needed. The client is
  * thread-safe and reused across all authentication requests.
+ *
+ * <p>The endpoint can be replaced with the {@code mojang.sessionserver} system property — the same
+ * property Velocity reads — to use an alternative authentication server (Ely.by, Drasl, …) or a
+ * mock in load tests: {@code
+ * -Dmojang.sessionserver=https://example.org/session/minecraft/hasJoined}.
  */
 public final class MojangSessionService implements AutoCloseable {
 
-  private static final String HAS_JOINED_URL =
+  /** System property overriding the {@code hasJoined} endpoint (shared with Velocity). */
+  public static final String SESSION_SERVER_PROPERTY = "mojang.sessionserver";
+
+  private static final String DEFAULT_HAS_JOINED_URL =
       "https://sessionserver.mojang.com/session/minecraft/hasJoined";
 
   private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
 
   private final HttpClient httpClient;
+  private final String hasJoinedUrl;
 
-  /** Creates a new session service with a default HTTP client. */
+  /**
+   * Creates a session service for Mojang's endpoint, or the one set in {@value
+   * #SESSION_SERVER_PROPERTY}.
+   */
   public MojangSessionService() {
+    this(System.getProperty(SESSION_SERVER_PROPERTY, DEFAULT_HAS_JOINED_URL));
+  }
+
+  /**
+   * Creates a session service for the given {@code hasJoined} endpoint.
+   *
+   * @param hasJoinedUrl the full URL of the endpoint, without query parameters
+   */
+  public MojangSessionService(String hasJoinedUrl) {
+    this.hasJoinedUrl = hasJoinedUrl;
     this.httpClient =
         HttpClient.newBuilder()
             .connectTimeout(REQUEST_TIMEOUT)
@@ -80,7 +102,7 @@ public final class MojangSessionService implements AutoCloseable {
    */
   public GameProfile hasJoined(String username, String serverHash) throws AuthenticationException {
     String url =
-        HAS_JOINED_URL
+        hasJoinedUrl
             + "?username="
             + URLEncoder.encode(username, StandardCharsets.UTF_8)
             + "&serverId="
