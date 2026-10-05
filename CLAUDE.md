@@ -1,6 +1,6 @@
 # Warp Proxy
 
-High-performance Minecraft proxy in Java 21. Core innovation: **blind forwarding** — skip decompression/deserialization for ~90% of PLAY-state packets.
+High-performance Minecraft proxy in Java 25. Core innovation: **blind forwarding** — skip decompression/deserialization for ~90% of PLAY-state packets.
 
 ## Build & Run
 
@@ -34,7 +34,7 @@ build-logic/ Gradle convention plugins (java, spotless, publish)
 
 ## Code Conventions
 
-- **Java 21** — use records, sealed interfaces, pattern matching where appropriate
+- **Java 25** — use records, sealed interfaces, pattern matching where appropriate
 - **Null safety** — `@NullMarked` at package level (package-info.java), `@Nullable` on individual fields/params. JSpecify annotations, enforced by NullAway at compile time
 - **New packages** must have a `package-info.java` with `@NullMarked` annotation and a one-line Javadoc
 - **License header** — AGPL-3.0 header on every Java file. Spotless enforces via `config/license-header.txt`. Do not write headers manually — run `spotlessApply`

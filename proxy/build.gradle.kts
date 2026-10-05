@@ -82,6 +82,8 @@ tasks.shadowJar {
         attributes(
             "Main-Class" to application.mainClass.get(),
             "Multi-Release" to true,
+            // Netty's epoll/kqueue transports load JNI libraries (JEP 472 restricted methods).
+            "Enable-Native-Access" to "ALL-UNNAMED",
             "Implementation-Title" to "Warp",
             "Implementation-Version" to project.version,
         )

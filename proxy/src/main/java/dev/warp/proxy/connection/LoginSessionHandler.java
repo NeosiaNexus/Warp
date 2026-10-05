@@ -447,7 +447,7 @@ final class LoginSessionHandler implements SessionHandler {
     var defaultServer = loginContext.serverRegistry().defaultServer();
     logger.info("Connecting {} to server '{}'", profile.name(), defaultServer.name());
 
-    var unused =
+    var _ =
         BackendConnection.connect(
                 loginContext.workerGroup(),
                 loginContext.channelClass(),

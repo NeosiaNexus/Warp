@@ -429,7 +429,7 @@ public final class ConnectedPlayer {
    * {@link #handleBackendFailure(String)} is called to try the next fallback.
    */
   private void connectToBackend(ServerInfo target) {
-    var unused =
+    var _ =
         BackendConnection.connect(
                 loginContext.workerGroup(),
                 loginContext.channelClass(),

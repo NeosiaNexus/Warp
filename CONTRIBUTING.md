@@ -5,7 +5,7 @@ Thanks for your interest in contributing. This document covers everything you ne
 ## Getting Started
 
 **Requirements:**
-- JDK 21+
+- JDK 25+
 - Git
 
 **Build & test:**

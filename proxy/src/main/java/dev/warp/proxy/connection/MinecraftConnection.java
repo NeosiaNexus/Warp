@@ -131,7 +131,7 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
     // Always log — do not gate on isActive() which can swallow critical errors.
     logger.error("Exception in pipeline for {}", channel.remoteAddress(), cause);
     if (ctx.channel().isActive()) {
-      var unused = ctx.close();
+      var _ = ctx.close();
     }
   }
 
@@ -145,7 +145,7 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
    * @param packet the packet to write
    */
   public void write(Packet packet) {
-    var unused = channel.write(packet, channel.voidPromise());
+    var _ = channel.write(packet, channel.voidPromise());
   }
 
   /**
@@ -154,7 +154,7 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
    * @param packet the packet to write
    */
   public void writeAndFlush(Packet packet) {
-    var unused = channel.writeAndFlush(packet, channel.voidPromise());
+    var _ = channel.writeAndFlush(packet, channel.voidPromise());
   }
 
   /**
@@ -181,7 +181,7 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
    */
   public void writeBlind(ByteBuf buf) {
     if (channel.isActive()) {
-      var unused = channel.write(buf, channel.voidPromise());
+      var _ = channel.write(buf, channel.voidPromise());
     } else {
       buf.release();
     }
@@ -204,7 +204,7 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   /** Closes the channel gracefully. */
   public void close() {
-    var unused = channel.close();
+    var _ = channel.close();
   }
 
   // ---------------------------------------------------------------------------

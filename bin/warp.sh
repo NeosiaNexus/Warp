@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Warp Proxy — optimized launch script for Java 21+
+# Warp Proxy — optimized launch script for Java 25+
 
 set -euo pipefail
 
@@ -14,9 +14,8 @@ JVM_FLAGS=(
     -Xmx512M
     -XX:MaxDirectMemorySize=256M
 
-    # GC: Generational ZGC for sub-ms pauses
+    # GC: ZGC (generational-only since JDK 24) for sub-ms pauses
     -XX:+UseZGC
-    -XX:+ZGenerational
     -XX:+AlwaysPreTouch
     -XX:+DisableExplicitGC
 
@@ -25,7 +24,8 @@ JVM_FLAGS=(
     -Dlog4j2.enableThreadlocals=true
     -Dlog4j2.enableDirectEncoders=true
 
-    # Netty
+    # Netty: since Java 25, Netty stops using sun.misc.Unsafe unless memory access is allowed
+    --sun-misc-unsafe-memory-access=allow
     -Dio.netty.leakDetection.level=DISABLED
     -Dio.netty.allocator.maxOrder=12
 

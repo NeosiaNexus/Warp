@@ -9,7 +9,7 @@ val libs = the<VersionCatalogsExtension>().named("libs")
 
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
+        languageVersion = JavaLanguageVersion.of(25)
     }
     withSourcesJar()
     withJavadocJar()
