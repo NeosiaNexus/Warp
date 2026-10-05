@@ -47,15 +47,23 @@ public final class PacketRegistry {
   /** Protocol number → codecs indexed by packet ID, decoded registrations only. */
   private final @Nullable PacketCodec<?>[] @Nullable [] decodeByProtocol;
 
-  /** Protocol number → (packet class → packet ID), all registrations. */
-  private final @Nullable Map<Class<? extends Packet>, Integer>[] idsByProtocol;
+  /** Protocol number → (packet class → id and codec), decoded and encode-only registrations. */
+  private final @Nullable Map<Class<? extends Packet>, Encoding>[] encodeByProtocol;
 
   private PacketRegistry(
       @Nullable PacketCodec<?>[] @Nullable [] decodeByProtocol,
-      @Nullable Map<Class<? extends Packet>, Integer>[] idsByProtocol) {
+      @Nullable Map<Class<? extends Packet>, Encoding>[] encodeByProtocol) {
     this.decodeByProtocol = decodeByProtocol;
-    this.idsByProtocol = idsByProtocol;
+    this.encodeByProtocol = encodeByProtocol;
   }
+
+  /**
+   * How a packet type is written at one protocol version.
+   *
+   * @param packetId the wire packet ID
+   * @param codec the codec that writes the packet body
+   */
+  public record Encoding(int packetId, PacketCodec<?> codec) {}
 
   // ---------------------------------------------------------------------------
   // Lookup (hot path)
@@ -92,19 +100,32 @@ public final class PacketRegistry {
    * @throws IllegalArgumentException if the packet type is not registered for this version
    */
   public int packetId(ProtocolVersion version, Class<? extends Packet> type) {
+    return encoding(version, type).packetId();
+  }
+
+  /**
+   * Returns how to write the given packet type at the given protocol version. Works for decoded and
+   * encode-only registrations alike.
+   *
+   * @param version the protocol version of the connection
+   * @param type the packet class to write
+   * @return its packet ID and codec
+   * @throws IllegalArgumentException if the packet type is not registered for this version
+   */
+  public Encoding encoding(ProtocolVersion version, Class<? extends Packet> type) {
     int protocol = version.protocol();
-    Map<Class<? extends Packet>, Integer> ids =
-        protocol >= 0 && protocol < idsByProtocol.length ? idsByProtocol[protocol] : null;
-    if (ids == null) {
+    Map<Class<? extends Packet>, Encoding> encodings =
+        protocol >= 0 && protocol < encodeByProtocol.length ? encodeByProtocol[protocol] : null;
+    if (encodings == null) {
       throw new IllegalArgumentException(
           "No packets registered for protocol " + version.protocol());
     }
-    Integer id = ids.get(type);
-    if (id == null) {
+    Encoding encoding = encodings.get(type);
+    if (encoding == null) {
       throw new IllegalArgumentException(
           type.getSimpleName() + " is not registered for " + version);
     }
-    return id;
+    return encoding;
   }
 
   // ---------------------------------------------------------------------------
@@ -188,9 +209,9 @@ public final class PacketRegistry {
       List<ProtocolVersion> allVersions = ProtocolVersion.values();
       int size = allVersions.stream().mapToInt(ProtocolVersion::protocol).max().orElse(-1) + 1;
 
-      // Working maps: protocol → (packetId → Entry) and protocol → (class → packetId).
+      // Working maps: protocol → (packetId → Entry) and protocol → (class → Encoding).
       Map<Integer, Map<Integer, Entry>> workingCodecs = new HashMap<>();
-      Map<Integer, Map<Class<? extends Packet>, Integer>> workingIds = new HashMap<>();
+      Map<Integer, Map<Class<? extends Packet>, Encoding>> workingEncodings = new HashMap<>();
 
       for (Registration<?> reg : registrations) {
         for (ProtocolVersion version : allVersions) {
@@ -214,7 +235,9 @@ public final class PacketRegistry {
                     + reg.type().getSimpleName());
           }
           protocolCodecs.put(packetId, new Entry(reg.type(), reg.codec(), reg.decoded()));
-          workingIds.computeIfAbsent(protocol, k -> new HashMap<>()).put(reg.type(), packetId);
+          workingEncodings
+              .computeIfAbsent(protocol, k -> new HashMap<>())
+              .put(reg.type(), new Encoding(packetId, reg.codec()));
         }
       }
 
@@ -232,12 +255,13 @@ public final class PacketRegistry {
       }
 
       // Encode tables: unmodifiable maps, array-indexed by protocol.
-      @Nullable Map<Class<? extends Packet>, Integer>[] idsByProtocol = new Map[Math.max(size, 0)];
-      for (var entry : workingIds.entrySet()) {
-        idsByProtocol[entry.getKey()] = Map.copyOf(entry.getValue());
+      @Nullable Map<Class<? extends Packet>, Encoding>[] encodeByProtocol =
+          new Map[Math.max(size, 0)];
+      for (var entry : workingEncodings.entrySet()) {
+        encodeByProtocol[entry.getKey()] = Map.copyOf(entry.getValue());
       }
 
-      return new PacketRegistry(decodeByProtocol, idsByProtocol);
+      return new PacketRegistry(decodeByProtocol, encodeByProtocol);
     }
 
     /**

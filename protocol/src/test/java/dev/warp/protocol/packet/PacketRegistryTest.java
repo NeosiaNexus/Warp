@@ -19,6 +19,7 @@ package dev.warp.protocol.packet;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import dev.warp.protocol.ProtocolState;
@@ -139,6 +140,24 @@ class PacketRegistryTest {
               .build();
 
       assertNull(registry.lookup(ProtocolVersion.MINECRAFT_1_21_4, 0x42));
+    }
+
+    @Test
+    @DisplayName("should not decode encode-only packets, but still encode them")
+    void encodeOnlyPacket() {
+      PacketRegistry registry =
+          PacketRegistry.builder()
+              .registerEncodeOnly(
+                  Handshake.class,
+                  Handshake.CODEC,
+                  VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_7_2))
+              .build();
+
+      assertNull(registry.lookup(ProtocolVersion.MINECRAFT_1_21_4, 0x00));
+      PacketRegistry.Encoding encoding =
+          registry.encoding(ProtocolVersion.MINECRAFT_1_21_4, Handshake.class);
+      assertEquals(0x00, encoding.packetId());
+      assertSame(Handshake.CODEC, encoding.codec());
     }
 
     @Test
