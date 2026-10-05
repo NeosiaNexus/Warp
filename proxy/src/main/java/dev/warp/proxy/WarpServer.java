@@ -261,6 +261,13 @@ public final class WarpServer implements Warp {
 
     MojangSessionService service = new MojangSessionService();
     this.sessionService = service;
+    String sessionServer = System.getProperty(MojangSessionService.SESSION_SERVER_PROPERTY);
+    if (sessionServer != null) {
+      logger.warn(
+          "Players are authenticated against {} instead of Mojang ({} system property)",
+          sessionServer,
+          MojangSessionService.SESSION_SERVER_PROPERTY);
+    }
 
     ServerRegistry serverRegistry =
         new ServerRegistry(config.servers(), config.defaultServer(), config.fallbackOrder());
