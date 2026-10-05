@@ -390,24 +390,7 @@ public final class ConnectedPlayer {
     clientConnection.setAutoRead(false);
     clientConnection.setSessionHandler(new SwitchWaitSessionHandler(this));
 
-    // Start a timeout watchdog. If the switch doesn't complete within SWITCH_TIMEOUT_MS,
-    // disconnect the player. Prevents infinite "Reconfiguring..." hangs (Velocity #1741).
-    cancelSwitchTimeout();
-    switchTimeoutTask =
-        clientConnection
-            .channel()
-            .eventLoop()
-            .schedule(
-                () -> {
-                  if (switching) {
-                    logger.warn(
-                        "Server switch timed out for {} after {}ms", username, SWITCH_TIMEOUT_MS);
-                    switching = false;
-                    disconnectWithReason("Server switch timed out.");
-                  }
-                },
-                SWITCH_TIMEOUT_MS,
-                TimeUnit.MILLISECONDS);
+    scheduleSwitchTimeout();
 
     // Disconnect old backend. The old handler's disconnected() checks isSwitching()
     // and will not trigger a player disconnect.
@@ -492,6 +475,30 @@ public final class ConnectedPlayer {
     }
   }
 
+  /**
+   * Starts the switch watchdog: if the player has not reached PLAY on the new server within {@value
+   * #SWITCH_TIMEOUT_MS} ms, disconnect them. Prevents infinite "Reconfiguring..." hangs (Velocity
+   * #1741).
+   */
+  private void scheduleSwitchTimeout() {
+    cancelSwitchTimeout();
+    switchTimeoutTask =
+        clientConnection
+            .channel()
+            .eventLoop()
+            .schedule(
+                () -> {
+                  if (switching) {
+                    logger.warn(
+                        "Server switch timed out for {} after {}ms", username, SWITCH_TIMEOUT_MS);
+                    switching = false;
+                    disconnectWithReason("Server switch timed out.");
+                  }
+                },
+                SWITCH_TIMEOUT_MS,
+                TimeUnit.MILLISECONDS);
+  }
+
   private void cancelSwitchTimeout() {
     ScheduledFuture<?> task = switchTimeoutTask;
     if (task != null) {
@@ -555,9 +562,9 @@ public final class ConnectedPlayer {
   /**
    * Handles a backend failure by attempting to connect to the next fallback server.
    *
-   * <p>If a server switch is in progress ({@code switching = true}), the client is already in
-   * CONFIG state and the proxy connects directly to the next fallback backend. If no switch is in
-   * progress, a normal server switch is initiated via {@link #switchServer(ServerInfo)}.
+   * <p>If the client is in CONFIG state — during a server switch, or still joining for the first
+   * time — the proxy connects it directly to the next fallback backend. A client in PLAY state is
+   * moved with a normal server switch ({@link #switchServer(ServerInfo)}).
    *
    * <p>Must be called on the client event loop.
    *
@@ -585,9 +592,19 @@ public final class ConnectedPlayer {
       return;
     }
 
-    if (switching) {
-      // Already in CONFIG state — directly connect to the fallback backend.
-      logger.info("Switch failed for {}, trying fallback '{}'", username, fallback.name());
+    if (switching || clientConnection.decoder().state() == ProtocolState.CONFIGURATION) {
+      // The client waits in CONFIG state (a switch, or its initial join): connect it directly.
+      logger.info(
+          "Could not connect {} to '{}', trying fallback '{}'",
+          username,
+          failedServerName,
+          fallback.name());
+      if (!switching) {
+        // Initial join: track the fallback as a switch, so the current server is updated and the
+        // watchdog applies once it completes.
+        switching = true;
+        scheduleSwitchTimeout();
+      }
       connectToFallbackDuringSwitch(fallback);
     } else {
       // In PLAY state — use the normal switch mechanism.

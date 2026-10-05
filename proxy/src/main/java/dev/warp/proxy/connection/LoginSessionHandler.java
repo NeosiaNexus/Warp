@@ -452,12 +452,18 @@ final class LoginSessionHandler implements SessionHandler {
                                 return;
                               }
                               if (ex != null) {
-                                logger.error(
-                                    "Failed to connect {} to server '{}'",
+                                logger.warn(
+                                    "Failed to connect {} to server '{}': {}",
                                     profile.name(),
                                     defaultServer.name(),
-                                    ex);
-                                disconnect("Could not connect to backend server");
+                                    ex.getMessage());
+                                if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
+                                  // The client waits in CONFIG: try the fallback order, as when
+                                  // a backend refuses the player.
+                                  player.handleBackendFailure(defaultServer.name());
+                                } else {
+                                  disconnect("Could not connect to backend server");
+                                }
                                 return;
                               }
                               player.setBackendConnection(backend);
