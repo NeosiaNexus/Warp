@@ -13,4 +13,7 @@ dependencies {
     implementation(libs.plugins.errorprone.get().let {
         "${it.pluginId}:${it.pluginId}.gradle.plugin:${it.version}"
     })
+    implementation(libs.plugins.jmh.get().let {
+        "${it.pluginId}:${it.pluginId}.gradle.plugin:${it.version}"
+    })
 }
