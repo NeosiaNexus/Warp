@@ -29,7 +29,6 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.EncoderException;
 import io.netty.handler.codec.MessageToByteEncoder;
-import org.jspecify.annotations.Nullable;
 
 /**
  * Encodes typed {@link Packet} objects into Minecraft protocol wire format: {@code [VarInt: Packet
@@ -103,9 +102,9 @@ public final class MinecraftEncoder extends MessageToByteEncoder<Packet> {
 
   @Override
   protected void encode(ChannelHandlerContext ctx, Packet packet, ByteBuf out) {
-    int packetId;
+    PacketRegistry.Encoding encoding;
     try {
-      packetId = registry.packetId(version, packet.getClass());
+      encoding = registry.encoding(version, packet.getClass());
     } catch (IllegalArgumentException e) {
       throw new EncoderException(
           "Cannot encode "
@@ -116,14 +115,9 @@ public final class MinecraftEncoder extends MessageToByteEncoder<Packet> {
               + version,
           e);
     }
-
-    VarInt.write(out, packetId);
-
-    // The codec is guaranteed non-null because packetId() succeeded — the registry
-    // has a codec for every (version, class) pair it knows about.
+    VarInt.write(out, encoding.packetId());
     @SuppressWarnings("unchecked")
-    PacketCodec<Packet> codec = (PacketCodec<Packet>) lookupCodecOrThrow(packetId);
-
+    PacketCodec<Packet> codec = (PacketCodec<Packet>) encoding.codec();
     try {
       codec.encode(packet, out, version);
     } catch (Exception e) {
@@ -131,29 +125,11 @@ public final class MinecraftEncoder extends MessageToByteEncoder<Packet> {
           "Failed to encode "
               + packet.getClass().getSimpleName()
               + " (0x"
-              + Integer.toHexString(packetId)
+              + Integer.toHexString(encoding.packetId())
               + ") in state "
               + state,
           e);
     }
-  }
-
-  /**
-   * Looks up the codec for a packet ID that was just resolved by {@link PacketRegistry#packetId}.
-   * The codec must exist — if it does not, the registry is internally inconsistent.
-   */
-  private PacketCodec<?> lookupCodecOrThrow(int packetId) {
-    @Nullable PacketCodec<?> codec = registry.lookup(version, packetId);
-    if (codec == null) {
-      throw new EncoderException(
-          "Registry inconsistency: packetId() resolved 0x"
-              + Integer.toHexString(packetId)
-              + " but lookup() returned null for "
-              + version
-              + " in state "
-              + state);
-    }
-    return codec;
   }
 
   // ---------------------------------------------------------------------------

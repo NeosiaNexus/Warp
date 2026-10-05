@@ -32,6 +32,7 @@ import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.status.StatusRequest;
 
 import java.util.Objects;
@@ -54,6 +55,26 @@ class MinecraftEncoderTest {
   @Nested
   @DisplayName("packet encoding")
   class PacketEncoding {
+
+    @Test
+    @DisplayName("should encode packets the proxy sends but never decodes (system chat)")
+    void encodeOnlyPacket() {
+      MinecraftEncoder encoder =
+          new MinecraftEncoder(
+              PacketDirection.CLIENTBOUND, ProtocolVersion.MINECRAFT_1_21_4, ProtocolState.PLAY);
+      EmbeddedChannel ch = new EmbeddedChannel(encoder);
+      byte[] text = {0x08, 0x00, 0x02, 'h', 'i'};
+
+      assertTrue(ch.writeOutbound(new SystemChatMessage(text, false)));
+
+      ByteBuf out = ch.readOutbound();
+      assertEquals(0x73, VarInt.read(out)); // system_chat since 1.21.2
+      SystemChatMessage decoded =
+          SystemChatMessage.CODEC.decode(out, ProtocolVersion.MINECRAFT_1_21_4);
+      assertArrayEquals(text, decoded.rawContent());
+      out.release();
+      assertFalse(ch.finish());
+    }
 
     @Test
     @DisplayName("should encode Handshake with correct packet ID and payload")
