@@ -27,6 +27,9 @@ import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 
+import java.io.IOException;
+import java.nio.channels.ClosedChannelException;
+
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFutureListener;
@@ -137,8 +140,16 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   @Override
   public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-    // Always log — do not gate on isActive() which can swallow critical errors.
-    logger.error("Exception in pipeline for {}", channel.remoteAddress(), cause);
+    if (cause instanceof ClosedChannelException) {
+      // A write raced with the peer closing the connection: expected, nothing went wrong.
+      logger.debug("Write to closed connection {}", channel.remoteAddress());
+    } else if (cause instanceof IOException) {
+      // The peer vanished (connection reset, broken pipe): routine for players, not a fault.
+      logger.debug("Connection {} lost: {}", channel.remoteAddress(), cause.getMessage());
+    } else {
+      // Everything else is logged in full — never gated on isActive(), which can hide real bugs.
+      logger.error("Exception in pipeline for {}", channel.remoteAddress(), cause);
+    }
     if (ctx.channel().isActive()) {
       var _ = ctx.close();
     }

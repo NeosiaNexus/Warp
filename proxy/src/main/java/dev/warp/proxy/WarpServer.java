@@ -152,8 +152,8 @@ public final class WarpServer implements Warp {
             // SO_REUSEADDR: allow rebind immediately after restart.
             .option(ChannelOption.SO_REUSEADDR, true);
 
-    // SO_REUSEPORT: distribute accept load across threads (epoll only).
-    applySoReusePort(bootstrap, transport);
+    // No SO_REUSEPORT: with it, a second Warp started on the same port binds without error and the
+    // kernel silently splits players between the two processes. A port conflict must fail loudly.
 
     try {
       this.serverChannel = bootstrap.bind(config.bind()).sync().channel();
@@ -331,32 +331,6 @@ public final class WarpServer implements Warp {
     logger.info("Using NIO transport (native transport unavailable)");
     return new TransportInfo(
         NioIoHandler.newFactory(), NioServerSocketChannel.class, NioSocketChannel.class);
-  }
-
-  /**
-   * Applies {@code SO_REUSEPORT} if the transport supports it (epoll only).
-   *
-   * <p>This distributes incoming connection accept load across multiple threads, improving accept
-   * throughput on high-connection-rate servers. Only attempted when the detected transport is epoll
-   * — avoids spurious Netty warnings when epoll classes are on the classpath but kqueue/NIO is the
-   * active transport.
-   */
-  @SuppressWarnings("unchecked")
-  private static void applySoReusePort(ServerBootstrap bootstrap, TransportInfo transport) {
-    // Only attempt SO_REUSEPORT when the actual transport is epoll.
-    String channelClassName = transport.serverChannelClass().getName();
-    if (!channelClassName.contains("Epoll")) {
-      return;
-    }
-    try {
-      Class<?> epollOptionClass = Class.forName("io.netty.channel.epoll.EpollChannelOption");
-      ChannelOption<Boolean> soReusePort =
-          (ChannelOption<Boolean>) epollOptionClass.getField("SO_REUSEPORT").get(null);
-      bootstrap.option(soReusePort, true);
-      logger.debug("SO_REUSEPORT enabled");
-    } catch (ReflectiveOperationException | UnsatisfiedLinkError e) {
-      logger.trace("SO_REUSEPORT not available", e);
-    }
   }
 
   /** Registers this server as the {@link WarpProvider} singleton. */
