@@ -43,7 +43,6 @@ import org.junit.jupiter.api.Test;
 class FrameForwarderTest {
 
   private static final ProtocolVersion MODERN = ProtocolVersion.MINECRAFT_1_21_4;
-  private static final ProtocolVersion LEGACY = ProtocolVersion.MINECRAFT_1_16_4;
 
   @Nested
   @DisplayName("verbatim forwarding")
@@ -52,7 +51,7 @@ class FrameForwarderTest {
     @Test
     @DisplayName("should forward compressed frames byte for byte between equal thresholds")
     void equalThresholds() {
-      Sink sink = Sink.compressed(256, false, MODERN, new RefusingCompressor());
+      Sink sink = Sink.compressed(256, new RefusingCompressor());
       ByteBuf frame = Frames.compressed(packet(1000), 6);
       byte[] wire = ByteBufUtil.getBytes(frame);
 
@@ -62,25 +61,13 @@ class FrameForwarderTest {
     }
 
     @Test
-    @DisplayName("should forward uncompressed frames above a validating peer's threshold verbatim")
-    void largeUncompressedToServer() {
-      Sink sink = Sink.compressed(256, true, MODERN, new RefusingCompressor());
-      ByteBuf frame = Frames.uncompressed(packet(500));
+    @DisplayName("should forward uncompressed frames below the threshold verbatim")
+    void smallUncompressed() {
+      Sink sink = Sink.compressed(256, new RefusingCompressor());
+      ByteBuf frame = Frames.uncompressed(packet(200));
       byte[] wire = ByteBufUtil.getBytes(frame);
 
       sink.forwarder.forward(frame, source(1024), null);
-
-      assertArrayEquals(wire, sink.output());
-    }
-
-    @Test
-    @DisplayName("should forward below-threshold compressed frames to 1.17.1+ clients verbatim")
-    void modernClientIgnoresThreshold() {
-      Sink sink = Sink.compressed(512, false, MODERN, new RefusingCompressor());
-      ByteBuf frame = Frames.compressed(packet(300), 6);
-      byte[] wire = ByteBufUtil.getBytes(frame);
-
-      sink.forwarder.forward(frame, source(256), null);
 
       assertArrayEquals(wire, sink.output());
     }
@@ -103,9 +90,9 @@ class FrameForwarderTest {
   class ReEncoding {
 
     @Test
-    @DisplayName("should send below-threshold frames uncompressed to a validating server")
-    void belowServerThreshold() {
-      Sink sink = Sink.compressed(256, true, MODERN, new RefusingCompressor());
+    @DisplayName("should send below-threshold compressed frames uncompressed, never re-deflated")
+    void belowThreshold() {
+      Sink sink = Sink.compressed(256, new RefusingCompressor());
       byte[] packet = packet(100);
 
       sink.forwarder.forward(Frames.compressed(packet, 6), source(64), null);
@@ -116,16 +103,16 @@ class FrameForwarderTest {
     }
 
     @Test
-    @DisplayName("should send below-threshold frames uncompressed to clients up to 1.17")
-    void belowLegacyClientThreshold() {
-      Sink sink = Sink.compressed(512, false, LEGACY, new RefusingCompressor());
-      byte[] packet = packet(300);
+    @DisplayName("should compress uncompressed frames at the threshold, which Krypton rejects")
+    void compressesLargeUncompressed() {
+      Sink sink = Sink.compressed(256, new JavaCompressor(6));
+      byte[] packet = packet(500);
 
-      sink.forwarder.forward(Frames.compressed(packet, 6), source(256), null);
+      sink.forwarder.forward(Frames.uncompressed(packet), source(1024), null);
 
       byte[] out = sink.output();
-      assertArrayEquals(packet, decodeCompressed(out, 512));
-      assertEquals(0, dataLength(out));
+      assertArrayEquals(packet, decodeCompressed(out, 256));
+      assertEquals(packet.length, dataLength(out));
     }
 
     @Test
@@ -144,7 +131,7 @@ class FrameForwarderTest {
     @Test
     @DisplayName("should compress for a compressed connection when the source is uncompressed")
     void fromUncompressed() {
-      Sink sink = Sink.compressed(256, false, MODERN, new JavaCompressor(6));
+      Sink sink = Sink.compressed(256, new JavaCompressor(6));
       byte[] packet = packet(2000);
 
       sink.forwarder.forward(Frames.plain(packet), null, null);
@@ -157,7 +144,7 @@ class FrameForwarderTest {
     @Test
     @DisplayName("should reuse bytes the source already inflated instead of inflating again")
     void reusesInflatedBytes() {
-      Sink sink = Sink.compressed(256, true, MODERN, new RefusingCompressor());
+      Sink sink = Sink.compressed(256, new RefusingCompressor());
       byte[] packet = packet(100);
       FrameDecompressor refusing =
           new FrameDecompressor(
@@ -173,7 +160,7 @@ class FrameForwarderTest {
     @DisplayName("should re-encode every frame when verbatim forwarding is disabled")
     void verbatimDisabled() {
       CountingCompressor deflater = new CountingCompressor();
-      Sink sink = Sink.compressed(256, false, MODERN, deflater);
+      Sink sink = Sink.compressed(256, deflater);
       sink.forwarder.setVerbatimEnabled(false);
       byte[] packet = packet(1000);
 
@@ -210,14 +197,13 @@ class FrameForwarderTest {
       this.forwarder = new FrameForwarder(channel);
     }
 
-    static Sink compressed(
-        int threshold, boolean peerIsServer, ProtocolVersion version, PacketCompressor deflater) {
+    static Sink compressed(int threshold, PacketCompressor deflater) {
       Sink sink =
           new Sink(
               new EmbeddedChannel(
                   new CompressionEncoder(threshold, deflater),
-                  new MinecraftEncoder(PacketDirection.CLIENTBOUND, version, ProtocolState.PLAY)));
-      sink.forwarder.compressionEnabled(threshold, peerIsServer, version);
+                  new MinecraftEncoder(PacketDirection.CLIENTBOUND, MODERN, ProtocolState.PLAY)));
+      sink.forwarder.compressionEnabled(threshold);
       return sink;
     }
 

@@ -92,15 +92,27 @@ class CompressionPassthroughTest {
     assertEquals(0, relay.clientZlib.deflations(), "deflations on the client leg");
   }
 
-  @ParameterizedTest(name = "backend {0}")
-  @CsvSource({"64", "1024"})
-  @DisplayName("should never re-deflate for a modern client, whatever the backend threshold")
-  void noDeflateForModernClients(int backendThreshold) {
-    Relay relay = new Relay(backendThreshold, 256, MODERN, true);
+  @org.junit.jupiter.api.Test
+  @DisplayName("should never re-deflate for a modern client when the backend compresses more")
+  void noDeflateWhenBackendCompressesMore() {
+    Relay relay = new Relay(64, 256, MODERN, true);
 
     relay.run(packets(200));
 
     assertEquals(0, relay.clientZlib.deflations());
+  }
+
+  @org.junit.jupiter.api.Test
+  @DisplayName("should compress only what the backend left uncompressed above the client threshold")
+  void deflatesOnlyBetweenThresholds() {
+    Relay relay = new Relay(1024, 256, MODERN, true);
+    List<byte[]> packets = packets(200);
+
+    relay.run(packets);
+
+    long between = packets.stream().filter(p -> p.length >= 256 && p.length < 1024).count();
+    assertEquals(between, relay.clientZlib.deflations());
+    assertEquals(0, relay.backendZlib.inflations());
   }
 
   @ParameterizedTest(name = "backend {0}")
@@ -168,7 +180,7 @@ class CompressionPassthroughTest {
               : new EmbeddedChannel(FrameEncoder.INSTANCE, clientEncoder);
       toClient = new FrameForwarder(clientLeg);
       if (clientThreshold >= 0) {
-        toClient.compressionEnabled(clientThreshold, false, version);
+        toClient.compressionEnabled(clientThreshold);
       }
       toClient.setVerbatimEnabled(passthrough);
     }

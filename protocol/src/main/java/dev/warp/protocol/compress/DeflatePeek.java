@@ -16,10 +16,12 @@
  */
 package dev.warp.protocol.compress;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
+import java.nio.ByteOrder;
 import java.util.Arrays;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
 
 /**
  * Reads the VarInt at the start of a zlib stream — the packet id of a compressed Minecraft frame —
@@ -29,26 +31,36 @@ import io.netty.buffer.Unpooled;
  * id to route the frame would otherwise inflate the whole payload. This class decodes just enough
  * DEFLATE to produce the first one to three bytes: the zlib header, the first block header and, for
  * dynamic-Huffman blocks, the code-length and literal/length codes. It then decodes literals until
- * the VarInt is complete. Distance codes, the window and the Adler-32 trailer are never touched,
- * and no decode tables are built: symbols are resolved canonically, as in Mark Adler's {@code
- * puff.c}.
+ * the VarInt is complete. Distance symbols, the window and the Adler-32 trailer are never touched.
+ *
+ * <h3>Why it is fast</h3>
+ *
+ * <ul>
+ *   <li>The first {@value #WINDOW} bytes of the stream — more than any valid block header plus the
+ *       first literals need — are copied once into a scratch array, then read 64 bits at a time.
+ *   <li>The code-length code (at most 7 bits per code) is decoded through a 128-entry table; code
+ *       lengths are counted while they are decoded.
+ *   <li>The literal/length code is never tabulated: at most three symbols are needed, so they are
+ *       resolved canonically, bit by bit, as in Mark Adler's {@code puff.c}.
+ * </ul>
  *
  * <h3>Contract</h3>
  *
  * <ul>
- *   <li>For a valid zlib stream, the result is exactly what a full inflate would yield, or {@link
- *       #UNKNOWN}.
- *   <li>{@link #UNKNOWN} means "inflate instead": the stream is malformed, uses a preset
- *       dictionary, ends too early, starts with a back-reference (only possible from the second
- *       byte on) or needs more empty blocks than {@value #MAX_BLOCKS} to reach data. It is never an
- *       error.
- *   <li>Malformed input never throws and never reads outside {@code [readerIndex, writerIndex)}.
- *   <li>The work is bounded by the dynamic block header (at most a few hundred bytes of input).
+ *   <li>For a valid zlib stream, the result is exactly what a full inflate would yield — VarInt
+ *       bytes are always literals, because a back-reference at the start of a stream can only copy
+ *       the first byte, and a VarInt never repeats its first byte three times.
+ *   <li>{@link #UNKNOWN} means "inflate instead": malformed stream, preset dictionary, stream ends
+ *       too early, more than {@value #MAX_BLOCKS} empty blocks, or an id wider than three bytes. It
+ *       is never an error.
+ *   <li>Malformed input never throws, and nothing outside {@code [readerIndex, writerIndex)} is
+ *       read. Code validation follows zlib: over-subscribed codes and incomplete codes other than a
+ *       single one-bit code are rejected.
  *   <li>Zero allocation; the source buffer's indices are not modified.
  * </ul>
  *
- * <p>Instances hold scratch tables and are <b>not</b> thread-safe: use one per event loop or per
- * connection.
+ * <p>Instances hold scratch tables (~2 KiB) and are <b>not</b> thread-safe: use one per connection
+ * or per event loop.
  */
 public final class DeflatePeek {
 
@@ -58,6 +70,12 @@ public final class DeflatePeek {
   /** Maximum number of DEFLATE blocks examined before giving up (bounds empty stored blocks). */
   static final int MAX_BLOCKS = 8;
 
+  /**
+   * Bytes of deflate data examined. A dynamic block header takes at most 560 bytes; with the empty
+   * blocks allowed before it and the first literals, every valid stream fits.
+   */
+  static final int WINDOW = 1024;
+
   /** Packet ids are VarInts of at most three bytes (21 bits) in every protocol version. */
   private static final int MAX_VARINT_BYTES = 3;
 
@@ -66,26 +84,31 @@ public final class DeflatePeek {
   private static final int MAX_DISTANCE_CODES = 30;
   private static final int CODE_LENGTH_CODES = 19;
   private static final int END_OF_BLOCK = 256;
+  private static final int CODE_LENGTH_TABLE_BITS = 7;
+  private static final int FIXED_TABLE_BITS = 9;
 
   /** Internal sentinel: the block ended before the VarInt did; continue with the next block. */
   private static final int CONTINUE = -2;
+
+  private static final VarHandle LONG_LE =
+      MethodHandles.byteArrayViewVarHandle(long[].class, ByteOrder.LITTLE_ENDIAN);
 
   /** Order in which code-length code lengths are transmitted (RFC 1951 §3.2.7). */
   private static final byte[] CODE_LENGTH_ORDER = {
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
   };
 
-  /** Canonical counts and sorted symbols of the fixed literal/length code (RFC 1951 §3.2.6). */
-  private static final short[] FIXED_COUNT = new short[MAX_BITS + 1];
-
-  private static final short[] FIXED_SYMBOL = new short[288];
+  /**
+   * Fixed literal/length code (RFC 1951 §3.2.6) as a 9-bit table of {@code symbol << 4 | length}.
+   */
+  private static final short[] FIXED_TABLE = new short[1 << FIXED_TABLE_BITS];
 
   static {
-    short[] lengths = new short[288];
+    byte[] lengths = new byte[288];
     for (int symbol = 0; symbol < 288; symbol++) {
-      lengths[symbol] = (short) (symbol < 144 ? 8 : symbol < 256 ? 9 : symbol < 280 ? 7 : 8);
+      lengths[symbol] = (byte) (symbol < 144 ? 8 : symbol < 256 ? 9 : symbol < 280 ? 7 : 8);
     }
-    if (construct(lengths, 0, 288, FIXED_COUNT, FIXED_SYMBOL, new short[MAX_BITS + 1]) != 0) {
+    if (!fillTable(FIXED_TABLE, FIXED_TABLE_BITS, lengths, 288, new int[16], new int[16])) {
       throw new AssertionError("fixed literal/length code must be complete");
     }
   }
@@ -94,27 +117,30 @@ public final class DeflatePeek {
   // Scratch state — reused across calls
   // ---------------------------------------------------------------------------
 
-  private final short[] lengths = new short[MAX_LITERAL_CODES + MAX_DISTANCE_CODES];
-  private final short[] codeLengthCount = new short[MAX_BITS + 1];
-  private final short[] codeLengthSymbol = new short[CODE_LENGTH_CODES];
-  private final short[] literalCount = new short[MAX_BITS + 1];
-  private final short[] literalSymbol = new short[MAX_LITERAL_CODES];
-  private final short[] offsets = new short[MAX_BITS + 1];
+  /** Copy of the deflate data, followed by 16 zero bytes so 64-bit loads never overrun. */
+  private final byte[] window = new byte[WINDOW + 16];
 
-  private ByteBuf in;
-  private int position;
+  private final byte[] lengths = new byte[MAX_LITERAL_CODES + MAX_DISTANCE_CODES];
+  private final byte[] codeLengthLengths = new byte[CODE_LENGTH_CODES];
+  private final short[] codeLengthTable = new short[1 << CODE_LENGTH_TABLE_BITS];
+
+  /**
+   * Code counts per length: {@code [0, 16)} literal/length code, {@code [16, 32)} distance code.
+   */
+  private final int[] counts = new int[32];
+
+  private final int[] tableCounts = new int[16];
+  private final int[] nextCodes = new int[16];
+
+  // Bit reader over the window.
   private int limit;
+  private int position;
   private long bitBuffer;
   private int bitCount;
-  private boolean overrun;
 
+  // VarInt being assembled.
   private int varIntValue;
   private int varIntBytes;
-
-  /** Creates a peeker with its own scratch tables. */
-  public DeflatePeek() {
-    in = Unpooled.EMPTY_BUFFER;
-  }
 
   /**
    * Returns the VarInt encoded by the first bytes of the zlib stream in {@code zlib}'s readable
@@ -124,47 +150,47 @@ public final class DeflatePeek {
    * @return the VarInt value (the packet id of a Minecraft frame), or {@link #UNKNOWN}
    */
   public int peekVarInt(ByteBuf zlib) {
-    in = zlib;
-    position = zlib.readerIndex();
-    limit = zlib.writerIndex();
+    int index = zlib.readerIndex();
+    int length = zlib.readableBytes();
+    if (length < 3) {
+      return UNKNOWN;
+    }
+    // zlib header: CM = 8 (deflate), window ≤ 32 KiB, check bits, no preset dictionary.
+    int cmf = zlib.getUnsignedByte(index);
+    int flg = zlib.getUnsignedByte(index + 1);
+    if ((cmf & 0x0F) != 8 || (cmf >>> 4) > 7 || ((cmf << 8) | flg) % 31 != 0 || (flg & 0x20) != 0) {
+      return UNKNOWN;
+    }
+    limit = Math.min(length - 2, WINDOW);
+    zlib.getBytes(index + 2, window, 0, limit);
+    LONG_LE.set(window, limit, 0L);
+    LONG_LE.set(window, limit + 8, 0L);
+    position = 0;
     bitBuffer = 0;
     bitCount = 0;
-    overrun = false;
     varIntValue = 0;
     varIntBytes = 0;
-    int result = peekStream();
-    in = Unpooled.EMPTY_BUFFER; // do not retain a reference to the caller's buffer
-    return result;
+    return peekBlocks();
   }
 
-  private int peekStream() {
-    // zlib header: CM = 8 (deflate), window ≤ 32 KiB, check bits, no preset dictionary.
-    int cmf = bits(8);
-    int flg = bits(8);
-    if (overrun || (cmf & 0x0F) != 8 || (cmf >>> 4) > 7 || ((cmf << 8) | flg) % 31 != 0) {
-      return UNKNOWN;
-    }
-    if ((flg & 0x20) != 0) {
-      return UNKNOWN;
-    }
+  private int peekBlocks() {
     for (int block = 0; block < MAX_BLOCKS; block++) {
-      boolean last = bits(1) == 1;
-      int type = bits(2);
-      if (overrun) {
-        return UNKNOWN;
-      }
+      refill();
+      boolean last = (bitBuffer & 1) != 0;
+      int type = (int) (bitBuffer >>> 1) & 3;
+      drop(3);
       int result =
           switch (type) {
             case 0 -> stored();
-            case 1 -> literals(FIXED_COUNT, FIXED_SYMBOL);
+            case 1 -> literals(true, 0);
             case 2 -> dynamic();
             default -> UNKNOWN;
           };
       if (result != CONTINUE) {
-        return result;
+        return result == UNKNOWN || overrun() ? UNKNOWN : result;
       }
-      if (last) {
-        return UNKNOWN; // stream ended before the VarInt did
+      if (last || overrun()) {
+        return UNKNOWN; // the stream ended, or ran past the data, before the VarInt did
       }
     }
     return UNKNOWN;
@@ -175,18 +201,18 @@ public final class DeflatePeek {
   // ---------------------------------------------------------------------------
 
   private int stored() {
-    // Discard the bits up to the next byte boundary, then LEN and its one's complement.
-    dropBits(bitCount & 7);
-    int length = bits(16);
-    int complement = bits(16);
-    if (overrun || length != (~complement & 0xFFFF)) {
+    drop(bitCount & 7); // to the byte boundary
+    refill();
+    int length = (int) bitBuffer & 0xFFFF;
+    int complement = (int) (bitBuffer >>> 16) & 0xFFFF;
+    drop(32);
+    if (length != (~complement & 0xFFFF)) {
       return UNKNOWN;
     }
     for (int i = 0; i < length; i++) {
-      int value = bits(8);
-      if (overrun) {
-        return UNKNOWN;
-      }
+      refill();
+      int value = (int) bitBuffer & 0xFF;
+      drop(8);
       int result = accept(value);
       if (result != CONTINUE) {
         return result;
@@ -196,72 +222,88 @@ public final class DeflatePeek {
   }
 
   private int dynamic() {
-    int literalCodes = bits(5) + 257;
-    int distanceCodes = bits(5) + 1;
-    int codeLengthCodes = bits(4) + 4;
-    if (overrun || literalCodes > MAX_LITERAL_CODES || distanceCodes > MAX_DISTANCE_CODES) {
+    refill();
+    int literalCodes = ((int) bitBuffer & 31) + 257;
+    int distanceCodes = ((int) (bitBuffer >>> 5) & 31) + 1;
+    int codeLengthCodes = ((int) (bitBuffer >>> 10) & 15) + 4;
+    drop(14);
+    if (literalCodes > MAX_LITERAL_CODES || distanceCodes > MAX_DISTANCE_CODES) {
       return UNKNOWN;
     }
 
-    // Code-length code: must be complete.
-    for (int i = 0; i < CODE_LENGTH_CODES; i++) {
-      lengths[CODE_LENGTH_ORDER[i]] = (short) (i < codeLengthCodes ? bits(3) : 0);
+    // Code-length code: 3 bits per length, must be complete.
+    Arrays.fill(codeLengthLengths, (byte) 0);
+    for (int i = 0; i < codeLengthCodes; i++) {
+      refill();
+      codeLengthLengths[CODE_LENGTH_ORDER[i]] = (byte) (bitBuffer & 7);
+      drop(3);
     }
-    if (overrun
-        || construct(lengths, 0, CODE_LENGTH_CODES, codeLengthCount, codeLengthSymbol, offsets)
-            != 0) {
+    if (!fillTable(
+        codeLengthTable,
+        CODE_LENGTH_TABLE_BITS,
+        codeLengthLengths,
+        CODE_LENGTH_CODES,
+        tableCounts,
+        nextCodes)) {
       return UNKNOWN;
     }
 
-    // Literal/length and distance code lengths, run-length encoded with the code-length code.
+    // Literal/length and distance code lengths, run-length encoded, counted as they are decoded.
+    Arrays.fill(counts, 0);
     int total = literalCodes + distanceCodes;
     int index = 0;
     while (index < total) {
-      int symbol = decode(codeLengthCount, codeLengthSymbol);
-      if (symbol < 0 || overrun) {
-        return UNKNOWN;
-      }
+      refill();
+      int entry = codeLengthTable[(int) bitBuffer & ((1 << CODE_LENGTH_TABLE_BITS) - 1)];
+      drop(entry & 15);
+      int symbol = entry >>> 4;
       if (symbol < 16) {
-        lengths[index++] = (short) symbol;
+        lengths[index] = (byte) symbol;
+        count(symbol, index, literalCodes);
+        index++;
         continue;
       }
+      int length = 0;
       int repeat;
-      short length = 0;
       if (symbol == 16) {
         if (index == 0) {
           return UNKNOWN;
         }
         length = lengths[index - 1];
-        repeat = 3 + bits(2);
+        repeat = 3 + ((int) bitBuffer & 3);
+        drop(2);
       } else if (symbol == 17) {
-        repeat = 3 + bits(3);
+        repeat = 3 + ((int) bitBuffer & 7);
+        drop(3);
       } else {
-        repeat = 11 + bits(7);
+        repeat = 11 + ((int) bitBuffer & 127);
+        drop(7);
       }
-      if (overrun || index + repeat > total) {
+      if (index + repeat > total) {
         return UNKNOWN;
       }
-      while (repeat-- > 0) {
-        lengths[index++] = length;
+      for (int end = index + repeat; index < end; index++) {
+        lengths[index] = (byte) length;
+        count(length, index, literalCodes);
       }
     }
-    if (lengths[END_OF_BLOCK] == 0) {
+    if (overrun() || lengths[END_OF_BLOCK] == 0 || !acceptableCode(0) || !acceptableCode(16)) {
       return UNKNOWN;
     }
-
-    // Literal/length code. An incomplete code is only legal as a single one-bit code.
-    int left = construct(lengths, 0, literalCodes, literalCount, literalSymbol, offsets);
-    if (left < 0 || (left > 0 && literalCodes != literalCount[0] + literalCount[1])) {
-      return UNKNOWN;
-    }
-    return literals(literalCount, literalSymbol);
+    return literals(false, literalCodes);
   }
 
-  /** Decodes literals until the VarInt completes, the block ends, or a back-reference appears. */
-  private int literals(short[] count, short[] symbols) {
+  /**
+   * Decodes literals until the VarInt completes, the block ends, or a back-reference appears.
+   *
+   * @param fixed whether the block uses the fixed code, else the dynamic code in {@link #counts}
+   * @param literalCodes the number of literal/length code lengths (dynamic blocks only)
+   */
+  private int literals(boolean fixed, int literalCodes) {
     while (true) {
-      int symbol = decode(count, symbols);
-      if (symbol < 0 || overrun) {
+      refill();
+      int symbol = fixed ? decodeFixed() : decodeDynamic(literalCodes);
+      if (symbol < 0) {
         return UNKNOWN;
       }
       if (symbol < END_OF_BLOCK) {
@@ -272,7 +314,7 @@ public final class DeflatePeek {
       } else if (symbol == END_OF_BLOCK) {
         return CONTINUE;
       } else {
-        return UNKNOWN; // length/distance pair: resolving it would need the window
+        return UNKNOWN; // length/distance pair: a VarInt byte is never one
       }
     }
   }
@@ -288,90 +330,133 @@ public final class DeflatePeek {
   }
 
   // ---------------------------------------------------------------------------
-  // Canonical Huffman (RFC 1951 §3.2.2), after puff.c
+  // Huffman codes (RFC 1951 §3.2.2)
   // ---------------------------------------------------------------------------
 
+  private int decodeFixed() {
+    int entry = FIXED_TABLE[(int) bitBuffer & ((1 << FIXED_TABLE_BITS) - 1)];
+    drop(entry & 15);
+    int symbol = entry >>> 4;
+    return symbol < MAX_LITERAL_CODES ? symbol : -1;
+  }
+
   /**
-   * Decodes one symbol bit by bit. Codes are stored most-significant bit first, so each new bit is
-   * appended on the right of the code read so far.
-   *
-   * @return the symbol, or {@code -1} if no code of up to 15 bits matches
+   * Decodes one literal/length symbol canonically, bit by bit (codes are stored most-significant
+   * bit first), then maps the code's rank among codes of its length to its symbol by scanning the
+   * code lengths — cheaper than building a symbol table for the one to three symbols needed.
    */
-  private int decode(short[] count, short[] symbols) {
+  private int decodeDynamic(int literalCodes) {
     int code = 0;
     int first = 0;
-    int index = 0;
     for (int length = 1; length <= MAX_BITS; length++) {
-      code |= bits(1);
-      int n = count[length];
+      code |= (int) (bitBuffer >>> (length - 1)) & 1;
+      int n = counts[length];
       if (code - n < first) {
-        return symbols[index + (code - first)];
+        drop(length);
+        int rank = code - first;
+        for (int symbol = 0; symbol < literalCodes; symbol++) {
+          if (lengths[symbol] == length && rank-- == 0) {
+            return symbol;
+          }
+        }
+        return -1;
       }
-      index += n;
       first = (first + n) << 1;
       code <<= 1;
     }
     return -1;
   }
 
+  /** Counts a decoded code length into the literal/length or the distance code. */
+  private void count(int length, int index, int literalCodes) {
+    if (length != 0) {
+      counts[length | (index < literalCodes ? 0 : 16)]++;
+    }
+  }
+
+  /** zlib's rule: not over-subscribed, and incomplete only for a lone one-bit code. */
+  private boolean acceptableCode(int offset) {
+    int left = 1;
+    int maxLength = 0;
+    for (int length = 1; length <= MAX_BITS; length++) {
+      int n = counts[offset + length];
+      left = (left << 1) - n;
+      if (left < 0) {
+        return false;
+      }
+      if (n != 0) {
+        maxLength = length;
+      }
+    }
+    return left == 0 || maxLength <= 1;
+  }
+
   /**
-   * Builds canonical decoding data: the number of codes of each length and the symbols sorted by
-   * code.
-   *
-   * @return {@code 0} for a complete code, a positive value for an incomplete one, or a negative
-   *     value for an over-subscribed (invalid) one
+   * Fills a lookup table indexed by the next {@code bits} input bits with {@code symbol << 4 |
+   * length}. Only complete codes no longer than {@code bits} are accepted.
    */
-  private static int construct(
-      short[] lengths, int from, int n, short[] count, short[] symbols, short[] offset) {
-    Arrays.fill(count, (short) 0);
+  private static boolean fillTable(
+      short[] table, int bits, byte[] codeLengths, int n, int[] count, int[] next) {
+    Arrays.fill(count, 0);
     for (int symbol = 0; symbol < n; symbol++) {
-      count[lengths[from + symbol]]++;
+      count[codeLengths[symbol]]++;
     }
-    if (count[0] == n) {
-      return 0; // no codes: complete, but nothing can be decoded
-    }
+    count[0] = 0;
     int left = 1;
     for (int length = 1; length <= MAX_BITS; length++) {
-      left <<= 1;
-      left -= count[length];
-      if (left < 0) {
-        return left;
+      left = (left << 1) - count[length];
+      if (left < 0 || (length > bits && count[length] != 0)) {
+        return false;
       }
     }
-    offset[1] = 0;
+    if (left != 0) {
+      return false;
+    }
+    next[1] = 0;
     for (int length = 1; length < MAX_BITS; length++) {
-      offset[length + 1] = (short) (offset[length] + count[length]);
+      next[length + 1] = (next[length] + count[length]) << 1;
     }
     for (int symbol = 0; symbol < n; symbol++) {
-      int length = lengths[from + symbol];
-      if (length != 0) {
-        symbols[offset[length]++] = (short) symbol;
+      int length = codeLengths[symbol];
+      if (length == 0) {
+        continue;
+      }
+      int code = next[length]++;
+      int reversed = Integer.reverse(code) >>> (32 - length);
+      short entry = (short) (symbol << 4 | length);
+      for (int i = reversed; i < table.length; i += 1 << length) {
+        table[i] = entry;
       }
     }
-    return left;
+    return true;
   }
 
   // ---------------------------------------------------------------------------
   // Bit input (RFC 1951 §3.1.1: bits are packed starting with the least-significant bit)
   // ---------------------------------------------------------------------------
 
-  private int bits(int n) {
-    while (bitCount < n) {
-      if (position >= limit) {
-        overrun = true;
-        return 0;
-      }
-      bitBuffer |= (long) (in.getByte(position++) & 0xFF) << bitCount;
-      bitCount += 8;
+  /**
+   * Tops the bit buffer up to at least 56 bits with one 64-bit load (bits above the count are the
+   * next bytes, so loading them again is harmless). Past the copied data it loads the zero padding,
+   * which {@link #overrun()} detects; it never reads past the padding.
+   */
+  private void refill() {
+    if (position > limit + 8) {
+      bitCount = 63; // far past the data: keep feeding zeros, overrun() rejects the result
+      return;
     }
-    int value = (int) (bitBuffer & ((1L << n) - 1));
-    bitBuffer >>>= n;
-    bitCount -= n;
-    return value;
+    bitBuffer |= (long) LONG_LE.get(window, position) << bitCount;
+    position += (63 - bitCount) >>> 3;
+    bitCount |= 56;
   }
 
-  private void dropBits(int n) {
+  private void drop(int n) {
     bitBuffer >>>= n;
     bitCount -= n;
+  }
+
+  /** Whether more bits were consumed than the copied data holds. */
+  private boolean overrun() {
+    return (long) position * 8 - bitCount > (long) limit * 8;
   }
 }

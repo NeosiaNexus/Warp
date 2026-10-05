@@ -280,15 +280,14 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
    */
   public void enableCompression(
       int threshold, int level, boolean peerIsServer, boolean passthrough) {
-    MinecraftDecoder minecraftDecoder = decoder();
-    ProtocolVersion version = minecraftDecoder.version();
-    minecraftDecoder.enableCompression(
-        new FrameDecompressor(
-            threshold,
-            !peerIsServer,
-            FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE,
-            new JavaCompressor(level)),
-        peerIsServer && passthrough);
+    decoder()
+        .enableCompression(
+            new FrameDecompressor(
+                threshold,
+                !peerIsServer,
+                FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE,
+                new JavaCompressor(level)),
+            peerIsServer && passthrough);
     // The compression encoder frames and compresses in one pass, replacing the frame encoder.
     channel
         .pipeline()
@@ -296,7 +295,7 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
             ServerChannelInitializer.FRAME_ENCODER,
             ServerChannelInitializer.COMPRESSION_ENCODER,
             new CompressionEncoder(threshold, new JavaCompressor(level)));
-    forwarder.compressionEnabled(threshold, peerIsServer, version);
+    forwarder.compressionEnabled(threshold);
     forwarder.setVerbatimEnabled(passthrough);
   }
 

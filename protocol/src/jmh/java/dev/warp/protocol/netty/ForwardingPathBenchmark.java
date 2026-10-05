@@ -151,7 +151,7 @@ public class ForwardingPathBenchmark {
             new MinecraftEncoder(
                 PacketDirection.CLIENTBOUND, BenchmarkConfig.VERSION, ProtocolState.PLAY));
     FrameForwarder toClient = new FrameForwarder(clientLeg);
-    toClient.compressionEnabled(BenchmarkConfig.THRESHOLD, false, BenchmarkConfig.VERSION);
+    toClient.compressionEnabled(BenchmarkConfig.THRESHOLD);
     toClient.setVerbatimEnabled(passthrough);
 
     MinecraftDecoder backendDecoder =
