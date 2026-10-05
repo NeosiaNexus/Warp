@@ -322,7 +322,7 @@ class MinecraftEncoderTest {
       assertNotNull(wire);
 
       // Decode
-      assertTrue(decoderCh.writeInbound(wire));
+      assertTrue(decoderCh.writeInbound(Frames.framed(wire)));
       Object out = decoderCh.readInbound();
       assertInstanceOf(StatusRequest.class, out);
 

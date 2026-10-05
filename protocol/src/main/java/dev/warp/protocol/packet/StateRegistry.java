@@ -266,6 +266,11 @@ public final class StateRegistry {
 
   // ---------------------------------------------------------------------------
   // Play — proxy-critical subset with version-range ID mappings
+  //
+  // Decoded on receipt: only what the proxy acts on (keep-alives, its own commands, client
+  // settings, state transitions, bundles, disconnects, the entity id). Encode-only: packets the
+  // proxy may send but forwards untouched when received, so they keep their original compressed
+  // form end to end.
   // ---------------------------------------------------------------------------
 
   private static void registerPlay() {
@@ -292,7 +297,7 @@ public final class StateRegistry {
                     map(0x15, MINECRAFT_1_20_3),
                     map(0x18, MINECRAFT_1_20_5),
                     map(0x1A, MINECRAFT_1_21_2))
-                .register(
+                .registerEncodeOnly(
                     PlayPluginMessage.class,
                     PlayPluginMessage.CODEC,
                     map(0x17, MINECRAFT_1_7_2),
@@ -310,7 +315,7 @@ public final class StateRegistry {
                     map(0x10, MINECRAFT_1_20_3),
                     map(0x12, MINECRAFT_1_20_5),
                     map(0x14, MINECRAFT_1_21_2))
-                .register(
+                .registerEncodeOnly(
                     TabCompleteRequest.class,
                     TabCompleteRequest.CODEC,
                     map(0x05, MINECRAFT_1_13),
@@ -348,7 +353,7 @@ public final class StateRegistry {
                     map(0x09, MINECRAFT_1_20_2),
                     map(0x0A, MINECRAFT_1_20_5),
                     map(0x0C, MINECRAFT_1_21_2))
-                .register(
+                .registerEncodeOnly(
                     ResourcePackResponse.class,
                     ResourcePackResponse.CODEC,
                     map(0x19, MINECRAFT_1_8),
@@ -410,7 +415,7 @@ public final class StateRegistry {
                     map(0x24, MINECRAFT_1_20_2),
                     map(0x26, MINECRAFT_1_20_5),
                     map(0x27, MINECRAFT_1_21_2))
-                .register(
+                .registerEncodeOnly(
                     PlayPluginMessage.class,
                     PlayPluginMessage.CODEC,
                     map(0x3F, MINECRAFT_1_7_2),
@@ -444,7 +449,7 @@ public final class StateRegistry {
                     map(0x29, MINECRAFT_1_20_2),
                     map(0x2B, MINECRAFT_1_20_5),
                     map(0x2C, MINECRAFT_1_21_2))
-                .register(
+                .registerEncodeOnly(
                     Respawn.class,
                     Respawn.CODEC,
                     map(0x07, MINECRAFT_1_7_2),
@@ -465,7 +470,7 @@ public final class StateRegistry {
                     map(0x45, MINECRAFT_1_20_3),
                     map(0x47, MINECRAFT_1_20_5),
                     map(0x4C, MINECRAFT_1_21_2))
-                .register(
+                .registerEncodeOnly(
                     SystemChatMessage.class,
                     SystemChatMessage.CODEC,
                     map(0x60, MINECRAFT_1_19_3),
@@ -481,12 +486,12 @@ public final class StateRegistry {
                     map(0x67, MINECRAFT_1_20_3),
                     map(0x69, MINECRAFT_1_20_5),
                     map(0x70, MINECRAFT_1_21_2))
-                .register(
+                .registerEncodeOnly(
                     Transfer.class,
                     Transfer.CODEC,
                     map(0x73, MINECRAFT_1_20_5),
                     map(0x7A, MINECRAFT_1_21_2))
-                .register(
+                .registerEncodeOnly(
                     TabCompleteResponse.class,
                     TabCompleteResponse.CODEC,
                     map(0x10, MINECRAFT_1_13),

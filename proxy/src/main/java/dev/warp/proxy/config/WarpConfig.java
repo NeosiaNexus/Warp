@@ -62,6 +62,7 @@ public final class WarpConfig {
   private static final String DEFAULT_SECRET_FILE = "forwarding.secret";
   private static final int DEFAULT_COMPRESSION_THRESHOLD = 256;
   private static final int DEFAULT_COMPRESSION_LEVEL = -1;
+  private static final boolean DEFAULT_COMPRESSION_PASSTHROUGH = true;
 
   /** Characters used for auto-generated forwarding secret. */
   private static final String SECRET_CHARS =
@@ -82,6 +83,7 @@ public final class WarpConfig {
   private final byte[] forwardingSecret;
   private final int compressionThreshold;
   private final int compressionLevel;
+  private final boolean compressionPassthrough;
 
   // ---------------------------------------------------------------------------
   // Constructor (private — use load())
@@ -96,7 +98,8 @@ public final class WarpConfig {
       ForwardingMode forwardingMode,
       byte[] forwardingSecret,
       int compressionThreshold,
-      int compressionLevel) {
+      int compressionLevel,
+      boolean compressionPassthrough) {
     this.bind = bind;
     this.onlineMode = onlineMode;
     this.servers = Map.copyOf(servers);
@@ -106,6 +109,7 @@ public final class WarpConfig {
     this.forwardingSecret = forwardingSecret;
     this.compressionThreshold = compressionThreshold;
     this.compressionLevel = compressionLevel;
+    this.compressionPassthrough = compressionPassthrough;
   }
 
   // ---------------------------------------------------------------------------
@@ -168,6 +172,8 @@ public final class WarpConfig {
     int compressionThreshold =
         root.node("compression", "threshold").getInt(DEFAULT_COMPRESSION_THRESHOLD);
     int compressionLevel = root.node("compression", "level").getInt(DEFAULT_COMPRESSION_LEVEL);
+    boolean compressionPassthrough =
+        root.node("compression", "passthrough").getBoolean(DEFAULT_COMPRESSION_PASSTHROUGH);
 
     // ---------------------------------------------------------------------------
     // Validate
@@ -192,7 +198,8 @@ public final class WarpConfig {
             forwardingMode,
             forwardingSecret,
             compressionThreshold,
-            compressionLevel);
+            compressionLevel,
+            compressionPassthrough);
 
     logConfig(config);
     return config;
@@ -284,6 +291,16 @@ public final class WarpConfig {
    */
   public int compressionLevel() {
     return compressionLevel;
+  }
+
+  /**
+   * Returns whether packets the proxy does not inspect are forwarded in their original compressed
+   * form instead of being decompressed and recompressed.
+   *
+   * @return {@code true} if compression passthrough is enabled
+   */
+  public boolean compressionPassthrough() {
+    return compressionPassthrough;
   }
 
   // ---------------------------------------------------------------------------
@@ -484,6 +501,12 @@ public final class WarpConfig {
 
           # Zlib compression level: 0 (none) to 9 (best). -1 for default (level 6).
           level = -1
+
+          # Forward packets Warp does not inspect in their original compressed form instead of
+          # decompressing and recompressing them. Requires compression on the backends too: keep
+          # network-compression-threshold at the same value as `threshold` above (Paper's default,
+          # 256) rather than -1. Disable only to troubleshoot.
+          passthrough = true
         }
         """;
 
@@ -506,8 +529,9 @@ public final class WarpConfig {
     logger.info("  fallback-order: {}", config.fallbackOrder);
     logger.info("  forwarding: {}", config.forwardingMode.name().toLowerCase(Locale.ROOT));
     logger.info(
-        "  compression: threshold={}, level={}",
+        "  compression: threshold={}, level={}, passthrough={}",
         config.compressionThreshold,
-        config.compressionLevel);
+        config.compressionLevel,
+        config.compressionPassthrough);
   }
 }

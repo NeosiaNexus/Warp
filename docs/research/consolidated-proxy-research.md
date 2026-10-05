@@ -22,7 +22,7 @@ Les problemes identifies se repartissent en **4 niveaux de gravite** :
 
 ### 1.1 Compression/decompression gaspillee (Velocity #594)
 - **Probleme** : Chaque paquet est decompresse -> deserialise -> reserialise -> recompresse, meme quand le proxy n'a rien a inspecter (~90% des paquets en PLAY state)
-- **Impact** : Principale source de CPU sur un proxy Velocity. Estimation : 4-5x gain possible avec passthrough (estimation des mainteneurs eux-memes)
+- **Impact** : Principale source de CPU sur un proxy Velocity. *(Correction cycle #5 : le « 4-5x » de #594 est le rapport de cout compression/decompression, pas un gain estime du passthrough — voir `compression-passthrough-prior-art.md`.)*
 - **Etat** : Issue ouverte depuis 2021, zero progression en 4 ans
 - **Solution Warp** : Blind forwarding. Les paquets non-enregistres par un plugin passent en raw bytes sans decompression
 

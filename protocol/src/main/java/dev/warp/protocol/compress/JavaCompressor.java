@@ -22,6 +22,7 @@ import java.util.zip.Deflater;
 import java.util.zip.Inflater;
 
 import io.netty.buffer.ByteBuf;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Pure-Java compressor using {@link Deflater} and {@link Inflater}.
@@ -32,14 +33,18 @@ import io.netty.buffer.ByteBuf;
  *
  * <p>Not as fast as native implementations (libdeflate ≈ 4× faster, zlib-ng ≈ 2.5×) but fully
  * portable. Suitable as a fallback when native libraries are unavailable.
+ *
+ * <p>The native zlib streams are created on first use: a decoder only ever inflates and an encoder
+ * only ever deflates, and an idle {@link Deflater} alone pins ~256 KiB of native memory.
  */
 public final class JavaCompressor implements PacketCompressor {
 
   /** Growth increment when the output buffer runs out of space during deflation. */
   private static final int DEFLATE_GROW = 8192;
 
-  private final Deflater deflater;
-  private final Inflater inflater;
+  private final int level;
+  private @Nullable Deflater deflater;
+  private @Nullable Inflater inflater;
   private boolean closed;
 
   /**
@@ -48,14 +53,13 @@ public final class JavaCompressor implements PacketCompressor {
    * @param level the compression level (0–9), or {@link Deflater#DEFAULT_COMPRESSION}
    */
   public JavaCompressor(int level) {
-    this.deflater = new Deflater(level);
-    this.inflater = new Inflater();
+    this.level = level;
   }
 
   @Override
   public void inflate(ByteBuf source, ByteBuf destination, int uncompressedSize)
       throws DataFormatException {
-    ensureOpen();
+    Inflater inflater = inflater();
 
     // nioBuffer() returns a ByteBuffer view — zero-copy for direct buffers.
     inflater.setInput(source.nioBuffer());
@@ -80,7 +84,7 @@ public final class JavaCompressor implements PacketCompressor {
 
   @Override
   public void deflate(ByteBuf source, ByteBuf destination) throws DataFormatException {
-    ensureOpen();
+    Deflater deflater = deflater();
 
     deflater.setInput(source.nioBuffer());
     deflater.finish();
@@ -103,9 +107,33 @@ public final class JavaCompressor implements PacketCompressor {
   public void close() {
     if (!closed) {
       closed = true;
-      deflater.end();
-      inflater.end();
+      if (deflater != null) {
+        deflater.end();
+      }
+      if (inflater != null) {
+        inflater.end();
+      }
     }
+  }
+
+  private Inflater inflater() {
+    ensureOpen();
+    Inflater current = inflater;
+    if (current == null) {
+      current = new Inflater();
+      inflater = current;
+    }
+    return current;
+  }
+
+  private Deflater deflater() {
+    ensureOpen();
+    Deflater current = deflater;
+    if (current == null) {
+      current = new Deflater(level);
+      deflater = current;
+    }
+    return current;
   }
 
   private void ensureOpen() {

@@ -40,8 +40,9 @@ import io.netty.handler.timeout.ReadTimeoutHandler;
  * <p>The pipeline starts in LOGIN state with the client's negotiated protocol version (not 1.7.2,
  * since the backend must use the same version the client connected with).
  *
- * <p>Compression and encryption handlers are inserted dynamically during the backend login
- * sequence. Encryption is not needed (backends run offline-mode with forwarding).
+ * <p>Compression is switched on during the backend login sequence ({@link
+ * MinecraftConnection#enableCompression}). Encryption is not needed (backends run offline-mode with
+ * forwarding).
  */
 final class BackendChannelInitializer extends ChannelInitializer<Channel> {
 

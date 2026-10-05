@@ -35,6 +35,7 @@ import io.netty.channel.Channel;
  * @param onlineMode whether to authenticate players with Mojang
  * @param compressionThreshold the compression threshold in bytes, or {@code -1} to disable
  * @param compressionLevel the zlib compression level (0–9 or {@code -1} for default)
+ * @param compressionPassthrough whether uninspected packets keep their original compressed form
  * @param sessionService the Mojang session service for online-mode authentication
  * @param serverRegistry the registry of backend servers
  * @param forwardingMode the player info forwarding mode
@@ -47,6 +48,7 @@ public record ServerLoginContext(
     boolean onlineMode,
     int compressionThreshold,
     int compressionLevel,
+    boolean compressionPassthrough,
     MojangSessionService sessionService,
     ServerRegistry serverRegistry,
     ForwardingMode forwardingMode,

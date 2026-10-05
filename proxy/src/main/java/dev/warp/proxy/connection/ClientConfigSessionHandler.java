@@ -97,7 +97,7 @@ final class ClientConfigSessionHandler implements SessionHandler {
   @Override
   public void handleBlind(ByteBuf buf) {
     logger.trace("Client→backend blind {} bytes for {}", buf.readableBytes(), player.username());
-    backendConnection.writeBlind(buf);
+    backendConnection.forward(buf, player.clientConnection());
   }
 
   @Override

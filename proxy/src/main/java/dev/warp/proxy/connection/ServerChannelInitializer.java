@@ -40,7 +40,9 @@ import io.netty.handler.timeout.ReadTimeoutHandler;
  * Outbound: [connection-handler] → [minecraft-encoder] → [frame-encoder]
  * }</pre>
  *
- * <p>Compression and encryption handlers are inserted dynamically during login, not at init time.
+ * <p>Encryption handlers are inserted during login. Compression needs no extra inbound handler: the
+ * {@link MinecraftDecoder} decompresses only the frames it inspects (see {@link
+ * MinecraftConnection#enableCompression}), and the compression encoder replaces the frame encoder.
  *
  * <h3>Handler naming</h3>
  *
@@ -67,9 +69,6 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
 
   /** Frame encoder — prepends VarInt length prefix to outgoing frames. */
   public static final String FRAME_ENCODER = "frame-encoder";
-
-  /** Compression decoder — decompresses frames after SetCompression, installed during login. */
-  public static final String COMPRESSION_DECODER = "compression-decoder";
 
   /** Compression encoder — compresses and frames outgoing data, replaces frame-encoder. */
   public static final String COMPRESSION_ENCODER = "compression-encoder";

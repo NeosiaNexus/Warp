@@ -21,6 +21,7 @@ import dev.warp.protocol.bench.BenchmarkConfig;
 import dev.warp.protocol.bench.PacketCorpus;
 import dev.warp.protocol.bench.PacketCorpus.Workload;
 import dev.warp.protocol.bench.WireStreams;
+import dev.warp.protocol.compress.FrameDecompressor;
 import dev.warp.protocol.compress.JavaCompressor;
 import dev.warp.protocol.packet.PacketDirection;
 
@@ -37,6 +38,8 @@ import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandler;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.embedded.EmbeddedChannel;
 import org.jspecify.annotations.Nullable;
 import org.openjdk.jmh.annotations.Benchmark;
@@ -58,12 +61,14 @@ import org.openjdk.jmh.annotations.Warmup;
  * CPU cost of relaying clientbound PLAY traffic from a backend to a player, per packet.
  *
  * <p>Wires the same handlers, in the same order, as the proxy does once both legs are in PLAY
- * state: the backend leg's inbound pipeline ({@link FrameDecoder} → {@link CompressionDecoder} →
- * {@link MinecraftDecoder}) feeds the client leg's outbound pipeline ({@link MinecraftEncoder} →
- * {@link CompressionEncoder} → optional {@link CipherEncoder}). The backend stream is pre-encoded
- * with vanilla settings (threshold 256, zlib level 6) and delivered in 16 KiB reads, so frame
- * reassembly across read boundaries is part of the measurement. Socket I/O and cross-thread
- * hand-off are not: this isolates the per-packet codec work that dominates proxy CPU.
+ * state: the backend leg's inbound pipeline ({@link FrameDecoder} → {@link MinecraftDecoder} → a
+ * tail that hands each frame to a {@link FrameForwarder}) feeds the client leg's outbound pipeline
+ * ({@link MinecraftEncoder} → {@link CompressionEncoder} → optional {@link CipherEncoder}). {@link
+ * CompressionMode#TRANSCODE} switches compression passthrough off, reproducing what proxies without
+ * it pay. The backend stream is pre-encoded with vanilla settings (threshold 256, zlib level 6) and
+ * delivered in 16 KiB reads, so frame reassembly across read boundaries is part of the measurement.
+ * Socket I/O and cross-thread hand-off are not: this isolates the per-packet codec work that
+ * dominates proxy CPU.
  *
  * <p>Every trial first checks that the client-side bytes decode back to the original packets, so a
  * broken pipeline can never produce a flattering number.
@@ -93,6 +98,17 @@ public class ForwardingPathBenchmark {
   @Param({"false", "true"})
   boolean encrypted;
 
+  /** How uninspected compressed frames are relayed. */
+  public enum CompressionMode {
+    /** Forward the backend's compressed bytes as they are (Warp's default). */
+    PASSTHROUGH,
+    /** Inflate every compressed frame and compress it again, as other proxies do. */
+    TRANSCODE
+  }
+
+  @Param({"PASSTHROUGH", "TRANSCODE"})
+  CompressionMode mode;
+
   private List<ByteBuf> corpus;
   private ByteBuf backendStream;
   private List<ByteBuf> reads;
@@ -121,14 +137,7 @@ public class ForwardingPathBenchmark {
         backendStream.readableBytes(),
         (double) backendStream.readableBytes() / BenchmarkConfig.PACKETS);
 
-    backendLeg =
-        channel(
-            new FrameDecoder(),
-            new CompressionDecoder(
-                BenchmarkConfig.THRESHOLD, new JavaCompressor(Deflater.DEFAULT_COMPRESSION)),
-            new MinecraftDecoder(
-                PacketDirection.CLIENTBOUND, BenchmarkConfig.VERSION, ProtocolState.PLAY));
-
+    boolean passthrough = mode == CompressionMode.PASSTHROUGH;
     SecretKey key = new SecretKeySpec(new byte[16], "AES");
     clientLeg = channel();
     if (encrypted) {
@@ -141,6 +150,31 @@ public class ForwardingPathBenchmark {
                 BenchmarkConfig.THRESHOLD, new JavaCompressor(Deflater.DEFAULT_COMPRESSION)),
             new MinecraftEncoder(
                 PacketDirection.CLIENTBOUND, BenchmarkConfig.VERSION, ProtocolState.PLAY));
+    FrameForwarder toClient = new FrameForwarder(clientLeg);
+    toClient.compressionEnabled(BenchmarkConfig.THRESHOLD);
+    toClient.setVerbatimEnabled(passthrough);
+
+    MinecraftDecoder backendDecoder =
+        new MinecraftDecoder(
+            PacketDirection.CLIENTBOUND, BenchmarkConfig.VERSION, ProtocolState.PLAY);
+    backendDecoder.enableCompression(
+        new FrameDecompressor(
+            BenchmarkConfig.THRESHOLD,
+            false,
+            FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE,
+            new JavaCompressor(Deflater.DEFAULT_COMPRESSION)),
+        passthrough);
+    // Frames are forwarded from the pipeline tail, synchronously, as MinecraftConnection does.
+    backendLeg =
+        channel(
+            new FrameDecoder(),
+            backendDecoder,
+            new ChannelInboundHandlerAdapter() {
+              @Override
+              public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                toClient.forward((ByteBuf) msg, backendDecoder);
+              }
+            });
 
     validate(encrypted ? key : null);
   }
@@ -174,10 +208,7 @@ public class ForwardingPathBenchmark {
   // ---------------------------------------------------------------------------
 
   private long relayRead(ByteBuf read, @Nullable ByteBuf capture) {
-    backendLeg.writeInbound(read.retainedDuplicate());
-    for (Object msg = backendLeg.readInbound(); msg != null; msg = backendLeg.readInbound()) {
-      var _ = clientLeg.write(msg, clientLeg.voidPromise());
-    }
+    backendLeg.writeInbound(read.retainedDuplicate()); // decodes and forwards every frame
     clientLeg.flush();
     long written = 0;
     for (ByteBuf out = clientLeg.readOutbound(); out != null; out = clientLeg.readOutbound()) {

@@ -32,6 +32,15 @@ import io.netty.handler.codec.DecoderException;
  * packet ID and data — everything after the length prefix itself. Per the Minecraft protocol, the
  * length VarInt is at most 3 bytes (max value {@value dev.warp.protocol.codec.VarInt#MAX_21_BIT}).
  *
+ * <h3>Output: complete wire frames</h3>
+ *
+ * <p>Each emitted buffer is one <b>complete frame, length prefix included</b>, positioned at the
+ * prefix (reader index 0). Downstream decoders skip the prefix themselves; in exchange, a frame the
+ * proxy does not inspect can be written to the other connection byte for byte — no re-framing, no
+ * copy, and the original encoding preserved (including the padded 3-byte length VarInts some
+ * servers write, such as Minestom and Velocity). Empty frames are dropped, never emitted: since
+ * 1.21.9 the vanilla client rejects them.
+ *
  * <h3>Improvements over existing proxies</h3>
  *
  * <ul>
@@ -43,7 +52,7 @@ import io.netty.handler.codec.DecoderException;
  *       and @bonzini) to decode without branching. Constant ~3 ns/op regardless of VarInt length,
  *       vs ~6.5 ns/op for branch-per-byte approaches with unpredictable inputs.
  *   <li><b>Zero-copy extraction</b> — complete frames are emitted as retained slices via {@link
- *       ByteBuf#readRetainedSlice(int)}, sharing the underlying memory with no copy.
+ *       ByteBuf#retainedSlice(int, int)}, sharing the underlying memory with no copy.
  *   <li><b>Cached exceptions</b> — protocol violations throw pre-allocated {@link DecoderException}
  *       instances with no-op {@code fillInStackTrace()} to avoid allocation on error paths.
  * </ul>
@@ -131,8 +140,10 @@ public final class FrameDecoder extends ByteToMessageDecoder {
         return;
       }
 
-      // Zero-copy: retained slice shares the underlying buffer's memory.
-      out.add(in.readRetainedSlice(length));
+      // Zero-copy: a retained slice of the whole frame, length prefix included.
+      int frameLength = in.readerIndex() - startIndex + length;
+      out.add(in.retainedSlice(startIndex, frameLength));
+      in.readerIndex(startIndex + frameLength);
     }
   }
 

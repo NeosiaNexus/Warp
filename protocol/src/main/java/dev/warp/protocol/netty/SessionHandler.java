@@ -59,14 +59,16 @@ public interface SessionHandler {
   void handle(Packet packet);
 
   /**
-   * Handles a raw, unregistered packet that was not deserialized (blind forwarding path).
+   * Handles a frame the proxy does not inspect (blind forwarding path).
    *
-   * <p>The buffer contains the complete packet data including the packet ID bytes. The handler is
-   * responsible for releasing or forwarding the buffer. The default implementation releases the
-   * buffer immediately, which is the correct behavior for states that do not support blind
-   * forwarding (handshake, status, login).
+   * <p>The buffer is the <b>complete wire frame exactly as received</b> — length prefix, Data
+   * Length if the connection is compressed, and the payload, still compressed if it arrived
+   * compressed. It must never be written through the normal outbound pipeline (that would frame it
+   * twice); forward it with a {@link FrameForwarder}, which writes it verbatim or re-encodes it as
+   * the other connection requires. The handler owns the buffer. The default implementation releases
+   * it, which is correct for states that do not forward (handshake, status, login).
    *
-   * @param buf the raw packet buffer (caller transfers ownership)
+   * @param buf the complete frame (caller transfers ownership)
    */
   default void handleBlind(ByteBuf buf) {
     buf.release();

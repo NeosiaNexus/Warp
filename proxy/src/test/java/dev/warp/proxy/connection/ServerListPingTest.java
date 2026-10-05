@@ -379,6 +379,7 @@ class ServerListPingTest {
           false, // offline mode for tests
           -1, // compression disabled
           Deflater.DEFAULT_COMPRESSION,
+          true,
           new MojangSessionService(),
           registry,
           ForwardingMode.NONE,

@@ -38,7 +38,12 @@ Aucun flame graph public de Velocity en production n'a ete trouve. L'analyse rep
 
 ### 1.3 Gain Reel du Blind Forwarding
 
-**Hypothese initiale** : 4-5x gain (source : commentaire de 5zig dans Velocity #594)
+**Hypothese initiale** : 4-5x gain (source : Velocity #594)
+
+> **Correction (cycle de recherche #5, 2026-10-05)** : #594 a ete ouverte par **TheMode** (createur de
+> Minestom), pas « 5zig ». Le « x4-5 » y designe le rapport de cout **compression / decompression**,
+> pas un gain estime du passthrough. Mesures du cycle #5 : la compression coute 3x la decompression
+> a 300 o et ~17x sur un chunk (zlib niveau 6). Voir `compression-passthrough-prior-art.md`.
 
 **Estimation revisee** : **2-3x gain de throughput** sur le CPU total
 
