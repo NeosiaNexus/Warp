@@ -14,7 +14,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Pull requests that only touch documentation skip the build and the end-to-end tests.
+  # Pull requests that only touch documentation skip the build, the allocation guard and the
+  # end-to-end tests.
   changes:
     name: Detect changes
     runs-on: ubuntu-24.04
