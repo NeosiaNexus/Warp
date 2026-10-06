@@ -17,13 +17,18 @@
 package dev.warp.protocol.packet;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.codec.McString;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -72,6 +77,18 @@ class TextComponentTest {
     expected[0] = (byte) json.length();
     System.arraycopy(json.getBytes(StandardCharsets.US_ASCII), 0, expected, 1, json.length());
     assertArrayEquals(expected, result);
+  }
+
+  @Test
+  @DisplayName("should produce a VarInt-prefixed JSON string on request, whatever the version")
+  void jsonOnRequest() {
+    byte[] result = TextComponent.plainTextJson("Invalid username");
+
+    ByteBuf buf = Unpooled.wrappedBuffer(result);
+    assertEquals("{\"text\":\"Invalid username\"}", McString.read(buf));
+    assertFalse(buf.isReadable());
+    assertArrayEquals(
+        result, TextComponent.plainText("Invalid username", ProtocolVersion.oldest()));
   }
 
   @Test
