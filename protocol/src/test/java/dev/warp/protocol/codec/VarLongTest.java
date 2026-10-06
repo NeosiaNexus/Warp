@@ -16,15 +16,25 @@
  */
 package dev.warp.protocol.codec;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.io.ByteArrayOutputStream;
+import java.util.Arrays;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.stream.LongStream;
+
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.DecoderException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 @DisplayName("VarLong codec")
 class VarLongTest {
@@ -500,6 +510,145 @@ class VarLongTest {
       } finally {
         buf.release();
       }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Every encoded length, through both read paths
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("every encoded length")
+  class EveryLength {
+
+    /** Bytes already read before the VarLong, continuation bits set. */
+    private static final byte[] PREFIX = {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF};
+
+    /** Both sides of every 7-bit group boundary, the extremes, and alternating bit patterns. */
+    static LongStream values() {
+      LongStream boundaries =
+          LongStream.range(0, 64).flatMap(bit -> LongStream.of(1L << bit, (1L << bit) - 1));
+      return LongStream.concat(
+              boundaries,
+              LongStream.of(
+                  -1, 0x5555_5555_5555_5555L, 0xAAAA_AAAA_AAAA_AAAAL, 0x0F0F_0F0F_0F0F_0F0FL))
+          .distinct();
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("values")
+    @DisplayName("should write the canonical encoding, as long as size() says")
+    void writesCanonicalEncoding(long value) {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        VarLong.write(buf, value);
+
+        assertArrayEquals(leb128(value), ByteBufUtil.getBytes(buf));
+        assertEquals(VarLong.size(value), buf.readableBytes());
+      } finally {
+        buf.release();
+      }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("values")
+    @DisplayName("should read and skip exactly the encoding, whether more bytes follow or not")
+    void readsAndSkips(long value) {
+      assertReadsAndSkips(value, leb128(value));
+    }
+
+    @Test
+    @DisplayName("should read all-zero and all-one groups, overlong too, and reject their prefixes")
+    void readsEveryGroupPattern() {
+      for (int length = 1; length <= VarLong.MAX_BYTES; length++) {
+        for (int ones = 0; ones < 1 << length; ones++) {
+          byte[] encoded = new byte[length];
+          long value = 0;
+          for (int group = 0; group < length; group++) {
+            int bits = ((ones >>> group) & 1) == 0 ? 0 : 0x7F;
+            encoded[group] = (byte) (group < length - 1 ? bits | 0x80 : bits);
+            value |= (long) bits << (7 * group);
+          }
+          assertReadsAndSkips(value, encoded);
+          assertRejectsTruncations(encoded);
+        }
+      }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("values")
+    @DisplayName("should reject every truncation without reading past the writer index")
+    void rejectsTruncations(long value) {
+      assertRejectsTruncations(leb128(value));
+    }
+
+    /**
+     * Asserts that {@code encoded} reads as {@code value} and that both reading and skipping it
+     * consume exactly its bytes: when it ends the readable bytes, and when continuation bytes
+     * follow it (enough for the fast path; reading one of them would change the result).
+     */
+    private static void assertReadsAndSkips(long value, byte[] encoded) {
+      byte[] trailer = new byte[VarLong.MAX_BYTES];
+      Arrays.fill(trailer, (byte) 0x80);
+      for (byte[] following : List.of(new byte[0], trailer)) {
+        ByteBuf buf = buffer(encoded, encoded.length, following);
+        String description = HexFormat.of().formatHex(encoded) + " + " + following.length;
+        try {
+          assertEquals(value, VarLong.read(buf), description);
+          assertEquals(PREFIX.length + encoded.length, buf.readerIndex(), description);
+
+          buf.readerIndex(PREFIX.length);
+          VarLong.skip(buf);
+          assertEquals(PREFIX.length + encoded.length, buf.readerIndex(), description);
+        } finally {
+          buf.release();
+        }
+      }
+    }
+
+    /**
+     * Asserts that reading or skipping any proper prefix of {@code encoded} fails, leaving the
+     * reader index alone, although the missing bytes sit right after the writer index.
+     */
+    private static void assertRejectsTruncations(byte[] encoded) {
+      for (int length = 0; length < encoded.length; length++) {
+        ByteBuf buf = buffer(encoded, length);
+        String description = HexFormat.of().formatHex(encoded) + " cut to " + length;
+        try {
+          assertThrows(DecoderException.class, () -> VarLong.read(buf), description);
+          assertEquals(PREFIX.length, buf.readerIndex(), description);
+          assertThrows(DecoderException.class, () -> VarLong.skip(buf), description);
+          assertEquals(PREFIX.length, buf.readerIndex(), description);
+        } finally {
+          buf.release();
+        }
+      }
+    }
+
+    /**
+     * A buffer whose readable bytes are the first {@code readable} bytes of {@code encoded}, then
+     * {@code trailer}; the rest of {@code encoded} follows past the writer index.
+     */
+    private static ByteBuf buffer(byte[] encoded, int readable, byte... trailer) {
+      ByteBuf buf = Unpooled.buffer().writeBytes(PREFIX);
+      buf.writeBytes(encoded, 0, readable).writeBytes(trailer);
+      int writerIndex = buf.writerIndex();
+      buf.writeBytes(encoded, readable, encoded.length - readable);
+      buf.writerIndex(writerIndex);
+      buf.readerIndex(PREFIX.length);
+      return buf;
+    }
+
+    /** Reference LEB128 encoder: seven bits per byte, least significant group first. */
+    private static byte[] leb128(long value) {
+      ByteArrayOutputStream out = new ByteArrayOutputStream(VarLong.MAX_BYTES);
+      long rest = value;
+      while ((rest & ~0x7FL) != 0) {
+        out.write((int) (rest & 0x7F) | 0x80);
+        rest >>>= 7;
+      }
+      out.write((int) rest);
+      return out.toByteArray();
     }
   }
 }
