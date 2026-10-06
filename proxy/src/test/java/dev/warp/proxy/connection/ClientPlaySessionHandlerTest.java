@@ -189,10 +189,128 @@ class ClientPlaySessionHandlerTest {
       Session session =
           join(ProtocolVersion.MINECRAFT_1_21_4, Map.of("lobby", LOBBY, "survival", SURVIVAL));
 
-      session.handler().handle(new ChatCommand("server survival", new byte[0]));
+      session.handler().handle(new ChatCommand("server survival", new byte[0], 0));
 
       assertArrayEquals(new byte[] {0x70}, session.toPlayer()); // StartConfiguration
       assertTrue(session.player().isSwitching());
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Chat acknowledgements carried by a /server the backend never sees
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("chat acknowledgements")
+  class ChatAcknowledgements {
+
+    /** One version per protocol whose commands carry a last-seen offset (1.19.3 to 1.20.4). */
+    static Stream<ProtocolVersion> versions() {
+      return Stream.of(
+          ProtocolVersion.MINECRAFT_1_19_3,
+          ProtocolVersion.MINECRAFT_1_19_4,
+          ProtocolVersion.MINECRAFT_1_20_1,
+          ProtocolVersion.MINECRAFT_1_20_2,
+          ProtocolVersion.MINECRAFT_1_20_4);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versions")
+    @DisplayName("should pass the offset of a /server it answers on to the backend")
+    void acknowledgesListedServers(ProtocolVersion version) {
+      Session session = join(version, Map.of("lobby", LOBBY));
+
+      session.handler().handle(sessionCommand(version, "server", 3));
+
+      assertArrayEquals(new byte[] {0x03, 3}, session.toBackendOrFail()); // Chat Acknowledgement
+      assertNull(session.toBackend(), "the command itself stays with the proxy");
+      byte[] content = TextComponent.plainText("Servers: [lobby]", version);
+      byte[] answer = session.toPlayer();
+      assertArrayEquals(content, Arrays.copyOfRange(answer, 1, 1 + content.length));
+    }
+
+    @Test
+    @DisplayName("should pass the offset of a /server naming an unknown server on")
+    void acknowledgesUnknownServer() {
+      Session session = join(ProtocolVersion.MINECRAFT_1_20_4, Map.of("lobby", LOBBY));
+
+      session.handler().handle(sessionCommand(ProtocolVersion.MINECRAFT_1_20_4, "server x", 300));
+
+      assertArrayEquals(new byte[] {0x03, (byte) 0xAC, 0x02}, session.toBackendOrFail());
+      assertNull(session.toBackend());
+    }
+
+    @Test
+    @DisplayName("should pass the offset on to the server the player is leaving, before it leaves")
+    void acknowledgesBeforeSwitching() {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_20_1;
+      Session session = join(version, Map.of("lobby", LOBBY, "survival", SURVIVAL));
+      unreachableBackends(session); // the switch fails at once: the player stays on the lobby
+
+      session.handler().handle(sessionCommand(version, "server survival", 1));
+
+      assertArrayEquals(new byte[] {0x03, 1}, session.toBackendOrFail());
+      assertFalse(session.player().isSwitching());
+    }
+
+    @Test
+    @DisplayName("should send nothing to the backend for a /server that acknowledges nothing")
+    void nothingToAcknowledge() {
+      Session session = join(ProtocolVersion.MINECRAFT_1_19_4, Map.of("lobby", LOBBY));
+
+      session.handler().handle(sessionCommand(ProtocolVersion.MINECRAFT_1_19_4, "server", 0));
+
+      assertNull(session.toBackend());
+    }
+
+    @Test
+    @DisplayName("should forward a backend's command as it came, its acknowledgements included")
+    void forwardsOtherCommands() {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_20_4;
+      Session session = join(version, Map.of("lobby", LOBBY));
+      ChatCommand command = sessionCommand(version, "help", 5);
+
+      session.handler().handle(command);
+
+      ByteBuf body = Unpooled.wrappedBuffer(session.toBackendOrFail());
+      assertEquals(0x04, VarInt.read(body)); // 1.20.3 serverbound chat command
+      assertEquals("help", McString.read(body));
+      assertArrayEquals(command.rawSignatureData(), ByteBufUtil.getBytes(body));
+      assertNull(session.toBackend(), "no acknowledgement of its own");
+    }
+
+    @Test
+    @DisplayName("should send nothing from 1.20.5, whose commands carry no acknowledgements")
+    void nothingFrom1205() {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_21_4;
+      Session session = join(version, Map.of("lobby", LOBBY));
+      ByteBuf wire = Unpooled.buffer();
+      McString.write(wire, "server");
+      ChatCommand command = ChatCommand.CODEC.decode(wire, version);
+      wire.release();
+
+      session.handler().handle(command);
+
+      assertNull(session.toBackend());
+    }
+
+    /**
+     * A command decoded from the bytes a 1.19.3 to 1.20.4 client sends: no argument signatures,
+     * then a last-seen update acknowledging {@code offset} new messages.
+     */
+    private static ChatCommand sessionCommand(ProtocolVersion version, String command, int offset) {
+      ByteBuf wire = Unpooled.buffer();
+      try {
+        McString.write(wire, command);
+        wire.writeLong(1_700_000_000_000L); // timestamp
+        wire.writeLong(0x5A17_5A17_5A17_5A17L); // salt
+        VarInt.write(wire, 0); // argument signatures
+        VarInt.write(wire, offset);
+        wire.writeMedium(0x00_00_08); // acknowledged: the newest of the last 20
+        return ChatCommand.CODEC.decode(wire, version);
+      } finally {
+        wire.release();
+      }
     }
   }
 
@@ -225,7 +343,7 @@ class ClientPlaySessionHandlerTest {
       Session session = join(ProtocolVersion.MINECRAFT_1_19_1, Map.of("lobby", LOBBY));
       byte[] signatureData = {0, 0, 1, -117, -49, -27, 104, 0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0};
 
-      session.handler().handle(new ChatCommand("help", signatureData));
+      session.handler().handle(new ChatCommand("help", signatureData, 0));
 
       ByteBuf body = Unpooled.wrappedBuffer(session.toBackendOrFail());
       assertEquals(0x04, VarInt.read(body)); // 1.19.2 serverbound chat command
@@ -297,7 +415,7 @@ class ClientPlaySessionHandlerTest {
   private static PlayPacket command(ProtocolVersion version, String command) {
     return version.isOlderThan(ProtocolVersion.MINECRAFT_1_19)
         ? new LegacyChatMessage("/" + command)
-        : new ChatCommand(command, new byte[0]);
+        : new ChatCommand(command, new byte[0], 0);
   }
 
   private Session join(ProtocolVersion version, Map<String, InetSocketAddress> servers) {

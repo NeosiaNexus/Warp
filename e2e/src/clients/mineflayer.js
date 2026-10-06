@@ -1,7 +1,10 @@
-// Real-protocol bots built on mineflayer. Every packet a bot receives is fully parsed against the
-// protocol definition of its version: a packet the proxy corrupted or mis-framed surfaces as an
-// 'error' or a disconnect, which fails the scenario.
+// Real-protocol bots built on mineflayer, or on minecraft-protocol alone for 1.7 (legacy.js), which
+// mineflayer no longer loads. Every packet a bot receives is fully parsed against the protocol
+// definition of its version: a packet the proxy corrupted or mis-framed surfaces as an 'error' or a
+// disconnect, which fails the scenario.
 import { createRequire } from 'node:module';
+
+import * as legacy from './legacy.js';
 
 const require = createRequire(import.meta.url);
 const mineflayer = require('mineflayer');
@@ -71,6 +74,81 @@ function findMapper(type, test) {
 }
 
 // ---------------------------------------------------------------------------
+// Corrections to mineflayer
+// ---------------------------------------------------------------------------
+
+/** The movement packets mineflayer sends, at most one per physics tick. */
+const MOVEMENT_PACKETS = new Set(['flying', 'look', 'position', 'position_look']);
+
+/**
+ * Ends the bot's ticks with a Client Tick End, as the game does from 1.21.2 and mineflayer never
+ * does. From 26.3 the server counts the positions it receives between two of them, and kicks a
+ * player that sends a second one ("Invalid move player packet received"). A tick end right after
+ * each movement packet keeps every two of them in different ticks, as the game sends them.
+ *
+ * @param {object} client the bot's minecraft-protocol client
+ * @param {string} version the version the bot speaks
+ */
+export function endTicks(client, version) {
+  if (!minecraftData(version)?.protocol?.play?.toServer?.types?.packet_tick_end) return;
+  const write = client.write.bind(client);
+  client.write = (name, params) => {
+    write(name, params);
+    if (MOVEMENT_PACKETS.has(name) && client.state === 'play') write('tick_end', {});
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tab list
+// ---------------------------------------------------------------------------
+
+/** First protocol with the configuration phase (1.20.2), which gives the client a new tab list. */
+const CONFIGURATION_PHASE = 764;
+
+/**
+ * The tab list as the vanilla client keeps it, rebuilt from the packets it receives: entries by
+ * UUID from 1.8, by name on 1.7. mineflayer's `bot.players` cannot show what a server switch left
+ * behind, as it starts over at every Join Game. The client keeps its tab list for the whole
+ * connection before 1.20.2 (the player info map of its play packet listener, which a Join Game does
+ * not replace). From 1.20.2 it gets a new one with each configuration phase: the model starts over
+ * at the Join Game that follows it, before any player info of the new server.
+ */
+export class TabList {
+  /** @param {number} protocol the protocol the client speaks */
+  constructor(protocol) {
+    this.protocol = protocol;
+    this.entries = new Map(); // UUID (1.7: the name) → listed name
+  }
+
+  /** Applies a packet the client received: its minecraft-protocol name and parsed fields. */
+  apply(name, data) {
+    if (name === 'login') {
+      if (this.protocol >= CONFIGURATION_PHASE) this.entries.clear();
+    } else if (name === 'player_remove') {
+      for (const uuid of data.players) this.entries.delete(uuid); // 1.19.3+
+    } else if (name !== 'player_info') {
+      // Nothing else changes the tab list.
+    } else if (data.playerName !== undefined) {
+      // 1.7: one name per packet, listed or not.
+      if (data.online) this.entries.set(data.playerName, data.playerName);
+      else this.entries.delete(data.playerName);
+    } else if (typeof data.action === 'object') {
+      // 1.19.3+: action flags; removals come as player_remove.
+      if (data.action.add_player) for (const entry of data.data) this.entries.set(entry.uuid, entry.player.name);
+    } else if (data.action === 'add_player') {
+      for (const entry of data.data) this.entries.set(entry.uuid, entry.name);
+    } else if (data.action === 'remove_player') {
+      for (const entry of data.data) this.entries.delete(entry.uuid);
+    }
+  }
+
+  /** The listed names, sorted. */
+  names() {
+    return [...this.entries.values()].sort();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Bots
 // ---------------------------------------------------------------------------
 
@@ -91,21 +169,35 @@ export async function ping({ host, port, version }) {
   return protocol.ping({ host, port, version, closeTimeout: 10_000 });
 }
 
-/** Connects a bot and resolves once it has spawned in the world. */
-export function connect({ host, port, version, username, spawnTimeoutMs = 45_000 }) {
+/** The bot library for `version`: mineflayer, or minecraft-protocol alone below 1.8.8. */
+export function library(version) {
+  return legacy.isLegacy(version) ? 'minecraft-protocol' : 'mineflayer';
+}
+
+/**
+ * Connects a bot and resolves once it has spawned in the world.
+ *
+ * With `profileKeys` (from `createProfileKeys`), the bot plays a client logged in to a Microsoft
+ * account, without the session server call. On 1.19 to 1.19.2 it sends the key and its certificate
+ * in Login Start, announcing their `uuid`, and signs the verify token with the key instead of
+ * encrypting it. From 1.19.3 it opens a chat session with them and signs its chat.
+ */
+export function connect({ host, port, version, username, profileKeys = null, spawnTimeoutMs = 45_000 }) {
   correctProtocolData(version);
+  const createBot = legacy.isLegacy(version) ? legacy.createBot : mineflayer.createBot;
   return new Promise((resolve, reject) => {
-    const bot = mineflayer.createBot({
+    const bot = createBot({
       host,
       port,
       username,
       version,
-      auth: 'offline',
+      auth: profileKeys ? keyedAuth(profileKeys) : 'offline',
       checkTimeoutInterval: 120_000,
       hideErrors: true,
       logErrors: false,
     });
-    const handle = new Bot(bot, username);
+    endTicks(bot._client, version);
+    const handle = new Bot(bot, username, announcedProtocol(version), profileKeys !== null);
     const fail = (why) => {
       clearTimeout(timer);
       bot.quit();
@@ -122,24 +214,53 @@ export function connect({ host, port, version, username, spawnTimeoutMs = 45_000
   });
 }
 
+/**
+ * Offline login (no Mojang account) that still hands minecraft-protocol a profile and its key, the
+ * way its Microsoft login does: its Login Start and encryption code then send the key, and from
+ * 1.19.3 it opens a chat session at Join Game when the server announced that profile's UUID, over an
+ * encrypted connection only, and from then on signs chat.
+ */
+function keyedAuth(profileKeys) {
+  return (client, options) => {
+    client.username = options.username;
+    // Undashed: minecraft-protocol compares it so with the UUID the server announced.
+    client.session = { selectedProfile: { id: profileKeys.uuid.replace(/-/g, ''), name: options.username } };
+    client.profileKeys = profileKeys;
+    options.connect(client);
+  };
+}
+
 class Bot {
   /**
-   * @param {object} bot mineflayer bot
+   * @param {object} bot mineflayer bot, or its 1.7 stand-in ({@link legacy.createBot})
    * @param {string} username the name it logs in with (mineflayer only sets `bot.username` once
    *   the server has accepted the login)
+   * @param {number} protocol the protocol it speaks
+   * @param {boolean} keyed whether it has a profile key to sign chat with
    */
-  constructor(bot, username) {
+  constructor(bot, username, protocol, keyed = false) {
     this.bot = bot;
     this.username = username;
-    this.stats = { packets: 0, chunks: 0, lastPacket: Date.now(), errors: [], kicked: null, ended: null };
+    this.keyed = keyed;
+    this.stats = { packets: 0, chunks: 0, signedChat: 0, lastPacket: Date.now(), errors: [], kicked: null, ended: null };
     this.messages = [];
+    this.tabList = new TabList(protocol);
     this.quitting = false;
+    this.chatSession = false;
     this.closed = new Promise((resolve) => bot.once('end', resolve));
     bot._client.on('packet', (data, meta) => {
       this.stats.packets++;
       this.stats.lastPacket = Date.now();
       if (meta.name === 'map_chunk') this.stats.chunks++;
-      else if (meta.name === 'map_chunk_bulk') this.stats.chunks += data.meta?.length ?? 1; // 1.8
+      else if (meta.name === 'map_chunk_bulk') this.stats.chunks += data.meta?.length ?? 1; // 1.7, 1.8
+      else if (meta.name === 'player_chat' && data.signature) this.stats.signedChat++;
+      this.tabList.apply(meta.name, data);
+    });
+    // From 1.19.3 a server announces a player's chat session to everyone, the player included,
+    // once it has taken it (Player Info Update, initialize chat).
+    bot._client.on('player_info', (packet) => {
+      const own = sameUuid(bot._client.uuid);
+      if (Array.isArray(packet.data) && packet.data.some((p) => p.chatSession && own(p.uuid))) this.chatSession = true;
     });
     bot.on('error', (e) => this.stats.errors.push(String(e?.stack ?? e)));
     bot.on('kicked', (reason) => { this.stats.kicked = text(reason); });
@@ -150,6 +271,11 @@ class Bot {
   /** `survival`, `creative`, `adventure` or `spectator`, as last announced by the server. */
   gameMode() {
     return this.bot.game?.gameMode;
+  }
+
+  /** The names in the bot's tab list, sorted ({@link TabList}). */
+  listed() {
+    return this.tabList.names();
   }
 
   async waitFor(condition, what, timeoutMs) {
@@ -174,7 +300,14 @@ class Bot {
   /** Sends a chat command and resolves with the first chat line matching `reply`. */
   async command(command, reply, timeoutMs = 10_000) {
     const from = this.messages.length;
-    this.bot.chat(`/${command}`);
+    if (this.keyed && this.bot.supportFeature('seperateSignedChatCommandPacket')) {
+      // From 1.20.5 a vanilla client sends a command in the signed command packet only when its
+      // syntax has an argument to sign (/msg, /say); minecraft-protocol sends every command there
+      // once it can sign. Commands here have none: send them as a vanilla client would.
+      this.bot._client.write('chat_command', { command });
+    } else {
+      this.bot.chat(`/${command}`);
+    }
     if (!reply) return null;
     let found = null;
     await this.waitFor(() => (found = this.messages.slice(from).find((m) => reply.test(m))) !== undefined, `reply to /${command}`, timeoutMs);
@@ -183,6 +316,22 @@ class Bot {
 
   chat(message) {
     this.bot.chat(message);
+  }
+
+  /**
+   * Waits until the server has taken the bot's chat session. A server applies it on its main
+   * thread but reads chat as it arrives: a line said before is not signed for it, and the server's
+   * signature chain then falls one step behind the bot's.
+   */
+  waitForChatSession(timeoutMs) {
+    return this.waitFor(() => this.chatSession, 'chat session taken by the server', timeoutMs);
+  }
+
+  /** Says `message` in chat and resolves once the server has sent it back to the bot. */
+  async say(message, timeoutMs = 10_000) {
+    const from = this.messages.length;
+    this.bot.chat(message);
+    await this.waitFor(() => this.messages.slice(from).some((m) => m.endsWith(message)), `chat line "${message}" back`, timeoutMs);
   }
 
   /** Throws if the bot saw a protocol error, was kicked, or lost its connection. */
@@ -201,6 +350,12 @@ class Bot {
     const timeout = new Promise((resolve) => { timer = setTimeout(resolve, 5_000); });
     return Promise.race([this.closed, timeout]).finally(() => clearTimeout(timer));
   }
+}
+
+/** A predicate matching `uuid`, with or without dashes. */
+function sameUuid(uuid) {
+  const bare = String(uuid ?? '').replace(/-/g, '');
+  return (other) => bare !== '' && String(other ?? '').replace(/-/g, '') === bare;
 }
 
 function text(reason) {

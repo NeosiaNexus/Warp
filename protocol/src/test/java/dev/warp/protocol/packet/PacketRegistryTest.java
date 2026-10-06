@@ -197,6 +197,44 @@ class PacketRegistryTest {
     }
 
     @Test
+    @DisplayName("should watch watched packets instead of decoding them, and still encode them")
+    void watchedPacket() {
+      PacketRegistry registry =
+          PacketRegistry.builder()
+              .registerWatched(
+                  BossBar.class,
+                  BossBar.CODEC,
+                  BossBar.WATCH,
+                  VersionMapping.map(0x0C, ProtocolVersion.MINECRAFT_1_9))
+              .build();
+
+      assertSame(BossBar.WATCH, registry.lookup(ProtocolVersion.MINECRAFT_1_12_2, 0x0C));
+      PacketRegistry.Encoding encoding =
+          registry.encoding(ProtocolVersion.MINECRAFT_1_12_2, BossBar.class);
+      assertEquals(0x0C, encoding.packetId());
+      assertSame(BossBar.CODEC, encoding.codec());
+    }
+
+    @Test
+    @DisplayName("should watch a packet registered without a codec, and refuse to encode it")
+    void watchedOnlyPacket() {
+      PacketRegistry registry =
+          PacketRegistry.builder()
+              .registerWatched(
+                  PlayerInfoUpdate.class,
+                  PlayerInfoUpdate.WATCH,
+                  VersionMapping.map(0x3A, ProtocolVersion.MINECRAFT_1_19_4))
+              .build();
+
+      assertSame(PlayerInfoUpdate.WATCH, registry.lookup(ProtocolVersion.MINECRAFT_1_20_1, 0x3A));
+      assertEquals(
+          0x3A, registry.packetId(ProtocolVersion.MINECRAFT_1_20_1, PlayerInfoUpdate.class));
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> registry.encoding(ProtocolVersion.MINECRAFT_1_20_1, PlayerInfoUpdate.class));
+    }
+
+    @Test
     @DisplayName("should return null for negative packet ID")
     void negativeId() {
       PacketRegistry registry = PacketRegistry.builder().build();
@@ -320,26 +358,31 @@ class PacketRegistryTest {
     }
 
     @Test
-    @DisplayName("should decode the tab list and boss bars before 1.20.2 only")
+    @DisplayName("should watch the tab list and boss bars before 1.20.2 only, never decode them")
     void switchTrackingBefore1202() {
       PacketRegistry clientbound =
           StateRegistry.get(ProtocolState.PLAY, PacketDirection.CLIENTBOUND);
 
       assertSame(
-          BossBar.CODEC,
+          BossBar.WATCH,
           clientbound.lookup(
               ProtocolVersion.MINECRAFT_1_20_1,
               clientbound.packetId(ProtocolVersion.MINECRAFT_1_20_1, BossBar.class)));
       assertSame(
-          PlayerInfo.CODEC,
+          PlayerInfo.WATCH,
           clientbound.lookup(
               ProtocolVersion.MINECRAFT_1_19_2,
               clientbound.packetId(ProtocolVersion.MINECRAFT_1_19_2, PlayerInfo.class)));
       assertSame(
-          PlayerInfoUpdate.CODEC,
+          PlayerInfoUpdate.WATCH,
           clientbound.lookup(
               ProtocolVersion.MINECRAFT_1_20_1,
               clientbound.packetId(ProtocolVersion.MINECRAFT_1_20_1, PlayerInfoUpdate.class)));
+      assertSame(
+          PlayerInfoRemove.WATCH,
+          clientbound.lookup(
+              ProtocolVersion.MINECRAFT_1_20_1,
+              clientbound.packetId(ProtocolVersion.MINECRAFT_1_20_1, PlayerInfoRemove.class)));
       for (var type :
           List.of(
               BossBar.class,

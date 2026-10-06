@@ -19,6 +19,7 @@ package dev.warp.protocol.packet.play;
 import static dev.warp.protocol.packet.play.SwitchPacketFixtures.bytes;
 import static dev.warp.protocol.packet.play.SwitchPacketFixtures.decode;
 import static dev.warp.protocol.packet.play.SwitchPacketFixtures.encode;
+import static dev.warp.protocol.packet.play.SwitchPacketFixtures.watch;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -29,6 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.packet.play.SwitchPacketFixtures.Watched;
 
 import java.util.Arrays;
 import java.util.List;
@@ -37,6 +39,7 @@ import java.util.stream.Stream;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.handler.codec.DecoderException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -47,6 +50,8 @@ import org.junit.jupiter.params.provider.MethodSource;
  * The packets Warp reads and writes to switch servers before 1.20.2, checked against the bytes an
  * independent implementation writes for every era (node-minecraft-protocol, see {@code
  * switch-packets.txt}): decoding must read every field and writing must give the same bytes back.
+ * The tab list and boss bar packets are watched rather than decoded: watching must find every UUID
+ * in the layout of each version, and read no further than it needs.
  */
 @DisplayName("Server switch packets before 1.20.2")
 class ServerSwitchPacketsTest {
@@ -287,30 +292,110 @@ class ServerSwitchPacketsTest {
   @DisplayName("BossBar")
   class BossBarCodec {
 
+    /** A boss bar's UUID and its one-byte action: all the watch ever reads. */
+    private static final int UUID_AND_ACTION = 17;
+
     static Stream<ProtocolVersion> bossBarVersions() {
       return SwitchPacketFixtures.versionsWith("boss_bar_add");
     }
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("bossBarVersions")
-    @DisplayName("should read the bar and the action, and write the same bytes back")
-    void roundTrip(ProtocolVersion version) {
-      for (String fixture : List.of("boss_bar_add", "boss_bar_health", "boss_bar_remove")) {
-        BossBar bossBar = decode(BossBar.CODEC, version, fixture);
+    @DisplayName("should watch the bars added and removed, reading only the UUID and the action")
+    void watchAddedAndRemoved(ProtocolVersion version) {
+      Watched<BossBar> added = watch(BossBar.WATCH, version, "boss_bar_add");
+      Watched<BossBar> removed = watch(BossBar.WATCH, version, "boss_bar_remove");
 
-        assertEquals(ALICE, bossBar.uuid());
-        assertArrayEquals(bytes(version, fixture), encode(BossBar.CODEC, bossBar, version));
-      }
-      assertEquals(BossBar.ADD, decode(BossBar.CODEC, version, "boss_bar_add").action());
-      assertEquals(BossBar.REMOVE, decode(BossBar.CODEC, version, "boss_bar_remove").action());
+      assertEquals(new BossBar(ALICE, BossBar.ADD), added.packet());
+      assertEquals(UUID_AND_ACTION, added.read(), "title, health, color, division, flags unread");
+      assertEquals(new BossBar(ALICE, BossBar.REMOVE), removed.packet());
+      assertEquals(removed.length(), removed.read());
     }
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("bossBarVersions")
-    @DisplayName("should remove a boss bar")
+    @DisplayName("should report nothing for an update, reading no further than its action")
+    void watchUpdate(ProtocolVersion version) {
+      Watched<BossBar> health = watch(BossBar.WATCH, version, "boss_bar_health");
+
+      assertNull(health.packet());
+      assertEquals(UUID_AND_ACTION, health.read());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("bossBarVersions")
+    @DisplayName("should write the removal of a bar, and read it back")
     void remove(ProtocolVersion version) {
       assertArrayEquals(
           bytes(version, "boss_bar_remove"), encode(BossBar.CODEC, BossBar.remove(ALICE), version));
+      assertEquals(BossBar.remove(ALICE), decode(BossBar.CODEC, version, "boss_bar_remove"));
+    }
+
+    @Test
+    @DisplayName("should refuse to write or read anything but a removal: other fields are not kept")
+    void onlyRemovals() {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_12_2;
+
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> encode(BossBar.CODEC, new BossBar(ALICE, BossBar.ADD), version));
+      assertThrows(DecoderException.class, () -> decode(BossBar.CODEC, version, "boss_bar_health"));
+    }
+  }
+
+  @Nested
+  @DisplayName("LegacyPlayerInfo (1.7)")
+  class LegacyPlayerInfoCodec {
+
+    static Stream<ProtocolVersion> legacyPlayerInfoVersions() {
+      return SwitchPacketFixtures.versionsWith("legacy_player_info_add");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("legacyPlayerInfoVersions")
+    @DisplayName("should watch every name listed, updated or removed, reading the whole packet")
+    void watchEveryEntry(ProtocolVersion version) {
+      Watched<LegacyPlayerInfo> added =
+          watch(LegacyPlayerInfo.WATCH, version, "legacy_player_info_add");
+      Watched<LegacyPlayerInfo> removed =
+          watch(LegacyPlayerInfo.WATCH, version, "legacy_player_info_remove");
+
+      assertEquals(new LegacyPlayerInfo("Alice", true, (short) 12), added.packet());
+      assertEquals(added.length(), added.read());
+      assertEquals(new LegacyPlayerInfo("Alice", false, (short) 0), removed.packet());
+      assertEquals(removed.length(), removed.read());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("legacyPlayerInfoVersions")
+    @DisplayName("should read the name, whether it is listed and its latency, and write them back")
+    void roundTrip(ProtocolVersion version) {
+      LegacyPlayerInfo added = decode(LegacyPlayerInfo.CODEC, version, "legacy_player_info_add");
+      LegacyPlayerInfo colored =
+          decode(LegacyPlayerInfo.CODEC, version, "legacy_player_info_colored");
+      LegacyPlayerInfo removed =
+          decode(LegacyPlayerInfo.CODEC, version, "legacy_player_info_remove");
+
+      assertEquals(new LegacyPlayerInfo("Alice", true, (short) 12), added);
+      assertEquals(new LegacyPlayerInfo("\u00a7cBob", true, (short) 300), colored);
+      assertEquals(new LegacyPlayerInfo("Alice", false, (short) 0), removed);
+      for (String fixture :
+          List.of(
+              "legacy_player_info_add",
+              "legacy_player_info_colored",
+              "legacy_player_info_remove")) {
+        LegacyPlayerInfo info = decode(LegacyPlayerInfo.CODEC, version, fixture);
+        assertArrayEquals(bytes(version, fixture), encode(LegacyPlayerInfo.CODEC, info, version));
+      }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("legacyPlayerInfoVersions")
+    @DisplayName("should remove a name from the tab list")
+    void remove(ProtocolVersion version) {
+      assertArrayEquals(
+          bytes(version, "legacy_player_info_remove"),
+          encode(LegacyPlayerInfo.CODEC, LegacyPlayerInfo.remove("Alice"), version));
     }
   }
 
@@ -324,37 +409,69 @@ class ServerSwitchPacketsTest {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("playerInfoVersions")
-    @DisplayName("should read the action and the entries' UUIDs, and write the same bytes back")
-    void roundTrip(ProtocolVersion version) {
-      PlayerInfo added = decode(PlayerInfo.CODEC, version, "player_info_add");
-      PlayerInfo latency = decode(PlayerInfo.CODEC, version, "player_info_latency");
-      PlayerInfo renamed = decode(PlayerInfo.CODEC, version, "player_info_display_name");
-      PlayerInfo removed = decode(PlayerInfo.CODEC, version, "player_info_remove");
+    @DisplayName("should watch the players added, skipping the fields of the version between UUIDs")
+    void watchAdded(ProtocolVersion version) {
+      Watched<PlayerInfo> added = watch(PlayerInfo.WATCH, version, "player_info_add");
 
-      assertEquals(PlayerInfo.ADD_PLAYER, added.action());
-      assertEquals(List.of(ALICE, BOB), added.profileIds());
-      assertEquals(List.of(ALICE), latency.profileIds());
-      assertEquals(List.of(BOB), renamed.profileIds());
-      assertEquals(PlayerInfo.REMOVE_PLAYER, removed.action());
-      assertEquals(List.of(ALICE, BOB), removed.profileIds());
-      for (String fixture :
-          List.of(
-              "player_info_add",
-              "player_info_latency",
-              "player_info_display_name",
-              "player_info_remove")) {
-        PlayerInfo info = decode(PlayerInfo.CODEC, version, fixture);
-        assertArrayEquals(bytes(version, fixture), encode(PlayerInfo.CODEC, info, version));
+      assertEquals(new PlayerInfo(PlayerInfo.ADD_PLAYER, List.of(ALICE, BOB)), added.packet());
+      assertEquals(added.length(), added.read(), "every entry skipped to its last byte");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("playerInfoVersions")
+    @DisplayName("should watch the players removed")
+    void watchRemoved(ProtocolVersion version) {
+      Watched<PlayerInfo> removed = watch(PlayerInfo.WATCH, version, "player_info_remove");
+
+      assertEquals(new PlayerInfo(PlayerInfo.REMOVE_PLAYER, List.of(ALICE, BOB)), removed.packet());
+      assertEquals(removed.length(), removed.read());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("playerInfoVersions")
+    @DisplayName("should report nothing for an update, reading no further than its action")
+    void watchUpdates(ProtocolVersion version) {
+      for (String fixture : List.of("player_info_latency", "player_info_display_name")) {
+        Watched<PlayerInfo> update = watch(PlayerInfo.WATCH, version, fixture);
+
+        assertNull(update.packet(), fixture);
+        assertEquals(1, update.read(), fixture);
       }
     }
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("playerInfoVersions")
-    @DisplayName("should remove players from the tab list")
+    @DisplayName("should write the removal of players, and read it back")
     void remove(ProtocolVersion version) {
+      PlayerInfo removal = PlayerInfo.remove(List.of(ALICE, BOB));
+
       assertArrayEquals(
-          bytes(version, "player_info_remove"),
-          encode(PlayerInfo.CODEC, PlayerInfo.remove(List.of(ALICE, BOB)), version));
+          bytes(version, "player_info_remove"), encode(PlayerInfo.CODEC, removal, version));
+      assertEquals(removal, decode(PlayerInfo.CODEC, version, "player_info_remove"));
+    }
+
+    @Test
+    @DisplayName("should refuse to write or read anything but a removal: other fields are not kept")
+    void onlyRemovals() {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_12_2;
+      PlayerInfo added = new PlayerInfo(PlayerInfo.ADD_PLAYER, List.of(ALICE));
+
+      assertThrows(IllegalArgumentException.class, () -> encode(PlayerInfo.CODEC, added, version));
+      assertThrows(
+          DecoderException.class, () -> decode(PlayerInfo.CODEC, version, "player_info_latency"));
+    }
+
+    @Test
+    @DisplayName("should reject an entry count the packet cannot hold")
+    void impossibleCount() {
+      ByteBuf buf = Unpooled.wrappedBuffer(new byte[] {PlayerInfo.ADD_PLAYER, (byte) 0xE8, 0x07});
+      try {
+        assertThrows(
+            DecoderException.class,
+            () -> PlayerInfo.WATCH.watch(buf, ProtocolVersion.MINECRAFT_1_12_2));
+      } finally {
+        buf.release();
+      }
     }
   }
 
@@ -368,33 +485,39 @@ class ServerSwitchPacketsTest {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("playerInfoUpdateVersions")
-    @DisplayName("should read every action of every entry, and write the same bytes back")
-    void update(ProtocolVersion version) {
-      PlayerInfoUpdate all = decode(PlayerInfoUpdate.CODEC, version, "player_info_update_all");
-      PlayerInfoUpdate latency =
-          decode(PlayerInfoUpdate.CODEC, version, "player_info_update_latency");
+    @DisplayName("should watch the players added, skipping every flagged field between UUIDs")
+    void watchAdded(ProtocolVersion version) {
+      Watched<PlayerInfoUpdate> all =
+          watch(PlayerInfoUpdate.WATCH, version, "player_info_update_all");
 
-      assertEquals(0x3F, all.actions());
-      assertEquals(List.of(ALICE, BOB), all.profileIds());
-      assertEquals(PlayerInfoUpdate.UPDATE_LATENCY, latency.actions());
-      assertEquals(List.of(ALICE), latency.profileIds());
-      assertArrayEquals(
-          bytes(version, "player_info_update_all"), encode(PlayerInfoUpdate.CODEC, all, version));
-      assertArrayEquals(
-          bytes(version, "player_info_update_latency"),
-          encode(PlayerInfoUpdate.CODEC, latency, version));
+      assertEquals(new PlayerInfoUpdate(0x3F, List.of(ALICE, BOB)), all.packet());
+      assertEquals(all.length(), all.read(), "every entry skipped to its last byte");
     }
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("playerInfoUpdateVersions")
-    @DisplayName("should read and write the removal of players")
-    void remove(ProtocolVersion version) {
-      PlayerInfoRemove removed = decode(PlayerInfoRemove.CODEC, version, "player_info_remove");
+    @DisplayName("should report nothing for an update adding no player, reading only its flags")
+    void watchUpdate(ProtocolVersion version) {
+      Watched<PlayerInfoUpdate> latency =
+          watch(PlayerInfoUpdate.WATCH, version, "player_info_update_latency");
 
-      assertEquals(List.of(ALICE, BOB), removed.profileIds());
+      assertNull(latency.packet());
+      assertEquals(1, latency.read());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("playerInfoUpdateVersions")
+    @DisplayName("should watch, write and read the removal of players")
+    void remove(ProtocolVersion version) {
+      PlayerInfoRemove removal = new PlayerInfoRemove(List.of(ALICE, BOB));
+      Watched<PlayerInfoRemove> removed =
+          watch(PlayerInfoRemove.WATCH, version, "player_info_remove");
+
+      assertEquals(removal, removed.packet());
+      assertEquals(removed.length(), removed.read());
       assertArrayEquals(
-          bytes(version, "player_info_remove"),
-          encode(PlayerInfoRemove.CODEC, new PlayerInfoRemove(List.of(ALICE, BOB)), version));
+          bytes(version, "player_info_remove"), encode(PlayerInfoRemove.CODEC, removal, version));
+      assertEquals(removal, decode(PlayerInfoRemove.CODEC, version, "player_info_remove"));
     }
   }
 

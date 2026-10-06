@@ -12,11 +12,13 @@ import { parseArgs } from 'node:util';
 
 import { Backend, fetchPreseeded, fetchServerJar, serverCacheDir } from './backend.js';
 import { connectClient } from './clients/index.js';
+import { library } from './clients/mineflayer.js';
 import { findJava } from './java.js';
+import { startMockMojang } from './mojang.js';
 import { Netem } from './netem.js';
 import { killAll, run, sleep } from './proc.js';
+import { signerPem } from './profile-keys.js';
 import { SCENARIOS, features, startKeepAlive } from './scenarios.js';
-import { startSessionServer } from './session.js';
 import { SOAK, soakJvmArgs, soakMarkdown } from './soak.js';
 import { E2E_DIR, findEntry, loadMatrix, resolveVariant } from './versions.js';
 import { Warp } from './warp.js';
@@ -33,7 +35,7 @@ Versions and variants
   --mc LIST               Minecraft versions (or protocol numbers) from e2e/versions.json
   --variants LIST         named variants from versions.json (default: online)
   --runs SPEC             per-version variants, e.g. "1.8.8=online,offline;1.12.2=online"
-  --online                ad-hoc variant: online mode against a mock session server
+  --online                ad-hoc variant: online mode against the mock Mojang
   --passthrough on|off    ad-hoc variant: compression passthrough (default on)
   --threshold N           ad-hoc variant: Warp's compression threshold (default 256)
   --backend-threshold N   ad-hoc variant: backends' network-compression-threshold (default: Warp's)
@@ -100,7 +102,9 @@ async function main() {
   const netem = opts.netem === undefined ? null : new Netem({ spec: opts.netem, ports: opts.direct ? [ports.lobby] : [ports.warp, ports.warpAlt] });
   const jar = opts.jar ? resolve(opts.jar) : await buildWarp();
   mkdirSync(opts.out, { recursive: true });
-
+  // Up for the whole run: it signs the bots' profile keys, which Warp and the backends trust, and
+  // Warp checks online logins against it.
+  const mojang = await startMockMojang(ports.mojang);
   const results = [];
   try {
     if (netem) {
@@ -108,10 +112,11 @@ async function main() {
       log(`netem on 127.0.0.1:${netem.ports.join(', ')}, both ways: ${netem.spec}`);
     }
     for (const { entry, variants } of runs) {
-      results.push(await runVersion({ matrix, entry, variants: adaptVariants(entry, variants), scenarios, ports, netem, jar, opts }));
+      results.push(await runVersion({ matrix, entry, variants: adaptVariants(entry, variants), scenarios, ports, netem, jar, mojang, opts }));
     }
   } finally {
     netem?.stop();
+    await mojang.close();
   }
   report(results, opts);
   return results.some((r) => r.status === 'fail') ? 1 : 0;
@@ -121,7 +126,7 @@ async function main() {
 // One version: backends per threshold, Warp per variant
 // ---------------------------------------------------------------------------
 
-async function runVersion({ matrix, entry, variants, scenarios, ports, netem, jar, opts }) {
+async function runVersion({ matrix, entry, variants, scenarios, ports, netem, jar, mojang, opts }) {
   const cache = opts.cache;
   const runDir = join(opts.out, entry.version);
   rmSync(runDir, { recursive: true, force: true });
@@ -141,10 +146,10 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, netem, ja
     ]);
     const thresholds = [...new Set(variants.map((v) => v.backendThreshold))];
     for (const backendThreshold of thresholds) {
-      const backends = await startBackends({ entry, serverJar, serverJava, preseeded, backendThreshold, ports, runDir, logDir, cache });
+      const backends = await startBackends({ entry, serverJar, serverJava, preseeded, backendThreshold, ports, runDir, logDir, cache, mojang });
       try {
         for (const variant of variants.filter((v) => v.backendThreshold === backendThreshold)) {
-          result.variants.push(await runVariant({ matrix, entry, variant, scenarios, backends, ports, netem, jar, warpJava, runDir, logDir, opts }));
+          result.variants.push(await runVariant({ matrix, entry, variant, scenarios, backends, ports, netem, jar, warpJava, runDir, logDir, mojang, opts }));
         }
       } finally {
         await stopBackends(backends, result);
@@ -160,7 +165,7 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, netem, ja
   return result;
 }
 
-async function startBackends({ entry, serverJar, serverJava, preseeded, backendThreshold, ports, runDir, logDir, cache }) {
+async function startBackends({ entry, serverJar, serverJava, preseeded, backendThreshold, ports, runDir, logDir, cache, mojang }) {
   const template = join(serverCacheDir(entry.server, cache), 'template');
   const backends = ['lobby', 'survival'].map(
     (name, i) =>
@@ -175,6 +180,8 @@ async function startBackends({ entry, serverJar, serverJava, preseeded, backendT
         gameMode: i === 0 ? 1 : 2,
         logDir,
         logSuffix: `t${backendThreshold}`,
+        // Only where the bots sign chat: older servers ignore the hosts or keep Mojang's bundled key.
+        mojangHost: features(entry.protocol).signedChat ? mojang.host : null,
       }),
   );
   log(`booting backends (${entry.server.type} ${entry.server.version}, Java ${entry.java}, threshold ${backendThreshold})`);
@@ -205,17 +212,17 @@ async function stopBackends(backends, result) {
   if (forced.length) log(`backend(s) ${forced.join(', ')} ignored "stop" and were killed`);
 }
 
-async function runVariant({ matrix, entry, variant, scenarios, backends, ports, netem, jar, warpJava, runDir, logDir, opts }) {
+async function runVariant({ matrix, entry, variant, scenarios, backends, ports, netem, jar, warpJava, runDir, logDir, mojang, opts }) {
   const label = `${entry.version} ${variant.name}`;
   log(`variant ${variant.name}: ${describeVariant(variant)}`);
   const outcome = { name: variant.name, settings: describeVariant(variant), scenarios: [], failures: [], stacks: [], shutdown: [] };
   const marks = { lobby: backends.lobby.process.mark(), survival: backends.survival.process.mark() };
-  const session = variant.online ? await startSessionServer(ports.session) : null;
   const common = {
     jar,
     java: warpJava,
     online: variant.online,
-    sessionServer: session?.url ?? null,
+    sessionServer: variant.online ? mojang.hasJoinedUrl : null,
+    profileKeySigner: signerPem(mojang.signer),
     passthrough: variant.passthrough,
     threshold: variant.threshold,
     logDir,
@@ -255,6 +262,7 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
     warpAlt: { port: targets.warpAlt },
     lobby: backends.lobby,
     survival: backends.survival,
+    mojang,
     bots: Number(opts.bots),
     // --soak: its duration, where it writes its time series, and the report it leaves for the summary.
     soak: opts.soak === undefined ? null : { minutes: Number(opts.soak), dir: runDir, report: null },
@@ -299,7 +307,6 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
       if (exit?.forced) outcome.failures.push(`${instance.name} did not shut down within 20 s (thread dump in logs/)`);
       for (const line of instance.failures()) outcome.failures.push(`${instance.name}: ${line}`);
     }
-    await session?.close();
   }
   if (ctx.soak?.report) outcome.soak = ctx.soak.report;
   for (const [name, backend] of Object.entries(backends)) {
@@ -409,7 +416,7 @@ function selectScenarios(list) {
 
 /** Fixed ports from `base`; fails early if one is taken (a dev testbed, another run…). */
 async function reservePorts(base) {
-  const ports = { lobby: base, survival: base + 1, warp: base + 2, warpAlt: base + 3, session: base + 4, closed: base + 5, via: base + 6, viaAlt: base + 7 };
+  const ports = { lobby: base, survival: base + 1, warp: base + 2, warpAlt: base + 3, mojang: base + 4, closed: base + 5, via: base + 6, viaAlt: base + 7 };
   for (const [name, port] of Object.entries(ports)) {
     const free = await new Promise((done) => {
       const probe = createServer().once('error', () => done(false)).listen(port, '127.0.0.1', () => probe.close(() => done(true)));
@@ -472,7 +479,8 @@ function markdown(results) {
 
 function printMatrix(matrix) {
   for (const v of matrix.versions) {
-    const client = v.via ? `mineflayer ${v.via} → ViaProxy` : 'mineflayer';
+    const speaks = v.via ?? v.client ?? v.version;
+    const client = v.via ? `${library(speaks)} ${v.via} → ViaProxy` : library(speaks);
     const broken = v.knownBroken ?? (v.knownBrokenScenarios ? Object.keys(v.knownBrokenScenarios).join(', ') : null);
     console.log(`${String(v.protocol).padStart(4)}  ${v.version.padEnd(8)} ${describeServer(v.server).padEnd(24)} Java ${String(v.java).padEnd(3)} ${client}${broken ? `  [known broken: ${broken}]` : ''}`);
   }

@@ -28,8 +28,8 @@ import io.netty.util.concurrent.DefaultThreadFactory;
  * <p>Netty's {@code FastThreadLocal}, {@code Recycler} and pooled-allocator thread caches take
  * slower fallback paths on plain threads, so benchmarking pipeline code on JMH's default workers
  * would misrepresent production. This mirrors the harness executor of Netty's own microbench
- * module. Enable it per benchmark with {@code -Djmh.executor=CUSTOM
- * -Djmh.executor.class=dev.warp.protocol.bench.EventLoopLikeExecutor}.
+ * module. {@link AbstractMicrobenchmark} enables it for every benchmark through the fork arguments
+ * {@link #JMH_EXECUTOR} and {@link #JMH_EXECUTOR_CLASS}.
  */
 public final class EventLoopLikeExecutor extends ThreadPoolExecutor {
 
