@@ -18,11 +18,11 @@ package dev.warp.protocol.packet.login;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.codec.McByteArray;
 import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.codec.McUuid;
 import dev.warp.protocol.codec.VarInt;
@@ -51,6 +51,27 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("Login packet codecs")
 class LoginPacketsTest {
 
+  /** Both halves have their sign bit set, so a signed/unsigned slip would show up. */
+  private static final UUID PLAYER_UUID = UUID.fromString("f81d4fae-7dec-11d0-a765-00a0c91e6bf6");
+
+  private static final byte[] BINARY_UUID =
+      HexFormat.of().parseHex("f81d4fae7dec11d0a76500a0c91e6bf6");
+
+  /** The VarInt-prefixed username {@code "Notch"} as it appears on the wire. */
+  private static final byte[] NOTCH_ON_WIRE = concat(new byte[] {5}, ascii("Notch"));
+
+  private static byte[] ascii(String str) {
+    return str.getBytes(StandardCharsets.US_ASCII);
+  }
+
+  private static byte[] concat(byte[]... parts) {
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    for (byte[] part : parts) {
+      out.writeBytes(part);
+    }
+    return out.toByteArray();
+  }
+
   // ---------------------------------------------------------------------------
   // LoginStart
   // ---------------------------------------------------------------------------
@@ -59,53 +80,138 @@ class LoginPacketsTest {
   @DisplayName("LoginStart")
   class LoginStartCodec {
 
+    private static final byte[] FALSE = {0};
+    private static final byte[] TRUE = {1};
+
+    private static final LoginStart NOTCH = new LoginStart("Notch", PLAYER_UUID);
+    private static final LoginStart NOTCH_WITHOUT_UUID = new LoginStart("Notch", null);
+
+    /**
+     * Every Login Start layout, on each side of every layout change: the bytes {@link #NOTCH}
+     * encodes to, and what those bytes decode back to.
+     */
+    static Stream<Arguments> layoutPerVersion() {
+      return Stream.of(
+          // name
+          Arguments.of(ProtocolVersion.MINECRAFT_1_8, NOTCH_ON_WIRE, NOTCH_WITHOUT_UUID),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_18_2, NOTCH_ON_WIRE, NOTCH_WITHOUT_UUID),
+          // name, signature data (absent)
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_19, concat(NOTCH_ON_WIRE, FALSE), NOTCH_WITHOUT_UUID),
+          // name, signature data (absent), optional uuid; 1.19.1 and 1.19.2 share protocol 760
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_19_1,
+              concat(NOTCH_ON_WIRE, FALSE, TRUE, BINARY_UUID),
+              NOTCH),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_19_2,
+              concat(NOTCH_ON_WIRE, FALSE, TRUE, BINARY_UUID),
+              NOTCH),
+          // name, optional uuid
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_19_3, concat(NOTCH_ON_WIRE, TRUE, BINARY_UUID), NOTCH),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_20_1, concat(NOTCH_ON_WIRE, TRUE, BINARY_UUID), NOTCH),
+          // name, uuid
+          Arguments.of(ProtocolVersion.MINECRAFT_1_20_2, concat(NOTCH_ON_WIRE, BINARY_UUID), NOTCH),
+          Arguments.of(ProtocolVersion.latest(), concat(NOTCH_ON_WIRE, BINARY_UUID), NOTCH));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("layoutPerVersion")
+    @DisplayName("should roundtrip through the exact layout of each version")
+    void roundtripsThroughVersionLayout(
+        ProtocolVersion version, byte[] expectedWire, LoginStart expectedDecoded) {
+      byte[] wire = encode(NOTCH, version);
+      LoginStart decoded = decode(wire, version);
+
+      assertArrayEquals(expectedWire, wire);
+      assertEquals(expectedDecoded, decoded);
+    }
+
+    static Stream<Arguments> signingKeyVersions() {
+      return Stream.of(
+          Arguments.of(ProtocolVersion.MINECRAFT_1_19, new byte[0], NOTCH_WITHOUT_UUID),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_19_2, concat(TRUE, BINARY_UUID), NOTCH));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("signingKeyVersions")
+    @DisplayName("should skip the chat signing key a 1.19 to 1.19.2 client sends")
+    void skipsSigningKey(
+        ProtocolVersion version, byte[] afterSignatureData, LoginStart expectedDecoded) {
+      byte[] wire = concat(NOTCH_ON_WIRE, signingKey(), afterSignatureData);
+
+      LoginStart decoded = decode(wire, version);
+
+      assertEquals(expectedDecoded, decoded);
+    }
+
+    /** The optional uuid flagged as absent, on each side of the signature data removal. */
+    static Stream<Arguments> absentUuidLayouts() {
+      return Stream.of(
+          // name, signature data (absent), uuid (absent)
+          Arguments.of(ProtocolVersion.MINECRAFT_1_19_2, concat(NOTCH_ON_WIRE, FALSE, FALSE)),
+          // name, uuid (absent)
+          Arguments.of(ProtocolVersion.MINECRAFT_1_19_3, concat(NOTCH_ON_WIRE, FALSE)),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_20_1, concat(NOTCH_ON_WIRE, FALSE)));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("absentUuidLayouts")
+    @DisplayName("should flag the uuid as absent when 1.19.1 to 1.20.1 has none, and read it back")
+    void roundtripsAbsentUuid(ProtocolVersion version, byte[] expectedWire) {
+      byte[] wire = encode(NOTCH_WITHOUT_UUID, version);
+      LoginStart decoded = decode(wire, version);
+
+      assertArrayEquals(expectedWire, wire);
+      assertEquals(NOTCH_WITHOUT_UUID, decoded);
+    }
+
     @Test
-    @DisplayName("should roundtrip for 1.7 (name only)")
-    void roundtrip17() {
-      LoginStart original = new LoginStart("Steve", null);
+    @DisplayName("should refuse to write a 1.20.2+ login without a uuid")
+    void rejectsMissingUuidFrom1202() {
       ByteBuf buf = Unpooled.buffer();
       try {
-        LoginStart.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_8);
-        LoginStart decoded = LoginStart.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_8);
-        assertEquals("Steve", decoded.name());
-        assertNull(decoded.playerUuid());
+        assertThrows(
+            IllegalStateException.class,
+            () ->
+                LoginStart.CODEC.encode(NOTCH_WITHOUT_UUID, buf, ProtocolVersion.MINECRAFT_1_20_2));
       } finally {
         buf.release();
       }
     }
 
-    @Test
-    @DisplayName("should decode for 1.19.1 (name + no signature + optional UUID)")
-    void decode1191WithUuid() {
-      // 1.19.1 decode reads: name, skipSignatureFields (boolean prefix), optional UUID
-      // Encode does not write signature fields, so we construct the wire format manually
-      UUID uuid = UUID.randomUUID();
+    /** Present signature data with a realistic 294-byte RSA public key and 512-byte signature. */
+    private static byte[] signingKey() {
       ByteBuf buf = Unpooled.buffer();
       try {
-        McString.write(buf, "Alex", 16);
-        buf.writeBoolean(false); // no signature data
-        buf.writeBoolean(true); // UUID is present
-        McUuid.write(buf, uuid);
-
-        LoginStart decoded = LoginStart.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_19_1);
-        assertEquals("Alex", decoded.name());
-        assertEquals(uuid, decoded.playerUuid());
+        buf.writeBoolean(true);
+        buf.writeLong(1_656_000_000_000L); // key expiry timestamp
+        McByteArray.write(buf, new byte[294]); // public key
+        McByteArray.write(buf, new byte[512]); // signature
+        return ByteBufUtil.getBytes(buf);
       } finally {
         buf.release();
       }
     }
 
-    @Test
-    @DisplayName("should roundtrip for 1.19.3+ (name + UUID)")
-    void roundtrip1193() {
-      UUID uuid = UUID.fromString("12345678-1234-1234-1234-123456789abc");
-      LoginStart original = new LoginStart("Alex", uuid);
+    private static byte[] encode(LoginStart packet, ProtocolVersion version) {
       ByteBuf buf = Unpooled.buffer();
       try {
-        LoginStart.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_19_3);
-        LoginStart decoded = LoginStart.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_19_3);
-        assertEquals("Alex", decoded.name());
-        assertEquals(uuid, decoded.playerUuid());
+        LoginStart.CODEC.encode(packet, buf, version);
+        return ByteBufUtil.getBytes(buf);
+      } finally {
+        buf.release();
+      }
+    }
+
+    private static LoginStart decode(byte[] wire, ProtocolVersion version) {
+      ByteBuf buf = Unpooled.wrappedBuffer(wire);
+      try {
+        LoginStart decoded = LoginStart.CODEC.decode(buf, version);
+        assertEquals(0, buf.readableBytes(), "bytes left after LoginStart");
+        return decoded;
       } finally {
         buf.release();
       }
@@ -120,16 +226,8 @@ class LoginPacketsTest {
   @DisplayName("LoginSuccess")
   class LoginSuccessCodec {
 
-    /** Both halves have their sign bit set, so a signed/unsigned slip would show up. */
-    private static final UUID PLAYER_UUID = UUID.fromString("f81d4fae-7dec-11d0-a765-00a0c91e6bf6");
-
     private static final String DASHED_UUID = "f81d4fae-7dec-11d0-a765-00a0c91e6bf6";
     private static final String UNDASHED_UUID = "f81d4fae7dec11d0a76500a0c91e6bf6";
-    private static final byte[] BINARY_UUID =
-        HexFormat.of().parseHex("f81d4fae7dec11d0a76500a0c91e6bf6");
-
-    /** The VarInt-prefixed username {@code "Notch"} as it follows the UUID on the wire. */
-    private static final byte[] NOTCH_ON_WIRE = concat(new byte[] {5}, ascii("Notch"));
 
     /** How the player UUID is laid out on the wire. */
     enum UuidForm {
@@ -306,18 +404,6 @@ class LoginPacketsTest {
         throw new IllegalArgumentException("Unknown protocol " + protocol);
       }
       return version;
-    }
-
-    private static byte[] ascii(String str) {
-      return str.getBytes(StandardCharsets.US_ASCII);
-    }
-
-    private static byte[] concat(byte[]... parts) {
-      ByteArrayOutputStream out = new ByteArrayOutputStream();
-      for (byte[] part : parts) {
-        out.writeBytes(part);
-      }
-      return out.toByteArray();
     }
   }
 
