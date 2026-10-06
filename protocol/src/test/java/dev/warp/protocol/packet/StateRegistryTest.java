@@ -55,6 +55,7 @@ import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPacket;
@@ -74,6 +75,7 @@ import dev.warp.protocol.packet.status.StatusResponse;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -115,7 +117,10 @@ class StateRegistryTest {
             .<Class<? extends Packet>>map(type -> type.asSubclass(Packet.class))
             .toList();
 
-    /** minecraft-data's name for each packet Warp registers, in each state and direction. */
+    /**
+     * minecraft-data's name for each packet Warp registers, in each state and direction. A packet
+     * minecraft-data renamed has one entry per name, each from the version it took that name.
+     */
     private static final List<ReferenceName> REFERENCE_NAMES =
         List.of(
             new ReferenceName(HANDSHAKE, SERVERBOUND, Handshake.class, "set_protocol"),
@@ -147,6 +152,7 @@ class StateRegistryTest {
             new ReferenceName(PLAY, SERVERBOUND, KeepAlive.class, "keep_alive"),
             new ReferenceName(PLAY, SERVERBOUND, PlayPluginMessage.class, "custom_payload"),
             new ReferenceName(PLAY, SERVERBOUND, TabCompleteRequest.class, "tab_complete"),
+            new ReferenceName(PLAY, SERVERBOUND, LegacyChatMessage.class, "chat"),
             new ReferenceName(PLAY, SERVERBOUND, ChatCommand.class, "chat_command"),
             new ReferenceName(
                 PLAY, SERVERBOUND, AcknowledgeConfiguration.class, "configuration_acknowledged"),
@@ -159,7 +165,13 @@ class StateRegistryTest {
             new ReferenceName(PLAY, CLIENTBOUND, PlayPluginMessage.class, "custom_payload"),
             new ReferenceName(PLAY, CLIENTBOUND, JoinGame.class, "login"),
             new ReferenceName(PLAY, CLIENTBOUND, Respawn.class, "respawn"),
-            new ReferenceName(PLAY, CLIENTBOUND, SystemChatMessage.class, "system_chat"),
+            new ReferenceName(PLAY, CLIENTBOUND, SystemChatMessage.class, "chat"),
+            new ReferenceName(
+                PLAY,
+                CLIENTBOUND,
+                SystemChatMessage.class,
+                "system_chat",
+                ProtocolVersion.MINECRAFT_1_19),
             new ReferenceName(PLAY, CLIENTBOUND, StartConfiguration.class, "start_configuration"),
             new ReferenceName(PLAY, CLIENTBOUND, Transfer.class, "transfer"),
             new ReferenceName(PLAY, CLIENTBOUND, TabCompleteResponse.class, "tab_complete"));
@@ -185,7 +197,7 @@ class StateRegistryTest {
               continue;
             }
             String where = state + " " + direction + " " + type.getSimpleName();
-            String name = referenceName(state, direction, type);
+            String name = referenceName(state, direction, type, version);
             if (name == null) {
               mismatches.add(where + ": no minecraft-data name in REFERENCE_NAMES");
               continue;
@@ -232,12 +244,17 @@ class StateRegistryTest {
       }
     }
 
+    /** The name minecraft-data gives {@code type} in {@code version}, if it has one. */
     private static @Nullable String referenceName(
-        ProtocolState state, PacketDirection direction, Class<? extends Packet> type) {
+        ProtocolState state,
+        PacketDirection direction,
+        Class<? extends Packet> type,
+        ProtocolVersion version) {
       return REFERENCE_NAMES.stream()
           .filter(n -> n.state() == state && n.direction() == direction && n.type() == type)
+          .filter(n -> version.isAtLeast(n.since()))
+          .max(Comparator.comparing(ReferenceName::since))
           .map(ReferenceName::name)
-          .findFirst()
           .orElse(null);
     }
 
@@ -245,12 +262,23 @@ class StateRegistryTest {
       return id.isPresent() ? "0x%02X".formatted(id.getAsInt()) : "absent";
     }
 
-    /** minecraft-data's name of a packet type in one state and direction. */
+    /** minecraft-data's name of a packet type in one state and direction, from {@code since} on. */
     private record ReferenceName(
         ProtocolState state,
         PacketDirection direction,
         Class<? extends Packet> type,
-        String name) {}
+        String name,
+        ProtocolVersion since) {
+
+      /** A name the packet has kept in every version. */
+      ReferenceName(
+          ProtocolState state,
+          PacketDirection direction,
+          Class<? extends Packet> type,
+          String name) {
+        this(state, direction, type, name, ProtocolVersion.oldest());
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------

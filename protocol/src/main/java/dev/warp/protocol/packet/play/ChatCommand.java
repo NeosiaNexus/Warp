@@ -25,15 +25,16 @@ import io.netty.buffer.ByteBuf;
 /**
  * Client sends a chat command ({@code C→S}).
  *
- * <p>The proxy intercepts this for command routing between backend servers. The packet split from
- * the chat message in 1.19, but is registered from 1.19.3 only: the proxy does not intercept the
- * commands of older clients.
+ * <p>Split from the chat message packet in 1.19 (before, commands are chat lines starting with
+ * {@code /}, see {@link LegacyChatMessage}). The proxy intercepts this for command routing between
+ * backend servers.
  *
  * <p>Version history:
  *
  * <ul>
- *   <li><b>1.19.3-1.20.4</b>: command (256 characters at most), then its timestamp, salt, argument
- *       signatures and acknowledged messages
+ *   <li><b>1.19-1.20.4</b>: command (256 characters at most), then its signing fields: timestamp,
+ *       salt and argument signatures, a signed preview flag until 1.19.2, and the acknowledged
+ *       messages from 1.19.1
  *   <li><b>1.20.5+</b>: command only (32767 characters at most). 1.20.5 moved commands with signed
  *       arguments to a separate packet, which the proxy forwards untouched
  * </ul>

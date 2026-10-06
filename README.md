@@ -44,8 +44,8 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
   virtual thread and never blocks the event loop. Offline mode is available for development.
 - **Player info forwarding**: [Velocity modern forwarding](https://docs.papermc.io/velocity/player-information-forwarding)
   (HMAC-SHA256 signed, Minecraft 1.13+ backends such as Paper), or none.
-- **Several backend servers**: `/server` lists them (1.19.3+ clients) and switches between them.
-  Switching uses the configuration phase, so it needs 1.20.2+ clients.
+- **Several backend servers**: `/server` lists them (every client version) and switches between
+  them. Switching uses the configuration phase, so it needs 1.20.2+ clients.
 - **Fallback** (1.20.2+ clients): when the server a player joins or switches to is unreachable or
   refuses the login, or kicks them during play, Warp tries the servers of `fallback-order` in turn
   before disconnecting the player. Older clients are disconnected instead.
@@ -117,9 +117,8 @@ and [`e2e/versions.json`](e2e/versions.json) are the current answer to "does my 
 ### Requirements
 
 - **To run Warp**: Java 25 or newer ([Adoptium Temurin](https://adoptium.net/) recommended).
-- **To build it**: Git, and JDK 21 to run Gradle (CI uses 21; Gradle 8.12 runs on JDK 23 at most,
-  not on 24 or newer). Gradle compiles with JDK 25 through its toolchain support and downloads one
-  if none is installed.
+- **To build it**: Git, and JDK 17 or newer to run Gradle (CI uses 21). Gradle compiles with
+  JDK 25 through its toolchain support and downloads one if none is installed.
 
 ### Build from source
 
@@ -131,7 +130,8 @@ cd Warp
 
 The shadow JAR is produced at `proxy/build/libs/warp-<version>.jar`. Pre-built jars are attached
 to the [releases](https://github.com/NeosiaNexus/Warp/releases); releases after 0.1.0-beta.5 also
-come with a `SHA256SUMS` file and a signed provenance attestation. During the beta, `main` moves
+come with a `SHA256SUMS` file and signed provenance
+([how to verify](CONTRIBUTING.md#release-automation)). During the beta, `main` moves
 well ahead of the releases: build from source to try the latest changes.
 
 ### Run
@@ -147,7 +147,7 @@ mkdir -p run && cd run
 `bin/warp.sh` starts the most recently built `proxy/build/libs/warp-*.jar` with tuned JVM flags
 (ZGC, async logging, and `sun.misc.Unsafe` access for Netty on Java 25). Set `WARP_JAR` to start
 another jar, such as a downloaded release. The scripts use the `java` on your `PATH`, which must be
-Java 25 or newer (not the JDK 21 that runs Gradle). Without the scripts:
+Java 25 or newer (the JDK that runs Gradle can be older). Without the scripts:
 
 ```bash
 java --sun-misc-unsafe-memory-access=allow -jar /path/to/warp-<version>.jar

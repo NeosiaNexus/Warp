@@ -25,18 +25,23 @@ import io.netty.buffer.ByteBuf;
 /**
  * Keep-alive ping/pong ({@code bidirectional}).
  *
- * <p>The server sends a random ID; the client must echo it within 15 seconds. The same record type
- * is registered in both directions.
+ * <p>The server sends an ID; the client must echo it unchanged. The same record type is registered
+ * in both directions.
  *
  * <p>Version history:
  *
  * <ul>
- *   <li><b>1.7.2–1.7.6</b>: ID as 32-bit int
- *   <li><b>1.8–1.12.1</b>: ID as VarInt
+ *   <li><b>1.7.2 to 1.7.6</b>: ID as 32-bit int
+ *   <li><b>1.8 to 1.12.1</b>: ID as VarInt (still 32-bit)
  *   <li><b>1.12.2+</b>: ID as 64-bit long
  * </ul>
  *
- * @param id the keep-alive identifier
+ * <p>The record holds a {@code long} for every version. Before 1.12.2, {@link #CODEC} refuses to
+ * encode an ID outside the {@code int} range instead of truncating it: the client would echo the
+ * truncated value, which never matches the ID the sender is waiting for.
+ *
+ * @param id the keep-alive identifier; it must fit in an {@code int} unless {@link
+ *     #hasLongId(ProtocolVersion)} holds for the connection's version
  */
 public record KeepAlive(long id) implements PlayPacket {
 
@@ -46,7 +51,7 @@ public record KeepAlive(long id) implements PlayPacket {
         @Override
         public KeepAlive decode(ByteBuf buf, ProtocolVersion version) {
           long id;
-          if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_12_2)) {
+          if (hasLongId(version)) {
             id = buf.readLong();
           } else if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_8)) {
             id = VarInt.read(buf);
@@ -58,13 +63,35 @@ public record KeepAlive(long id) implements PlayPacket {
 
         @Override
         public void encode(KeepAlive packet, ByteBuf buf, ProtocolVersion version) {
-          if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_12_2)) {
+          if (hasLongId(version)) {
             buf.writeLong(packet.id());
           } else if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_8)) {
-            VarInt.write(buf, (int) packet.id());
+            VarInt.write(buf, intId(packet, version));
           } else {
-            buf.writeInt((int) packet.id());
+            buf.writeInt(intId(packet, version));
           }
         }
       };
+
+  /**
+   * Returns whether {@code version} carries the keep-alive ID as a 64-bit {@code long}, which is
+   * the case from 1.12.2 on. Older versions carry a 32-bit ID, so an ID generated for them must lie
+   * in the {@code int} range.
+   *
+   * @param version the protocol version of the connection
+   * @return {@code true} if every {@code long} ID survives the wire format of {@code version}
+   */
+  public static boolean hasLongId(ProtocolVersion version) {
+    return version.isAtLeast(ProtocolVersion.MINECRAFT_1_12_2);
+  }
+
+  /** Narrows the ID to the 32 bits of a pre-1.12.2 wire format, refusing to drop any bit. */
+  private static int intId(KeepAlive packet, ProtocolVersion version) {
+    int id = (int) packet.id();
+    if (id != packet.id()) {
+      throw new IllegalArgumentException(
+          "KeepAlive id " + packet.id() + " does not fit the 32-bit id of " + version);
+    }
+    return id;
+  }
 }
