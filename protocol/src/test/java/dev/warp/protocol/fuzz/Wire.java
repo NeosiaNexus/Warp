@@ -288,7 +288,7 @@ public final class Wire {
   public static byte[] packet(byte[] id, int size) {
     byte[] packet = Arrays.copyOf(id, id.length + size);
     for (int i = id.length; i < packet.length; i++) {
-      packet[i] = (byte) (i % 13 * 7);
+      packet[i] = (byte) ((i % 13) * 7); // a pattern zlib compresses
     }
     return packet;
   }
