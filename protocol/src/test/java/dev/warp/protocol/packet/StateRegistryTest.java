@@ -58,6 +58,7 @@ import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
+import dev.warp.protocol.packet.play.LegacyPlayerInfo;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPacket;
@@ -373,6 +374,7 @@ class StateRegistryTest {
             new PacketName(PLAY, CLIENTBOUND, Transfer.class, "transfer"),
             new PacketName(PLAY, CLIENTBOUND, TabCompleteResponse.class, "tab_complete"),
             new PacketName(PLAY, CLIENTBOUND, BossBar.class, "boss_bar"),
+            new PacketName(PLAY, CLIENTBOUND, LegacyPlayerInfo.class, "player_info"),
             new PacketName(PLAY, CLIENTBOUND, PlayerInfo.class, "player_info"),
             new PacketName(PLAY, CLIENTBOUND, PlayerInfoUpdate.class, "player_info"),
             new PacketName(PLAY, CLIENTBOUND, PlayerInfoRemove.class, "player_remove"),

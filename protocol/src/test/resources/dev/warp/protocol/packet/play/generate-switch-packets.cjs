@@ -199,6 +199,13 @@ for (const v of VERSIONS) {
     out(protocol, 'boss_bar_health', body(ser, 'boss_bar', { entityUUID: UUID_A, action: 2, health: 0.5 }))
     out(protocol, 'boss_bar_remove', body(ser, 'boss_bar', { entityUUID: UUID_A, action: 1 }))
   }
+  if (!at(data, '1.8')) {
+    // One name per packet, listed or not: Alice listed, Bob with a colour code (a two-byte UTF-8
+    // character), and Alice's removal as Warp writes it (latency 0).
+    out(protocol, 'legacy_player_info_add', body(ser, 'player_info', { playerName: 'Alice', online: true, ping: 12 }))
+    out(protocol, 'legacy_player_info_colored', body(ser, 'player_info', { playerName: '\u00a7cBob', online: true, ping: 300 }))
+    out(protocol, 'legacy_player_info_remove', body(ser, 'player_info', { playerName: 'Alice', online: false, ping: 0 }))
+  }
   if (at(data, '1.8') && !at(data, '1.19.3')) {
     const crypto = at(data, '1.19') ? { timestamp: [0, 1000], publicKey: Buffer.from([1, 2, 3]), signature: Buffer.from([4, 5]) } : undefined
     out(protocol, 'player_info_add', body(ser, 'player_info', {

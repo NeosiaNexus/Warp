@@ -27,6 +27,7 @@ import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
+import dev.warp.protocol.packet.play.LegacyPlayerInfo;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPacket;
@@ -128,6 +129,7 @@ final class BackendPlaySessionHandler implements SessionHandler {
       case TabCompleteResponse response -> forwardToClient(response);
       // Watched before 1.20.2 only, to clear them from the client on a server switch. Their frame
       // follows, forwarded untouched by handleBlind.
+      case LegacyPlayerInfo info -> track(info);
       case PlayerInfo info -> track(info);
       case PlayerInfoUpdate update -> track(update);
       case PlayerInfoRemove remove -> track(remove);

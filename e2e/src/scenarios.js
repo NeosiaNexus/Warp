@@ -18,8 +18,8 @@ export function features(protocol) {
     // Every version switches: through the configuration phase from 1.20.2, with the new server's
     // Join Game and a Respawn before.
     switching: true,
-    // From 1.8 the tab list is keyed by UUID, which Warp follows to clear it on a switch before
-    // 1.20.2; 1.7 keys it by name, and Warp leaves it.
+    // Before 1.20.2 Warp clears the tab list on a switch. The bots follow it from 1.8, where it is
+    // keyed by UUID; 1.7 keys it by name, with a packet they do not read.
     tabList: protocol >= 47,
     // 1.19 to 1.19.2 clients send their chat signing key in Login Start.
     profileKeys: protocol >= FIRST_PROTOCOL && protocol <= LAST_PROTOCOL,

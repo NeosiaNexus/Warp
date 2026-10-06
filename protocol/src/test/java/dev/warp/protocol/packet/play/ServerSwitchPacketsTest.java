@@ -344,6 +344,62 @@ class ServerSwitchPacketsTest {
   }
 
   @Nested
+  @DisplayName("LegacyPlayerInfo (1.7)")
+  class LegacyPlayerInfoCodec {
+
+    static Stream<ProtocolVersion> legacyPlayerInfoVersions() {
+      return SwitchPacketFixtures.versionsWith("legacy_player_info_add");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("legacyPlayerInfoVersions")
+    @DisplayName("should watch every name listed, updated or removed, reading the whole packet")
+    void watchEveryEntry(ProtocolVersion version) {
+      Watched<LegacyPlayerInfo> added =
+          watch(LegacyPlayerInfo.WATCH, version, "legacy_player_info_add");
+      Watched<LegacyPlayerInfo> removed =
+          watch(LegacyPlayerInfo.WATCH, version, "legacy_player_info_remove");
+
+      assertEquals(new LegacyPlayerInfo("Alice", true, (short) 12), added.packet());
+      assertEquals(added.length(), added.read());
+      assertEquals(new LegacyPlayerInfo("Alice", false, (short) 0), removed.packet());
+      assertEquals(removed.length(), removed.read());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("legacyPlayerInfoVersions")
+    @DisplayName("should read the name, whether it is listed and its latency, and write them back")
+    void roundTrip(ProtocolVersion version) {
+      LegacyPlayerInfo added = decode(LegacyPlayerInfo.CODEC, version, "legacy_player_info_add");
+      LegacyPlayerInfo colored =
+          decode(LegacyPlayerInfo.CODEC, version, "legacy_player_info_colored");
+      LegacyPlayerInfo removed =
+          decode(LegacyPlayerInfo.CODEC, version, "legacy_player_info_remove");
+
+      assertEquals(new LegacyPlayerInfo("Alice", true, (short) 12), added);
+      assertEquals(new LegacyPlayerInfo("\u00a7cBob", true, (short) 300), colored);
+      assertEquals(new LegacyPlayerInfo("Alice", false, (short) 0), removed);
+      for (String fixture :
+          List.of(
+              "legacy_player_info_add",
+              "legacy_player_info_colored",
+              "legacy_player_info_remove")) {
+        LegacyPlayerInfo info = decode(LegacyPlayerInfo.CODEC, version, fixture);
+        assertArrayEquals(bytes(version, fixture), encode(LegacyPlayerInfo.CODEC, info, version));
+      }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("legacyPlayerInfoVersions")
+    @DisplayName("should remove a name from the tab list")
+    void remove(ProtocolVersion version) {
+      assertArrayEquals(
+          bytes(version, "legacy_player_info_remove"),
+          encode(LegacyPlayerInfo.CODEC, LegacyPlayerInfo.remove("Alice"), version));
+    }
+  }
+
+  @Nested
   @DisplayName("PlayerInfo (1.8 to 1.19.2)")
   class PlayerInfoCodec {
 
