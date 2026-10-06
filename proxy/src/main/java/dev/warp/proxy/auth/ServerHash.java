@@ -46,6 +46,8 @@ public final class ServerHash {
   public static String compute(String serverId, byte[] sharedSecret, byte[] publicKey) {
     MessageDigest digest;
     try {
+      // SHA-1 is fixed by the protocol: the client computes the same digest and the session server
+      // compares the two, so neither side can change it alone.
       digest = MessageDigest.getInstance("SHA-1");
     } catch (NoSuchAlgorithmException e) {
       // SHA-1 is required by the JCA specification — this cannot happen.
