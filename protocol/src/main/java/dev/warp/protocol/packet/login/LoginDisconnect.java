@@ -24,10 +24,11 @@ import io.netty.buffer.ByteBuf;
 /**
  * Server disconnects the client during login ({@code S→C, ID 0x00}).
  *
- * <p>The reason is a text component (JSON pre-1.20.3, NBT post-1.20.3). The proxy stores the raw
- * bytes and forwards them as-is, deferring format interpretation to the serialisation layer.
+ * <p>The reason is a JSON text component in every version: 1.20.3 moved the configuration and play
+ * disconnects to NBT, not this one. The proxy stores the raw bytes and forwards them as-is,
+ * deferring format interpretation to the serialisation layer.
  *
- * @param rawReason the raw text component bytes (JSON or NBT depending on version)
+ * @param rawReason the raw text component bytes, a VarInt-prefixed JSON string
  */
 public record LoginDisconnect(byte[] rawReason) implements LoginPacket {
 
