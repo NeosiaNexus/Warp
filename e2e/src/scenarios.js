@@ -1,10 +1,17 @@
 // End-to-end scenarios. Each one drives real-protocol bots through Warp and throws on the first
 // sign of trouble. Backends are told apart by game mode, which every version announces when a
 // player joins: lobby = creative, survival = adventure.
+import { randomUUID } from 'node:crypto';
+
+import { offlineUuid } from './mojang.js';
 import { sleep } from './proc.js';
+import { FIRST_PROTOCOL, LAST_PROTOCOL, createProfileKeys, createSigner } from './profile-keys.js';
 
 export const LOBBY_MODE = 'creative';
 export const SURVIVAL_MODE = 'adventure';
+
+/** First protocol (1.20) whose servers can be made to trust the mock Mojang's key (see mojang.js). */
+export const SIGNED_CHAT = 763;
 
 export function features(protocol) {
   return {
@@ -14,6 +21,12 @@ export function features(protocol) {
     // From 1.8 the tab list is keyed by UUID, which Warp follows to clear it on a switch before
     // 1.20.2; 1.7 keys it by name, and Warp leaves it.
     tabList: protocol >= 47,
+    // 1.19 to 1.19.2 clients send their chat signing key in Login Start.
+    profileKeys: protocol >= FIRST_PROTOCOL && protocol <= LAST_PROTOCOL,
+    // Bots can sign their chat: from 1.20 a server fetches the keys that verify chat sessions from
+    // the services host, which the harness mocks. Before, it only trusts Mojang's own key, bundled in
+    // authlib, so no bot can open a chat session there.
+    signedChat: protocol >= SIGNED_CHAT,
   };
 }
 
@@ -37,8 +50,8 @@ async function proxyReportsServer(ctx, bot, expected) {
   if (current !== expected) throw new Error(`/server says ${current}, expected ${expected}`);
 }
 
-async function joinWarp(ctx, username, target = ctx.warp) {
-  return ctx.client.connect({ host: '127.0.0.1', port: target.port, username });
+async function joinWarp(ctx, username, target = ctx.warp, profileKeys = null) {
+  return ctx.client.connect({ host: '127.0.0.1', port: target.port, username, profileKeys });
 }
 
 // ---------------------------------------------------------------------------
@@ -74,6 +87,71 @@ async function login(ctx) {
     await sleep(500);
     bot.healthy();
     return `spawned on lobby, ${chunks} chunks, ${bot.stats.packets} packets parsed`;
+  } finally {
+    bot.quit();
+  }
+}
+
+/**
+ * Pause after each chat line: a server kicks a player who chats too fast ("Kicked for spamming":
+ * each line adds 20, each tick takes 1 off, over 200 is a kick), about 10 lines in a burst.
+ */
+const CHAT_PACE_MS = 250;
+
+/**
+ * Chat around the /server commands Warp answers itself, which never reach the backend.
+ *
+ * From 1.19.3 a server keeps, for each player, a window over the signed chat messages it sent them,
+ * and every chat message or command the client sends moves it: by how many messages the client saw
+ * since its last update (the offset), then checking which of the last 20 it acknowledges. A command
+ * the proxy keeps from the backend must still pass its offset on, or the backend's window lags
+ * behind the client's and refuses the next message: it kicks the player, whom Warp then moves to
+ * its fallback (#81).
+ *
+ * The backend only tracks signed messages, so this checks something only where the bot signs its
+ * chat: online variants (the bot opens a chat session over an encrypted connection only) from 1.20
+ * (see {@link features}). Elsewhere the chat is unsigned and it only checks that chat still flows.
+ */
+async function chat(ctx) {
+  const signed = ctx.features.signedChat && ctx.variant.online;
+  const bot = await joinWarp(ctx, 'e2e_chat', ctx.warp, signed ? ctx.mojang.profileKeys('e2e_chat') : null);
+  try {
+    await bot.waitForGameMode(LOBBY_MODE, 10_000);
+    if (signed) await bot.waitForChatSession(10_000);
+    let lines = 0;
+    // Every step must leave the bot on the lobby: a kicked player lands on Warp's fallback.
+    const step = async (action) => {
+      try {
+        await action();
+      } catch (e) {
+        if (bot.gameMode() === LOBBY_MODE) throw e;
+      }
+      if (bot.gameMode() !== LOBBY_MODE) {
+        throw new Error(`${bot.username} left the lobby after chat line ${lines}: the lobby dropped it (see its log)`);
+      }
+    };
+    // Each line comes back from the lobby (signed, where the bot signs) before the next step, so
+    // each command acknowledges the line before it.
+    const say = (count) =>
+      step(async () => {
+        for (let i = 0; i < count; i++) {
+          await bot.say(`chat line ${++lines}`);
+          await sleep(CHAT_PACE_MS);
+        }
+      });
+    await say(2);
+    await step(() => bot.command('server', /^Servers:/));
+    await say(2);
+    await step(() => bot.command('server nowhere', /^Unknown server: nowhere/));
+    await say(2);
+    await step(() => bot.command('server lobby', /^Already connected to lobby/));
+    await say(2);
+    await step(() => sleep(500));
+    bot.healthy();
+    if (signed && bot.stats.signedChat < lines) {
+      throw new Error(`${bot.stats.signedChat} of ${lines} chat lines came back signed: the lobby refused the bot's chat session`);
+    }
+    return `${lines} chat lines (${signed ? 'signed' : 'unsigned'}) around 3 /server commands Warp answered, still on the lobby`;
   } finally {
     bot.quit();
   }
@@ -167,6 +245,85 @@ async function fallbackRejected(ctx) {
   }
 }
 
+const DAY_MS = 86_400_000;
+/**
+ * Warp's reason for every refused key: the only profile key reason that 1.19, 1.19.1 and 1.19.2
+ * clients all translate (Velocity's `invalid_public_key` is not in 1.19.2's language files).
+ */
+const REFUSED_KEY = 'multiplayer.disconnect.invalid_public_key_signature';
+
+/**
+ * 1.19 to 1.19.2: bots log in with a profile key, as every client of a Microsoft account does. The
+ * mock Mojang signs the keys (`ctx.mojang.signer`, which Warp trusts). A valid key logs in (online,
+ * the bot signs the verify token instead of encrypting it) and plays: chat, `/server`, a switch.
+ * Online, Warp refuses a key Mojang did not sign, an expired one and, from 1.19.1, a key issued to
+ * another player than the one authenticated. Offline, it ignores the key, as vanilla 1.19.1+ does,
+ * and lets the first two in.
+ */
+async function profileKey(ctx) {
+  const name = 'e2e_signed';
+  const bot = await joinWarp(ctx, name, ctx.warp, ctx.mojang.profileKeys(name));
+  try {
+    await bot.waitForChunks(30, 30_000, 0);
+    await bot.waitForGameMode(LOBBY_MODE, 5_000);
+    await proxyReportsServer(ctx, bot, 'lobby');
+    bot.chat('signed hello from e2e');
+    await bot.command('server survival');
+    await bot.waitForGameMode(SURVIVAL_MODE, 20_000);
+    await proxyReportsServer(ctx, bot, 'survival');
+    await sleep(500);
+    bot.healthy();
+  } finally {
+    bot.quit();
+  }
+
+  // Each one otherwise issued to the player who logs in with it, so that it fails on one count only.
+  const badKeys = [
+    { what: 'a key Mojang did not sign', signer: createSigner(2048) },
+    { what: 'an expired key', expiresAt: Date.now() - 60_000 },
+  ];
+  // The key is signed for the UUID the bot announces; the session server vouches for another one.
+  if (ctx.variant.online && ctx.entry.protocol > FIRST_PROTOCOL) {
+    badKeys.push({ what: 'a key issued to another player', uuid: randomUUID() });
+  }
+  for (const [i, bad] of badKeys.entries()) {
+    const username = `e2e_signed_no${i}`;
+    const profileKeys = createProfileKeys({
+      signer: bad.signer ?? ctx.mojang.signer,
+      uuid: bad.uuid ?? offlineUuid(username),
+      expiresAt: bad.expiresAt ?? Date.now() + DAY_MS,
+    });
+    if (ctx.variant.online) await expectRefused(ctx, username, profileKeys, bad.what);
+    else await expectLoggedIn(ctx, username, profileKeys, bad.what);
+  }
+  const outcome = ctx.variant.online ? 'refused' : 'ignored, offline,';
+  return `logged in with a signed key, chatted and switched; ${outcome} ${badKeys.map((k) => k.what).join(', ')}`;
+}
+
+/** Joins with `profileKeys` and expects Warp to refuse the login over them, with `REFUSED_KEY`. */
+async function expectRefused(ctx, username, profileKeys, what) {
+  let bot;
+  try {
+    bot = await joinWarp(ctx, username, ctx.warp, profileKeys);
+  } catch (e) {
+    if (String(e.message).includes(`"translate":"${REFUSED_KEY}"`)) return;
+    throw new Error(`${what}: expected a refusal with ${REFUSED_KEY}, got: ${e.message}`);
+  }
+  bot.quit();
+  throw new Error(`${what}: logged in, expected a refusal with ${REFUSED_KEY}`);
+}
+
+/** Joins with `profileKeys` and expects the login to succeed: offline, Warp ignores them. */
+async function expectLoggedIn(ctx, username, profileKeys, what) {
+  let bot;
+  try {
+    bot = await joinWarp(ctx, username, ctx.warp, profileKeys);
+  } catch (e) {
+    throw new Error(`${what}: refused offline, where Warp ignores the key: ${e.message}`);
+  }
+  bot.quit();
+}
+
 /**
  * Background soak: one bot stays connected while every other scenario runs, then must still be
  * healthy. Warp sends a keep-alive every 15 s and drops a player whose answer is more than 30 s
@@ -202,7 +359,9 @@ export const SCENARIOS = [
   { name: 'status', run: status },
   { name: 'login', run: login },
   { name: 'keepalive', background: true },
+  { name: 'chat', run: chat, requires: 'proxy' },
   { name: 'switching', run: switching, requires: 'switching' },
+  { name: 'profile-key', run: profileKey, requires: 'profileKeys' },
   { name: 'crowd', run: crowd },
   { name: 'fallback-unreachable', run: fallbackUnreachable, requires: 'proxy' },
   { name: 'fallback-rejected', run: fallbackRejected, requires: 'proxy' },

@@ -16,15 +16,14 @@
  */
 package dev.warp.protocol.compress;
 
+import dev.warp.protocol.bench.AbstractMicrobenchmark;
 import dev.warp.protocol.bench.BenchmarkConfig;
-import dev.warp.protocol.bench.EventLoopLikeExecutor;
 import dev.warp.protocol.bench.PacketCorpus;
 import dev.warp.protocol.bench.PacketCorpus.Workload;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
 import java.util.zip.Inflater;
@@ -32,19 +31,13 @@ import java.util.zip.Inflater;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.PooledByteBufAllocator;
 import org.openjdk.jmh.annotations.Benchmark;
-import org.openjdk.jmh.annotations.BenchmarkMode;
-import org.openjdk.jmh.annotations.Fork;
 import org.openjdk.jmh.annotations.Level;
-import org.openjdk.jmh.annotations.Measurement;
-import org.openjdk.jmh.annotations.Mode;
 import org.openjdk.jmh.annotations.OperationsPerInvocation;
-import org.openjdk.jmh.annotations.OutputTimeUnit;
 import org.openjdk.jmh.annotations.Param;
 import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
-import org.openjdk.jmh.annotations.Warmup;
 
 /**
  * Cost of learning the packet id of one compressed frame, three ways:
@@ -61,23 +54,8 @@ import org.openjdk.jmh.annotations.Warmup;
  */
 @State(Scope.Thread)
 @SuppressWarnings("checkstyle:VisibilityModifier") // JMH injects @Param fields directly
-@BenchmarkMode(Mode.AverageTime)
-@OutputTimeUnit(TimeUnit.NANOSECONDS)
-@Warmup(iterations = 5, time = 2)
-@Measurement(iterations = 10, time = 2)
-@Fork(
-    value = 3,
-    jvmArgsAppend = {
-      "-Xms1g",
-      "-Xmx1g",
-      "-XX:+AlwaysPreTouch",
-      "--sun-misc-unsafe-memory-access=allow",
-      "-Dio.netty.leakDetection.level=disabled",
-      EventLoopLikeExecutor.JMH_EXECUTOR,
-      EventLoopLikeExecutor.JMH_EXECUTOR_CLASS
-    })
 @OperationsPerInvocation(PacketIdPeekBenchmark.FRAMES)
-public class PacketIdPeekBenchmark {
+public class PacketIdPeekBenchmark extends AbstractMicrobenchmark {
 
   /** Compressed frames processed per invocation; scores are per frame. */
   static final int FRAMES = 64;

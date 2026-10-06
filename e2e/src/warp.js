@@ -6,8 +6,10 @@ import { ManagedProcess, run } from './proc.js';
 
 /**
  * Warp output lines that fail a run: anything logged at ERROR or FATAL, Netty buffer leaks,
- * uncaught exceptions printed by the JVM itself, JVM crashes, and keep-alive trouble (bots always
- * echo the keep-alive id they received, at once, so a mismatch or a time-out is a proxy bug).
+ * uncaught exceptions printed by the JVM itself, JVM crashes, keep-alive trouble (bots always echo
+ * the keep-alive id they received, at once, so a mismatch or a time-out is a proxy bug) and read
+ * time-outs (Warp logs them at INFO, as a player who goes quiet is routine; bots and backends here
+ * never do, so one is a hang somewhere between them).
  */
 export const WARP_FAILURES = [
   /^\S+ \S+ \[[^\]]*\] (ERROR|FATAL) /,
@@ -16,7 +18,11 @@ export const WARP_FAILURES = [
   /^# A fatal error has been detected by the Java Runtime Environment/,
   /Invalid KeepAlive ID from player /,
   /timed out \(no KeepAlive response/,
+  /Connection \S+ timed out in \S+: the (client|backend) sent nothing/,
 ];
+
+/** Where the harness's stand-in for Mojang's key goes, in Warp's working directory. */
+const SIGNER_FILE = 'profile-key-signer.pem';
 
 export class Warp {
   /**
@@ -28,6 +34,8 @@ export class Warp {
    * @param {number} options.port
    * @param {boolean} options.online online mode against the mock session server
    * @param {string|null} options.sessionServer `hasJoined` URL of the mock session server
+   * @param {string|null} options.profileKeySigner PEM public key Warp trusts to sign 1.19 to 1.19.2
+   *   profile keys instead of Mojang's (the harness signs its bots' keys)
    * @param {boolean} options.passthrough `compression.passthrough`
    * @param {number} options.threshold `compression.threshold`
    * @param {Record<string, number>} options.servers name → port of each backend
@@ -44,6 +52,7 @@ export class Warp {
     mkdirSync(this.dir, { recursive: true });
     copyFileSync(this.jar, join(this.dir, 'warp.jar'));
     writeFileSync(join(this.dir, 'warp.conf'), this.config());
+    if (this.profileKeySigner) writeFileSync(join(this.dir, SIGNER_FILE), this.profileKeySigner);
   }
 
   config() {
@@ -77,6 +86,7 @@ compression {
       // Every ByteBuf is tracked: a buffer the proxy forgets to release is reported as an ERROR.
       '-Dio.netty.leakDetection.level=paranoid',
       ...(this.online ? [`-Dmojang.sessionserver=${this.sessionServer}`] : []),
+      ...(this.profileKeySigner ? [`-Dwarp.profilekeys.signer=${SIGNER_FILE}`] : []),
       '-jar',
       'warp.jar',
     ];
