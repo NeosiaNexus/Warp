@@ -13,8 +13,9 @@ import java.util.Properties
 // below the module's threshold in config/pitest/thresholds.properties.
 //
 // Every run is a full analysis. PIT's incremental analysis (the pitest-history plugin) is left out:
-// it tells JUnit 5 tests apart by their top-level class only, so it misses changes made inside a
-// @Nested class and reuses stale results. Gradle still skips the task when nothing changed.
+// it tells JUnit 5 tests apart by their top-level class only, whose class file does not change when
+// a test of one of its @Nested classes does, so it would reuse stale results. Gradle still skips the
+// task, or takes its result from the build cache, when nothing changed.
 
 plugins {
     java
@@ -34,18 +35,17 @@ pitest {
     // constructor ignores the returned value, so no test can tell a mutant of it apart.
     excludedMethods = setOf("fillInStackTrace")
     threads = Runtime.getRuntime().availableProcessors()
-    // As for the test task: Mockito attaches its agent at run time.
-    jvmArgs = listOf("-XX:+EnableDynamicAgentLoading")
+    jvmArgs = TEST_JVM_ARGS
     outputFormats = setOf("HTML", "XML")
     timestampedReports = false
 
     val module = project.name
-    val thresholds = "config/pitest/thresholds.properties"
-    mutationThreshold = providers
-        .fileContents(rootProject.layout.projectDirectory.file(thresholds))
-        .asText
+    val thresholds = rootProject.layout.projectDirectory.file("config/pitest/thresholds.properties")
+    // A missing file fails like a missing entry: a module never runs without its ratchet.
+    mutationThreshold = providers.fileContents(thresholds).asText
+        .orElse("")
         .map { text ->
             Properties().apply { load(StringReader(text)) }.getProperty(module)?.toInt()
-                ?: throw GradleException("No mutation threshold for '$module' in $thresholds")
+                ?: throw GradleException("No mutation threshold for '$module' in ${thresholds.asFile}")
         }
 }
