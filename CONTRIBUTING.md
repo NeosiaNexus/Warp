@@ -131,7 +131,7 @@ e2e/run.sh --list                                        # the whole matrix
 
 | Where | What runs |
 |---|---|
-| Every pull request (**E2E**, part of **CI OK**) | One version per era, plus the online, offline and compression variants on the reference version |
+| Every pull request (**E2E**, part of **CI OK**) | One version per era and the newest version, plus the online, offline and compression variants on the newest version the bots speak natively |
 | Every push to `main`, nightly, on demand (`e2e.yml`) | Every protocol of the matrix |
 | Pull requests labelled `e2e: full` | The whole matrix as well. Use it for changes to the protocol, compression, login, forwarding or server switching; ask a maintainer if you cannot set labels |
 

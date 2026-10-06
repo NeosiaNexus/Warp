@@ -106,7 +106,7 @@ if Warp logs an error, leaks a Netty buffer, or a backend drops a connection wit
 
 | When | What runs |
 |---|---|
-| Every pull request | One version per era, plus the online, offline and compression variants on the reference version |
+| Every pull request | One version per era and the newest version, plus the online, offline and compression variants on the newest version the bots speak natively |
 | Every push to `main`, nightly, on demand, and pull requests labelled `e2e: full` | Every protocol of the matrix |
 
 Versions Warp does not fully support yet stay in the matrix as *known broken*: they run and are
