@@ -30,19 +30,10 @@ import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
-import dev.warp.proxy.auth.MojangSessionService;
-import dev.warp.proxy.config.ForwardingMode;
-import dev.warp.proxy.server.ServerRegistry;
 
-import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.security.KeyPairGenerator;
-import java.security.NoSuchAlgorithmException;
-import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Stream;
-import java.util.zip.Deflater;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -400,7 +391,7 @@ class ServerListPingTest {
 
   /** Creates a full Netty pipeline using {@link ServerChannelInitializer}. */
   private static EmbeddedChannel createFullPipeline() {
-    ServerChannelInitializer init = new ServerChannelInitializer(createTestLoginContext());
+    ServerChannelInitializer init = new ServerChannelInitializer(TestLoginContexts.offline());
     EmbeddedChannel ch = new EmbeddedChannel();
     // Manually trigger initChannel since EmbeddedChannel doesn't invoke ChannelInitializer
     // the same way as a real ServerBootstrap.
@@ -442,33 +433,5 @@ class ServerListPingTest {
     packetData.release();
 
     ch.writeInbound(frame);
-  }
-
-  /** Creates a test {@link ServerLoginContext} for pipeline initialisation. */
-  @SuppressWarnings("NullAway") // Backend fields unused in status ping tests
-  private static ServerLoginContext createTestLoginContext() {
-    try {
-      KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
-      gen.initialize(1024);
-      // Server registry and channel class are unused for status ping tests.
-      ServerRegistry registry =
-          new ServerRegistry(
-              Map.of("lobby", new InetSocketAddress("localhost", 25565)),
-              "lobby",
-              List.of("lobby"));
-      return new ServerLoginContext(
-          gen.generateKeyPair(),
-          false, // offline mode for tests
-          -1, // compression disabled
-          Deflater.DEFAULT_COMPRESSION,
-          true,
-          new MojangSessionService(),
-          registry,
-          ForwardingMode.NONE,
-          new byte[0],
-          null); // no channel class needed for status tests
-    } catch (NoSuchAlgorithmException e) {
-      throw new AssertionError("RSA not available", e);
-    }
   }
 }

@@ -22,6 +22,7 @@ import dev.warp.protocol.netty.CipherDecoder;
 import dev.warp.protocol.netty.CipherEncoder;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
+import dev.warp.protocol.packet.TextComponent;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.login.EncryptionRequest;
 import dev.warp.protocol.packet.login.EncryptionResponse;
@@ -147,14 +148,16 @@ final class LoginSessionHandler implements SessionHandler {
     switch (loginPacket) {
       case LoginStart start -> handleLoginStart(start);
       case EncryptionResponse response -> handleEncryptionResponse(response);
-      case LoginAcknowledged ack -> handleLoginAcknowledged();
-      case LoginPluginResponse response -> handleLoginPluginResponse(response);
+      case LoginAcknowledged _ -> handleLoginAcknowledged();
+      // Warp sends the client no login plugin request (yet), so a response answers nothing.
+      case LoginPluginResponse _ -> {}
       // Clientbound packets must never arrive from a client.
-      case EncryptionRequest ignored -> connection.close();
-      case LoginSuccess ignored -> connection.close();
-      case SetCompression ignored -> connection.close();
-      case LoginDisconnect ignored -> connection.close();
-      case LoginPluginRequest ignored -> connection.close();
+      case EncryptionRequest _,
+          LoginSuccess _,
+          SetCompression _,
+          LoginDisconnect _,
+          LoginPluginRequest _ ->
+          connection.close();
     }
   }
 
@@ -260,12 +263,6 @@ final class LoginSessionHandler implements SessionHandler {
   @Override
   public void disconnected() {
     logger.info("Client disconnected during login: {} (state={})", username, state);
-  }
-
-  @SuppressWarnings("unused")
-  private void handleLoginPluginResponse(LoginPluginResponse response) {
-    // LoginPluginResponse from the client during proxy login — currently unused.
-    // Will be used in the future for Warp-specific login channels.
   }
 
   // ---------------------------------------------------------------------------
@@ -485,35 +482,16 @@ final class LoginSessionHandler implements SessionHandler {
         username != null ? username : "unknown",
         connection.channel().remoteAddress(),
         reason);
-    byte[] rawReason = encodeTextComponent(reason, clientVersion());
-    // Use the correct disconnect packet for the current protocol state.
-    // After handleLoginAcknowledged, the decoder is in CONFIGURATION.
-    // After completeLogin (pre-1.20.2), the decoder is in PLAY.
-    // LoginDisconnect only encodes in LOGIN state.
+    // The disconnect packet of the current protocol state: LoginAcknowledged moves the decoder to
+    // CONFIGURATION, completeLogin (before 1.20.2) to PLAY. The login reason is JSON in every
+    // version; the configuration and play reasons follow the client's version.
     Packet disconnectPacket =
         switch (connection.decoder().state()) {
-          case HANDSHAKE, STATUS, LOGIN -> new LoginDisconnect(rawReason);
-          case CONFIGURATION -> new ConfigDisconnect(rawReason);
-          case PLAY -> new PlayDisconnect(rawReason);
+          case HANDSHAKE, STATUS, LOGIN -> new LoginDisconnect(TextComponent.plainTextJson(reason));
+          case CONFIGURATION ->
+              new ConfigDisconnect(TextComponent.plainText(reason, clientVersion()));
+          case PLAY -> new PlayDisconnect(TextComponent.plainText(reason, clientVersion()));
         };
     connection.writeAndClose(disconnectPacket);
-  }
-
-  /**
-   * Encodes a plain text string as a Minecraft text component.
-   *
-   * <p>Pre-1.20.3: JSON {@code {"text":"reason"}}. Post-1.20.3: NBT string tag (TAG_String with the
-   * JSON text). The NBT encoding for a plain string is: {@code 0x08} (TAG_String) + 2-byte
-   * big-endian name length (0) + 2-byte big-endian value length + UTF-8 bytes.
-   *
-   * <p>Note: LoginDisconnect in the LOGIN state uses JSON for all versions. NBT is only used for
-   * PlayDisconnect in PLAY state post-1.20.3. During LOGIN, JSON is always correct.
-   */
-  @SuppressWarnings("UnusedVariable") // version reserved for PLAY-state NBT disconnect format
-  private static byte[] encodeTextComponent(String reason, ProtocolVersion version) {
-    // During the LOGIN state, the disconnect reason is always JSON-encoded across all versions.
-    // The NBT encoding applies only to PLAY-state disconnects (1.20.3+).
-    String escaped = reason.replace("\\", "\\\\").replace("\"", "\\\"");
-    return ("{\"text\":\"" + escaped + "\"}").getBytes(StandardCharsets.UTF_8);
   }
 }
