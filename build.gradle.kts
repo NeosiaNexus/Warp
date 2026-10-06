@@ -12,7 +12,7 @@ allprojects {
 }
 
 // Install Git pre-commit hook on first build.
-val installGitHooks by tasks.registering {
+val installGitHooks = tasks.register("installGitHooks") {
     val source = layout.projectDirectory.file("config/hooks/pre-commit")
     val target = layout.projectDirectory.file(".git/hooks/pre-commit")
     inputs.file(source)

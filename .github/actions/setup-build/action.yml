@@ -1,6 +1,6 @@
 name: Set up build
 description: >-
-  JDK 25 (Warp's toolchain), JDK 21 (runs Gradle 8.12) and Gradle with its dependency cache.
+  JDK 25 (Warp's toolchain), JDK 21 (runs Gradle) and Gradle with its dependency cache.
   Gradle is told to use the provisioned JDK 25 and never to download one.
 
 runs:
