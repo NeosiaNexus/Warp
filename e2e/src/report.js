@@ -1,16 +1,20 @@
 // Merges the result.json of every E2E job into one Markdown report (the run summary on GitHub).
 //
 //   node e2e/src/report.js DIR [TITLE]   # prints Markdown; exits 1 if any version failed
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { SCENARIOS } from './scenarios.js';
 
 const [dir, title = 'End-to-end tests'] = process.argv.slice(2);
 
-function collect(path) {
-  if (statSync(path).isDirectory()) return readdirSync(path).flatMap((name) => collect(join(path, name)));
-  return path.endsWith('result.json') ? [JSON.parse(readFileSync(path, 'utf8'))] : [];
+/** Every result.json under `dir` (one directory per downloaded artifact). */
+function collect(dir) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return collect(path);
+    return entry.name === 'result.json' ? [JSON.parse(readFileSync(path, 'utf8'))] : [];
+  });
 }
 
 const results = collect(dir).sort((a, b) => a.protocol - b.protocol);
@@ -72,6 +76,7 @@ if (!results.length) {
 process.stdout.write(`${lines.join('\n')}\n`);
 process.exit(count('fail') ? 1 : 0);
 
+/** Makes text safe in a Markdown table cell: backslashes first, then pipes and tags. */
 function escape(text) {
-  return String(text).replace(/\|/g, '\\|').replace(/</g, '&lt;').slice(0, 400);
+  return String(text).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/</g, '&lt;').slice(0, 400);
 }

@@ -118,5 +118,5 @@ Tiers pick what runs where:
 5. Until Warp supports it fully, add `"knownBroken"` (or `"knownBrokenScenarios"`) with the
    issue; CI then reports it without failing.
 
-The harness itself is tested with `npm test` (matrix consistency, failure patterns, downloads,
-protocol data corrections), which CI runs before every end-to-end matrix.
+The harness itself is tested with `npm test` (matrix consistency, failure patterns, downloads, the
+report, protocol data corrections), which CI runs before every end-to-end matrix.

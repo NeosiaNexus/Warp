@@ -9,7 +9,7 @@ export function startSessionServer(port) {
     const url = new URL(req.url, 'http://localhost');
     const name = url.searchParams.get('username') ?? 'unknown';
     requests.push({ path: url.pathname, name });
-    const id = createHash('md5').update(`mock:${name}`).digest('hex');
+    const id = createHash('sha256').update(`mock:${name}`).digest('hex').slice(0, 32);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ id, name, properties: [] }));
   });
