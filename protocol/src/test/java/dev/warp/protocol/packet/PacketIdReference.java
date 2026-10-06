@@ -24,8 +24,8 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
 import java.util.NavigableMap;
@@ -33,7 +33,6 @@ import java.util.OptionalInt;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 /**
  * The reference packet ids of {@code packet-ids.txt}: every packet of every state, at each protocol
@@ -70,9 +69,9 @@ record PacketIdReference(
         }
         String[] fields = FIELDS.split(line);
         switch (fields[0]) {
-          case "checked" -> checked = protocols(fields);
-          case "unchecked" -> unchecked = protocols(fields);
-          default -> changes.put(fields[0] + ' ' + fields[1] + ' ' + fields[2], ids(fields));
+          case "checked" -> checked = protocols(fields, line);
+          case "unchecked" -> unchecked = protocols(fields, line);
+          default -> changes.put(fields[0] + ' ' + fields[1] + ' ' + fields[2], ids(fields, line));
         }
       }
       return new PacketIdReference(checked, unchecked, Map.copyOf(changes));
@@ -103,22 +102,32 @@ record PacketIdReference(
         : OptionalInt.of(change.getValue());
   }
 
-  private static Set<Integer> protocols(String[] fields) {
-    return Arrays.stream(fields, 1, fields.length)
-        .map(Integer::valueOf)
-        .collect(Collectors.toUnmodifiableSet());
+  private static Set<Integer> protocols(String[] fields, String line) {
+    Set<Integer> protocols = new HashSet<>();
+    for (int i = 1; i < fields.length; i++) {
+      protocols.add(number(fields[i], line));
+    }
+    return Set.copyOf(protocols);
   }
 
   /** Parses {@code 0x04@759 -@770}: the id from each protocol on. */
-  private static NavigableMap<Integer, Integer> ids(String[] fields) {
+  private static NavigableMap<Integer, Integer> ids(String[] fields, String line) {
     NavigableMap<Integer, Integer> ids = new TreeMap<>();
     for (int i = 3; i < fields.length; i++) {
       String change = fields[i];
       int at = change.indexOf('@');
       String id = change.substring(0, at);
-      int protocol = Integer.parseInt(change.substring(at + 1));
-      ids.put(protocol, id.equals("-") ? ABSENT : Integer.decode(id));
+      ids.put(number(change.substring(at + 1), line), id.equals("-") ? ABSENT : number(id, line));
     }
     return ids;
+  }
+
+  /** Parses a decimal or {@code 0x} number of the table, naming the line it breaks. */
+  private static int number(String text, String line) {
+    try {
+      return Integer.decode(text);
+    } catch (NumberFormatException e) {
+      throw new IllegalStateException(RESOURCE + ": malformed line: " + line, e);
+    }
   }
 }
