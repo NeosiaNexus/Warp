@@ -45,6 +45,7 @@ import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_8;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_9;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_9_4;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_26_1;
+import static dev.warp.protocol.ProtocolVersion.MINECRAFT_26_3;
 import static dev.warp.protocol.packet.VersionMapping.map;
 
 import dev.warp.protocol.ProtocolState;
@@ -416,7 +417,8 @@ public final class StateRegistry {
                     map(0x2D, MINECRAFT_1_21_2),
                     map(0x2F, MINECRAFT_1_21_4),
                     map(0x30, MINECRAFT_1_21_6),
-                    map(0x31, MINECRAFT_26_1))
+                    map(0x31, MINECRAFT_26_1),
+                    map(0x32, MINECRAFT_26_3))
                 .build());
 
     directionMap(ProtocolState.PLAY)
@@ -463,7 +465,8 @@ public final class StateRegistry {
                     map(0x27, MINECRAFT_1_21_2),
                     map(0x26, MINECRAFT_1_21_5),
                     map(0x2B, MINECRAFT_1_21_9),
-                    map(0x2C, MINECRAFT_26_1))
+                    map(0x2C, MINECRAFT_26_1),
+                    map(0x2D, MINECRAFT_26_3))
                 .registerEncodeOnly(
                     PlayPluginMessage.class,
                     PlayPluginMessage.CODEC,
@@ -501,7 +504,8 @@ public final class StateRegistry {
                     map(0x2C, MINECRAFT_1_21_2),
                     map(0x2B, MINECRAFT_1_21_5),
                     map(0x30, MINECRAFT_1_21_9),
-                    map(0x31, MINECRAFT_26_1))
+                    map(0x31, MINECRAFT_26_1),
+                    map(0x32, MINECRAFT_26_3))
                 .registerEncodeOnly(
                     Respawn.class,
                     Respawn.CODEC,
@@ -604,7 +608,8 @@ public final class StateRegistry {
                     map(0x73, MINECRAFT_1_21_2),
                     map(0x72, MINECRAFT_1_21_5),
                     map(0x77, MINECRAFT_1_21_9),
-                    map(0x79, MINECRAFT_26_1))
+                    map(0x79, MINECRAFT_26_1),
+                    map(0x7C, MINECRAFT_26_3))
                 .register(
                     StartConfiguration.class,
                     StartConfiguration.CODEC,
@@ -614,14 +619,16 @@ public final class StateRegistry {
                     map(0x70, MINECRAFT_1_21_2),
                     map(0x6F, MINECRAFT_1_21_5),
                     map(0x74, MINECRAFT_1_21_9),
-                    map(0x76, MINECRAFT_26_1))
+                    map(0x76, MINECRAFT_26_1),
+                    map(0x78, MINECRAFT_26_3))
                 .registerEncodeOnly(
                     Transfer.class,
                     Transfer.CODEC,
                     map(0x73, MINECRAFT_1_20_5),
                     map(0x7A, MINECRAFT_1_21_2),
                     map(0x7F, MINECRAFT_1_21_9),
-                    map(0x81, MINECRAFT_26_1))
+                    map(0x81, MINECRAFT_26_1),
+                    map(0x84, MINECRAFT_26_3))
                 .registerEncodeOnly(
                     TabCompleteResponse.class,
                     TabCompleteResponse.CODEC,

@@ -33,6 +33,10 @@ import org.jspecify.annotations.Nullable;
  * they are distinct {@code ProtocolVersion} objects but compare as equal on the wire.
  *
  * <p>Ordering follows the protocol ID: a higher ID means a newer version.
+ *
+ * <p>Warp supports every release protocol from 1.7.2 (protocol 4) to 26.3 (protocol 777), all
+ * registered here in release order: {@link #oldest()} and {@link #latest()} are the two ends. The
+ * end-to-end suite runs real clients on every one of them from 1.8 on.
  */
 public final class ProtocolVersion implements Comparable<ProtocolVersion> {
 
@@ -173,6 +177,8 @@ public final class ProtocolVersion implements Comparable<ProtocolVersion> {
   public static final ProtocolVersion MINECRAFT_26_1 = register(775, "26.1");
   public static final ProtocolVersion MINECRAFT_26_1_1 = register(775, "26.1.1");
   public static final ProtocolVersion MINECRAFT_26_1_2 = register(775, "26.1.2");
+  public static final ProtocolVersion MINECRAFT_26_2 = register(776, "26.2");
+  public static final ProtocolVersion MINECRAFT_26_3 = register(777, "26.3");
 
   /** Cached unmodifiable view of all registered versions. */
   private static final List<ProtocolVersion> UNMODIFIABLE_VERSIONS =
