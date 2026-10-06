@@ -14,8 +14,8 @@
 # runners where timings cannot. It must stay within the tolerance of
 # protocol/src/jmh/alloc-baseline.json; bench-guard.py reports the comparison.
 #
-# Smoke test: every benchmark runs one short iteration in process, so that a broken benchmark fails
-# here and not on the day someone needs it.
+# Smoke test: every benchmark runs one short iteration in a fork of its own, with its JVM settings,
+# so that a broken benchmark fails here and not on the day someone needs it.
 #
 # Timings: each benchmark's own forks, warm-up and iterations, as for published results.
 set -euo pipefail
@@ -35,22 +35,6 @@ results=protocol/build/results/jmh
 baseline=protocol/src/jmh/alloc-baseline.json
 guarded=('ForwardingPathBenchmark\.relayClientbound$|PacketIdPeekBenchmark\.peek$' -p mode=PASSTHROUGH)
 
-# The benchmarks are compiled for Java 25, the toolchain: CI's JAVA_HOME_25_X64, else the first
-# Java 25 among JAVA_HOME, the PATH and the JDKs that Gradle provisioned.
-find_java() {
-  local candidate
-  for candidate in "${JAVA_HOME_25_X64:+$JAVA_HOME_25_X64/bin/java}" "${JAVA_HOME:+$JAVA_HOME/bin/java}" \
-    "$(command -v java || true)" "$HOME"/.gradle/jdks/*/bin/java; do
-    if [ -x "$candidate" ] &&
-      [ "$("$candidate" -XshowSettings:properties -version 2>&1 | sed -n 's/^ *java\.specification\.version = //p')" = 25 ]; then
-      echo "$candidate"
-      return
-    fi
-  done
-  echo "error: no Java 25 found; set JAVA_HOME_25_X64 to a JDK 25" >&2
-  return 1
-}
-
 # Collapsible sections in the Actions log, headings elsewhere.
 group() { if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::group::$1"; else echo "== $1"; fi; }
 endgroup() { if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::endgroup::"; fi; }
@@ -67,7 +51,8 @@ report() {
 group "Build the benchmarks"
 ./gradlew --quiet :protocol:jmhJar
 endgroup
-java=$(find_java)
+# The java of the toolchain that compiled the benchmarks, wherever Gradle found or installed it.
+java=$(./gradlew --quiet :protocol:jmhJava)
 jar=protocol/build/libs/protocol-$(< version.txt)-jmh.jar
 mkdir -p "$results"
 # -foe: a benchmark that throws fails the run instead of being skipped.
@@ -97,6 +82,6 @@ status=0
 report python3 bin/bench-guard.py check "$results/allocation.json" "$baseline" || status=$?
 
 group "Smoke test: every benchmark, one short iteration"
-jmh -f 0 -wi 0 -i 1 -r 100ms -rf json -rff "$results/smoke.json"
+jmh -f 1 -wi 0 -i 1 -r 100ms -rf json -rff "$results/smoke.json"
 endgroup
 exit "$status"

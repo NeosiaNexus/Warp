@@ -11,8 +11,12 @@ deoptimisation) only ever adds to it. A benchmark fails when it allocates more t
 plus the larger of the two tolerances, or when it is in only one of the results and the baseline.
 Exits with 1 on failure.
 
+update: the baseline keeps its tolerance, or gets the default one when it has none or does not
+exist yet.
+
 timings: writes the scores in github-action-benchmark's customSmallerIsBetter format. Each entry
-names the CPU and the JDK of the run: shared runners vary, and the chart shows it per point.
+names the CPU and the JDK of the run, and in GitHub Actions the CPU is also the step's `cpu`
+output: timings are only comparable on the same CPU model, so the workflow keeps a series per model.
 
 Prints a Markdown report on stdout and, in GitHub Actions, annotations on stderr.
 """
@@ -24,6 +28,7 @@ import platform
 import sys
 
 ALLOCATION = "gc.alloc.rate.norm"
+DEFAULT_TOLERANCE = {"absolute": 2, "relative": 0.01}  # bytes per packet, fraction of the baseline
 
 
 # ---------------------------------------------------------------------------
@@ -80,13 +85,34 @@ def load(path):
         return json.load(f)
 
 
+def load_baseline(path):
+    """The baseline, with the default tolerance where it sets none; empty if it does not exist."""
+    try:
+        baseline = load(path)
+    except FileNotFoundError:
+        baseline = {}
+    return {
+        "tolerance": DEFAULT_TOLERANCE | baseline.get("tolerance", {}),
+        "jdk": baseline.get("jdk"),
+        "benchmarks": baseline.get("benchmarks", {}),
+    }
+
+
+def set_output(name, value):
+    """Sets an output of the current GitHub Actions step; does nothing elsewhere."""
+    path = os.environ.get("GITHUB_OUTPUT")
+    if path:
+        with open(path, "a") as f:
+            f.write(f"{name}={value}\n")
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
 
 
 def check(results, baseline_path):
-    baseline = load(baseline_path)
+    baseline = load_baseline(baseline_path)
     expected, measured = baseline["benchmarks"], allocation(results)
     absolute, relative = baseline["tolerance"]["absolute"], baseline["tolerance"]["relative"]
     rows, failures, moved = [], 0, 0
@@ -138,10 +164,9 @@ def check(results, baseline_path):
 
 
 def update(results, baseline_path):
-    tolerance = load(baseline_path)["tolerance"]
     measured = allocation(results)
     baseline = {
-        "tolerance": tolerance,
+        "tolerance": load_baseline(baseline_path)["tolerance"],
         "jdk": jdk(results),
         "benchmarks": {bench: round(value, 1) for bench, value in sorted(measured.items())},
     }
@@ -171,6 +196,7 @@ def timings(results, chart_path):
     with open(chart_path, "w") as f:
         json.dump(chart, f, indent=2, ensure_ascii=False)
         f.write("\n")
+    set_output("cpu", machine)
 
     print("### Timings\n")
     print(f"Average time per packet with a 99.9% confidence interval, on {machine} and "

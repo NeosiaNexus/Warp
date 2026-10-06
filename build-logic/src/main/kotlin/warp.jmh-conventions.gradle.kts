@@ -24,6 +24,18 @@ jmh {
     failOnError = true
 }
 
+// The java executable of the toolchain that compiles the benchmarks, for scripts that run the
+// benchmark jar themselves (bin/bench-guard.sh): Gradle resolves it the same way on every machine.
+val toolchainJava = the<JavaToolchainService>()
+    .launcherFor(the<JavaPluginExtension>().toolchain)
+    .map { it.executablePath.asFile.absolutePath }
+tasks.register("jmhJava") {
+    group = "jmh"
+    description = "Prints the path of the java executable of the benchmarks' toolchain."
+    val executable = toolchainJava // a local: the action must not capture the build script
+    doLast { println(executable.get()) }
+}
+
 // JMH @State fields are initialized in @Setup methods or injected (@Param), not in constructors.
 tasks.named<JavaCompile>("compileJmhJava") {
     options.errorprone {
