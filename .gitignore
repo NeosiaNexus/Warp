@@ -17,8 +17,9 @@ gradle-app.setting
 *.swp
 *~
 
-# Claude Code (local overrides — not committed)
+# Claude Code (local overrides and agent worktrees, never committed)
 .claude/settings.local.json
+.claude/worktrees/
 
 # Java
 *.class
@@ -29,6 +30,7 @@ replay_pid*
 .DS_Store
 Thumbs.db
 
-# Runtime
+# Runtime (the README runs Warp from run/: warp.conf, forwarding.secret, logs)
+/run/
 logs/
 *.log

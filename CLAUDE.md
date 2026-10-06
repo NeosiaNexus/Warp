@@ -1,6 +1,6 @@
 # Warp Proxy
 
-High-performance Minecraft proxy in Java 25. Core innovation: **blind forwarding** — skip decompression/deserialization for ~90% of PLAY-state packets.
+High-performance Minecraft proxy in Java 25. Core innovation: **blind forwarding**, which skips deserialization (and, with compression passthrough, decompression) for every PLAY-state packet the proxy does not act on.
 
 ## Build & Run
 
@@ -19,7 +19,7 @@ Shadow JAR output: `proxy/build/libs/warp-<version>.jar`
 ```
 api/        Public plugin API (Adventure, Guice, Configurate, SLF4J)
 protocol/   Minecraft protocol codec and packet definitions (Netty)
-proxy/      Core proxy implementation — entry point: WarpBootstrap
+proxy/      Core proxy implementation (entry point: WarpBootstrap)
 jni/        Native bindings for compression and cryptography
 build-logic/ Gradle convention plugins (java, spotless, publish)
 ```
@@ -34,16 +34,16 @@ build-logic/ Gradle convention plugins (java, spotless, publish)
 
 ## Code Conventions
 
-- **Java 25** — use records, sealed interfaces, pattern matching where appropriate
-- **Null safety** — `@NullMarked` at package level (package-info.java), `@Nullable` on individual fields/params. JSpecify annotations, enforced by NullAway at compile time
+- **Java 25**: use records, sealed interfaces, pattern matching where appropriate
+- **Null safety**: `@NullMarked` at package level (package-info.java), `@Nullable` on individual fields/params. JSpecify annotations, enforced by NullAway at compile time
 - **New packages** must have a `package-info.java` with `@NullMarked` annotation and a one-line Javadoc
-- **License header** — AGPL-3.0 header on every Java file. Spotless enforces via `config/license-header.txt`. Do not write headers manually — run `spotlessApply`
-- **Formatting** — Google Java Format via Spotless. Never format manually
-- **Imports** — four groups separated by blank lines: `dev.warp` | `java` | `javax` | everything else. Spotless enforces this
-- **Logging** — SLF4J facade: `private static final Logger logger = LoggerFactory.getLogger(X.class);`
-- **Constants** — `UPPER_SNAKE_CASE`, always `static final`
-- **Thread safety** — `volatile` for shared mutable state, `final` wherever possible, immutable collections for public returns
-- **Utility classes** — `final` class + `private` constructor
+- **License header**: AGPL-3.0 header on every Java file. Spotless enforces via `config/license-header.txt`. Do not write headers manually, run `spotlessApply`
+- **Formatting**: Google Java Format via Spotless. Never format manually
+- **Imports**: four groups separated by blank lines: `dev.warp` | `java` | `javax` | everything else. Spotless enforces this
+- **Logging**: SLF4J facade: `private static final Logger logger = LoggerFactory.getLogger(X.class);`
+- **Constants**: `UPPER_SNAKE_CASE`, always `static final`
+- **Thread safety**: `volatile` for shared mutable state, `final` wherever possible, immutable collections for public returns
+- **Utility classes**: `final` class + `private` constructor
 - **Section separators** in large classes:
   ```java
   // ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ build-logic/ Gradle convention plugins (java, spotless, publish)
 ## Git Workflow
 
 - **Conventional Commits** enforced on PR titles: `type(scope): description`
-- **Squash merge only** — PR title becomes the commit on main
+- **Squash merge only**: PR title becomes the commit on main
 - **release-please** automates versioning from conventional commits
 - Version lives in `version.txt` (single source of truth)
 - See `docs/research/` for design decisions and research findings
@@ -69,6 +69,6 @@ build-logic/ Gradle convention plugins (java, spotless, publish)
 ## Performance
 
 - Hot path = packet forwarding. Zero allocations, no blocking, no locks.
-- Use Netty ByteBuf directly — avoid unnecessary copies or wrapping
+- Use Netty ByteBuf directly and avoid unnecessary copies or wrapping
 - Blind packets (unregistered) = raw ByteBuf passthrough, never deserialized
-- Profile before optimizing. Benchmarks live in integration tests.
+- Profile before optimizing. Benchmarks are JMH, in `protocol/src/jmh` (results in `docs/benchmarks/`).
