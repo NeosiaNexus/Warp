@@ -31,7 +31,7 @@ and one whose default server is a closed port) and run the scenarios:
 
 | Scenario | Checks |
 |---|---|
-| `status` | Server list ping through Warp |
+| `status` | Server list ping through Warp, advertising the protocol the bot speaks (else a client lists Warp as incompatible) |
 | `login` | Join, receive chunks, land on the lobby; `/server` answers |
 | `keepalive` | One bot stays connected through the whole run (at least 65 s, past Warp's first keep-alive time-out check) |
 | `switching` | Six `/server` switches back and forth (configuration phase from 1.20.2, Join Game and Respawn before) |
@@ -108,7 +108,7 @@ Tiers pick what runs where:
 ## Adding a Minecraft version
 
 1. Find the protocol number (it is in the client jar's `version.json`) and add it to
-   `ProtocolVersion` in Warp.
+   `ProtocolVersion` in Warp, then run `npm run packet-ids` in `e2e/` (see below).
 2. Add the entry to `versions.json`, in protocol order. Take the latest **STABLE** Paper build from
    `https://fill.papermc.io/v3/projects/paper/versions/<version>/builds?channel=STABLE` (URL and
    sha256 are in `downloads["server:default"]`), and the server's Java from the version's
@@ -120,3 +120,12 @@ Tiers pick what runs where:
 
 The harness itself is tested with `npm test` (matrix consistency, failure patterns, downloads, the
 report, protocol data corrections), which CI runs before every end-to-end matrix.
+
+## Packet id reference
+
+`npm run packet-ids` writes `protocol/src/test/resources/dev/warp/protocol/packet/packet-ids.txt`:
+the id of every packet, in every state and direction, at each protocol `ProtocolVersion` registers,
+taken from the pinned minecraft-data. Warp's `StateRegistryTest` checks every packet id Warp
+registers against it, so a wrong id fails the unit tests rather than a player's session. Run it
+again after adding a protocol to `ProtocolVersion` or bumping minecraft-data; the test reports a
+table that misses a protocol.

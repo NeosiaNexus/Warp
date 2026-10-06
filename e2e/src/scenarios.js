@@ -30,11 +30,23 @@ async function joinWarp(ctx, username, target = ctx.warp) {
 // Scenarios
 // ---------------------------------------------------------------------------
 
+/**
+ * Checks a server list ping answer: Warp's name (any name in a --direct run), and the protocol the
+ * bot speaks, without which a vanilla client lists the server as incompatible.
+ */
+export function checkStatus(response, { direct, protocol }) {
+  const name = response?.version?.name ?? '';
+  const advertised = response?.version?.protocol;
+  if (!direct && !name.startsWith('Warp')) throw new Error(`unexpected status response: ${JSON.stringify(response)}`);
+  if (advertised !== protocol) {
+    throw new Error(`advertised protocol ${advertised} to a client of protocol ${protocol}, which lists the server as incompatible`);
+  }
+  return `answered as "${name}" (protocol ${advertised}) in ${response.latency} ms`;
+}
+
 async function status(ctx) {
   const response = await ctx.client.ping({ host: '127.0.0.1', port: ctx.warp.port });
-  const name = response?.version?.name ?? '';
-  if (!ctx.direct && !name.startsWith('Warp')) throw new Error(`unexpected status response: ${JSON.stringify(response)}`);
-  return `answered as "${name}" (protocol ${response.version.protocol}) in ${response.latency} ms`;
+  return checkStatus(response, { direct: ctx.direct, protocol: ctx.client.protocol });
 }
 
 async function login(ctx) {
