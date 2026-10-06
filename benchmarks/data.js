@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791308477424,
+  "lastUpdate": 1791311843075,
   "repoUrl": "https://github.com/NeosiaNexus/Warp",
   "entries": {
     "Hot path on AMD EPYC 9V45 96-Core Processor (4 CPUs)": [
@@ -320,6 +320,88 @@ window.BENCHMARK_DATA = {
             "range": "± 16.9",
             "unit": "ns/packet",
             "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          }
+        ]
+      }
+    ],
+    "Hot path on INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)": [
+      {
+        "commit": {
+          "author": {
+            "email": "63867369+NeosiaNexus@users.noreply.github.com",
+            "name": "NeosiaNexus",
+            "username": "NeosiaNexus"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6bcc8ac49409b576f0640109bd22acc0748b262b",
+          "message": "perf(protocol): watch tab list and boss bar packets in place instead of re-encoding them (#91)\n\nBefore 1.20.2, Warp decoded and re-encoded every tab list and boss bar packet only to follow the UUIDs it clears on a server switch, which cost a copy, a decode, an encode and a deflate per packet. They are now watched: the decoder reads their UUIDs and actions in place, reports only additions and removals, and forwards the original frame like a blind one, so a boss bar update allocates 104 B instead of 697 B and a compressed latency update takes about 1 microsecond instead of 40. The crowd E2E scenario now checks that the bots that switched list none of those that stayed on the lobby. Fixes #80.",
+          "timestamp": "2026-10-06T20:23:50+02:00",
+          "tree_id": "d694a0b630dba05edc67e8d5edc984bd522ed42c",
+          "url": "https://github.com/NeosiaNexus/Warp/commit/6bcc8ac49409b576f0640109bd22acc0748b262b"
+        },
+        "date": 1791311840855,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 2497.9,
+            "range": "± 99.8",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 151.7,
+            "range": "± 0.5",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 349.9,
+            "range": "± 4.4",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 69525.8,
+            "range": "± 476.9",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 564.9,
+            "range": "± 8.7",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 4992.2,
+            "range": "± 7.2",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=CHUNK]",
+            "value": 1383.1,
+            "range": "± 2.9",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=MIXED]",
+            "value": 1054.4,
+            "range": "± 1.7",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
           }
         ]
       }
