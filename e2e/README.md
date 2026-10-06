@@ -108,7 +108,8 @@ Tiers pick what runs where:
 ## Adding a Minecraft version
 
 1. Find the protocol number (it is in the client jar's `version.json`) and add it to
-   `ProtocolVersion` in Warp, then run `npm run packet-ids` in `e2e/` (see below).
+   `ProtocolVersion` in Warp, then run `npm run packet-reports -- <version>` in `e2e/` (see
+   below) and give each packet Warp registers its id in that protocol.
 2. Add the entry to `versions.json`, in protocol order. Take the latest **STABLE** Paper build from
    `https://fill.papermc.io/v3/projects/paper/versions/<version>/builds?channel=STABLE` (URL and
    sha256 are in `downloads["server:default"]`), and the server's Java from the version's
@@ -121,11 +122,23 @@ Tiers pick what runs where:
 The harness itself is tested with `npm test` (matrix consistency, failure patterns, downloads, the
 report, protocol data corrections), which CI runs before every end-to-end matrix.
 
-## Packet id reference
+## Packet id references
 
-`npm run packet-ids` writes `protocol/src/test/resources/dev/warp/protocol/packet/packet-ids.txt`:
-the id of every packet, in every state and direction, at each protocol `ProtocolVersion` registers,
-taken from the pinned minecraft-data. Warp's `StateRegistryTest` checks every packet id Warp
-registers against it, so a wrong id fails the unit tests rather than a player's session. Run it
-again after adding a protocol to `ProtocolVersion` or bumping minecraft-data; the test reports a
-table that misses a protocol.
+Warp's `StateRegistryTest` checks every packet id Warp registers, in every state and direction,
+against a checked-in reference, so a wrong id fails the unit tests rather than a player's session.
+
+From 1.21 on, the reference is Mojang's own: the packets report of the vanilla server's data
+generator. `npm run packet-reports -- <version>` downloads the release's server jar from Mojang's
+version manifest (checked against its sha1), runs its data generator on the Java version Mojang
+lists for it (from the cache, else downloaded like the servers' own), reads its protocol with
+`unzip`, and writes `protocol/src/test/resources/dev/warp/protocol/packet/reports/<version>.json`:
+the id of every packet under its Mojang name (`minecraft:keep_alive`). Game versions sharing a
+protocol share every id, so there is one fixture per protocol, and the test fails when a protocol
+from 1.21 on has none. Without a version it regenerates every fixture; `--check` writes nothing and
+fails if a release's ids differ from the fixture of its protocol, or if no fixture has it. The
+`Packet reports` workflow runs `--check` on every fixture when a pull request changes them (so none
+can be edited by hand), and on the latest release every week, which flags a new Minecraft version.
+
+Before 1.21, `npm run packet-ids` writes `protocol/src/test/resources/dev/warp/protocol/packet/packet-ids.txt`
+from the pinned minecraft-data: the id of every packet at each protocol `ProtocolVersion` registers.
+Run it again after bumping minecraft-data; the test reports a table that misses a protocol.
