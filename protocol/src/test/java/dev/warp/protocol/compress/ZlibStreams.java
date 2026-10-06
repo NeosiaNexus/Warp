@@ -87,6 +87,57 @@ public final class ZlibStreams {
     return out.toByteArray();
   }
 
+  /** The byte that {@link #maximalDynamicBlock(int)} decodes to. */
+  public static final byte MAXIMAL_DYNAMIC_BLOCK_DATA = 0x2A;
+
+  /** The longest run of zero code lengths a single code-length symbol 18 can encode. */
+  private static final int MAX_ZERO_RUN = 138;
+
+  /**
+   * Builds a zlib stream of one dynamic-Huffman block declaring the most code lengths DEFLATE
+   * allows, 286 literal/length and 30 distance, that decodes to {@link
+   * #MAXIMAL_DYNAMIC_BLOCK_DATA}. Its code lengths end with a run of zeros (code-length symbol 18)
+   * that crosses from the literal/length into the distance code lengths and ends {@code overrun}
+   * entries past the last declared one: 0 gives a valid stream, anything more a malformed one.
+   *
+   * @param overrun how far the last run goes past the declared code lengths, from 0 to 79
+   * @return the zlib stream
+   */
+  public static byte[] maximalDynamicBlock(int overrun) {
+    int lastRun = 29 + 30 + overrun; // literal/length codes 257 to 285, then the 30 distance codes
+    if (overrun < 0 || lastRun > MAX_ZERO_RUN) {
+      throw new IllegalArgumentException("overrun must be in [0, 79]: " + overrun);
+    }
+    BitWriter bits = new BitWriter();
+    bits.write(1, 1); // BFINAL
+    bits.write(2, 2); // BTYPE: dynamic Huffman
+    bits.write(286 - 257, 5); // HLIT
+    bits.write(30 - 1, 5); // HDIST
+    bits.write(18 - 4, 4); // HCLEN: the first 18 code-length code lengths of the order below
+    // Code-length code: symbols 18 (third in transmission order) and 1 (eighteenth), one bit each,
+    // so symbol 1 is code 0 and symbol 18 is code 1.
+    for (int position = 0; position < 18; position++) {
+      bits.write(position == 2 || position == 17 ? 1 : 0, 3);
+    }
+    // Literal/length code: the data byte and end-of-block, one bit each; no distance code.
+    zeroRun(bits, MAXIMAL_DYNAMIC_BLOCK_DATA);
+    bits.write(0, 1); // length 1 for the data byte
+    zeroRun(bits, MAX_ZERO_RUN);
+    zeroRun(bits, 255 - MAXIMAL_DYNAMIC_BLOCK_DATA - MAX_ZERO_RUN);
+    bits.write(0, 1); // length 1 for end-of-block (256)
+    zeroRun(bits, lastRun);
+    // Data: the byte (code 0), then end-of-block (code 1).
+    bits.write(0, 1);
+    bits.write(1, 1);
+
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    out.write(0x78);
+    out.write(0x9C);
+    out.writeBytes(bits.toByteArray());
+    writeAdler(out, new byte[] {MAXIMAL_DYNAMIC_BLOCK_DATA});
+    return out.toByteArray();
+  }
+
   /**
    * Inflates a zlib stream that must decode to exactly {@code size} bytes.
    *
@@ -138,5 +189,38 @@ public final class ZlibStreams {
     out.write((int) (value >>> 16));
     out.write((int) (value >>> 8));
     out.write((int) value);
+  }
+
+  /** Writes code-length symbol 18 (code 1 in {@link #maximalDynamicBlock}): 11 to 138 zeros. */
+  private static void zeroRun(BitWriter bits, int count) {
+    bits.write(1, 1);
+    bits.write(count - 11, 7);
+  }
+
+  /** DEFLATE bit packing (RFC 1951 §3.1.1): least-significant bit first. */
+  private static final class BitWriter {
+    private final ByteArrayOutputStream out = new ByteArrayOutputStream();
+    private int buffer;
+    private int count;
+
+    void write(int value, int bits) {
+      for (int i = 0; i < bits; i++) {
+        buffer |= ((value >>> i) & 1) << count;
+        if (++count == 8) {
+          out.write(buffer);
+          buffer = 0;
+          count = 0;
+        }
+      }
+    }
+
+    byte[] toByteArray() {
+      if (count > 0) {
+        out.write(buffer);
+        buffer = 0;
+        count = 0;
+      }
+      return out.toByteArray();
+    }
   }
 }
