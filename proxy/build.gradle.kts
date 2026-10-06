@@ -72,6 +72,10 @@ dependencies {
 tasks.shadowJar {
     archiveBaseName = "warp"
     archiveClassifier = ""
+    // Every copy of a duplicated path must reach the transformers below. Shadow's default (EXCLUDE
+    // since 9.0.1) keeps only the first one, which leaves Log4j with a single jar's plugin cache.
+    // INCLUDE also keeps the other duplicates of the dependencies (LICENSE, NOTICE...) as they are.
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE
     mergeServiceFiles()
     // Merge Log4j2 plugin cache files across JARs (required for JsonTemplateLayout etc.)
     transform(com.github.jengelman.gradle.plugins.shadow.transformers.Log4j2PluginsCacheFileTransformer::class.java)
