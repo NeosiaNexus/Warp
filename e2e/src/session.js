@@ -3,21 +3,19 @@
 // offline-mode servers derive one from the name too, the way the game does.
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
+
+// The bots' protocol library computes offline UUIDs the way the game does; it does not export it.
+const { nameToMcOfflineUUID } = createRequire(import.meta.url)('minecraft-protocol/src/datatypes/uuid.js');
 
 /** The UUID the mock session server gives `name`. */
 export function sessionUuid(name) {
-  return dashed(createHash('sha256').update(`mock:${name}`).digest('hex').slice(0, 32));
+  const hex = createHash('sha256').update(`mock:${name}`).digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
 /** The UUID an offline-mode server gives `name`: version 3 (MD5) of `OfflinePlayer:<name>`. */
-export function offlineUuid(name) {
-  const bytes = createHash('md5').update(`OfflinePlayer:${name}`).digest();
-  bytes[6] = (bytes[6] & 0x0f) | 0x30;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  return dashed(bytes.toString('hex'));
-}
-
-const dashed = (hex) => `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+export const offlineUuid = (name) => nameToMcOfflineUUID(name);
 
 /** Starts the mock session server on `port` (0: one the system picks); `url` is its `hasJoined`. */
 export function startSessionServer(port) {

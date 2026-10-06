@@ -38,9 +38,9 @@ a closed port) and run the scenarios:
 |---|---|
 | `status` | Server list ping through Warp, advertising the protocol the bot speaks (else a client lists Warp as incompatible) |
 | `login` | Join, receive chunks, land on the lobby; `/server` answers |
-| `forwarding` | Forwarding variants only: lobby, then survival after a switch, list the player under the UUID Warp authenticated (the mock session server's), not the one an offline-mode server derives from the name |
+| `forwarding` | Online forwarding variants only: lobby, then survival after a switch, list the player under the UUID Warp authenticated (the mock session server's), not the one an offline-mode server derives from the name |
 | `keepalive` | One bot stays connected through the whole run (at least 65 s, past Warp's first keep-alive time-out check) |
-| `brand` | The backend's brand (`Paper`, `PaperSpigot` on 1.8, `vanilla`) reaches the player on joining, and again from survival after a switch |
+| `brand` | The backend's brand (`Paper`, `PaperSpigot` on 1.8, `vanilla`) reaches the player on joining, and survival's after a switch. Both brands read the same: survival's is the one that arrives in the switch's configuration phase (1.20.2+) or once the player is in adventure mode; a late one from the lobby fails |
 | `chat` | Two players on lobby: a chat line from one reaches the other, and so does a `/tell`, a command Warp does not own and only the backend can deliver |
 | `resource-pack` | Lobby's resource pack offer (URL, SHA-1, and its id from 1.20.3) reaches the player, then survival's after a switch; each pack downloads with the SHA-1 offered |
 | `switching` | Six `/server` switches back and forth (configuration phase from 1.20.2, Join Game and Respawn before) |
@@ -48,7 +48,8 @@ a closed port) and run the scenarios:
 | `fallback-unreachable` | Default server down: the player lands on the next one |
 | `fallback-rejected` | Lobby refuses the login (whitelist): the player lands on survival |
 
-A scenario a run cannot hold is skipped and says why: `forwarding` without forwarding, `switching`
+A scenario a run cannot hold is skipped and says why: `forwarding` without forwarding or offline
+(Warp then forwards the UUID a backend derives itself, so nothing tells them apart), `switching`
 and the fallbacks in a `--direct` run, `resource-pack` before 1.8 (offers were a plugin message,
 without the SHA-1). The features are in `features()` in `src/scenarios.js`.
 
@@ -73,16 +74,16 @@ Logs and `result.json` go to `e2e/build/<version>/`.
 
 Defined in `versions.json`: `online` (mock Mojang session server, encryption on), `offline`,
 `transcode` (compression passthrough off), backends compressing from a lower (`backend-lower`),
-higher (`backend-higher`) or no (`backend-uncompressed`) threshold than Warp, and `velocity` (online,
-with Velocity modern forwarding). Variants that share a backend threshold and forwarding share the
-backends; only Warp restarts between them. Ad-hoc flags (`--online`, `--passthrough`,
+higher (`backend-higher`) or no (`backend-uncompressed`) threshold than Warp, and `velocity`
+(online, with Velocity modern forwarding). Variants that share a backend threshold and forwarding
+share the backends; only Warp restarts between them. Ad-hoc flags (`--online`, `--passthrough`,
 `--threshold`, `--backend-threshold`, `--forwarding`) build a one-off variant.
 
 With forwarding, the backends only accept players whose identity Warp vouches for: Paper's Velocity
 support is turned on (`paper.yml` up to 1.18.2, `config/paper-global.yml` from 1.19) with a secret
-generated for each boot and given to Warp in `WARP_FORWARDING_SECRET`. Paper reads it from 1.13.1,
-the first build after login plugin messages, which carry it, arrived in 1.13; vanilla servers never
-do. Such a version, and a `--direct` run, skip the variant and say why in the report.
+generated for each boot and given to Warp in `WARP_FORWARDING_SECRET`. The identity travels in a
+login plugin message, which 1.13 introduced; Paper reads it from 1.13.1, vanilla servers never do.
+Those versions, and a `--direct` run, skip the variant and say why in the report.
 
 ## The matrix (`versions.json`)
 
@@ -122,8 +123,10 @@ Tiers pick what runs where:
 - `pr`, on every pull request (required): one version per protocol era among those that pass,
   and the offline, transcode, backend-lower and velocity variants on the newest. A known-broken
   version never goes there, a version with known-broken scenarios can.
-- `full`, on pull requests that change `protocol/`, `proxy/` or `e2e/` (required, instead of
-  `pr`), on every push to `main`, nightly, on demand, and on pull requests labelled `e2e: full`:
+- `full`, on pull requests that change what Warp's jar is built from (its modules, dependencies
+  and build) or what the end-to-end tests run with (the harness, its npm dependencies and workflow),
+  tests aside (required, instead of `pr`; `.github/actions/changes` lists the paths), on every push
+  to `main`, nightly, on demand, and on pull requests labelled `e2e: full`:
   every version, and more variants at era boundaries (`velocity` where Paper's Velocity support
   changes: 1.13.1 and 1.18.2 for `paper.yml`, 1.19 for `paper-global.yml`, 1.20.1 and 1.20.2 on
   each side of the configuration phase, and the newest). `npm test` checks that no tier schedules a

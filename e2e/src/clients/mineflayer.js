@@ -146,7 +146,10 @@ class Bot {
     this.username = username;
     this.stats = { packets: 0, chunks: 0, errors: [], kicked: null, ended: null };
     this.messages = [];
-    /** What the servers it played on said, in order: brands, resource pack offers, own UUIDs. */
+    /**
+     * What the servers it played on said, in order: brands (with the protocol state and game mode
+     * the bot was in when each arrived), resource pack offers, the UUIDs it was listed under.
+     */
     this.brands = [];
     this.resourcePacks = [];
     this.listedAs = [];
@@ -159,7 +162,9 @@ class Bot {
       else if (meta.name === 'player_info') this.listedAs.push(...listedUuids(data, username));
     });
     // mineflayer decodes the brand on the channel of the version: `MC|Brand` before 1.13.
-    for (const channel of ['MC|Brand', 'minecraft:brand']) bot._client.on(channel, (brand) => this.brands.push(brand));
+    for (const channel of ['MC|Brand', 'minecraft:brand']) {
+      bot._client.on(channel, (brand) => this.brands.push({ brand, state: bot._client.state, gameMode: this.gameMode() }));
+    }
     bot.on('error', (e) => this.stats.errors.push(String(e?.stack ?? e)));
     bot.on('kicked', (reason) => { this.stats.kicked = text(reason); });
     bot.on('end', (reason) => { if (!this.quitting) this.stats.ended = String(reason ?? 'unknown'); });

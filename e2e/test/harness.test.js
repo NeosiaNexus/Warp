@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import { BACKEND_PROTOCOL_ERRORS, backendGroups } from '../src/backend.js';
 import { connectClient } from '../src/clients/index.js';
 import { announcedProtocol } from '../src/clients/mineflayer.js';
-import { SCENARIOS, checkStatus, features } from '../src/scenarios.js';
+import { LOBBY_MODE, SCENARIOS, SURVIVAL_MODE, checkStatus, features, fromSurvival } from '../src/scenarios.js';
 import { findEntry, jobsForTier, loadMatrix, resolveVariant } from '../src/versions.js';
 import { WARP_FAILURES } from '../src/warp.js';
 
@@ -118,10 +118,17 @@ describe('scenario features', () => {
     assert.equal(features(769, { direct: true }).switching, 'no proxy in a control run');
   });
 
-  it('checks forwarded identities in forwarding variants only', () => {
-    assert.equal(features(769, { forwarding: 'velocity' }).forwarding, true);
-    assert.equal(features(769).forwarding, 'the variant forwards no player info');
-    assert.equal(features(769, { direct: true, forwarding: 'velocity' }).forwarding, 'no proxy in a control run');
+  it('checks forwarded identities where they differ from what a backend derives itself: online', () => {
+    assert.equal(features(769, { forwarding: 'velocity', online: true }).forwarding, true);
+    assert.equal(features(769, { forwarding: 'velocity' }).forwarding, 'offline, Warp forwards the UUID a backend derives itself');
+    assert.equal(features(769, { online: true }).forwarding, 'the variant forwards no player info');
+    assert.equal(features(769, { direct: true, forwarding: 'velocity', online: true }).forwarding, 'no proxy in a control run');
+  });
+
+  it('tells survival’s brand from a late one of the lobby, by when it arrives', () => {
+    assert.equal(fromSurvival({ state: 'configuration', gameMode: LOBBY_MODE }), true, 'configuration phase of the switch (1.20.2+)');
+    assert.equal(fromSurvival({ state: 'play', gameMode: SURVIVAL_MODE }), true, 'after survival’s Join Game (before 1.20.2)');
+    assert.equal(fromSurvival({ state: 'play', gameMode: LOBBY_MODE }), false, 'still on the lobby');
   });
 
   it('offers resource packs from 1.8, where they became a packet of their own', () => {

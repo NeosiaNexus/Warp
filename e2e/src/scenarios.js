@@ -17,22 +17,30 @@ const BRANDS = { paper: /Paper/, vanilla: /vanilla/ };
  * What a run offers the scenarios that require it: `true`, or why the run lacks it, which the
  * skipped scenario reports. `proxy` and `forwarding` depend on the run, the others on the protocol.
  * @param {number} protocol
- * @param {{direct?: boolean, forwarding?: string}} run `direct`: a control run, without Warp;
- *   `forwarding`: the variant's forwarding mode
+ * @param {{direct?: boolean, forwarding?: string, online?: boolean}} run `direct`: a control run,
+ *   without Warp; `forwarding` and `online`: the variant's forwarding mode and online mode
  * @returns {Record<string, true|string>}
  */
-export function features(protocol, { direct = false, forwarding = 'none' } = {}) {
+export function features(protocol, { direct = false, forwarding = 'none', online = false } = {}) {
   const proxy = direct ? 'no proxy in a control run' : true;
   return {
     proxy,
     // Every version switches: through the configuration phase from 1.20.2, with the new server's
     // Join Game and a Respawn before.
     switching: proxy,
-    forwarding: proxy !== true ? proxy : forwarding !== 'none' || 'the variant forwards no player info',
+    // Offline, Warp forwards the UUID a backend derives from the name anyway: nothing to tell apart.
+    forwarding: all(
+      proxy,
+      forwarding !== 'none' || 'the variant forwards no player info',
+      online || 'offline, Warp forwards the UUID a backend derives itself',
+    ),
     // Offers carry the pack's SHA-1 in a packet of their own from 1.8 (a plugin message before).
     resourcePack: protocol >= 47 || 'no Resource Pack Send packet before 1.8',
   };
 }
+
+/** `true` if every condition is, else the reason of the first one that is not. */
+const all = (...conditions) => conditions.find((condition) => condition !== true) ?? true;
 
 const has = (ctx, feature) => ctx.features[feature] === true;
 
@@ -95,17 +103,16 @@ async function login(ctx) {
 }
 
 /**
- * Modern forwarding: the backends trust Warp's word on who the player is, so each one lists the
- * player under the UUID Warp authenticated, not the one an offline-mode server derives from the
- * name.
+ * Modern forwarding: the backends (offline-mode servers) trust Warp's word on who the player is, so
+ * each one lists the player under the UUID Warp authenticated, the mock session server's, rather
+ * than the one it would derive from the name.
  */
 async function forwarding(ctx) {
   const name = 'e2e_forwarded';
-  // ViaProxy-bridged versions run online variants offline (see adaptVariants in cli.js).
-  const [expected, source] = ctx.variant.online ? [sessionUuid(name), 'the session server'] : [offlineUuid(name), 'offline mode'];
+  const expected = sessionUuid(name);
   const bot = await joinWarp(ctx, name);
   try {
-    if (bot.uuid !== expected) throw new Error(`Warp logged ${name} in as ${bot.uuid}, expected ${expected} from ${source}`);
+    if (bot.uuid !== expected) throw new Error(`Warp logged ${name} in as ${bot.uuid}, not ${expected} from the session server`);
     const servers = ['lobby'];
     await expectListedAs(bot, 0, expected, 'lobby');
     if (has(ctx, 'switching')) {
@@ -115,7 +122,7 @@ async function forwarding(ctx) {
       servers.push('survival');
     }
     bot.healthy();
-    return `${servers.join(' and ')} know ${name} as ${expected}, the UUID from ${source}`;
+    return `${servers.join(' and ')} know ${name} as ${expected}, the UUID from the session server`;
   } finally {
     bot.quit();
   }
@@ -124,26 +131,54 @@ async function forwarding(ctx) {
 /** Checks the `index`-th UUID a backend listed the bot under (its Player Info entry). */
 async function expectListedAs(bot, index, expected, server) {
   const uuid = await bot.waitForEntry('listedAs', index, `${server} listing ${bot.username}`, 10_000);
-  if (uuid !== expected) throw new Error(`${server} knows ${bot.username} as ${uuid}, not ${expected}: it did not get the forwarded identity`);
+  if (uuid === expected) return;
+  const own = uuid === offlineUuid(bot.username) ? ', the UUID it derives from the name: it took no forwarded identity' : '';
+  throw new Error(`${server} knows ${bot.username} as ${uuid}, not ${expected}${own}`);
 }
 
-/** The backend's brand reaches the player through Warp, on joining and on every switch. */
+/**
+ * The backend's brand reaches the player through Warp, on joining and after a switch. Both backends
+ * run the same server, so their brands read the same. Survival's is told apart by when it arrives:
+ * in the configuration phase the switch opens (from 1.20.2), or once survival has put the player in
+ * adventure mode (before). A brand from the lobby arriving after the switch fails the scenario.
+ */
 async function brand(ctx) {
   const expected = BRANDS[ctx.entry.server.type];
   const bot = await joinWarp(ctx, 'e2e_brand');
   try {
-    const brands = [await bot.waitForEntry('brands', 0, 'the lobby brand', 10_000)];
+    const lobby = await bot.waitForEntry('brands', 0, 'the lobby brand', 10_000);
+    checkBrand(lobby, expected, 'lobby');
+    let detail = `"${lobby.brand}" from lobby`;
     if (has(ctx, 'switching')) {
+      const before = bot.brands.length;
       await switchToSurvival(bot);
-      brands.push(await bot.waitForEntry('brands', 1, 'the survival brand', 10_000));
+      await bot.waitForEntry('brands', before, 'the survival brand', 10_000);
+      for (const received of bot.brands.slice(before)) {
+        if (!fromSurvival(received)) {
+          throw new Error(`brand "${received.brand}" arrived after the switch but from lobby (${received.state}, game mode ${received.gameMode})`);
+        }
+        checkBrand(received, expected, 'survival');
+      }
+      detail += ', then from survival after a switch';
     }
-    const wrong = brands.find((b) => !expected.test(b));
-    if (wrong !== undefined) throw new Error(`got brand "${wrong}", not the ${ctx.entry.server.type} backend's (${expected})`);
     bot.healthy();
-    return `"${brands[0]}" from ${brands.length > 1 ? 'lobby, then from survival after a switch' : 'lobby'}`;
+    return detail;
   } finally {
     bot.quit();
   }
+}
+
+/**
+ * Whether a brand the bot received after asking to switch to survival is survival's: it arrived in
+ * the configuration phase of the switch, or once the bot was in survival's game mode.
+ * @param {{state: string, gameMode: string|undefined}} received an entry of the bot's `brands`
+ */
+export function fromSurvival({ state, gameMode }) {
+  return state === 'configuration' || gameMode === SURVIVAL_MODE;
+}
+
+function checkBrand({ brand }, expected, server) {
+  if (!expected.test(brand)) throw new Error(`${server} brand "${brand}" does not match ${expected}`);
 }
 
 /**

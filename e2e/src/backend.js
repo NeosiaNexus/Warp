@@ -136,7 +136,7 @@ export class Backend {
    *   (Paper only, see {@link forwardingUnsupported}), or null to accept players straight
    * @param {string} options.logDir
    * @param {string} options.logSuffix distinguishes the logs of successive boots (one per backend
-   *   threshold and forwarding mode)
+   *   threshold and forwarding)
    */
   constructor(options) {
     Object.assign(this, options);

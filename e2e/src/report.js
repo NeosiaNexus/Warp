@@ -5,6 +5,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { SCENARIOS } from './scenarios.js';
+import { variantStatus } from './status.js';
 
 const [dir, title = 'End-to-end tests'] = process.argv.slice(2);
 
@@ -44,7 +45,7 @@ if (!results.length) {
   for (const r of results) {
     r.variants.forEach((v, i) => {
       const cells = columns.map((name) => SCENARIO[v.scenarios.find((s) => s.name === name)?.status] ?? '');
-      const status = !r.knownBroken || v.status === 'skip' ? v.status : v.status === 'pass' ? 'xpass' : 'xfail';
+      const status = variantStatus(r, v);
       const result = status === 'skip' ? `${STATUS.skip}: ${escape(v.reason)}` : STATUS[status];
       const first = i === 0;
       lines.push(`| ${first ? `**${r.version}**` : ''} | ${first ? r.protocol : ''} | ${first ? r.server : ''} | ${v.name} | ${cells.join(' | ')} | ${result} |`);

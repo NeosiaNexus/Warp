@@ -18,6 +18,7 @@ import { startPackServer } from './packs.js';
 import { killAll, run, sleep } from './proc.js';
 import { SCENARIOS, features, startKeepAlive } from './scenarios.js';
 import { startSessionServer } from './session.js';
+import { variantStatus, versionStatus } from './status.js';
 import { E2E_DIR, FORWARDING_MODES, findEntry, loadMatrix, resolveVariant } from './versions.js';
 import { Warp } from './warp.js';
 
@@ -147,7 +148,7 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, packs, ja
   }
   result.seconds = Math.round((Date.now() - started) / 1000);
   const ran = result.variants.filter((v) => v.status !== 'skip');
-  result.status = ran.length ? classify(ran.every((v) => v.status === 'pass'), knownBroken) : 'skip';
+  result.status = ran.length ? versionStatus(ran.every((v) => v.status === 'pass'), knownBroken) : 'skip';
   writeFileSync(join(runDir, 'result.json'), `${JSON.stringify(result, null, 2)}\n`);
   endGroup();
   return result;
@@ -170,10 +171,10 @@ async function startBackends({ entry, serverJar, serverJava, preseeded, threshol
         resourcePack: packs[name],
         forwarding,
         logDir,
-        logSuffix: `t${threshold}${forwarding ? `-${forwarding.mode}` : ''}`,
+        logSuffix: `t${threshold}${forwarding ? `-${forwarding.mode}-${forwarding.online ? 'online' : 'offline'}` : ''}`,
       }),
   );
-  const accepting = forwarding ? `, ${forwarding.mode} forwarding` : '';
+  const accepting = forwarding ? `, ${forwarding.mode} forwarding from an ${forwarding.online ? 'online' : 'offline'} proxy` : '';
   log(`booting backends (${entry.server.type} ${entry.server.version}, Java ${entry.java}, threshold ${threshold}${accepting})`);
   const booted = Date.now();
   for (const b of backends) {
@@ -251,7 +252,7 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, forward
     entry,
     variant,
     direct: opts.direct,
-    features: features(entry.protocol, { direct: opts.direct, forwarding: variant.forwarding }),
+    features: features(entry.protocol, { direct: opts.direct, forwarding: variant.forwarding, online: variant.online }),
     client: connectClient(entry, { tools: matrix.tools, cache: opts.cache, java: warpJava, ports, targets: Object.values(targets), logDir, runDir }),
     warp: { port: targets.warp },
     warpAlt: { port: targets.warpAlt },
@@ -428,11 +429,6 @@ async function buildWarp() {
 // Reporting
 // ---------------------------------------------------------------------------
 
-function classify(passed, knownBroken) {
-  if (knownBroken) return passed ? 'xpass' : 'xfail';
-  return passed ? 'pass' : 'fail';
-}
-
 const ICONS = { pass: '✅', fail: '❌', xfail: '⚠️ known broken', xpass: '🎉 fixed?', skip: '⏭️' };
 const SCENARIO_ICONS = { pass: '✅', fail: '❌', xfail: '⚠️', xpass: '🎉', skip: '⏭️' };
 
@@ -458,8 +454,7 @@ function markdown(results) {
   const rows = results.flatMap((r) =>
     r.variants.map((v) => {
       const cells = v.status === 'skip' ? v.reason : v.scenarios.map((s) => `${SCENARIO_ICONS[s.status]} ${s.name}`).join(' · ');
-      const status = !r.knownBroken || v.status === 'skip' ? v.status : v.status === 'fail' ? 'xfail' : 'xpass';
-      return `| ${r.version} | ${r.protocol} | ${v.name} | ${ICONS[status]} | ${cells}${v.failures?.length ? ` · ❌ ${v.failures.length} log failure(s)` : ''} | ${r.seconds}s |`;
+      return `| ${r.version} | ${r.protocol} | ${v.name} | ${ICONS[variantStatus(r, v)]} | ${cells}${v.failures?.length ? ` · ❌ ${v.failures.length} log failure(s)` : ''} | ${r.seconds}s |`;
     }),
   );
   return `| Version | Protocol | Variant | Result | Scenarios | Time |\n|---|---|---|---|---|---|\n${rows.join('\n')}\n`;
