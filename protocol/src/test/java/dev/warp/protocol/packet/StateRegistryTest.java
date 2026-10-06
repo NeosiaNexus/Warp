@@ -84,7 +84,6 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
 import java.util.TreeSet;
@@ -235,21 +234,35 @@ class StateRegistryTest {
     @Test
     @DisplayName("should have Mojang's report of every protocol from 1.21 on")
     void coverEveryReportedProtocol() {
-      List<String> problems = new ArrayList<>();
-      for (ProtocolVersion version : reportedProtocols().toList()) {
-        Optional<PacketReport> report = PacketReport.of(version);
-        if (report.isEmpty()) {
-          problems.add(
-              "%s (protocol %d): no report, run npm run packet-reports -- %s in e2e/"
-                  .formatted(version.name(), version.protocol(), version.name()));
-        } else if (report.get().protocol() != version.protocol()) {
-          problems.add(
-              "reports/%s.json: ProtocolVersion registers protocol %d, the server jar declares %d"
-                  .formatted(report.get().version(), version.protocol(), report.get().protocol()));
-        }
+      List<String> missing =
+          reportedProtocols()
+              .filter(version -> PacketReport.of(version).isEmpty())
+              .map(
+                  version ->
+                      "%s (protocol %d): no report, run npm run packet-reports -- %s in e2e/"
+                          .formatted(version.name(), version.protocol(), version.name()))
+              .toList();
+
+      assertTrue(missing.isEmpty(), () -> String.join("\n", missing));
+    }
+
+    // Every version, not one per protocol: a version given its predecessor's protocol by mistake
+    // shares that predecessor's report, and only its own report shows the protocol it really has.
+    @Test
+    @DisplayName("should register the protocol the server jar of each report declares")
+    void registerDeclaredProtocol() {
+      List<String> mismatches = new ArrayList<>();
+      for (ProtocolVersion version : ProtocolVersion.values()) {
+        PacketReport.generatedFrom(version)
+            .filter(report -> report.protocol() != version.protocol())
+            .ifPresent(
+                report ->
+                    mismatches.add(
+                        "%s: ProtocolVersion registers protocol %d, its server jar declares %d"
+                            .formatted(version.name(), version.protocol(), report.protocol())));
       }
 
-      assertTrue(problems.isEmpty(), () -> String.join("\n", problems));
+      assertTrue(mismatches.isEmpty(), () -> String.join("\n", mismatches));
     }
 
     /** One version per protocol from 1.21 on, with Mojang's report of its protocol. */
