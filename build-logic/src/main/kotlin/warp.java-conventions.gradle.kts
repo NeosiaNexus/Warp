@@ -22,7 +22,6 @@ tasks.withType<JavaCompile>().configureEach {
         "-Xlint:-processing",
         "-Xlint:-serial",
         "-parameters",
-        "-XDaddTypeAnnotationsToSymbol=true",
     ))
     options.errorprone {
         error("NullAway")
