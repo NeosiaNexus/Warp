@@ -171,8 +171,9 @@ jobs:
           advanced-security: false
           annotations: true
 
-  # One passing version per protocol era, plus the variants on the newest (e2e/versions.json, tier
-  # `pr`). The full matrix runs on main, nightly, and on PRs labelled `e2e: full` (e2e.yml).
+  # One passing version per protocol era and the newest version, plus every variant on the newest
+  # the bots speak natively (e2e/versions.json, tier `pr`). The full matrix runs on main, nightly,
+  # and on PRs labelled `e2e: full` (e2e.yml).
   e2e:
     name: E2E
     needs: build

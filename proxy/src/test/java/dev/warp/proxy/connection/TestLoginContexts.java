@@ -65,6 +65,7 @@ final class TestLoginContexts {
         Deflater.DEFAULT_COMPRESSION,
         true,
         new MojangSessionService(),
+        new PlaySession(),
         registry,
         ForwardingMode.NONE,
         new byte[0],

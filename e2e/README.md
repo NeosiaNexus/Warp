@@ -8,7 +8,7 @@ can actually join, play, switch servers and survive a fallback, on every version
 e2e/run.sh --mc 1.21.4                                   # one version, default variant (online)
 e2e/run.sh --mc 1.8.8,1.20.2 --variants online,offline   # several versions and variants
 e2e/run.sh --mc 1.21.4 --passthrough off --scenarios login,switching
-e2e/run.sh --mc 26.3 --strict                            # a known-broken version, failing for real
+e2e/run.sh --mc 26.3 --strict                            # known-broken flags ignored: fails for real
 e2e/run.sh --mc 1.21.1 --direct                          # control run without Warp
 e2e/run.sh --list                                        # the whole matrix
 e2e/run.sh --help
@@ -52,7 +52,9 @@ A run fails if a scenario fails, and also if:
 
 Strict parsing also catches errors in the bots' protocol data. Those are corrected in memory
 (`correctProtocolData` in `src/clients/mineflayer.js`) once a `--direct` run proves the server
-alone triggers them, never skipped: today, the recipe serializer ids of 1.20.5 to 1.21.1.
+alone triggers them, never skipped: today, the recipe serializer ids of 1.20.5 to 1.21.1. Bots also
+end their ticks as the game does from 1.21.2 (`endTicks`): mineflayer never sends a Client Tick End,
+and a 26.3 server kicks a player that sends two positions in the same tick.
 
 Logs and `result.json` go to `e2e/build/<version>/`.
 
@@ -74,8 +76,7 @@ One entry per protocol number:
   "protocol": 773,
   "java": 21,
   "client": "1.21.9",
-  "server": { "type": "paper", "version": "1.21.10", "build": 130, "url": "…", "sha256": "…" },
-  "knownBroken": "packet ids for 1.21.5+ not audited yet (#48)"
+  "server": { "type": "paper", "version": "1.21.10", "build": 130, "url": "…", "sha256": "…" }
 }
 ```
 
@@ -100,15 +101,21 @@ One entry per protocol number:
 Tiers pick what runs where:
 
 - `pr`, on every pull request (required): one version per protocol era among those that pass,
-  and the offline, transcode and backend-lower variants on the newest. A known-broken version never goes there, a version with
-  known-broken scenarios can.
+  every variant on the newest version the bots speak natively, and the newest version, through
+  ViaProxy if need be (so offline, with the transcode and backend-lower variants). A known-broken
+  version never goes there, a version with known-broken scenarios can. `npm test` fails when the
+  newest version that passes, or a variant on the newest the bots speak, is missing from it.
 - `full`, on every push to `main`, nightly, on demand, and on pull requests labelled
-  `e2e: full`: every version, and more variants at era boundaries.
+  `e2e: full`: every version, more variants at era boundaries, and everything `pr` runs.
 
 ## Adding a Minecraft version
 
 1. Find the protocol number (it is in the client jar's `version.json`) and add it to
-   `ProtocolVersion` in Warp, then run `npm run packet-ids` in `e2e/` (see below).
+   `ProtocolVersion` in Warp, then run `npm run packet-reports -- <version>` in `e2e/` (see
+   below) and give each packet Warp registers its id in that protocol. Then compare the format of
+   every packet Warp decodes or encodes with the previous release: their codecs in the server jar
+   (unobfuscated from 26.1, so `javap -c` reads them) and Velocity's packet classes. 26.2, for
+   instance, added a session ID to Login Success and an online mode flag to Join Game.
 2. Add the entry to `versions.json`, in protocol order. Take the latest **STABLE** Paper build from
    `https://fill.papermc.io/v3/projects/paper/versions/<version>/builds?channel=STABLE` (URL and
    sha256 are in `downloads["server:default"]`), and the server's Java from the version's
@@ -116,16 +123,30 @@ Tiers pick what runs where:
 3. If the bot library has no data for it yet, add `"via": "<newest version it speaks>"`.
 4. Run it: `e2e/run.sh --mc <version>`, and `npm test` in `e2e/` (checks the matrix).
 5. Until Warp supports it fully, add `"knownBroken"` (or `"knownBrokenScenarios"`) with the
-   issue; CI then reports it without failing.
+   issue; CI then reports it without failing. Once it passes, give the top-level `README.md` its
+   new newest version (the supported range, and the versions the suite plays), and move the `pr`
+   tier's newest version to it (`npm test` says what is missing).
 
 The harness itself is tested with `npm test` (matrix consistency, failure patterns, downloads, the
 report, protocol data corrections), which CI runs before every end-to-end matrix.
 
-## Packet id reference
+## Packet id references
 
-`npm run packet-ids` writes `protocol/src/test/resources/dev/warp/protocol/packet/packet-ids.txt`:
-the id of every packet, in every state and direction, at each protocol `ProtocolVersion` registers,
-taken from the pinned minecraft-data. Warp's `StateRegistryTest` checks every packet id Warp
-registers against it, so a wrong id fails the unit tests rather than a player's session. Run it
-again after adding a protocol to `ProtocolVersion` or bumping minecraft-data; the test reports a
-table that misses a protocol.
+Warp's `StateRegistryTest` checks every packet id Warp registers, in every state and direction,
+against a checked-in reference, so a wrong id fails the unit tests rather than a player's session.
+
+From 1.21 on, the reference is Mojang's own: the packets report of the vanilla server's data
+generator. `npm run packet-reports -- <version>` downloads the release's server jar from Mojang's
+version manifest (checked against its sha1), runs its data generator on the Java version Mojang
+lists for it (from the cache, else downloaded like the servers' own), reads its protocol with
+`unzip`, and writes `protocol/src/test/resources/dev/warp/protocol/packet/reports/<version>.json`:
+the id of every packet under its Mojang name (`minecraft:keep_alive`). Game versions sharing a
+protocol share every id, so there is one fixture per protocol, and the test fails when a protocol
+from 1.21 on has none. Without a version it regenerates every fixture; `--check` writes nothing and
+fails if a release's ids differ from the fixture of its protocol, or if no fixture has it. The
+`Packet reports` workflow runs `--check` on every fixture when a pull request changes them (so none
+can be edited by hand), and on the latest release every week, which flags a new Minecraft version.
+
+Before 1.21, `npm run packet-ids` writes `protocol/src/test/resources/dev/warp/protocol/packet/packet-ids.txt`
+from the pinned minecraft-data: the id of every packet at each protocol `ProtocolVersion` registers.
+Run it again after bumping minecraft-data; the test reports a table that misses a protocol.
