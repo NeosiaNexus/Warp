@@ -25,7 +25,7 @@ def counters(path):
 def cell(covered, missed):
     total = covered + missed
     if total == 0:
-        return "—"
+        return "n/a"
     ratio = covered / total
     filled = round(ratio * 10)
     return f"`{'█' * filled}{'░' * (10 - filled)}` {ratio:.1%}"

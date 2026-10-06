@@ -28,7 +28,7 @@ This compiles all modules, runs tests, checks formatting (Spotless), and produce
 
 ### Commit Messages
 
-We use [Conventional Commits](https://www.conventionalcommits.org/). Your **PR title** must follow this format — it becomes the commit message on `main` after squash merge.
+We use [Conventional Commits](https://www.conventionalcommits.org/). Your **PR title** must follow this format: it becomes the commit message on `main` after squash merge.
 
 ```
 type(scope): description
@@ -51,10 +51,10 @@ type(scope): description
 
 ### Code Style
 
-- **Formatting** is enforced by Spotless (Google Java Format). Run `./gradlew spotlessApply` — never format manually.
-- **Null safety** — use `@NullMarked` at package level, `@Nullable` on individual fields/params (JSpecify).
-- **Javadoc** — all public types and methods must have Javadoc with `@param` and `@return` tags. Checkstyle enforces this.
-- **Imports** — four groups separated by blank lines: `dev.warp` | `java` | `javax` | everything else. Spotless handles ordering.
+- **Formatting** is enforced by Spotless (Google Java Format). Run `./gradlew spotlessApply`, never format manually.
+- **Null safety**: use `@NullMarked` at package level, `@Nullable` on individual fields/params (JSpecify).
+- **Javadoc**: all public types and methods must have Javadoc with `@param` and `@return` tags. Checkstyle enforces this.
+- **Imports**: four groups separated by blank lines: `dev.warp` | `java` | `javax` | everything else. Spotless handles ordering.
 
 ### Testing
 
@@ -99,20 +99,26 @@ them, so the release workflow authenticates as a GitHub App when one is configur
    - **Where can this GitHub App be installed?** Only on this account.
 2. Note the App's **Client ID**, then **Generate a private key** (a `.pem` file is downloaded).
 3. **Install App** → *Only select repositories* → this repository.
-4. Store the credentials in the repository:
+4. Store the credentials in the `release` environment (usable from `main` only):
    ```bash
-   gh variable set RELEASE_APP_CLIENT_ID --body "<client id>"
-   gh secret set RELEASE_APP_PRIVATE_KEY < path/to/private-key.pem
+   gh variable set RELEASE_APP_CLIENT_ID --env release --body "<client id>"
+   gh secret set RELEASE_APP_PRIVATE_KEY --env release < path/to/private-key.pem
    ```
    then delete the local `.pem`.
 
 Without these, the workflow falls back to `GITHUB_TOKEN` and CI on the release PR needs a manual
 "Approve workflows to run".
 
+Every released jar carries a signed build provenance attestation:
+
+```bash
+gh attestation verify warp-<version>.jar --repo NeosiaNexus/Warp
+```
+
 ## Architecture
 
 ```
-api/        Public plugin API — stable contract for plugins
+api/        Public plugin API, the stable contract for plugins
 protocol/   Minecraft protocol codec and packets
 proxy/      Core proxy implementation (shadow JAR)
 jni/        Native bindings (compression, crypto)
@@ -123,4 +129,4 @@ Dependencies flow: `api ← protocol ← proxy`, `jni ← proxy`. Never add reve
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [AGPL-3.0](LICENSE). All Java files must include the license header — Spotless adds it automatically via `./gradlew spotlessApply`.
+By contributing, you agree that your contributions will be licensed under the [AGPL-3.0](LICENSE). All Java files must include the license header; Spotless adds it automatically via `./gradlew spotlessApply`.
