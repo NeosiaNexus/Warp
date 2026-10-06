@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { parseNetemSpec } from '../src/netem.js';
-import { RESOURCES, checkGrowth, csv, retainedObjects, soakMarkdown, warmUpMs } from '../src/soak.js';
+import { RESOURCES, checkGrowth, csv, retainedObjects, soakMarkdown, summarize, warmUpMs } from '../src/soak.js';
 
 const rss = RESOURCES.find((r) => r.key === 'rss');
 const heapLive = RESOURCES.find((r) => r.key === 'heapLive');
@@ -38,10 +38,11 @@ describe('leak check', () => {
   });
 
   it('scales the limit with the level of the resource', () => {
-    const samples = series('rss', 1200, (t) => 1000 + (110 * t) / 1200);
+    // 40 MiB between the thirds of about 1 GiB: under 5 % of it, though over 32 MiB.
+    const samples = series('rss', 1200, (t) => 1000 + (60 * t) / 1200);
     const check = checkGrowth(samples, rss, 0, 1200);
 
-    assert.ok(check.limit > 100, `limit ${check.limit}`); // 10 % of about 1 GiB, more than 64 MiB
+    assert.ok(check.growth > 32 && check.limit > check.growth, `growth ${check.growth}, limit ${check.limit}`);
     assert.equal(check.status, 'pass');
   });
 
@@ -93,6 +94,39 @@ describe('objects left once every player has left', () => {
   });
 });
 
+describe('soak verdict', () => {
+  const ctx = { entry: { version: '1.21.4' }, variant: { name: 'online' }, bots: 20, soak: { minutes: 10 } };
+  const crowd = { ops: [], failures: [] };
+  const samples = series('heapLive', 600, () => 16);
+  const idle = new Map([['dev.warp.proxy.WarpServer', 1]]);
+  const verdict = (overrides) =>
+    summarize({ ctx, samples, crowd, warmUp: 120_000, durationMs: 600_000, drain: { clients: 0, backends: 0, seconds: 0.1 }, objects: { before: idle, after: idle }, network: null, error: null, ...overrides });
+
+  it('passes a Warp that released everything', () => {
+    const report = verdict({});
+
+    assert.equal(report.status, 'pass');
+    assert.deepEqual(report.problems, []);
+    assert.deepEqual(report.phases.map((p) => p.name), ['warm-up', 'steady']);
+  });
+
+  it('names the classes Warp kept, the connections it held and the bots that failed', () => {
+    const after = new Map([...idle, ['dev.warp.proxy.connection.MinecraftConnection', 220], ['io.netty.channel.epoll.EpollSocketChannel', 220]]);
+    const report = verdict({
+      objects: { before: idle, after },
+      drain: { clients: 0, backends: 3, seconds: null },
+      crowd: { ops: [], failures: [{ t: 42, phase: 'steady', op: 'switch', bot: 'soak_03', error: 'no packet for 31 s' }] },
+    });
+
+    assert.equal(report.status, 'fail');
+    assert.deepEqual(report.problems, [
+      'Warp kept objects of 2 class(es) once every player had left, more than one per player: dev.warp.proxy.connection.MinecraftConnection +220, io.netty.channel.epoll.EpollSocketChannel +220',
+      'Warp still holds 0 client and 3 backend connection(s) 30 s after every player left',
+      '1 bot failure(s), first: switch soak_03: no packet for 31 s',
+    ]);
+  });
+});
+
 describe('soak report', () => {
   const soak = {
     bots: 20,
@@ -127,7 +161,7 @@ describe('soak report', () => {
     const markdown = soakMarkdown({ version: '1.21.4' }, variant);
 
     assert.match(markdown, /\| Resident memory \| 590 MiB \| 612 MiB → 615 MiB \(\+3 MiB\) \| 640 MiB \| 600 MiB \| \+64 MiB \| ✅ \|/);
-    assert.match(markdown, /^\| \| \*\*warm-up\*\* \(0:00 to 5:00\) \|$/m);
+    assert.match(markdown, /^\| \| \*\*warm-up\*\* \(5:00\) \|$/m);
     assert.match(markdown, /^\| Joins \(p50 \/ p95\) \| 40 \(900 \/ 1500 ms\) \|$/m);
     assert.match(markdown, /^\| Server switches \(p50 \/ p95\) \| 120 \(180 \/ 420 ms\) \|$/m);
     assert.match(markdown, /tc netem `delay 50ms 20ms loss 1%` on Warp's port, both ways: 990,000 packets \(1907 MiB\), 10,000 dropped \(1\.00 %\)/);

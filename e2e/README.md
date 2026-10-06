@@ -74,7 +74,7 @@ e2e/run.sh --mc 1.21.4 --soak 30 --bots 20 --netem "delay 50ms 20ms distribution
 
 `--soak MINUTES` replaces the scenarios with a long run that looks for leaks. A crowd of `--bots`
 bots joins Warp and stays for MINUTES; every 10 s a quarter of them switch server (and must receive
-the new world), a tenth reconnect, and a server list ping goes through. A bot that is kicked, sees
+the new world), a fifth reconnect, and a server list ping goes through. A bot that is kicked, sees
 a protocol error or receives nothing for 30 s is a failure; it reconnects at the next cycle.
 
 Every 5 s the harness samples Warp's process: resident memory, file descriptors, connections to
@@ -89,32 +89,47 @@ The soak has three phases: warm-up (a fifth of it, 1 to 5 minutes, while the JIT
 fill up), steady state, and drain (every bot leaves). Besides what fails any run (an ERROR, a buffer
 leak, a hung shutdown), a soak fails when:
 
-| Check | Fails when, over the steady phase |
+| Check | Fails when |
 |---|---|
-| Resident memory | it grows by more than 64 MiB or 10 %, whichever is larger |
-| Live heap | it grows by more than 8 MiB or 25 % |
-| Direct memory | it grows by more than 16 MiB or 25 % |
-| File descriptors | they grow by more than 8 or 10 % |
-| Threads | they grow by more than 4 or 10 % |
-| Connections | Warp still holds a client or backend connection 30 s after every bot left (drain) |
+| Resident memory | it grows over the steady phase by more than 32 MiB or 5 %, whichever is larger |
+| Live heap | it grows over the steady phase by more than 8 MiB or 25 % |
+| Direct memory | it grows over the steady phase by more than 16 MiB or 25 % |
+| File descriptors | they grow over the steady phase by more than 8 or 10 % |
+| Threads | they grow over the steady phase by more than 8 or 10 % |
+| Connections | Warp still holds a client or backend connection 30 s after every bot left |
+| Objects | once every bot left, a class of Warp's own or a Netty socket channel has more instances than before the first joined, by more than the number of bots |
 | Bots | any bot fails, in any phase |
 
 Growth is measured between the medians of the first and last thirds of the steady phase, and is
 only sustained if the resource was still growing in the last third: a pool that fills up early and
 stays full is not a leak. A soak shorter than about 5 minutes is too short for the live heap check,
-which it then skips.
+which it then skips. The limits come from the nightly soak of a clean Warp on a GitHub runner: over
+its 25 minutes of steady state, resident memory grows by about 7 MiB (the JIT at work) and nothing
+else grows at all, varying by about 1 MiB of live heap, 2 file descriptors and 3 threads (those of
+the HTTP client of online mode). The limits leave several times that.
+
+A trend only shows a leak big enough to stand out of the noise. The objects check does not depend
+on one: a class histogram of Warp (`jcmd GC.class_histogram`, after a full GC) is taken while it is
+idle before the first bot joins, and again once every bot has left. A cache with an entry per
+player may keep one object per bot; an object kept per connection or per switch outnumbers them
+within minutes. A Warp patched to keep a reference to every player that ever joined passes every
+trend check (the 65 players of a 5-minute soak add 0.3 MiB of live heap), and fails this one.
 
 Results go to `e2e/build/<version>/`: `soak-<variant>.csv` and `soak-<variant>.json` (the time
-series, a row every 5 s), and the summary (resources, then each phase: joins, switches and their
-latency, failures, memory, descriptors, threads, CPU) in `summary.md` and the GitHub run summary.
+series, a row every 5 s), and the summary in `summary.md` and the GitHub run summary: each check,
+the classes that gained objects, then each phase (joins and switches with their latency, failures,
+memory, descriptors, threads, CPU, and the TCP queues: bytes on their way to the bots, bytes Warp
+has not read yet).
 
 ### Degraded network
 
 `--netem SPEC` puts [netem](https://man7.org/linux/man-pages/man8/tc-netem.8.html) between the bots
-and Warp, with any run: latency, jitter, loss, duplication, reordering. Only TCP traffic to and from
-Warp's ports goes through it, both ways (a `prio` qdisc on `lo` whose fourth band, reached by `u32`
-port filters only, holds netem); Warp's connections to its backends and the rest of the machine's
-loopback traffic are untouched. The run removes it when it ends, Ctrl-C and crashes included.
+and Warp, with any run: latency, jitter, loss, duplication, reordering, rate (not corruption:
+loopback does not check TCP checksums). Only TCP traffic to and from Warp's ports goes through it,
+both ways (a `prio` qdisc on `lo` whose fourth band, reached by `u32` port filters only, holds
+netem); Warp's connections to its backends and the rest of the machine's loopback traffic are
+untouched. The run removes it when it ends, Ctrl-C and crashes included, and replaces what a killed
+run left behind. A soak reports what netem handled and dropped.
 
 It needs Linux, and root or passwordless sudo. Without either, a user namespace has a loopback
 interface of its own; it has no network either, so every download must already be cached and the

@@ -46,11 +46,11 @@ export function soakJvmArgs(recording) {
  * pool that filled up early and then stayed full is not a leak.
  */
 export const RESOURCES = [
-  { key: 'rss', label: 'Resident memory', unit: 'MiB', abs: 64, rel: 0.1 },
+  { key: 'rss', label: 'Resident memory', unit: 'MiB', abs: 32, rel: 0.05 },
   { key: 'heapLive', label: 'Live heap (after full GC)', unit: 'MiB', abs: 8, rel: 0.25 },
   { key: 'direct', label: 'Direct memory', unit: 'MiB', abs: 16, rel: 0.25 },
   { key: 'fds', label: 'File descriptors', unit: '', abs: 8, rel: 0.1 },
-  { key: 'threads', label: 'Threads', unit: '', abs: 4, rel: 0.1 },
+  { key: 'threads', label: 'Threads', unit: '', abs: 8, rel: 0.1 },
 ];
 
 /**
@@ -130,7 +130,7 @@ export async function soak(ctx) {
       objects.after = await histogram().catch(() => null);
     }
   }
-  if (network) network.after = await ctx.netem.stats();
+  if (network) network.after = await ctx.netem.stats().catch(() => null);
 
   const report = summarize({ ctx, samples: sampler.samples, crowd, warmUp, durationMs, drain, objects, network, error });
   const base = join(ctx.soak.dir, `soak-${ctx.variant.name}`);
@@ -145,14 +145,17 @@ export async function soak(ctx) {
   return `${ctx.bots} bots for ${ctx.soak.minutes} min: ${ops.switches} switches, ${ops.joins} joins, no leak, every connection and object released`;
 }
 
-/** Polls Warp's connections until none is left; null fields if it still holds some at the deadline. */
+/**
+ * Polls Warp's connections until none is left.
+ * @returns {Promise<{clients: number, backends: number, seconds: number|null}>} how long it took, or
+ *   null seconds and what Warp still holds at the deadline
+ */
 async function waitForDrain(sampler) {
   const started = Date.now();
   for (;;) {
-    const held = sampler.connections();
-    const seconds = (Date.now() - started) / 1000;
-    if (!held.clients && !held.backends) return { ...held, seconds };
-    if (Date.now() - started > DRAIN_TIMEOUT_MS) return { ...held, seconds: null };
+    const { clients, backends } = sampler.connections();
+    if (!clients && !backends) return { clients, backends, seconds: (Date.now() - started) / 1000 };
+    if (Date.now() - started > DRAIN_TIMEOUT_MS) return { clients, backends, seconds: null };
     await sleep(250);
   }
 }
@@ -346,9 +349,9 @@ export function summarize({ ctx, samples, crowd, warmUp, durationMs, drain, obje
   }
   const retained = objects.before && objects.after ? retainedObjects(objects.before, objects.after, ctx.bots) : null;
   if (retained?.status === 'fail') {
-    const [top] = retained.classes;
-    const others = retained.leaked > 1 ? `, and ${retained.leaked - 1} other class(es)` : '';
-    problems.push(`Warp held ${top.growth} more ${top.name} objects once every player had left than before the first joined (limit ${retained.limit}, one per player)${others}`);
+    const listed = retained.classes.filter((c) => c.growth > retained.limit).slice(0, 3).map((c) => `${c.name} +${c.growth}`);
+    const more = retained.leaked > listed.length ? `, and ${retained.leaked - listed.length} more` : '';
+    problems.push(`Warp kept objects of ${retained.leaked} class(es) once every player had left, more than one per player: ${listed.join(', ')}${more}`);
   }
   if (drain && drain.seconds === null) problems.push(`Warp still holds ${drain.clients} client and ${drain.backends} backend connection(s) ${DRAIN_TIMEOUT_MS / 1000} s after every player left`);
   if (crowd.failures.length) problems.push(`${crowd.failures.length} bot failure(s), first: ${describeFailure(crowd.failures[0])}`);
@@ -385,8 +388,8 @@ function phaseStats(name, from, to, samples, crowd) {
   const avg = (key) => (values(key).length ? values(key).reduce((a, b) => a + b, 0) / values(key).length : null);
   return {
     name,
-    from: Math.round(from),
-    to: Math.round(to),
+    from,
+    to,
     bots: max('bots'),
     joins: done('join').length,
     switches: done('switch').length,
@@ -529,7 +532,7 @@ export function soakMarkdown(result, variant) {
 
   const phases = soak.phases;
   const row = (label, cell) => lines.push(`| ${label} | ${phases.map((p) => cell(p) ?? '').join(' | ')} |`);
-  lines.push(`| | ${phases.map((p) => `**${p.name}** (${clock(p.from)} to ${clock(p.to)})`).join(' | ')} |`);
+  lines.push(`| | ${phases.map((p) => `**${p.name}** (${span(p.to - p.from)})`).join(' | ')} |`);
   lines.push(`|---|${phases.map(() => '--:').join('|')}|`);
   row('Bots online (max)', (p) => p.bots);
   row('Joins (p50 / p95)', (p) => withLatency(p.joins, p.joinMs));
@@ -588,5 +591,7 @@ const count = (n) => (n ?? 0).toLocaleString('en-US');
 const withLatency = (n, ms) => (ms ? `${count(n)} (${ms.p50} / ${ms.p95} ms)` : count(n));
 /** Makes text safe in a Markdown table cell or list: backslashes first, then pipes and tags. */
 const escape = (text) => String(text).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/</g, '&lt;').slice(0, 300);
+/** A duration: seconds under a minute, else minutes and seconds. */
+const span = (seconds) => (seconds < 60 ? `${Math.max(1, Math.round(seconds))} s` : clock(seconds));
 const clock = (seconds) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 const log = (message) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${message}`);

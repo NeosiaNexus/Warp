@@ -3,8 +3,8 @@ name: Soak
 # Warp under sustained load on the reference version: a crowd of bots stays connected for half an
 # hour, switching servers and reconnecting, while the harness samples Warp's memory, file
 # descriptors, connections and threads (e2e/README.md, Soak). It fails on sustained growth (a leak),
-# on connections Warp keeps once every player has left, on any Warp ERROR or Netty leak report, and
-# on a hung shutdown. Nightly on a clean and on a degraded network, and on demand.
+# on connections or objects Warp keeps once every player has left, on any Warp ERROR or Netty leak
+# report, and on a hung shutdown. Nightly on a clean and on a degraded network, and on demand.
 on:
   # Temporary: validates the soak on its own pull request (dispatch needs it on main). Reverted
   # before merging.

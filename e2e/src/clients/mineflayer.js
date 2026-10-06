@@ -197,7 +197,9 @@ class Bot {
   quit() {
     this.quitting = true;
     this.bot.quit();
-    return Promise.race([this.closed, sleep(5_000)]);
+    let timer;
+    const timeout = new Promise((resolve) => { timer = setTimeout(resolve, 5_000); });
+    return Promise.race([this.closed, timeout]).finally(() => clearTimeout(timer));
   }
 }
 

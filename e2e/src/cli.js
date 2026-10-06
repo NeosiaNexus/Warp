@@ -42,7 +42,8 @@ Versions and variants
 Soak and network
   --soak MINUTES          instead of the scenarios, --bots bots stay connected for MINUTES, switching
                           servers and reconnecting; fails on sustained growth of Warp's memory, file
-                          descriptors or threads, or on connections it keeps (see e2e/README.md)
+                          descriptors or threads, or on connections or objects it keeps once every
+                          bot left (see e2e/README.md)
   --netem SPEC            degrade the network between the bots and Warp, both ways, with tc netem
                           (e.g. "delay 50ms 20ms distribution normal loss 1%"); Linux, root or sudo
 
