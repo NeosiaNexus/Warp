@@ -5,7 +5,6 @@ import { verify } from 'node:crypto';
 import { describe, it } from 'node:test';
 
 import { createProfileKeys, createSigner, signedPayload, signerPem } from '../src/profile-keys.js';
-import { mockUuid } from '../src/session.js';
 
 const signer = createSigner(2048);
 const uuid = '069a79f4-44e9-4726-a5be-fca90e38aaf5';
@@ -38,9 +37,12 @@ describe('profile keys', () => {
     assert.match(signerPem(signer), /^-----BEGIN PUBLIC KEY-----\n[\s\S]+\n-----END PUBLIC KEY-----\n$/);
   });
 
-  it('binds keys to the UUID the mock session server vouches for', () => {
-    assert.match(mockUuid('e2e_signed'), /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-    assert.equal(mockUuid('e2e_signed'), mockUuid('e2e_signed'));
-    assert.notEqual(mockUuid('e2e_signed'), mockUuid('e2e_other'));
+  it('carries the player the key is issued to, whom the bot announces', () => {
+    assert.equal(keys.uuid, uuid);
+  });
+
+  it('signs the same payload for a UUID with or without dashes', () => {
+    const bare = uuid.replace(/-/g, '');
+    assert.equal(signedPayload(760, { der, uuid: bare, expiresAt }).compare(signedPayload(760, { der, uuid, expiresAt })), 0);
   });
 });

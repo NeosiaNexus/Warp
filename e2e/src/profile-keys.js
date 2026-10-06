@@ -1,7 +1,8 @@
-// Profile keys (chat signing keys) for 1.19 to 1.19.2 bots. A client logged in to a Microsoft
+// Profile keys (chat signing keys) for bots. A 1.19 to 1.19.2 client logged in to a Microsoft
 // account sends its key and Mojang's certificate for it in Login Start, then signs the verify token
-// with the key instead of encrypting it. The harness plays Mojang: it signs the bots' keys with its
-// own key pair, which Warp is told to trust (-Dwarp.profilekeys.signer).
+// with the key instead of encrypting it; from 1.19.3 it opens a chat session with them once in play.
+// The harness plays Mojang (mojang.js): it signs the bots' keys with its own key pair, which Warp
+// (-Dwarp.profilekeys.signer) and backends from 1.20 (services key set) are told to trust.
 import { generateKeyPairSync, sign } from 'node:crypto';
 
 /** First and last protocols whose Login Start carries a profile key (1.19, 1.19.1/1.19.2). */
@@ -22,17 +23,19 @@ export function signerPem(signer) {
 
 /**
  * A bot's profile keys in the shape minecraft-protocol sends (`client.profileKeys`): a 2048-bit RSA
- * key pair, as Mojang issues them, and the certificate in both formats (1.19 and 1.19.1+).
+ * key pair, as Mojang issues them, the certificate in both formats (1.19 and 1.19.1+), and the
+ * player they are issued to (`uuid`), whom the bot announces.
  *
  * @param {object} options
  * @param {{privateKey: import('node:crypto').KeyObject}} options.signer from {@link createSigner}
- * @param {string} options.uuid the player the key is issued to (dashed)
+ * @param {string} options.uuid the player the key is issued to (with or without dashes)
  * @param {number} options.expiresAt expiry, in milliseconds since the epoch
  */
 export function createProfileKeys({ signer, uuid, expiresAt }) {
   const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const der = publicKey.export({ type: 'spki', format: 'der' });
   return {
+    uuid,
     public: publicKey,
     private: privateKey,
     expiresOn: new Date(expiresAt),

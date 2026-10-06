@@ -34,6 +34,7 @@ and one whose default server is a closed port) and run the scenarios:
 | `status` | Server list ping through Warp, advertising the protocol the bot speaks (else a client lists Warp as incompatible) |
 | `login` | Join, receive chunks, land on the lobby; `/server` answers |
 | `keepalive` | One bot stays connected through the whole run (at least 65 s, past Warp's first keep-alive time-out check) |
+| `chat` | Chat lines before and after each `/server` that Warp answers itself (list, unknown server, current server): the bot must not be kicked. From 1.20, online, the bot signs its chat, so the lobby checks every acknowledgement (see below) |
 | `switching` | Six `/server` switches back and forth (configuration phase from 1.20.2, Join Game and Respawn before) |
 | `profile-key` | 1.19 to 1.19.2 only: a bot with a chat signing key, as every client of a Microsoft account, joins (online, it signs the verify token instead of encrypting it), chats and switches. Online, Warp refuses a key Mojang did not sign, an expired one and, from 1.19.1, a key issued to another player; offline, it ignores the key and lets the first two in |
 | `crowd` | Ten bots at once, then half of them switch server at the same moment |
@@ -59,6 +60,26 @@ and a 26.3 server kicks a player that sends two positions in the same tick.
 
 Logs and `result.json` go to `e2e/build/<version>/`.
 
+## Signed chat
+
+From 1.19.3 a server checks, with every chat message and command, which of the signed messages it
+sent the player the client acknowledges; a proxy that keeps a command from the backend must pass
+those acknowledgements on (#81). Servers only track signed messages, so the harness lets bots sign:
+`src/mojang.js` is a mock Mojang, up for the whole run, that
+
+- vouches for each player in online mode (`-Dmojang.sessionserver` on Warp), with the UUID an
+  offline-mode backend gives it, so that the bot and the backend agree on the signer;
+- signs the bots' profile keys with its own key pair, which Warp trusts through
+  `-Dwarp.profilekeys.signer` in every variant (the 1.19 to 1.19.2 logins of `profile-key`);
+- publishes that key as the services key set (`/publickeys`).
+
+Backends from 1.20 (authlib 4) are started with the authlib host properties
+(`-Dminecraft.api.<service>.host`, `AUTHLIB_HOSTS` in `src/backend.js`) pointing at it, so they
+accept the chat session of a bot whose key it signed. A bot gets such a key in the `chat` scenario
+of online variants (minecraft-protocol opens a chat session over an encrypted connection only).
+Before 1.20, authlib bundles Mojang's key and no bot can sign: there, `chat` only checks that chat
+still flows.
+
 ## Variants
 
 Defined in `versions.json`: `online` (mock Mojang session server, encryption on), `offline`,
@@ -66,10 +87,6 @@ Defined in `versions.json`: `online` (mock Mojang session server, encryption on)
 higher (`backend-higher`) or no (`backend-uncompressed`) threshold than Warp. Variants that share a
 backend threshold share the backends; only Warp restarts between them. Ad-hoc flags (`--online`,
 `--passthrough`, `--threshold`, `--backend-threshold`) build a one-off variant.
-
-In every variant the harness also stands in for Mojang's key: it signs the bots' chat signing keys
-(`profile-key` scenario) with a key pair of its own, which Warp trusts through
-`-Dwarp.profilekeys.signer`.
 
 ## The matrix (`versions.json`)
 
