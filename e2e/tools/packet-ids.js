@@ -1,7 +1,7 @@
-// Writes the reference table StateRegistryTest checks Warp's packet ids against: the id of every
+// Writes the reference table StateRegistryTest checks Warp's packet ids before 1.21 against (from
+// 1.21 on, Mojang's own reports are the reference: tools/packet-reports.js): the id of every
 // packet, in every state and direction, at each protocol Warp registers, from the pinned
-// minecraft-data. Run it (`npm run packet-ids` in e2e/) after adding a protocol to
-// ProtocolVersion.java or bumping minecraft-data.
+// minecraft-data. Run it (`npm run packet-ids` in e2e/) after bumping minecraft-data.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
