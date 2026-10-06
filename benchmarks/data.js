@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791319689822,
+  "lastUpdate": 1791325315584,
   "repoUrl": "https://github.com/NeosiaNexus/Warp",
   "entries": {
     "Hot path on AMD EPYC 9V45 96-Core Processor (4 CPUs)": [
@@ -804,6 +804,86 @@ window.BENCHMARK_DATA = {
             "name": "PacketIdPeekBenchmark.peek[workload=MIXED]",
             "value": 1426.4,
             "range": "± 6.1",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "63867369+NeosiaNexus@users.noreply.github.com",
+            "name": "NeosiaNexus",
+            "username": "NeosiaNexus"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8bbd900ca3aa82adf56e400ca8468e80debdc3a6",
+          "message": "test(e2e): cover forwarding, brand, chat and resource packs, and run the full matrix on protocol changes (#82)\n\nThe end-to-end harness now checks Velocity modern forwarding against Paper, server brands, chat between players and resource pack offers on every version, and pull requests that change Warp's modules or the harness run the whole matrix inside CI OK. A backend that hangs while booting has its threads dumped and boots once more (#97), and Paper 1.19 declares a concurrentLogins quirk that staggers the crowd's switches by 50 ms there. Bots now answer resource packs with the pack's UUID, which servers from 1.21.8 require. Fixes #103.",
+          "timestamp": "2026-10-07T00:08:03+02:00",
+          "tree_id": "51bcee177d5b5987da08f6a9e015d7bbcb14107e",
+          "url": "https://github.com/NeosiaNexus/Warp/commit/8bbd900ca3aa82adf56e400ca8468e80debdc3a6"
+        },
+        "date": 1791325314371,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 2809.4,
+            "range": "± 10.4",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 140.9,
+            "range": "± 0.9",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 417.9,
+            "range": "± 2",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 104692.7,
+            "range": "± 65",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 723.7,
+            "range": "± 4.8",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 7526.7,
+            "range": "± 59.1",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=CHUNK]",
+            "value": 1844.5,
+            "range": "± 9.8",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=MIXED]",
+            "value": 1426.4,
+            "range": "± 7.8",
             "unit": "ns/packet",
             "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
           }
