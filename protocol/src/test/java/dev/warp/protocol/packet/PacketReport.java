@@ -64,9 +64,21 @@ record PacketReport(
   static Optional<PacketReport> of(ProtocolVersion version) {
     return ProtocolVersion.values().stream()
         .filter(sibling -> sibling.protocol() == version.protocol())
-        .map(sibling -> load(sibling.name()))
+        .map(PacketReport::generatedFrom)
         .flatMap(Optional::stream)
         .findFirst();
+  }
+
+  /**
+   * Returns the report generated from this very release, if it is the one checked in for its
+   * protocol: unlike {@link #of}, it is found by the version's name alone, whatever protocol {@code
+   * ProtocolVersion} gives it.
+   *
+   * @param version the release the report would have been generated from
+   * @return its report
+   */
+  static Optional<PacketReport> generatedFrom(ProtocolVersion version) {
+    return load(version.name());
   }
 
   /**
