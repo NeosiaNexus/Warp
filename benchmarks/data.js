@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791311843075,
+  "lastUpdate": 1791313452723,
   "repoUrl": "https://github.com/NeosiaNexus/Warp",
   "entries": {
     "Hot path on AMD EPYC 9V45 96-Core Processor (4 CPUs)": [
@@ -318,6 +318,86 @@ window.BENCHMARK_DATA = {
             "name": "PacketIdPeekBenchmark.peek[workload=MIXED]",
             "value": 874.8,
             "range": "± 16.9",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "63867369+NeosiaNexus@users.noreply.github.com",
+            "name": "NeosiaNexus",
+            "username": "NeosiaNexus"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "558cdde71a5d85dc7f4327b7fda13931e12cc131",
+          "message": "fix(proxy): never compress a 1.7 client's connection, Set Compression only exists from 1.8 (#88)\n\nCompression and its Set Compression login packet appeared in 1.8, so Warp threw an EncoderException and dropped every 1.7 client when compression was on. ServerLoginContext.compressionThreshold(ProtocolVersion) now returns the configured threshold from 1.8 and -1 before, and both the client login and the backend compression warnings use it. Nothing changes from 1.8 on. Fixes #84.",
+          "timestamp": "2026-10-06T20:50:52+02:00",
+          "tree_id": "f1007dd2378e9f3b750ff5fdd1c99cd5c5175760",
+          "url": "https://github.com/NeosiaNexus/Warp/commit/558cdde71a5d85dc7f4327b7fda13931e12cc131"
+        },
+        "date": 1791313450499,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 1609.9,
+            "range": "± 42.8",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 111.1,
+            "range": "± 1.7",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 277.4,
+            "range": "± 4.5",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 67338.9,
+            "range": "± 816.9",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 479.4,
+            "range": "± 11.1",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 4876.5,
+            "range": "± 43.1",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=CHUNK]",
+            "value": 1133.2,
+            "range": "± 15.8",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=MIXED]",
+            "value": 840.9,
+            "range": "± 17.5",
             "unit": "ns/packet",
             "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
           }
