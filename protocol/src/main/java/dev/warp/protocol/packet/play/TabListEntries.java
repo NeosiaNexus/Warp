@@ -44,11 +44,7 @@ final class TabListEntries {
 
   /** Reads an entry count, rejecting one the remaining bytes cannot hold. */
   static int readCount(ByteBuf buf, int minEntrySize) {
-    int count = VarInt.read(buf);
-    if (count < 0 || (long) count * minEntrySize > buf.readableBytes()) {
-      throw new DecoderException("Invalid tab list entry count: " + count);
-    }
-    return count;
+    return VarInt.readCount(buf, Integer.MAX_VALUE, minEntrySize, "tab list entry");
   }
 
   /** Skips a game profile's properties: a count, then name, value and optional signature. */

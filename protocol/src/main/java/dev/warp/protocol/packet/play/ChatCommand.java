@@ -128,15 +128,9 @@ public record ChatCommand(String command, byte[] rawSignatureData, int lastSeenO
   private static int peekLastSeenOffset(ByteBuf buf) {
     int start = buf.readerIndex();
     buf.skipBytes(TIMESTAMP_AND_SALT_BYTES);
-    int signatures = VarInt.read(buf);
-    if (signatures < 0 || signatures > MAX_ARGUMENT_SIGNATURES) {
-      throw new DecoderException(
-          "Invalid argument signature count: "
-              + signatures
-              + " (max "
-              + MAX_ARGUMENT_SIGNATURES
-              + ")");
-    }
+    // An argument signature takes its name, at least one byte, and the signature.
+    int signatures =
+        VarInt.readCount(buf, MAX_ARGUMENT_SIGNATURES, 1 + SIGNATURE_BYTES, "argument signature");
     for (int i = 0; i < signatures; i++) {
       McString.skip(buf); // argument name
       buf.skipBytes(SIGNATURE_BYTES);

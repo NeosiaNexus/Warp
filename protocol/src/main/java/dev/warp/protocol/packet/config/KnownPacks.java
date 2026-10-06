@@ -25,7 +25,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.handler.codec.DecoderException;
 
 /**
  * Known packs negotiation ({@code bidirectional}).
@@ -36,6 +35,9 @@ import io.netty.handler.codec.DecoderException;
  * @param packs the list of known data packs
  */
 public record KnownPacks(List<Pack> packs) implements ConfigPacket {
+
+  /** Most packs accepted in one packet. */
+  private static final int MAX_PACKS = 128;
 
   /**
    * A known data pack entry.
@@ -51,10 +53,8 @@ public record KnownPacks(List<Pack> packs) implements ConfigPacket {
       new PacketCodec<>() {
         @Override
         public KnownPacks decode(ByteBuf buf, ProtocolVersion version) {
-          int count = VarInt.read(buf);
-          if (count > 128) {
-            throw new DecoderException("Too many packs: " + count + " (max 128)");
-          }
+          // A pack takes at least three bytes: three empty strings.
+          int count = VarInt.readCount(buf, MAX_PACKS, 3, "pack");
           List<Pack> packs = new ArrayList<>(count);
           for (int i = 0; i < count; i++) {
             String namespace = McString.read(buf);
