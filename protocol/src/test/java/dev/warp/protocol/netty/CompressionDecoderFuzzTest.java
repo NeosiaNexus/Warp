@@ -175,16 +175,16 @@ class CompressionDecoderFuzzTest {
     Inflater inflater = new Inflater();
     try {
       inflater.setInput(payload);
-      byte[] packet = new byte[declared + 1]; // room to find out it is longer
-      int size = 0;
-      while (!inflater.finished() && size < packet.length) {
-        int inflated = inflater.inflate(packet, size, packet.length - size);
-        if (inflated == 0 && (inflater.needsInput() || inflater.needsDictionary())) {
-          return null;
+      ByteArrayOutputStream packet = new ByteArrayOutputStream();
+      byte[] chunk = new byte[8192];
+      while (!inflater.finished() && packet.size() <= declared) {
+        int inflated = inflater.inflate(chunk);
+        packet.write(chunk, 0, inflated);
+        if (inflated == 0 && !inflater.finished()) {
+          return null; // truncated, or needs a preset dictionary
         }
-        size += inflated;
       }
-      return inflater.finished() && size == declared ? Arrays.copyOf(packet, size) : null;
+      return inflater.finished() && packet.size() == declared ? packet.toByteArray() : null;
     } catch (DataFormatException malformed) {
       return null;
     } finally {
