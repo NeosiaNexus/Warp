@@ -69,18 +69,19 @@ type(scope): description
 
 ## Continuous Integration
 
-Every pull request runs the checks below. **CI OK** aggregates the build, the end-to-end tests and
-the workflow lint into one check. It must be green before merging, as must **Conventional Commits**
-and the security checks of the [next section](#security-and-dependencies).
+Every pull request runs the checks below. **CI OK** aggregates the build, the end-to-end tests, the
+fuzzing and the workflow lint into one check. It must be green before merging, as must
+**Conventional Commits** and the security checks of the [next section](#security-and-dependencies).
 
 | Check | What it verifies |
 |---|---|
 | **Build & test** | Spotless formatting, compilation with ErrorProne and NullAway, unit and integration tests, Checkstyle, JaCoCo coverage, shadow jar. Failed tests are annotated on the diff; the run summary shows test and coverage tables |
 | **E2E** | Real clients through Warp to real servers, one Minecraft version per era (see [End-to-end tests](#end-to-end-tests)) |
+| **Fuzz** | Two minutes of fuzzing for each protocol decoder (see [Fuzz tests](#fuzz-tests)). A failing input is annotated on its fuzz test and uploaded; the run summary shows each fuzz test and its corpus |
 | **Lint workflows** | [actionlint](https://github.com/rhysd/actionlint) (with ShellCheck on `run:` scripts) and [zizmor](https://docs.zizmor.sh) at its strictest persona |
 | **Conventional Commits** | The PR title's format (the title becomes the squash commit) |
 
-Pull requests that only touch documentation skip the build and the end-to-end tests.
+Pull requests that only touch documentation skip the build, the end-to-end tests and the fuzzing.
 
 Workflow conventions, enforced in review and by the linters:
 
@@ -138,6 +139,46 @@ e2e/run.sh --list                                        # the whole matrix
 Versions marked `knownBroken` in `e2e/versions.json` run and are reported without failing CI. To
 add a Minecraft version, follow
 [Adding a Minecraft version](e2e/README.md#adding-a-minecraft-version).
+
+## Fuzz tests
+
+The decoders that read what players and servers send are fuzzed with
+[Jazzer](https://github.com/CodeIntelligenceTesting/jazzer), which mutates inputs toward the code
+they have not reached yet. A fuzz test is a JUnit method annotated with `@FuzzTest`, one per
+`*FuzzTest` class in `protocol/src/test/java`. Whatever the input, its decoder must agree with a
+reference implementation, reject malformed bytes with a `DecoderException` and nothing else, read
+nothing past the bytes it was given, release every buffer, and allocate in proportion to what it
+received rather than to the lengths it reads.
+
+| Fuzz test | Decoder and oracle |
+|---|---|
+| `VarIntFuzzTest` | VarInt and VarLong, against a reference decoder |
+| `FrameDecoderFuzzTest` | Framing, against a reference framing, however TCP fragments the stream |
+| `DeflatePeekFuzzTest` | The packet id read without inflating, against a full inflate by zlib |
+| `CompressionDecoderFuzzTest` | Compressed frames, against what a vanilla server accepts |
+| `MinecraftDecoderFuzzTest` | Every state, direction and version, compressed or not: decoded packets must encode back to the same bytes, and peeking at compressed frames must not change what comes out |
+
+```bash
+./gradlew :protocol:test                         # runs each fuzz test on its checked-in inputs
+./gradlew :protocol:fuzz                         # fuzzes each fuzz test for a minute
+./gradlew :protocol:fuzz --tests '*FrameDecoderFuzzTest' -Pfuzz.duration=30m
+```
+
+The inputs of a fuzz test live in `src/test/resources/<package>/<TestClass>Inputs/<method>/`. The
+files named `seed-*` are written from their definition in the test: after changing it, rewrite them
+with `./gradlew :protocol:test -Pfuzz.updateSeeds`. Fuzzing grows a corpus in `.cifuzz-corpus/`
+(ignored by Git; the `test` task replays it too when it is there) and writes each failing input to
+the inputs directory, where it stays a failing test. Fix the bug, then commit the input with the fix,
+renamed after the bug (`finding-<what>`).
+
+| Where | What runs |
+|---|---|
+| Every pull request and push to `main` (**Fuzz**, part of **CI OK**) | Two minutes per fuzz test |
+| Nightly, on demand (`fuzz.yml`) | Ten minutes per fuzz test, or as long as asked |
+
+Every run starts from the corpus the runs on `main` grew. One that finds a failing input uploads it as
+the `fuzz-findings` artifact, laid out to unpack at the root of the repository, where
+`./gradlew :protocol:test` reproduces it.
 
 ## Release Automation
 

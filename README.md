@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/NeosiaNexus/Warp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/NeosiaNexus/Warp/actions/workflows/ci.yml?query=branch%3Amain)
 [![E2E matrix](https://github.com/NeosiaNexus/Warp/actions/workflows/e2e.yml/badge.svg?branch=main)](https://github.com/NeosiaNexus/Warp/actions/workflows/e2e.yml?query=branch%3Amain)
+[![Fuzz nightly](https://github.com/NeosiaNexus/Warp/actions/workflows/fuzz.yml/badge.svg?branch=main)](https://github.com/NeosiaNexus/Warp/actions/workflows/fuzz.yml?query=branch%3Amain)
 [![CodeQL](https://github.com/NeosiaNexus/Warp/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/NeosiaNexus/Warp/actions/workflows/codeql.yml?query=branch%3Amain)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/NeosiaNexus/Warp/badge)](https://scorecard.dev/viewer/?uri=github.com/NeosiaNexus/Warp)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
@@ -111,6 +112,10 @@ Versions Warp does not fully support yet stay in the matrix as *known broken*: t
 reported without failing CI, and CI says when one starts passing. The
 [E2E matrix badge](https://github.com/NeosiaNexus/Warp/actions/workflows/e2e.yml?query=branch%3Amain)
 and [`e2e/versions.json`](e2e/versions.json) are the current answer to "does my version work?".
+
+The decoders that read what players and servers send are also
+[fuzzed](CONTRIBUTING.md#fuzz-tests): two minutes each on every pull request, ten every night,
+against reference implementations, for every state and protocol version.
 
 ## Getting Started
 
@@ -227,7 +232,7 @@ The API is designed around:
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for build setup, code style, commit conventions, CI, the
-security checks and the end-to-end tests. Everyone taking part is expected to follow the
+security checks, and the end-to-end and fuzz tests. Everyone taking part is expected to follow the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
 - [Report a bug](https://github.com/NeosiaNexus/Warp/issues/new?template=bug_report.yml)
