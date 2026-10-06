@@ -37,10 +37,13 @@ import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.status.StatusRequest;
 
 import java.nio.charset.StandardCharsets;
+import java.util.HexFormat;
 import java.util.Objects;
+import java.util.stream.Stream;
 import java.util.zip.DataFormatException;
 
 import io.netty.buffer.ByteBuf;
@@ -51,6 +54,9 @@ import io.netty.handler.codec.DecoderException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 @DisplayName("MinecraftDecoder")
 class MinecraftDecoderTest {
@@ -179,6 +185,40 @@ class MinecraftDecoderTest {
       Object out = ch.readInbound();
       assertInstanceOf(BundleDelimiter.class, out);
 
+      assertFalse(ch.finish());
+    }
+
+    /**
+     * The settings packet each client layout sends right after entering PLAY, with its packet id
+     * (serialised by node-minecraft-protocol, as the end-to-end bots send it).
+     */
+    static Stream<Arguments> clientSettingsPackets() {
+      return Stream.of(
+          Arguments.of(ProtocolVersion.MINECRAFT_1_7_6, 0x15, "05656e5f47420c01010201"),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_8, 0x15, "05656e5f47420c01017f"),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_12_2, 0x04, "05656e5f47420c01017f00"),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_16_4, 0x05, "05656e5f47420c01017f00"),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_17_1, 0x05, "05656e5f47420c01017f0001"),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_18_2, 0x05, "05656e5f47420c01017f000100"),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_21_4, 0x0C, "05656e5f47420c01017f00010002"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("clientSettingsPackets")
+    @DisplayName("should decode the settings a client sends on entering PLAY, to the last byte")
+    void clientSettings(ProtocolVersion version, int packetId, String payloadHex) {
+      MinecraftDecoder decoder =
+          new MinecraftDecoder(PacketDirection.SERVERBOUND, version, ProtocolState.PLAY);
+      EmbeddedChannel ch = new EmbeddedChannel(decoder);
+
+      ByteBuf buf = Unpooled.buffer();
+      VarInt.write(buf, packetId);
+      buf.writeBytes(HexFormat.of().parseHex(payloadHex));
+
+      assertTrue(ch.writeInbound(Frames.framed(buf)));
+
+      PlayClientSettings settings = assertInstanceOf(PlayClientSettings.class, ch.readInbound());
+      assertEquals("en_GB", settings.locale());
       assertFalse(ch.finish());
     }
   }

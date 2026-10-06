@@ -84,7 +84,7 @@ final class HandshakeSessionHandler implements SessionHandler {
     switch (handshake.nextState()) {
       case STATUS_NEXT_STATE -> {
         connection.setState(ProtocolState.STATUS);
-        connection.setSessionHandler(new StatusSessionHandler(connection));
+        connection.setSessionHandler(new StatusSessionHandler(connection, version));
       }
       case LOGIN_NEXT_STATE -> {
         if (version == null) {

@@ -4,8 +4,9 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { BACKEND_PROTOCOL_ERRORS } from '../src/backend.js';
+import { connectClient } from '../src/clients/index.js';
 import { announcedProtocol } from '../src/clients/mineflayer.js';
-import { SCENARIOS, features } from '../src/scenarios.js';
+import { SCENARIOS, checkStatus, features } from '../src/scenarios.js';
 import { findEntry, jobsForTier, loadMatrix, resolveVariant } from '../src/versions.js';
 import { WARP_FAILURES } from '../src/warp.js';
 
@@ -89,10 +90,34 @@ describe('variants', () => {
 });
 
 describe('scenario features', () => {
-  it('switches servers from 1.20.2 and intercepts /server from 1.19.3', () => {
-    assert.deepEqual(features(763), { proxyCommands: true, switching: false });
-    assert.deepEqual(features(764), { proxyCommands: true, switching: true });
-    assert.deepEqual(features(760), { proxyCommands: false, switching: false });
+  it('switches servers from 1.20.2', () => {
+    assert.deepEqual(features(47), { switching: false });
+    assert.deepEqual(features(763), { switching: false });
+    assert.deepEqual(features(764), { switching: true });
+  });
+});
+
+describe('status scenario', () => {
+  const answer = (name, protocol) => ({ version: { name, protocol }, latency: 1 });
+
+  it('passes when Warp advertises the protocol the bot speaks', () => {
+    const detail = checkStatus(answer('Warp 1.7.2-26.1.1', 769), { direct: false, protocol: 769 });
+    assert.equal(detail, 'answered as "Warp 1.7.2-26.1.1" (protocol 769) in 1 ms');
+  });
+
+  it('fails when Warp advertises another protocol, which lists it as incompatible (#49)', () => {
+    assert.throws(() => checkStatus(answer('Warp 26.1.1', 775), { direct: false, protocol: 769 }), /advertised protocol 775 to a client of protocol 769/);
+  });
+
+  it('fails on an answer that is not Warp’s, except in a control run', () => {
+    assert.throws(() => checkStatus(answer('Paper 1.21.4', 769), { direct: false, protocol: 769 }), /unexpected status response/);
+    assert.doesNotThrow(() => checkStatus(answer('Paper 1.21.4', 769), { direct: true, protocol: 769 }));
+  });
+
+  it('expects the protocol the bots speak, the bridged one through ViaProxy', () => {
+    assert.equal(connectClient(findEntry(matrix, '1.21.4'), {}).protocol, 769);
+    const bridged = findEntry(matrix, '1.9.1');
+    assert.equal(connectClient(bridged, { ports: {}, targets: [] }).protocol, announcedProtocol(bridged.via));
   });
 });
 

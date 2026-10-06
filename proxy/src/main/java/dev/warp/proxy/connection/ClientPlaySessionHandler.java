@@ -26,6 +26,7 @@ import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPacket;
@@ -62,6 +63,9 @@ import org.slf4j.LoggerFactory;
 final class ClientPlaySessionHandler implements SessionHandler {
 
   private static final Logger logger = LoggerFactory.getLogger(ClientPlaySessionHandler.class);
+
+  /** The proxy's own command, which lists the servers or moves the player to another one. */
+  private static final String SERVER_COMMAND = "server";
 
   private final ConnectedPlayer player;
 
@@ -104,6 +108,7 @@ final class ClientPlaySessionHandler implements SessionHandler {
     switch (playPacket) {
       case KeepAlive keepAlive -> handleKeepAlive(keepAlive);
       case ChatCommand chatCommand -> handleChatCommand(chatCommand);
+      case LegacyChatMessage chatMessage -> handleLegacyChatMessage(chatMessage);
       case PlayClientSettings settings -> handleClientSettings(settings);
       case ResourcePackResponse response -> forwardToBackend(response);
       case AcknowledgeConfiguration _ -> handleAcknowledgeConfiguration();
@@ -170,12 +175,32 @@ final class ClientPlaySessionHandler implements SessionHandler {
   }
 
   private void handleChatCommand(ChatCommand chatCommand) {
-    String command = chatCommand.command();
-    if (command.equals("server") || command.startsWith("server ")) {
-      handleServerCommand(command.length() > 7 ? command.substring(7).trim() : "");
+    if (!handleProxyCommand(chatCommand.command())) {
+      forwardToBackend(chatCommand);
+    }
+  }
+
+  private void handleLegacyChatMessage(LegacyChatMessage chatMessage) {
+    // Before 1.19, a command is a chat line starting with '/'.
+    String message = chatMessage.message();
+    if (message.startsWith("/") && handleProxyCommand(message.substring(1))) {
       return;
     }
-    forwardToBackend(chatCommand);
+    forwardToBackend(chatMessage);
+  }
+
+  /**
+   * Runs a command the proxy owns.
+   *
+   * @param command the command line, without its leading {@code /}
+   * @return {@code true} if the proxy handled it, {@code false} if it belongs to the backend
+   */
+  private boolean handleProxyCommand(String command) {
+    if (command.equals(SERVER_COMMAND) || command.startsWith(SERVER_COMMAND + " ")) {
+      handleServerCommand(command.substring(SERVER_COMMAND.length()).trim());
+      return true;
+    }
+    return false;
   }
 
   private void handleServerCommand(String args) {
@@ -188,25 +213,19 @@ final class ClientPlaySessionHandler implements SessionHandler {
           registry.allServers().stream()
               .map(s -> s.name().equals(current) ? "[" + s.name() + "]" : s.name())
               .collect(Collectors.joining(", "));
-      player
-          .clientConnection()
-          .writeAndFlush(
-              new SystemChatMessage(
-                  dev.warp.protocol.packet.TextComponent.plainText(
-                      "Servers: " + list, player.protocolVersion()),
-                  false));
+      player.sendSystemMessage("Servers: " + list);
       return;
     }
 
     ServerInfo target = registry.getServer(args);
     if (target == null) {
-      player
-          .clientConnection()
-          .writeAndFlush(
-              new SystemChatMessage(
-                  dev.warp.protocol.packet.TextComponent.plainText(
-                      "Unknown server: " + args, player.protocolVersion()),
-                  false));
+      player.sendSystemMessage("Unknown server: " + args);
+      return;
+    }
+
+    if (!player.protocolVersion().supportsConfigurationState()) {
+      // Switching goes through the configuration phase, which clients only have from 1.20.2 (#44).
+      player.sendSystemMessage("Switching servers needs Minecraft 1.20.2 or newer.");
       return;
     }
 

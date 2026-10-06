@@ -18,16 +18,18 @@ package dev.warp.protocol.packet.play;
 
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.packet.PacketCodec;
+import dev.warp.protocol.packet.TextComponent;
 
 import io.netty.buffer.ByteBuf;
 
 /**
  * Server disconnects the player during gameplay ({@code S→C}).
  *
- * <p>The reason is a text component whose wire format changed in 1.20.3 (JSON → NBT). Raw bytes are
- * preserved for format-agnostic forwarding.
+ * <p>The reason is a text component whose wire format changed in 1.20.3, from a VarInt-prefixed
+ * JSON string to NBT. The proxy keeps the encoded bytes and never parses them.
  *
- * @param rawReason the raw text component bytes (JSON or NBT depending on version)
+ * @param rawReason the encoded reason, exactly as on the wire: a VarInt-prefixed JSON string before
+ *     1.20.3, an NBT tag from 1.20.3 (see {@link TextComponent})
  */
 public record PlayDisconnect(byte[] rawReason) implements PlayPacket {
 
@@ -46,4 +48,15 @@ public record PlayDisconnect(byte[] rawReason) implements PlayPacket {
           buf.writeBytes(packet.rawReason());
         }
       };
+
+  /**
+   * Creates a play disconnect whose reason is plain text, encoded for {@code version}.
+   *
+   * @param reason the text shown to the player
+   * @param version the client's protocol version, which selects JSON or NBT
+   * @return the packet
+   */
+  public static PlayDisconnect ofPlainText(String reason, ProtocolVersion version) {
+    return new PlayDisconnect(TextComponent.plainText(reason, version));
+  }
 }

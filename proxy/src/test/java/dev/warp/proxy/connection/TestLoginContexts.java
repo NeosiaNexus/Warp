@@ -20,6 +20,7 @@ import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.config.ForwardingMode;
 import dev.warp.proxy.server.ServerRegistry;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
@@ -28,7 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.zip.Deflater;
 
-import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.channel.socket.nio.NioSocketChannel;
 
 /** {@link ServerLoginContext}s for tests that drive a client pipeline built by Warp. */
 final class TestLoginContexts {
@@ -42,14 +43,21 @@ final class TestLoginContexts {
   private TestLoginContexts() {}
 
   /**
-   * Returns an offline-mode context without compression, forwarding or a reachable backend.
+   * Returns an offline-mode context without compression or forwarding, whose only server is
+   * unreachable.
+   *
+   * <p>Connecting to the server fails at once: an NIO channel cannot register with the embedded
+   * event loop the client connection runs on, which the login handler sees as an unreachable
+   * server.
    *
    * @return the context
    */
   static ServerLoginContext offline() {
     ServerRegistry registry =
         new ServerRegistry(
-            Map.of("lobby", new InetSocketAddress("localhost", 25565)), "lobby", List.of("lobby"));
+            Map.of("lobby", new InetSocketAddress(InetAddress.getLoopbackAddress(), 1)),
+            "lobby",
+            List.of("lobby"));
     return new ServerLoginContext(
         KEY_PAIR,
         false, // offline mode
@@ -60,7 +68,7 @@ final class TestLoginContexts {
         registry,
         ForwardingMode.NONE,
         new byte[0],
-        EmbeddedChannel.class);
+        NioSocketChannel.class);
   }
 
   private static KeyPair generateKeyPair() {

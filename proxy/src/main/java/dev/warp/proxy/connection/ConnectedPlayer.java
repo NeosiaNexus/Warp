@@ -516,7 +516,14 @@ public final class ConnectedPlayer {
     return pendingSwitchTarget;
   }
 
-  private void sendSystemMessage(String message) {
+  /**
+   * Sends a message from the proxy to the player's chat box, on any protocol version.
+   *
+   * <p>Must be called while the client is in PLAY state.
+   *
+   * @param message the plain text to show
+   */
+  void sendSystemMessage(String message) {
     byte[] raw = TextComponent.plainText(message, protocolVersion);
     clientConnection.writeAndFlush(new SystemChatMessage(raw, false));
   }
@@ -529,12 +536,10 @@ public final class ConnectedPlayer {
    */
   private void disconnectWithReason(String reason) {
     if (clientConnection.channel().isActive()) {
-      byte[] raw = TextComponent.plainText(reason, protocolVersion);
-      ProtocolState state = clientConnection.decoder().state();
-      if (state == ProtocolState.CONFIGURATION) {
-        clientConnection.writeAndFlush(new ConfigDisconnect(raw));
+      if (clientConnection.decoder().state() == ProtocolState.CONFIGURATION) {
+        clientConnection.writeAndFlush(ConfigDisconnect.ofPlainText(reason, protocolVersion));
       } else {
-        clientConnection.writeAndFlush(new PlayDisconnect(raw));
+        clientConnection.writeAndFlush(PlayDisconnect.ofPlainText(reason, protocolVersion));
       }
     }
     disconnect();
@@ -690,11 +695,23 @@ public final class ConnectedPlayer {
       return;
     }
 
-    long id = ThreadLocalRandom.current().nextLong();
+    long id = nextKeepAliveId();
     pendingKeepAliveId = id;
     keepAliveSentTime = System.nanoTime();
     keepAliveOutstanding = true;
     clientConnection.writeAndFlush(new KeepAlive(id));
+  }
+
+  /**
+   * Returns a random keep-alive ID that the client's version carries without loss: any {@code long}
+   * from 1.12.2 on, a non-negative {@code int} before (the ID is an int in 1.7 and a VarInt up to
+   * 1.12.1), so the client echoes exactly the ID that {@link #handleKeepAliveResponse} expects.
+   */
+  private long nextKeepAliveId() {
+    ThreadLocalRandom random = ThreadLocalRandom.current();
+    return KeepAlive.hasLongId(protocolVersion)
+        ? random.nextLong()
+        : random.nextInt() & Integer.MAX_VALUE;
   }
 
   /**
