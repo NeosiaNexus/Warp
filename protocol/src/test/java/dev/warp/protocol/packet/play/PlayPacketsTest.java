@@ -19,6 +19,7 @@ package dev.warp.protocol.packet.play;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -34,6 +35,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.DecoderException;
+import io.netty.handler.codec.EncoderException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -168,6 +170,113 @@ class PlayPacketsTest {
   }
 
   // ---------------------------------------------------------------------------
+  // JoinGame (26.2+)
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("JoinGame from 26.2")
+  class JoinGameOnlineMode {
+
+    /**
+     * The Join Game of a vanilla server, as it arrived on the wire, packet id excluded: a bot
+     * logging in to the vanilla 26.2 and 26.3 servers, offline. Both end with the online mode flag
+     * ({@code false}, as on any backend behind a proxy), then the enforces secure chat flag; 26.3
+     * writes the game modes as VarInts, {@code 00 00} instead of {@code 00 ff}.
+     */
+    static Stream<Arguments> vanillaServerCaptures() {
+      return Stream.of(
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_26_2,
+              "000000010003136d696e6563726166743a6f766572776f726c64146d696e6563726166743a7468"
+                  + "655f6e6574686572116d696e6563726166743a7468655f656e6405020200010000136d696e65"
+                  + "63726166743a6f766572776f726c64d87cf18482a4621900ff00010000c1ffffff0f0000"),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_26_3,
+              "000000010003136d696e6563726166743a6f766572776f726c64146d696e6563726166743a7468"
+                  + "655f6e6574686572116d696e6563726166743a7468655f656e6405020200010000136d696e65"
+                  + "63726166743a6f766572776f726c64f5bc5f1952f4f432000000010000c1ffffff0f0000"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("vanillaServerCaptures")
+    @DisplayName("should carry a vanilla server's packet verbatim after the hardcore flag")
+    void keepsTheBytesOfAVanillaServer(ProtocolVersion version, String wireHex) {
+      byte[] wire = HexFormat.of().parseHex(wireHex);
+
+      JoinGame joinGame = decode(wire, version);
+
+      assertEquals(1, joinGame.entityId());
+      assertFalse(joinGame.hardcore());
+      assertArrayEquals(wire, encode(joinGame, version));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("vanillaServerCaptures")
+    @DisplayName("should set the online mode flag, the next to last byte, and nothing else")
+    void setsOnlineMode(ProtocolVersion version, String wireHex) {
+      byte[] wire = HexFormat.of().parseHex(wireHex);
+      JoinGame offline = decode(wire, version);
+
+      JoinGame online = offline.withOnlineMode(true, version);
+
+      byte[] expected = wire.clone();
+      expected[expected.length - 2] = 1;
+      assertArrayEquals(expected, encode(online, version));
+      assertArrayEquals(wire, encode(offline, version), "the original packet is unchanged");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("vanillaServerCaptures")
+    @DisplayName("should return the same packet when the flag already has the value")
+    void keepsMatchingFlag(ProtocolVersion version, String wireHex) {
+      JoinGame offline = decode(HexFormat.of().parseHex(wireHex), version);
+
+      assertSame(offline, offline.withOnlineMode(false, version));
+    }
+
+    @Test
+    @DisplayName("should leave a packet before 26.2 alone, which has no online mode flag")
+    void noFlagBefore262() {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_26_1;
+      JoinGame joinGame = new JoinGame(1, false, new JoinGame.Opaque(new byte[] {0, 0}));
+
+      assertSame(joinGame, joinGame.withOnlineMode(true, version));
+    }
+
+    @Test
+    @DisplayName("should refuse a packet that cannot end with the two flags")
+    void refusesOtherBodies() {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_26_2;
+      JoinGame decoded =
+          SwitchPacketFixtures.decode(
+              JoinGame.CODEC, ProtocolVersion.MINECRAFT_1_20_1, "join_game");
+      JoinGame tooShort = new JoinGame(1, false, new JoinGame.Opaque(new byte[] {0}));
+
+      assertThrows(IllegalArgumentException.class, () -> decoded.withOnlineMode(true, version));
+      assertThrows(IllegalArgumentException.class, () -> tooShort.withOnlineMode(true, version));
+    }
+
+    private static JoinGame decode(byte[] wire, ProtocolVersion version) {
+      ByteBuf buf = Unpooled.wrappedBuffer(wire);
+      try {
+        return JoinGame.CODEC.decode(buf, version);
+      } finally {
+        buf.release();
+      }
+    }
+
+    private static byte[] encode(JoinGame packet, ProtocolVersion version) {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        JoinGame.CODEC.encode(packet, buf, version);
+        return ByteBufUtil.getBytes(buf);
+      } finally {
+        buf.release();
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // PlayPluginMessage
   // ---------------------------------------------------------------------------
 
@@ -190,6 +299,104 @@ class PlayPacketsTest {
       } finally {
         buf.release();
       }
+    }
+
+    /** "MC|Brand" then "warp", as node-minecraft-protocol 1.68.0 writes the body for 1.7.10. */
+    private static final String BRAND_1_7 = "084d437c4272616e64" + "0004" + "77617270";
+
+    /** The same message for 1.8.8: the payload runs to the end, without a length. */
+    private static final String BRAND_1_8 = "084d437c4272616e64" + "77617270";
+
+    static Stream<ProtocolVersion> legacyVersions() {
+      return ProtocolVersion.values().stream()
+          .filter(version -> version.isOlderThan(ProtocolVersion.MINECRAFT_1_8));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("legacyVersions")
+    @DisplayName("should put the payload behind a short length on 1.7")
+    void shortLengthOn17(ProtocolVersion version) {
+      PlayPluginMessage brand = new PlayPluginMessage("MC|Brand", ascii("warp"));
+
+      assertEquals(BRAND_1_7, HexFormat.of().formatHex(encode(brand, version)));
+      PlayPluginMessage decoded = decode(HexFormat.of().parseHex(BRAND_1_7), version);
+      assertEquals("MC|Brand", decoded.channel());
+      assertArrayEquals(ascii("warp"), decoded.data());
+    }
+
+    @Test
+    @DisplayName("should run the payload to the end of the packet from 1.8")
+    void restOfPacketFrom18() {
+      PlayPluginMessage brand = new PlayPluginMessage("MC|Brand", ascii("warp"));
+
+      assertEquals(
+          BRAND_1_8, HexFormat.of().formatHex(encode(brand, ProtocolVersion.MINECRAFT_1_8)));
+      assertArrayEquals(
+          ascii("warp"),
+          decode(HexFormat.of().parseHex(BRAND_1_8), ProtocolVersion.MINECRAFT_1_8).data());
+    }
+
+    @Test
+    @DisplayName("should extend the 1.7 length to three bytes from 32 KiB, as Forge does")
+    void forgeExtendedLength() {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_7_6;
+
+      // 32767: the largest two-byte length. 32768 and 40000: low 15 bits with the top bit set,
+      // then the bits above (40000 = 0x9C40: 0x1C40 | 0x8000, then 1).
+      assertEquals("7fff", lengthPrefix(32_767, version));
+      assertEquals("800001", lengthPrefix(32_768, version));
+      assertEquals("9c4001", lengthPrefix(40_000, version));
+      byte[] payload = new byte[40_000];
+      payload[39_999] = 7;
+      PlayPluginMessage decoded =
+          decode(encode(new PlayPluginMessage("FML|HS", payload), version), version);
+      assertArrayEquals(payload, decoded.data());
+    }
+
+    @Test
+    @DisplayName("should refuse a 1.7 payload larger than Forge allows, or longer than the packet")
+    void legacyBounds() {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_7_2;
+      byte[] tooLarge = new byte[PlayPluginMessage.MAX_LEGACY_DATA_LENGTH + 1];
+
+      assertThrows(
+          EncoderException.class, () -> encode(new PlayPluginMessage("x", tooLarge), version));
+      // "x", a length of 5, then 4 bytes.
+      assertThrows(
+          DecoderException.class,
+          () -> decode(HexFormat.of().parseHex("0178" + "0005" + "77617270"), version));
+    }
+
+    /** The bytes the codec writes between the channel and the payload, in hex. */
+    private String lengthPrefix(int length, ProtocolVersion version) {
+      String hex =
+          HexFormat.of().formatHex(encode(new PlayPluginMessage("", new byte[length]), version));
+      return hex.substring(2, hex.length() - 2 * length); // after the empty channel's 00
+    }
+
+    private byte[] encode(PlayPluginMessage message, ProtocolVersion version) {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        PlayPluginMessage.CODEC.encode(message, buf, version);
+        return ByteBufUtil.getBytes(buf);
+      } finally {
+        buf.release();
+      }
+    }
+
+    private PlayPluginMessage decode(byte[] body, ProtocolVersion version) {
+      ByteBuf buf = Unpooled.wrappedBuffer(body);
+      try {
+        PlayPluginMessage decoded = PlayPluginMessage.CODEC.decode(buf, version);
+        assertFalse(buf.isReadable(), "the whole body is read");
+        return decoded;
+      } finally {
+        buf.release();
+      }
+    }
+
+    private static byte[] ascii(String text) {
+      return text.getBytes(StandardCharsets.US_ASCII);
     }
   }
 
@@ -383,7 +590,7 @@ class PlayPacketsTest {
     @Test
     @DisplayName("should write an unsigned command longer than 256 characters as the string alone")
     void writeLongUnsignedCommand() {
-      ChatCommand packet = new ChatCommand(LONG_COMMAND, new byte[0]);
+      ChatCommand packet = new ChatCommand(LONG_COMMAND, new byte[0], 0);
       ByteBuf expected = Unpooled.buffer();
       ByteBuf buf = Unpooled.buffer();
       try {
@@ -416,7 +623,8 @@ class PlayPacketsTest {
     @Test
     @DisplayName("should keep the signing fields after the command before 1.20.5")
     void signingFieldsBefore1205() {
-      byte[] signingFields = {0, 0, 1, -110, 42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0};
+      // Timestamp, salt, no argument signatures, last-seen offset 0, 3 bytes of acknowledgements.
+      byte[] signingFields = {0, 0, 1, -110, 42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0};
       ByteBuf buf = Unpooled.buffer();
       try {
         McString.write(buf, "server survival");
@@ -483,6 +691,42 @@ class PlayPacketsTest {
               settings((byte) 0, (byte) 0x7F, 0, true, false, 0)),
           Arguments.of(
               ProtocolVersion.MINECRAFT_1_21_4,
+              "05656e5f47420c01017f00010002",
+              settings((byte) 0, (byte) 0x7F, 0, true, false, 2)),
+          // Every protocol since sends the same bytes: vanilla 26.1 still writes these fields
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_21_5,
+              "05656e5f47420c01017f00010002",
+              settings((byte) 0, (byte) 0x7F, 0, true, false, 2)),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_21_6,
+              "05656e5f47420c01017f00010002",
+              settings((byte) 0, (byte) 0x7F, 0, true, false, 2)),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_21_8,
+              "05656e5f47420c01017f00010002",
+              settings((byte) 0, (byte) 0x7F, 0, true, false, 2)),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_21_9,
+              "05656e5f47420c01017f00010002",
+              settings((byte) 0, (byte) 0x7F, 0, true, false, 2)),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_21_11,
+              "05656e5f47420c01017f00010002",
+              settings((byte) 0, (byte) 0x7F, 0, true, false, 2)),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_26_1,
+              "05656e5f47420c01017f00010002",
+              settings((byte) 0, (byte) 0x7F, 0, true, false, 2)),
+          // node-minecraft-protocol has no 26.2 and 26.3 yet: Mojang's own codec (from the server
+          // jars) writes the same bytes, 26.3 encoding its three enums by an id equal to their
+          // ordinal
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_26_2,
+              "05656e5f47420c01017f00010002",
+              settings((byte) 0, (byte) 0x7F, 0, true, false, 2)),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_26_3,
               "05656e5f47420c01017f00010002",
               settings((byte) 0, (byte) 0x7F, 0, true, false, 2)));
     }

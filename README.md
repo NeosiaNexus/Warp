@@ -41,8 +41,13 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 
 **Proxying**
 
+- **Minecraft Java Edition 1.7.2 to 26.3**: every release protocol in between, each one played
+  end to end (see [below](#tested-on-every-minecraft-version)).
 - **Online mode**: Mojang authentication and AES/CFB8 encryption. The session server call runs on a
-  virtual thread and never blocks the event loop. Offline mode is available for development.
+  virtual thread and never blocks the event loop. On 1.19 to 1.19.2, the chat signing key a client
+  sends is checked against Mojang's certificate, and the client proves it holds the key by signing
+  the verify token, as vanilla servers and Velocity require. Offline mode is available for
+  development; it ignores the key, as vanilla 1.19.1+ does.
 - **Player info forwarding**: [Velocity modern forwarding](https://docs.papermc.io/velocity/player-information-forwarding)
   (HMAC-SHA256 signed, Minecraft 1.13+ backends such as Paper), or none.
 - **Several backend servers**: `/server` lists them and switches between them, on every client
@@ -99,13 +104,13 @@ Planned, not implemented yet:
 
 Unit tests check that each piece does what its author meant. The
 [end-to-end suite](e2e/README.md) checks that a player can actually play: real-protocol bots go
-through Warp to real Paper or vanilla servers for every protocol from 1.8 to 26.3. They join,
+through Warp to real Paper or vanilla servers for every protocol from 1.7.2 to 26.3. They join,
 receive chunks, switch servers, survive a fallback and stay connected. A run also fails
 if Warp logs an error, leaks a Netty buffer, or a backend drops a connection with a protocol error.
 
 | When | What runs |
 |---|---|
-| Every pull request | One version per era, plus the online, offline and compression variants on the reference version |
+| Every pull request | One version per era and the newest version, plus the online, offline and compression variants on the newest version the bots speak natively |
 | Every push to `main`, nightly, on demand, and pull requests labelled `e2e: full` | Every protocol of the matrix |
 
 Versions Warp does not fully support yet stay in the matrix as *known broken*: they run and are
@@ -188,6 +193,12 @@ On each backend, set `online-mode=false` in `server.properties` and keep
 `network-compression-threshold` equal to Warp's threshold (256). For Velocity forwarding, enable
 Velocity support with the content of `forwarding.secret` as its secret, as described in
 [Paper's guide](https://docs.papermc.io/velocity/player-information-forwarding).
+
+For an alternative authentication server, or a test harness standing in for Mojang, two system
+properties replace Mojang's services: `-Dmojang.sessionserver=<hasJoined URL>` (the property
+Velocity reads), and `-Dwarp.profilekeys.signer=<file>`, the RSA public key (PEM or DER) trusted to
+sign the chat signing keys of 1.19 to 1.19.2 players instead of Mojang's (online mode). Warp warns
+at startup when either is set.
 
 ## Project Structure
 

@@ -22,12 +22,18 @@ export function findEntry(matrix, key) {
   return entry;
 }
 
+/** Warp's `forwarding.mode` values: how it tells backends who the player is. */
+export const FORWARDING_MODES = ['none', 'velocity'];
+
 /** Resolves a variant name, or the flags of an ad-hoc run, into Warp/backend settings. */
 export function resolveVariant(matrix, name, overrides = {}) {
   const preset = matrix.variants[name];
   if (!preset) throw new Error(`unknown variant "${name}". Known: ${Object.keys(matrix.variants).join(', ')}`);
   const settings = { ...matrix.variants.defaults, ...preset, ...overrides };
   if (settings.backendThreshold === undefined) settings.backendThreshold = settings.threshold;
+  if (!FORWARDING_MODES.includes(settings.forwarding)) {
+    throw new Error(`variant "${name}": forwarding "${settings.forwarding}" is not one of ${FORWARDING_MODES.join(', ')}`);
+  }
   return { name, ...settings };
 }
 

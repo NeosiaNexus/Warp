@@ -1,0 +1,45 @@
+name: Detect changes
+description: >-
+  What a pull request needs, from the files it changes: the build and the end-to-end tests unless
+  it only changes documentation, and the whole end-to-end matrix when it changes Warp's modules or
+  what the end-to-end tests run with. Any other event needs the build and the quick end-to-end
+  tier. The job needs `pull-requests: read` to list the files of a pull request.
+
+outputs:
+  code:
+    description: '`true` unless a pull request only changes documentation.'
+    value: ${{ steps.filter.outputs.code || 'true' }}
+  e2e-tier:
+    description: 'Tier of e2e/versions.json the pull request needs: `full`, or `pr` (the quick one).'
+    value: ${{ steps.filter.outputs.e2e-full == 'true' && 'full' || 'pr' }}
+
+runs:
+  using: composite
+  steps:
+    # A file counts for a filter when it matches one of its patterns and none of its exclusions.
+    - name: Filter paths
+      id: filter
+      if: ${{ github.event_name == 'pull_request' }}
+      uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+      with:
+        predicate-quantifier: some-with-excludes
+        filters: |
+          code:
+            - '**'
+            - '!**/*.md'
+            - '!docs/**'
+            - '!LICENSE'
+            - '!.github/ISSUE_TEMPLATE/**'
+            - '!.github/PULL_REQUEST_TEMPLATE.md'
+          # Warp's modules (their code, and how each builds its part of the jar) and what the
+          # end-to-end tests run with (the harness, its npm dependencies, its workflow, this filter).
+          # Unit tests, benchmarks and the harness's own tests change neither: CI runs them anyway.
+          # Dependency and build tool bumps run the quick tier, then the full matrix on main.
+          e2e-full:
+            - '{api,protocol,proxy,jni}/**'
+            - 'e2e/**'
+            - '.github/workflows/_e2e.yml'
+            - '.github/actions/changes/**'
+            - '!*/src/{test,integrationTest,jmh}/**'
+            - '!e2e/{test,tools}/**'
+            - '!**/*.md'

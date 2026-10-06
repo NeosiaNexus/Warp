@@ -85,9 +85,6 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
    */
   public static final String CONNECTION_HANDLER = "connection-handler";
 
-  /** Read timeout duration for idle connections before handshake/status. */
-  private static final int READ_TIMEOUT_SECONDS = 30;
-
   private final ServerLoginContext loginContext;
 
   // ---------------------------------------------------------------------------
@@ -123,7 +120,9 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
 
     ch.pipeline()
         // Inbound: timeout → frame split → packet decode → handler
-        .addLast(READ_TIMEOUT, new ReadTimeoutHandler(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+        .addLast(
+            READ_TIMEOUT,
+            new ReadTimeoutHandler(MinecraftConnection.READ_TIMEOUT_SECONDS, TimeUnit.SECONDS))
         .addLast(FRAME_DECODER, new FrameDecoder())
         .addLast(MINECRAFT_DECODER, decoder)
         // Outbound: handler → packet encode → frame prepend
