@@ -327,11 +327,14 @@ public final class StateRegistry {
                     map(0x0A, MINECRAFT_1_20_2),
                     map(0x0B, MINECRAFT_1_20_5),
                     map(0x0D, MINECRAFT_1_21_2))
+                // From 1.20.5, the unsigned command. The signed one split off in 1.20.5 (0x05, then
+                // 0x06 from 1.21.2) only carries commands whose declared syntax has a message
+                // argument (/msg, /say), and is forwarded untouched.
                 .register(
                     ChatCommand.class,
                     ChatCommand.CODEC,
                     map(0x04, MINECRAFT_1_19_3),
-                    map(0x05, MINECRAFT_1_20_5))
+                    map(0x05, MINECRAFT_1_21_2))
                 .register(
                     AcknowledgeConfiguration.class,
                     AcknowledgeConfiguration.CODEC,
@@ -359,17 +362,14 @@ public final class StateRegistry {
                     map(0x19, MINECRAFT_1_8),
                     map(0x16, MINECRAFT_1_9),
                     map(0x18, MINECRAFT_1_12),
-                    map(0x16, MINECRAFT_1_12_1),
                     map(0x1D, MINECRAFT_1_13),
                     map(0x1F, MINECRAFT_1_14),
-                    map(0x21, MINECRAFT_1_16),
-                    map(0x20, MINECRAFT_1_16_2),
-                    map(0x21, MINECRAFT_1_17),
-                    map(0x24, MINECRAFT_1_19),
-                    map(0x25, MINECRAFT_1_19_1),
-                    map(0x24, MINECRAFT_1_19_3),
-                    map(0x27, MINECRAFT_1_19_4),
-                    map(0x28, MINECRAFT_1_20_2),
+                    map(0x20, MINECRAFT_1_16),
+                    map(0x21, MINECRAFT_1_16_2),
+                    map(0x23, MINECRAFT_1_19),
+                    map(0x24, MINECRAFT_1_19_1),
+                    map(0x27, MINECRAFT_1_20_2),
+                    map(0x28, MINECRAFT_1_20_3),
                     map(0x2B, MINECRAFT_1_20_5),
                     map(0x2D, MINECRAFT_1_21_2),
                     map(0x2F, MINECRAFT_1_21_4))

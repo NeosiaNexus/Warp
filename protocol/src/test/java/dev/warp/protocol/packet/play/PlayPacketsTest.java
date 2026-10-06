@@ -18,6 +18,7 @@ package dev.warp.protocol.packet.play;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolVersion;
@@ -26,7 +27,9 @@ import dev.warp.protocol.codec.McString;
 import java.util.UUID;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
+import io.netty.handler.codec.DecoderException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -258,15 +261,33 @@ class PlayPacketsTest {
   class ResourcePackResponseCodec {
 
     @Test
-    @DisplayName("should roundtrip for pre-1.20.3 (no UUID)")
-    void roundtripPreUuid() {
-      ResourcePackResponse original = new ResourcePackResponse(new UUID(0, 0), 0);
+    @DisplayName("should carry the pack hash before 1.10")
+    void roundtripWithHash() {
+      ResourcePackResponse original =
+          new ResourcePackResponse(new UUID(0, 0), "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12", 1);
       ByteBuf buf = Unpooled.buffer();
       try {
-        ResourcePackResponse.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_8);
+        ResourcePackResponse.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_9_4);
         ResourcePackResponse decoded =
-            ResourcePackResponse.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_8);
-        assertEquals(0, decoded.result());
+            ResourcePackResponse.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_9_4);
+        assertEquals(original, decoded);
+        assertEquals(0, buf.readableBytes());
+      } finally {
+        buf.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should write the result alone from 1.10 to 1.20.2")
+    void resultOnly() {
+      ResourcePackResponse original = new ResourcePackResponse(new UUID(0, 0), "", 0);
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        ResourcePackResponse.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_10);
+        assertEquals(1, buf.readableBytes()); // VarInt 0
+        ResourcePackResponse decoded =
+            ResourcePackResponse.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_2);
+        assertEquals(original, decoded);
       } finally {
         buf.release();
       }
@@ -276,7 +297,7 @@ class PlayPacketsTest {
     @DisplayName("should roundtrip for 1.20.3+ (with UUID)")
     void roundtripWithUuid() {
       UUID uuid = UUID.randomUUID();
-      ResourcePackResponse original = new ResourcePackResponse(uuid, 3);
+      ResourcePackResponse original = new ResourcePackResponse(uuid, "", 3);
       ByteBuf buf = Unpooled.buffer();
       try {
         ResourcePackResponse.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_20_3);
@@ -284,6 +305,70 @@ class PlayPacketsTest {
             ResourcePackResponse.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_3);
         assertEquals(uuid, decoded.uuid());
         assertEquals(3, decoded.result());
+      } finally {
+        buf.release();
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // ChatCommand
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("ChatCommand")
+  class ChatCommandCodec {
+
+    /** Longer than the 256 characters a command could have before 1.20.5. */
+    private static final String LONG_COMMAND = "say " + "a".repeat(296);
+
+    @Test
+    @DisplayName("should read an unsigned command longer than 256 characters from 1.20.5")
+    void longUnsignedCommand() {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        McString.write(buf, LONG_COMMAND);
+
+        ChatCommand decoded = ChatCommand.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_5);
+
+        assertEquals(LONG_COMMAND, decoded.command());
+        assertEquals(0, decoded.rawSignatureData().length);
+      } finally {
+        buf.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should reject a command longer than 256 characters before 1.20.5")
+    void longCommandBefore1205() {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        McString.write(buf, LONG_COMMAND);
+
+        assertThrows(
+            DecoderException.class,
+            () -> ChatCommand.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_3));
+      } finally {
+        buf.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should keep the signing fields after the command before 1.20.5")
+    void signingFieldsBefore1205() {
+      byte[] signingFields = {0, 0, 1, -110, 42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0};
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        McString.write(buf, "server survival");
+        buf.writeBytes(signingFields);
+
+        ChatCommand decoded = ChatCommand.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_3);
+        buf.clear();
+        ChatCommand.CODEC.encode(decoded, buf, ProtocolVersion.MINECRAFT_1_20_3);
+
+        assertEquals("server survival", decoded.command());
+        assertEquals("server survival", McString.read(buf));
+        assertArrayEquals(signingFields, ByteBufUtil.getBytes(buf));
       } finally {
         buf.release();
       }
