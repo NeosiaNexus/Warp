@@ -89,7 +89,7 @@ def check(results, baseline_path):
     baseline = load(baseline_path)
     expected, measured = baseline["benchmarks"], allocation(results)
     absolute, relative = baseline["tolerance"]["absolute"], baseline["tolerance"]["relative"]
-    rows, failures = [], 0
+    rows, failures, moved = [], 0, 0
     for bench in sorted(expected.keys() | measured.keys()):
         base, actual = expected.get(bench), measured.get(bench)
         if base is None:
@@ -109,11 +109,13 @@ def check(results, baseline_path):
         delta, allowed = round(actual - base, 1) or 0.0, max(absolute, base * relative)  # no -0.0
         if delta > allowed:
             failures += 1
+            moved += 1
             status = "❌ regression"
             annotate("error", "Allocation regression",
                      f"{bench} allocates {actual:,.1f} B per packet, {delta:,.1f} B more than its "
                      f"baseline of {base:,.1f} B (tolerance {allowed:,.1f} B).")
         elif -delta > allowed:
+            moved += 1
             status = "📉 lower: update the baseline"
             annotate("warning", "Allocation dropped",
                      f"{bench} allocates {actual:,.1f} B per packet, {-delta:,.1f} B less than its "
@@ -125,7 +127,7 @@ def check(results, baseline_path):
     print("### Allocation per packet\n")
     print(f"Bytes allocated per packet with escape analysis off, against `{baseline_path}`. "
           f"A benchmark fails above its baseline plus the larger of {absolute} B and {relative:.0%}.\n")
-    if baseline.get("jdk") != jdk(results):
+    if moved and baseline.get("jdk") != jdk(results):
         print(f"> [!NOTE]\n> The baseline was measured on JDK {baseline.get('jdk')}, this run on "
               f"JDK {jdk(results)}: a JDK update can move allocation.\n")
     print("| Benchmark | Parameters | Baseline | Measured | Δ | |")
