@@ -68,6 +68,11 @@ jobs:
         with:
           fail-on-severity: moderate
           fail-on-scopes: runtime, development, unknown
+          # GHSA-r937-wjx7-w2jp: Kotlin before 2.4.20 (build cache metadata deserialization). The
+          # Kotlin Gradle plugin comes with Gradle's kotlin-dsl, at the version Gradle pins: 2.0.21
+          # in Gradle 8.12, 2.4.10 in Gradle 9.8.0, and no Gradle release ships 2.4.20 yet. Remove
+          # this exception with the first one that does (`./gradlew --version` prints its Kotlin).
+          allow-ghsas: GHSA-r937-wjx7-w2jp
           license-check: false
           show-patched-versions: true
           comment-summary-in-pr: never
