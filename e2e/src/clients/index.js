@@ -11,6 +11,8 @@ import { ViaProxy } from './viaproxy.js';
  * @param {object} entry versions.json entry
  * @param {{tools: object, cache: string, java: string, ports: object, targets: number[], logDir: string, runDir: string}} env
  *   `targets` are the ports bots connect to (Warp instances, or the lobby in a --direct run)
+ * @returns the client; `protocol` is the one the bots speak. Through ViaProxy, a server answering a
+ *   ping with the bridged version's protocol is shown to the bot with its own, as to a real client.
  */
 export function connectClient(entry, env) {
   const speaks = entry.via ?? entry.client ?? entry.version;
@@ -26,6 +28,7 @@ export function connectClient(entry, env) {
   if (!entry.via) {
     return {
       description: `mineflayer ${speaks}`,
+      protocol: announced,
       connect: (options) => mineflayer.connect({ ...options, version: speaks }),
       ping: (options) => mineflayer.ping({ ...options, version: speaks }),
     };
@@ -42,6 +45,7 @@ export function connectClient(entry, env) {
   const bridged = (options) => ({ ...options, port: bridges.get(options.port).port, version: speaks });
   return {
     description: `mineflayer ${speaks} → ViaProxy → ${entry.version}`,
+    protocol: announced,
     start: () => Promise.all([...bridges.values()].map((b) => b.start())),
     stop: () => Promise.all([...bridges.values()].map((b) => b.stop())),
     connect: (options) => mineflayer.connect(bridged(options)),

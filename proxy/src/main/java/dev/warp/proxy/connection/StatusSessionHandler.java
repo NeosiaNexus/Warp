@@ -25,6 +25,9 @@ import dev.warp.protocol.packet.status.StatusPacket;
 import dev.warp.protocol.packet.status.StatusRequest;
 import dev.warp.protocol.packet.status.StatusResponse;
 
+import java.util.Objects;
+
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,19 +52,36 @@ final class StatusSessionHandler implements SessionHandler {
   private static final Logger logger = LoggerFactory.getLogger(StatusSessionHandler.class);
 
   /**
-   * Cached JSON status response. Computed once since {@link ProtocolVersion#latest()} is constant
-   * for the lifetime of the JVM. This eliminates per-ping String concatenation — a weakness in
-   * Velocity which allocates a fresh JSON string on every SLP request.
+   * The version name every client sees: the range of versions Warp supports. A client only shows it
+   * when the advertised protocol is not its own, as the reason it cannot join.
    */
-  private static final String CACHED_STATUS_JSON = buildStatusJson();
+  static final String VERSION_NAME =
+      "Warp " + ProtocolVersion.oldest().name() + "-" + ProtocolVersion.latest().name();
+
+  /**
+   * The JSON status response for each supported protocol, indexed by protocol number. Built once,
+   * so that answering a ping builds no string (Velocity builds a fresh JSON string per ping).
+   */
+  private static final @Nullable String[] STATUS_JSON_BY_PROTOCOL = buildStatusJsonByProtocol();
 
   private final MinecraftConnection connection;
+
+  /** The JSON this client gets, advertising its own protocol when Warp supports it. */
+  private final String statusJson;
 
   /** Guards against duplicate StatusRequest packets. */
   private boolean sentResponse;
 
-  StatusSessionHandler(MinecraftConnection connection) {
+  /**
+   * Creates the handler of one server list ping.
+   *
+   * @param connection the client connection
+   * @param clientVersion the version the client announced in its handshake, or {@code null} when
+   *     Warp does not support it
+   */
+  StatusSessionHandler(MinecraftConnection connection, @Nullable ProtocolVersion clientVersion) {
     this.connection = connection;
+    this.statusJson = statusJson(clientVersion);
   }
 
   @Override
@@ -88,7 +108,7 @@ final class StatusSessionHandler implements SessionHandler {
     }
     sentResponse = true;
 
-    connection.writeAndFlush(new StatusResponse(CACHED_STATUS_JSON));
+    connection.writeAndFlush(new StatusResponse(statusJson));
   }
 
   private void handlePingRequest(PingRequest ping) {
@@ -103,28 +123,47 @@ final class StatusSessionHandler implements SessionHandler {
   }
 
   /**
-   * Builds the JSON status response.
+   * Returns the status JSON for a client: it advertises the client's own protocol when Warp
+   * supports it, so that the server list shows Warp as compatible, and the latest one otherwise, as
+   * Velocity does.
+   *
+   * @param clientVersion the client's version, or {@code null} when Warp does not support it
+   * @return the JSON status response
+   */
+  static String statusJson(@Nullable ProtocolVersion clientVersion) {
+    ProtocolVersion advertised = clientVersion != null ? clientVersion : ProtocolVersion.latest();
+    return Objects.requireNonNull(STATUS_JSON_BY_PROTOCOL[advertised.protocol()]);
+  }
+
+  /**
+   * Builds the JSON status response of every supported protocol.
    *
    * <p>Format follows the Minecraft protocol specification:
    *
    * <pre>{@code
    * {
-   *   "version": { "name": "Warp <latest>", "protocol": <latest_protocol> },
+   *   "version": { "name": "Warp <oldest>-<latest>", "protocol": <protocol> },
    *   "players": { "max": 0, "online": 0 },
    *   "description": { "text": "A Warp Proxy" }
    * }
    * }</pre>
    */
-  private static String buildStatusJson() {
-    ProtocolVersion latest = ProtocolVersion.latest();
-    return "{"
-        + "\"version\":{\"name\":\"Warp "
-        + latest.name()
-        + "\",\"protocol\":"
-        + latest.protocol()
-        + "},"
-        + "\"players\":{\"max\":0,\"online\":0},"
-        + "\"description\":{\"text\":\"A Warp Proxy\"}"
-        + "}";
+  private static @Nullable String[] buildStatusJsonByProtocol() {
+    int maxProtocol =
+        ProtocolVersion.values().stream().mapToInt(ProtocolVersion::protocol).max().orElseThrow();
+    @Nullable String[] json = new String[maxProtocol + 1];
+    for (ProtocolVersion version : ProtocolVersion.values()) {
+      json[version.protocol()] =
+          "{"
+              + "\"version\":{\"name\":\""
+              + VERSION_NAME
+              + "\",\"protocol\":"
+              + version.protocol()
+              + "},"
+              + "\"players\":{\"max\":0,\"online\":0},"
+              + "\"description\":{\"text\":\"A Warp Proxy\"}"
+              + "}";
+    }
+    return json;
   }
 }
