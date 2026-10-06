@@ -31,7 +31,7 @@ and one whose default server is a closed port) and run the scenarios:
 
 | Scenario | Checks |
 |---|---|
-| `status` | Server list ping through Warp |
+| `status` | Server list ping through Warp, advertising the protocol the bot speaks (else a client lists Warp as incompatible) |
 | `login` | Join, receive chunks, land on the lobby; `/server` answers (1.19.3+) |
 | `keepalive` | One bot stays connected through the whole run (at least 65 s, past Warp's first keep-alive time-out check) |
 | `switching` | Six `/server` switches back and forth (1.20.2+, configuration phase) |
