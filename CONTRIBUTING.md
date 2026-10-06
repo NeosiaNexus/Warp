@@ -185,7 +185,7 @@ meaning when versions are added.
 |---|---|
 | Every build (`./gradlew build`: **Build & test**, part of **CI OK**) | Each fuzz test once on each of its seeds and past findings |
 | Every pull request and push to `main` (**Fuzz**, not required) | Two minutes per fuzz test |
-| Nightly, on demand (`fuzz.yml`) | Ten minutes per fuzz test, or up to two hours on demand, then the corpus minimized |
+| Nightly, on demand (`fuzz.yml`) | Ten minutes per fuzz test, or 30 minutes or an hour on demand, then the corpus minimized |
 
 Fuzzing does not gate pull requests: random inputs can find a bug the pull request did not add, and
 a required check must not pass or fail by chance. A finding fails the **Fuzz** job, which reviewers

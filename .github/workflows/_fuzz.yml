@@ -20,7 +20,7 @@ on:
           Timeout of the job, in minutes. Fuzzing may take all of it but the last ten minutes, which
           report, minimize and save the corpus.
         type: number
-        default: 20
+        required: true
       minimize:
         description: Whether to minimize the corpus before saving it.
         type: boolean

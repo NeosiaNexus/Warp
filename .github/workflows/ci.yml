@@ -189,6 +189,8 @@ jobs:
     uses: $/.github/workflows/_fuzz.yml
     with:
       duration: 2m
+      # Fuzzing takes 9 minutes on a two-core runner (three rounds and the build), ten more report.
+      timeout-minutes: 30
 
   # The only check to mark as required: it fails if any job above failed or was cancelled, and
   # passes when they succeeded or were skipped on purpose.

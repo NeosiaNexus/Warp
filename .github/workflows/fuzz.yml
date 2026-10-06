@@ -11,7 +11,7 @@ on:
       duration:
         description: How long to fuzz each fuzz test
         type: choice
-        options: [10m, 30m, 1h, 2h]
+        options: [10m, 30m, 1h]
         default: 10m
 
 permissions: {}
@@ -29,9 +29,9 @@ jobs:
     uses: $/.github/workflows/_fuzz.yml
     with:
       duration: ${{ inputs.duration || '10m' }}
-      # From the duration: the fuzz tests fuzz in two rounds on the runner's four cores, after
-      # about five minutes of setup and build, and the last ten minutes report, minimize and save.
+      # From the duration: the five fuzz tests fuzz one per core, so in three rounds when the
+      # runner has two cores, after up to five minutes of setup and build; the last ten minutes
+      # report, minimize and save the corpus.
       timeout-minutes: >-
-        ${{ inputs.duration == '2h' && 270 || inputs.duration == '1h' && 145
-          || inputs.duration == '30m' && 85 || 40 }}
+        ${{ inputs.duration == '1h' && 215 || inputs.duration == '30m' && 120 || 55 }}
       minimize: true
