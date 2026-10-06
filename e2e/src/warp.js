@@ -18,7 +18,7 @@ export const WARP_FAILURES = [
   /^# A fatal error has been detected by the Java Runtime Environment/,
   /Invalid KeepAlive ID from player /,
   /timed out \(no KeepAlive response/,
-  /Connection \S+ timed out: nothing received in/,
+  /Connection \S+ timed out in \S+: the (client|backend) sent nothing/,
 ];
 
 /** Where the harness's stand-in for Mojang's key goes, in Warp's working directory. */

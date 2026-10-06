@@ -26,6 +26,7 @@ import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
+import dev.warp.protocol.packet.PacketDirection;
 
 import java.io.IOException;
 import java.nio.channels.ClosedChannelException;
@@ -154,7 +155,9 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
       // A peer that went quiet: it is gone or stuck, and closing is all the proxy can do. Worth a
       // line, unlike a reset connection: how the connection stood says which side stopped.
       logger.info(
-          "Connection {} timed out: {}", channel.remoteAddress(), describeTimeout(ctx.channel()));
+          "Connection {} timed out {}",
+          channel.remoteAddress(),
+          describeTimeout(channel, decoder()));
     } else {
       String routine = describeRoutine(cause, ctx.channel().isActive());
       if (routine != null) {
@@ -171,18 +174,25 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   /**
    * Describes a connection that received nothing for {@value #READ_TIMEOUT_SECONDS} s, as it
-   * stands: whether the proxy was reading it, and how much it still had to send it. Reads paused
-   * means the proxy's own back-pressure kept the peer's packets unread; bytes piling up mean the
-   * peer stopped reading too; neither means the peer went silent while taking what it was sent. The
+   * stands: its protocol state, which side went quiet, whether the proxy was reading it, and how
+   * much it still had to send it. Reads paused means the proxy itself kept the peer's packets
+   * unread (back-pressure, or a player held during a server switch); bytes piling up mean the peer
+   * stopped reading too; neither means the peer went silent while taking what it was sent. The
    * queued bytes are Netty's count: the packets plus a small overhead per message.
    *
    * @param channel the connection that timed out
-   * @return e.g. {@code "nothing received in 30 s (reads on, 0 bytes queued to send)"}
+   * @param decoder the connection's decoder, which knows its state and which side the peer is
+   * @return e.g. {@code "in PLAY: the client sent nothing for 30 s (reads on, 0 bytes queued to
+   *     send)"}
    */
-  static String describeTimeout(Channel channel) {
+  static String describeTimeout(Channel channel, MinecraftDecoder decoder) {
     ChannelOutboundBuffer outbound = channel.unsafe().outboundBuffer();
     long queued = outbound == null ? 0 : outbound.totalPendingWriteBytes();
-    return "nothing received in "
+    return "in "
+        + decoder.state()
+        + ": the "
+        + (decoder.direction() == PacketDirection.SERVERBOUND ? "client" : "backend")
+        + " sent nothing for "
         + READ_TIMEOUT_SECONDS
         + " s (reads "
         + (channel.config().isAutoRead() ? "on" : "paused")

@@ -285,8 +285,8 @@ class MinecraftConnectionTest {
         LogEvent event = assertOne(log.events());
         assertEquals(Level.INFO, event.getLevel());
         assertEquals(
-            "Connection embedded timed out: nothing received in 30 s (reads on, 0 bytes queued to"
-                + " send)",
+            "Connection embedded timed out in STATUS: the client sent nothing for 30 s (reads on, 0"
+                + " bytes queued to send)",
             event.getMessage().getFormattedMessage());
         assertNull(event.getThrown(), "no stack trace for a quiet peer");
         assertFalse(ch.isOpen());
@@ -325,16 +325,21 @@ class MinecraftConnectionTest {
   @DisplayName("read time-out description")
   class TimeoutDescription {
 
+    private static MinecraftDecoder decoder(PacketDirection direction, ProtocolState state) {
+      return new MinecraftDecoder(direction, ProtocolVersion.MINECRAFT_1_21_4, state);
+    }
+
     @Test
-    @DisplayName("should say when the proxy had paused reading the peer")
+    @DisplayName("should name a quiet backend, its state, and that the proxy had paused reading it")
     void readsPaused() {
-      EmbeddedChannel ch = createChannel();
+      EmbeddedChannel ch = new EmbeddedChannel();
       try {
         ch.config().setAutoRead(false);
 
         assertEquals(
-            "nothing received in 30 s (reads paused, 0 bytes queued to send)",
-            MinecraftConnection.describeTimeout(ch));
+            "in PLAY: the backend sent nothing for 30 s (reads paused, 0 bytes queued to send)",
+            MinecraftConnection.describeTimeout(
+                ch, decoder(PacketDirection.CLIENTBOUND, ProtocolState.PLAY)));
       } finally {
         ch.finishAndReleaseAll();
       }
@@ -348,10 +353,15 @@ class MinecraftConnectionTest {
         // Written but not flushed: still in the channel's outbound buffer.
         var _ = ch.write(Unpooled.wrappedBuffer(new byte[1500]));
 
+        String text =
+            MinecraftConnection.describeTimeout(
+                ch, decoder(PacketDirection.SERVERBOUND, ProtocolState.LOGIN));
         Matcher description =
-            Pattern.compile("nothing received in 30 s \\(reads on, (\\d+) bytes queued to send\\)")
-                .matcher(MinecraftConnection.describeTimeout(ch));
-        assertTrue(description.matches(), MinecraftConnection.describeTimeout(ch));
+            Pattern.compile(
+                    "in LOGIN: the client sent nothing for 30 s \\(reads on, (\\d+) bytes queued to"
+                        + " send\\)")
+                .matcher(text);
+        assertTrue(description.matches(), text);
         // The packet, and Netty's bookkeeping per queued message.
         long queued = Long.parseLong(description.group(1));
         assertTrue(queued >= 1500 && queued < 1500 + 256, "queued " + queued);
