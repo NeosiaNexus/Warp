@@ -19,6 +19,7 @@ package dev.warp.protocol.packet.play;
 import static dev.warp.protocol.packet.play.SwitchPacketFixtures.bytes;
 import static dev.warp.protocol.packet.play.SwitchPacketFixtures.decode;
 import static dev.warp.protocol.packet.play.SwitchPacketFixtures.encode;
+import static dev.warp.protocol.packet.play.SwitchPacketFixtures.writeAndRead;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -29,6 +30,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.codec.McUuid;
+import dev.warp.protocol.codec.VarInt;
 
 import java.util.Arrays;
 import java.util.List;
@@ -37,11 +40,14 @@ import java.util.stream.Stream;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.handler.codec.DecoderException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * The packets Warp reads and writes to switch servers before 1.20.2, checked against the bytes an
@@ -119,6 +125,111 @@ class ServerSwitchPacketsTest {
       }
       assertEquals(
           version.isAtLeast(ProtocolVersion.MINECRAFT_1_20) ? 3 : 0, spawn.portalCooldown());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("decodedVersions")
+    @DisplayName("should carry the reduced debug info and respawn screen flags, both ways")
+    void flags(ProtocolVersion version) {
+      JoinGame joinGame = decode(JoinGame.CODEC, version, "join_game");
+      JoinGame.Decoded body = (JoinGame.Decoded) joinGame.body();
+      for (boolean reducedDebugInfo : new boolean[] {false, true}) {
+        for (boolean respawnScreen : new boolean[] {false, true}) {
+          JoinGame flagged =
+              new JoinGame(
+                  joinGame.entityId(),
+                  joinGame.hardcore(),
+                  new JoinGame.Decoded(
+                      body.maxPlayers(),
+                      body.worldNames(),
+                      body.registry(),
+                      body.viewDistance(),
+                      body.simulationDistance(),
+                      reducedDebugInfo,
+                      respawnScreen,
+                      body.spawn()));
+
+          JoinGame.Decoded read =
+              (JoinGame.Decoded) writeAndRead(JoinGame.CODEC, flagged, version).body();
+
+          // Sent from 1.8 and from 1.15: older clients read them as unset.
+          assertEquals(
+              reducedDebugInfo && version.isAtLeast(ProtocolVersion.MINECRAFT_1_8),
+              read.reducedDebugInfo());
+          assertEquals(
+              respawnScreen && version.isAtLeast(ProtocolVersion.MINECRAFT_1_15),
+              read.respawnScreen());
+        }
+      }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("decodedVersions")
+    @DisplayName("should carry a player limit above 127: a byte before 1.16.2, a VarInt since")
+    void largePlayerLimit(ProtocolVersion version) {
+      JoinGame joinGame = decode(JoinGame.CODEC, version, "join_game");
+      JoinGame.Decoded body = (JoinGame.Decoded) joinGame.body();
+      JoinGame crowded =
+          new JoinGame(
+              joinGame.entityId(),
+              joinGame.hardcore(),
+              new JoinGame.Decoded(
+                  200,
+                  body.worldNames(),
+                  body.registry(),
+                  body.viewDistance(),
+                  body.simulationDistance(),
+                  body.reducedDebugInfo(),
+                  body.respawnScreen(),
+                  body.spawn()));
+
+      JoinGame.Decoded read =
+          (JoinGame.Decoded) writeAndRead(JoinGame.CODEC, crowded, version).body();
+
+      assertEquals(200, read.maxPlayers());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("deathLocationVersions")
+    @DisplayName("should write and read back a player who never died")
+    void noDeathLocation(ProtocolVersion version) {
+      JoinGame joinGame = decode(JoinGame.CODEC, version, "join_game");
+      JoinGame.Decoded body = (JoinGame.Decoded) joinGame.body();
+      JoinGame neverDied =
+          new JoinGame(
+              joinGame.entityId(),
+              joinGame.hardcore(),
+              body.withSpawn(withoutDeathLocation(body.spawn())));
+
+      JoinGame.Decoded read =
+          (JoinGame.Decoded) writeAndRead(JoinGame.CODEC, neverDied, version).body();
+
+      assertNull(read.spawn().lastDeathLocation());
+    }
+
+    static Stream<ProtocolVersion> deathLocationVersions() {
+      return decodedVersions().filter(v -> v.isAtLeast(ProtocolVersion.MINECRAFT_1_19));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(ints = {-1, Integer.MAX_VALUE})
+    @DisplayName("should refuse a world name count the packet cannot hold, before allocating")
+    void impossibleWorldNameCount(int count) {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        buf.writeInt(42); // entity ID
+        buf.writeBoolean(false); // hardcore
+        buf.writeByte(2); // game mode
+        buf.writeByte(-1); // previous game mode
+        VarInt.write(buf, count);
+        buf.writeZero(16);
+
+        assertThrows(
+            DecoderException.class,
+            () -> JoinGame.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_19));
+      } finally {
+        buf.release();
+      }
     }
 
     @Test
@@ -221,6 +332,48 @@ class ServerSwitchPacketsTest {
       assertArrayEquals(bytes(version, "respawn"), encode(Respawn.CODEC, respawn, version));
     }
 
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("respawnVersions")
+    @DisplayName("should keep the data the respawn keeps: a flag before 1.19.3, a bit mask since")
+    void dataKept(ProtocolVersion version) {
+      Respawn respawn = decode(Respawn.CODEC, version, "respawn");
+
+      Respawn read = writeAndRead(Respawn.CODEC, new Respawn(respawn.spawn(), 0b11), version);
+
+      int expected =
+          version.isAtLeast(ProtocolVersion.MINECRAFT_1_19_3)
+              ? 0b11
+              : version.isAtLeast(ProtocolVersion.MINECRAFT_1_16) ? 1 : 0;
+      assertEquals(expected, read.dataKept());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource(
+        "dev.warp.protocol.packet.play.ServerSwitchPacketsTest$JoinGameCodec#deathLocationVersions")
+    @DisplayName("should write and read back a respawn of a player who never died")
+    void noDeathLocation(ProtocolVersion version) {
+      Respawn respawn = decode(Respawn.CODEC, version, "respawn");
+
+      Respawn read =
+          writeAndRead(
+              Respawn.CODEC, new Respawn(withoutDeathLocation(respawn.spawn()), 0), version);
+
+      assertNull(read.spawn().lastDeathLocation());
+    }
+
+    @Test
+    @DisplayName("should refuse to read a respawn from 1.20.2, where it no longer switches servers")
+    void notDecodedFrom1202() {
+      ByteBuf buf = Unpooled.wrappedBuffer(bytes(ProtocolVersion.MINECRAFT_1_20_1, "respawn"));
+      try {
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> Respawn.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_2));
+      } finally {
+        buf.release();
+      }
+    }
+
     @Test
     @DisplayName("should refuse the versions with a configuration phase")
     void notFrom1202() {
@@ -280,6 +433,20 @@ class ServerSwitchPacketsTest {
           encode(ClearTitles.CODEC, new ClearTitles(false), version));
       assertTrue(decode(ClearTitles.CODEC, version, "clear_titles_reset").reset());
       assertFalse(decode(ClearTitles.CODEC, version, "clear_titles_hide").reset());
+    }
+
+    @Test
+    @DisplayName(
+        "should refuse a title action that neither hides nor resets the title, before 1.17")
+    void otherTitleAction() {
+      ByteBuf buf = Unpooled.buffer().writeByte(0); // set title
+      try {
+        assertThrows(
+            DecoderException.class,
+            () -> ClearTitles.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_12_2));
+      } finally {
+        buf.release();
+      }
     }
   }
 
@@ -396,6 +563,62 @@ class ServerSwitchPacketsTest {
           bytes(version, "player_info_remove"),
           encode(PlayerInfoRemove.CODEC, new PlayerInfoRemove(List.of(ALICE, BOB)), version));
     }
+
+    @ParameterizedTest(name = "key {0} bytes, signature {1} bytes")
+    @CsvSource({
+      "0, 0, true",
+      "512, 4096, true",
+      "513, 4096, false",
+      "512, 4097, false",
+      "-1, 0, false"
+    })
+    @DisplayName("should take a chat session key and signature up to the sizes vanilla accepts")
+    void chatSessionLimits(int keyLength, int signatureLength, boolean accepted) {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        buf.writeByte(PlayerInfoUpdate.INITIALIZE_CHAT);
+        VarInt.write(buf, 1);
+        McUuid.write(buf, ALICE);
+        buf.writeBoolean(true); // a chat session
+        McUuid.write(buf, BOB); // its id
+        buf.writeLong(0); // key expiry
+        VarInt.write(buf, keyLength);
+        buf.writeZero(Math.max(keyLength, 0));
+        VarInt.write(buf, signatureLength);
+        buf.writeZero(signatureLength);
+
+        if (accepted) {
+          PlayerInfoUpdate read =
+              PlayerInfoUpdate.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_19_3);
+          assertEquals(List.of(ALICE), read.profileIds());
+          assertFalse(buf.isReadable());
+        } else {
+          assertThrows(
+              DecoderException.class,
+              () -> PlayerInfoUpdate.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_19_3));
+        }
+      } finally {
+        buf.release();
+      }
+    }
+
+    @ParameterizedTest(name = "{0} entries")
+    @ValueSource(ints = {-1, 3})
+    @DisplayName("should refuse an entry count the packet cannot hold")
+    void impossibleCount(int count) {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        VarInt.write(buf, count);
+        McUuid.write(buf, ALICE);
+        McUuid.write(buf, BOB);
+
+        assertThrows(
+            DecoderException.class,
+            () -> PlayerInfoRemove.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_19_3));
+      } finally {
+        buf.release();
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -420,5 +643,23 @@ class ServerSwitchPacketsTest {
       assertArrayEquals(
           bytes(version, "chat_server"), encode(LegacyChatMessage.CODEC, message, version));
     }
+  }
+
+  /** Returns {@code spawn} without a last death location. */
+  private static SpawnInfo withoutDeathLocation(SpawnInfo spawn) {
+    return new SpawnInfo(
+        spawn.dimension(),
+        spawn.dimensionType(),
+        spawn.dimensionTypeData(),
+        spawn.worldName(),
+        spawn.hashedSeed(),
+        spawn.difficulty(),
+        spawn.gameMode(),
+        spawn.previousGameMode(),
+        spawn.levelType(),
+        spawn.debug(),
+        spawn.flat(),
+        null,
+        spawn.portalCooldown());
   }
 }

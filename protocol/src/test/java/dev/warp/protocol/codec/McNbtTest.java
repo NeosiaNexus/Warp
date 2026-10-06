@@ -18,6 +18,7 @@ package dev.warp.protocol.codec;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.nio.charset.StandardCharsets;
@@ -29,6 +30,8 @@ import io.netty.handler.codec.DecoderException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 @DisplayName("McNbt codec")
 class McNbtTest {
@@ -80,6 +83,31 @@ class McNbtTest {
     } finally {
       buf.release();
     }
+  }
+
+  /** Reads {@code tag} from a buffer holding nothing else. */
+  private static byte[] readExactly(byte[] tag) {
+    ByteBuf buf = Unpooled.wrappedBuffer(tag);
+    try {
+      byte[] read = McNbt.readNamed(buf);
+      assertFalse(buf.isReadable());
+      return read;
+    } finally {
+      buf.release();
+    }
+  }
+
+  /**
+   * Writes the payload of a list holding a list, and so on: {@code depth} lists below this one, the
+   * deepest an empty list of TAG_End.
+   */
+  private static void nestedLists(ByteBuf buf, int depth) {
+    for (int i = 0; i < depth; i++) {
+      buf.writeByte(LIST);
+      buf.writeInt(1);
+    }
+    buf.writeByte(END);
+    buf.writeInt(0);
   }
 
   @Nested
@@ -240,6 +268,62 @@ class McNbtTest {
               });
 
       assertThrows(DecoderException.class, () -> readWithTrailer(tag));
+    }
+
+    @ParameterizedTest(name = "type {0}")
+    @CsvSource({"1, 1", "2, 2", "3, 4", "4, 8", "5, 4", "6, 8"})
+    @DisplayName("should skip a list of fixed-size elements to its last byte")
+    void fixedSizeList(int type, int size) {
+      byte[] tag =
+          root(
+              LIST,
+              buf -> {
+                buf.writeByte(type);
+                buf.writeInt(3);
+                buf.writeZero(3 * size);
+              });
+
+      assertArrayEquals(tag, readWithTrailer(tag));
+    }
+
+    @Test
+    @DisplayName("should reject lists nested deeper than vanilla allows")
+    void listsTooDeep() {
+      byte[] tag = root(LIST, buf -> nestedLists(buf, McNbt.MAX_DEPTH + 1));
+
+      assertThrows(DecoderException.class, () -> readWithTrailer(tag));
+    }
+
+    @Test
+    @DisplayName("should accept lists nested up to the limit")
+    void deepestListsAllowed() {
+      byte[] tag = root(LIST, buf -> nestedLists(buf, McNbt.MAX_DEPTH));
+
+      assertArrayEquals(tag, readWithTrailer(tag));
+    }
+
+    @Test
+    @DisplayName("should reject an array length cut short")
+    void truncatedArrayLength() {
+      byte[] tag = root(INT_ARRAY, buf -> buf.writeShort(0));
+
+      assertThrows(DecoderException.class, () -> readExactly(tag));
+    }
+
+    @Test
+    @DisplayName("should reject a string length cut short")
+    void truncatedStringLength() {
+      byte[] tag = root(STRING, buf -> buf.writeByte(0));
+
+      assertThrows(DecoderException.class, () -> readExactly(tag));
+    }
+
+    @Test
+    @DisplayName("should read a tag that ends exactly at the end of the buffer")
+    void endsTheBuffer() {
+      byte[] tag = root(STRING, buf -> name(buf, "text"));
+
+      assertArrayEquals(tag, readExactly(tag));
     }
 
     @Test

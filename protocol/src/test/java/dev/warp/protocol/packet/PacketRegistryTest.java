@@ -80,6 +80,28 @@ class PacketRegistryTest {
     }
 
     @Test
+    @DisplayName("should reject two mappings starting at the same version")
+    void sameStartMappings() {
+      assertThrows(
+          IllegalArgumentException.class,
+          () ->
+              PacketRegistry.builder()
+                  .register(
+                      StatusRequest.class,
+                      StatusRequest.CODEC,
+                      VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_9),
+                      VersionMapping.map(0x01, ProtocolVersion.MINECRAFT_1_9)));
+    }
+
+    @Test
+    @DisplayName("should reject a negative packet ID")
+    void negativePacketId() {
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> VersionMapping.map(-1, ProtocolVersion.MINECRAFT_1_7_2));
+    }
+
+    @Test
     @DisplayName("should reject a bounded mapping that is not the last one")
     void boundedMappingNotLast() {
       assertThrows(
@@ -194,6 +216,22 @@ class PacketRegistryTest {
           registry.encoding(ProtocolVersion.MINECRAFT_1_21_4, Handshake.class);
       assertEquals(0x00, encoding.packetId());
       assertSame(Handshake.CODEC, encoding.codec());
+    }
+
+    @Test
+    @DisplayName("should return null for IDs outside those registered, on either side")
+    void idsOutsideTable() {
+      PacketRegistry registry =
+          PacketRegistry.builder()
+              .register(
+                  Handshake.class,
+                  Handshake.CODEC,
+                  VersionMapping.map(0x02, ProtocolVersion.MINECRAFT_1_7_2))
+              .build();
+
+      assertNotNull(registry.lookup(ProtocolVersion.MINECRAFT_1_21_4, 0x02));
+      assertNull(registry.lookup(ProtocolVersion.MINECRAFT_1_21_4, 0x03));
+      assertNull(registry.lookup(ProtocolVersion.MINECRAFT_1_21_4, -1));
     }
 
     @Test

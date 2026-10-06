@@ -89,6 +89,22 @@ final class SwitchPacketFixtures {
     }
   }
 
+  /** Writes {@code packet} at {@code version} and reads it back, checking every byte is read. */
+  static <T extends Packet> T writeAndRead(
+      PacketCodec<T> codec, T packet, ProtocolVersion version) {
+    ByteBuf buf = Unpooled.wrappedBuffer(encode(codec, packet, version));
+    try {
+      T decoded = codec.decode(buf, version);
+      if (buf.isReadable()) {
+        throw new AssertionError(
+            buf.readableBytes() + " bytes left after reading back at " + version);
+      }
+      return decoded;
+    } finally {
+      buf.release();
+    }
+  }
+
   /** Encodes {@code packet} at {@code version} and returns its bytes. */
   static <T extends Packet> byte[] encode(PacketCodec<T> codec, T packet, ProtocolVersion version) {
     ByteBuf buf = Unpooled.buffer();

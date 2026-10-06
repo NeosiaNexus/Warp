@@ -198,6 +198,75 @@ class PlayPacketsTest {
   // ---------------------------------------------------------------------------
 
   @Nested
+  @DisplayName("StartConfiguration and AcknowledgeConfiguration")
+  class ConfigurationPhaseCodecs {
+
+    @Test
+    @DisplayName(
+        "should read and write the empty packets that move a 1.20.2 player to configuration")
+    void empty() {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        StartConfiguration.CODEC.encode(
+            new StartConfiguration(), buf, ProtocolVersion.MINECRAFT_1_20_2);
+        AcknowledgeConfiguration.CODEC.encode(
+            new AcknowledgeConfiguration(), buf, ProtocolVersion.MINECRAFT_1_20_2);
+        assertFalse(buf.isReadable());
+
+        assertEquals(
+            new StartConfiguration(),
+            StartConfiguration.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_2));
+        assertEquals(
+            new AcknowledgeConfiguration(),
+            AcknowledgeConfiguration.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_2));
+      } finally {
+        buf.release();
+      }
+    }
+  }
+
+  @Nested
+  @DisplayName("TabCompleteRequest and TabCompleteResponse")
+  class TabCompleteCodec {
+
+    @Test
+    @DisplayName("should write a request as its transaction ID and text, and read it back")
+    void request() {
+      TabCompleteRequest request = new TabCompleteRequest(300, "/give ");
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        TabCompleteRequest.CODEC.encode(request, buf, ProtocolVersion.MINECRAFT_1_13);
+        assertArrayEquals(
+            new byte[] {(byte) 0xAC, 0x02, 6, '/', 'g', 'i', 'v', 'e', ' '},
+            ByteBufUtil.getBytes(buf));
+
+        assertEquals(request, TabCompleteRequest.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_13));
+      } finally {
+        buf.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should write a response as its transaction ID then its matches, verbatim")
+    void response() {
+      byte[] matches = {0, 6, 1, 'a'};
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        TabCompleteResponse.CODEC.encode(
+            new TabCompleteResponse(5, matches), buf, ProtocolVersion.MINECRAFT_1_13);
+        assertArrayEquals(new byte[] {5, 0, 6, 1, 'a'}, ByteBufUtil.getBytes(buf));
+
+        TabCompleteResponse read =
+            TabCompleteResponse.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_13);
+        assertEquals(5, read.transactionId());
+        assertArrayEquals(matches, read.rawMatches());
+      } finally {
+        buf.release();
+      }
+    }
+  }
+
+  @Nested
   @DisplayName("Transfer")
   class TransferCodec {
 

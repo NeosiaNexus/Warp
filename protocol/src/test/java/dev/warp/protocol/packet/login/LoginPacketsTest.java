@@ -19,6 +19,7 @@ package dev.warp.protocol.packet.login;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -378,6 +379,23 @@ class LoginPacketsTest {
       }
     }
 
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(ints = {759, 766, 768})
+    @DisplayName("should keep an unsigned property and an unset strict error handling flag")
+    void unsignedPropertyWithoutStrictErrors(int protocol) {
+      ProtocolVersion version = versionOf(protocol);
+      List<LoginSuccess.Property> props =
+          List.of(
+              new LoginSuccess.Property("textures", "base64data", null),
+              new LoginSuccess.Property("signed", "value", "signature"));
+      LoginSuccess original = new LoginSuccess(PLAYER_UUID, "jeb_", props, false);
+
+      LoginSuccess decoded = decode(encode(original, version), version);
+
+      assertEquals(props, decoded.properties());
+      assertFalse(decoded.strictErrorHandling());
+    }
+
     private static byte[] encode(LoginSuccess packet, ProtocolVersion version) {
       ByteBuf buf = Unpooled.buffer();
       try {
@@ -589,6 +607,25 @@ class LoginPacketsTest {
         buf.release();
       }
     }
+
+    @Test
+    @DisplayName("should write and read back a failed response without data")
+    void responseWithoutData() {
+      LoginPluginResponse original = new LoginPluginResponse(42, false, null);
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        LoginPluginResponse.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_21_4);
+        assertArrayEquals(new byte[] {42, 0}, ByteBufUtil.getBytes(buf));
+
+        LoginPluginResponse decoded =
+            LoginPluginResponse.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_21_4);
+        assertEquals(42, decoded.messageId());
+        assertFalse(decoded.successful());
+        assertNull(decoded.data());
+      } finally {
+        buf.release();
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -616,6 +653,7 @@ class LoginPacketsTest {
         assertArrayEquals(publicKey, decoded.publicKey());
         assertArrayEquals(verifyToken, decoded.verifyToken());
         assertTrue(decoded.shouldAuthenticate());
+        assertFalse(buf.isReadable(), "nothing after the verify token before 1.20.5");
       } finally {
         buf.release();
       }
@@ -634,6 +672,23 @@ class LoginPacketsTest {
         assertEquals("", decoded.serverId());
         assertArrayEquals(new byte[] {1, 2, 3}, decoded.publicKey());
         assertArrayEquals(new byte[] {4, 5, 6, 7}, decoded.verifyToken());
+      } finally {
+        buf.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should keep shouldAuthenticate unset from 1.20.5, for offline-mode servers")
+    void offlineFrom1205() {
+      EncryptionRequest original =
+          new EncryptionRequest("", new byte[] {1, 2, 3}, new byte[] {4, 5, 6, 7}, false);
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        EncryptionRequest.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_20_5);
+        EncryptionRequest decoded =
+            EncryptionRequest.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_5);
+        assertFalse(decoded.shouldAuthenticate());
+        assertFalse(buf.isReadable());
       } finally {
         buf.release();
       }
@@ -721,6 +776,82 @@ class LoginPacketsTest {
         buf.release();
       }
     }
+
+    /** The wire layout of {secret 1 2, token 3 4} on each side of the 1.19 to 1.19.2 prefix. */
+    static Stream<Arguments> layouts() {
+      byte[] arrays = {2, 1, 2, 2, 3, 4};
+      return Stream.of(
+          Arguments.of(ProtocolVersion.MINECRAFT_1_18_2, arrays),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_19, new byte[] {2, 1, 2, 1, 2, 3, 4}),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_19_1, new byte[] {2, 1, 2, 1, 2, 3, 4}),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_19_3, arrays),
+          Arguments.of(ProtocolVersion.latest(), arrays));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("layouts")
+    @DisplayName("should write the verify token behind a true flag only from 1.19 to 1.19.2")
+    void layout(ProtocolVersion version, byte[] wire) {
+      EncryptionResponse response = new EncryptionResponse(new byte[] {1, 2}, new byte[] {3, 4});
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        EncryptionResponse.CODEC.encode(response, buf, version);
+        assertArrayEquals(wire, ByteBufUtil.getBytes(buf));
+
+        EncryptionResponse decoded = EncryptionResponse.CODEC.decode(buf, version);
+        assertArrayEquals(new byte[] {1, 2}, decoded.sharedSecret());
+        assertArrayEquals(new byte[] {3, 4}, decoded.verifyToken());
+        assertFalse(buf.isReadable());
+      } finally {
+        buf.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should read the salt-signed 1.19 variant as an empty verify token, to its end")
+    void saltSigned119() {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        McByteArray.write(buf, new byte[] {1, 2});
+        buf.writeBoolean(false); // no verify token: a salt and a message signature instead
+        buf.writeLong(0x0102_0304_0506_0708L);
+        McByteArray.write(buf, new byte[] {9, 9, 9});
+
+        EncryptionResponse decoded =
+            EncryptionResponse.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_19);
+
+        assertArrayEquals(new byte[] {1, 2}, decoded.sharedSecret());
+        assertArrayEquals(new byte[0], decoded.verifyToken());
+        assertFalse(buf.isReadable());
+      } finally {
+        buf.release();
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // LoginAcknowledged
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("LoginAcknowledged")
+  class LoginAcknowledgedCodec {
+
+    @Test
+    @DisplayName("should read and write an empty packet")
+    void empty() {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        LoginAcknowledged.CODEC.encode(
+            new LoginAcknowledged(), buf, ProtocolVersion.MINECRAFT_1_20_2);
+        assertFalse(buf.isReadable());
+        assertEquals(
+            new LoginAcknowledged(),
+            LoginAcknowledged.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_2));
+      } finally {
+        buf.release();
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -732,19 +863,46 @@ class LoginPacketsTest {
   class LoginSuccessErrors {
 
     @Test
-    @DisplayName("should reject more than 64 properties")
+    @DisplayName("should reject more than 64 properties, even when all of them are there")
     void rejectTooManyProperties() {
       ByteBuf buf = Unpooled.buffer();
       try {
-        // Write UUID (128-bit)
-        McUuid.write(buf, UUID.randomUUID());
-        // Write username
+        McUuid.write(buf, PLAYER_UUID);
         McString.write(buf, "TestPlayer", 16);
-        // Write property count > 64
         VarInt.write(buf, 65);
+        for (int i = 0; i < 65; i++) {
+          McString.write(buf, "p" + i);
+          McString.write(buf, "v");
+          buf.writeBoolean(false);
+        }
+        buf.writeBoolean(false); // strict error handling
         assertThrows(
             DecoderException.class,
             () -> LoginSuccess.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_5));
+      } finally {
+        buf.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should accept exactly 64 properties")
+    void acceptsSixtyFourProperties() {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        McUuid.write(buf, PLAYER_UUID);
+        McString.write(buf, "TestPlayer", 16);
+        VarInt.write(buf, 64);
+        for (int i = 0; i < 64; i++) {
+          McString.write(buf, "p" + i);
+          McString.write(buf, "v");
+          buf.writeBoolean(false);
+        }
+        buf.writeBoolean(false); // strict error handling
+
+        LoginSuccess decoded = LoginSuccess.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_5);
+
+        assertEquals(64, decoded.properties().size());
+        assertFalse(buf.isReadable());
       } finally {
         buf.release();
       }
@@ -760,7 +918,12 @@ class LoginPacketsTest {
           "f81d4fae-7dec-11d0-a765-00a0c91e6bfg",
           "f81d4fae7-dec-11d0-a765-00a0c91e6bf6",
           "+81d4fae-7dec-11d0-a765-00a0c91e6bf6",
-          "f81d4fae-7dec-11d0-a765-00a0c91e6bf6-"
+          "f81d4fae-7dec-11d0-a765-00a0c91e6bf6-",
+          // A digit in place of each dash: the hex digits around still parse.
+          "f81d4fae07dec-11d0-a765-00a0c91e6bf6",
+          "f81d4fae-7dec011d0-a765-00a0c91e6bf6",
+          "f81d4fae-7dec-11d00a765-00a0c91e6bf6",
+          "f81d4fae-7dec-11d0-a765000a0c91e6bf6"
         })
     @DisplayName("should reject a malformed uuid string before 1.16")
     void rejectMalformedUuidString(String uuid) {

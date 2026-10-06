@@ -112,6 +112,19 @@ class McStringTest {
     }
 
     @Test
+    @DisplayName(
+        "should accept the character limit in three-byte characters, the longest it allows")
+    void byteLimitReached() {
+      // maxChars=5: five three-byte characters are 15 bytes, the most the limit allows.
+      ByteBuf buf = encodedString("\u20AC\u20AC\u20AC\u20AC\u20AC");
+      try {
+        assertEquals("\u20AC\u20AC\u20AC\u20AC\u20AC", McString.read(buf, 5));
+      } finally {
+        buf.release();
+      }
+    }
+
+    @Test
     @DisplayName("should reject when buffer has insufficient data")
     void notEnoughData() {
       ByteBuf buf = Unpooled.buffer();
