@@ -291,8 +291,9 @@ public final class StateRegistry {
   // keep their original compressed form end to end.
   //
   // Before 1.20.2 a server switch keeps the client's tab list, boss bars and titles: the proxy
-  // also decodes the packets that fill them, and sends the ones that clear them, up to 1.20.1
-  // only. From 1.20.2 the configuration phase resets the client and those packets stay opaque.
+  // also watches the packets that fill them (it reads their UUIDs in place and forwards their
+  // frames untouched), and sends the ones that clear them, up to 1.20.1 only. From 1.20.2 the
+  // configuration phase resets the client and those packets stay opaque.
   // ---------------------------------------------------------------------------
 
   private static void registerPlay() {
@@ -531,18 +532,20 @@ public final class StateRegistry {
                     map(0x3E, MINECRAFT_1_19_1),
                     map(0x3D, MINECRAFT_1_19_3),
                     map(0x41, MINECRAFT_1_19_4, MINECRAFT_1_20_1))
-                .register(
+                .registerWatched(
                     BossBar.class,
                     BossBar.CODEC,
+                    BossBar.WATCH,
                     map(0x0C, MINECRAFT_1_9),
                     map(0x0D, MINECRAFT_1_15),
                     map(0x0C, MINECRAFT_1_16),
                     map(0x0D, MINECRAFT_1_17),
                     map(0x0A, MINECRAFT_1_19),
                     map(0x0B, MINECRAFT_1_19_4, MINECRAFT_1_20_1))
-                .register(
+                .registerWatched(
                     PlayerInfo.class,
                     PlayerInfo.CODEC,
+                    PlayerInfo.WATCH,
                     map(0x38, MINECRAFT_1_8),
                     map(0x2D, MINECRAFT_1_9),
                     map(0x2E, MINECRAFT_1_12_1),
@@ -554,14 +557,15 @@ public final class StateRegistry {
                     map(0x36, MINECRAFT_1_17),
                     map(0x34, MINECRAFT_1_19),
                     map(0x37, MINECRAFT_1_19_1, MINECRAFT_1_19_2))
-                .register(
+                .registerWatched(
                     PlayerInfoUpdate.class,
-                    PlayerInfoUpdate.CODEC,
+                    PlayerInfoUpdate.WATCH,
                     map(0x36, MINECRAFT_1_19_3),
                     map(0x3A, MINECRAFT_1_19_4, MINECRAFT_1_20_1))
-                .register(
+                .registerWatched(
                     PlayerInfoRemove.class,
                     PlayerInfoRemove.CODEC,
+                    PlayerInfoRemove.WATCH,
                     map(0x35, MINECRAFT_1_19_3),
                     map(0x39, MINECRAFT_1_19_4, MINECRAFT_1_20_1))
                 .registerEncodeOnly(

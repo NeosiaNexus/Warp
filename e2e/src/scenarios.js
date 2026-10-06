@@ -18,6 +18,9 @@ export function features(protocol) {
     // Every version switches: through the configuration phase from 1.20.2, with the new server's
     // Join Game and a Respawn before.
     switching: true,
+    // From 1.8 the tab list is keyed by UUID, which Warp follows to clear it on a switch before
+    // 1.20.2; 1.7 keys it by name, and Warp leaves it.
+    tabList: protocol >= 47,
     // 1.19 to 1.19.2 clients send their chat signing key in Login Start.
     profileKeys: protocol >= FIRST_PROTOCOL && protocol <= LAST_PROTOCOL,
     // Bots can sign their chat: from 1.20 a server fetches the keys that verify chat sessions from
@@ -25,6 +28,27 @@ export function features(protocol) {
     // authlib, so no bot can open a chat session there.
     signedChat: protocol >= SIGNED_CHAT,
   };
+}
+
+/**
+ * Checks that the bots that did not switch are still on the lobby. One the lobby dropped, which
+ * Warp then moved to the next server, would otherwise pass for a player left behind.
+ */
+export function checkStayed(stayers) {
+  const moved = stayers.filter((bot) => bot.gameMode() !== LOBBY_MODE).map((bot) => `${bot.username} (${bot.gameMode()})`);
+  if (moved.length) throw new Error(`left the lobby without switching, see the lobby's log: ${moved.join(', ')}`);
+}
+
+/**
+ * Checks that the bots that switched server list none of the players that stayed behind. Before
+ * 1.20.2 the game keeps its tab list across the Join Game of a switch, so Warp removes the previous
+ * server's players itself; from 1.20.2 the client starts a new list after the configuration phase.
+ */
+export function checkTabLists(switchers, stayed) {
+  const behind = new Set(stayed);
+  const stale = switchers.flatMap((bot) => bot.listed().filter((name) => behind.has(name)).map((name) => `${bot.username} lists ${name}`));
+  if (stale.length) throw new Error(`players of the previous server still listed: ${stale.join(', ')}`);
+  return `no player left behind in ${switchers.length} tab lists`;
 }
 
 /** Asks Warp where the bot is ("Servers: [lobby], survival"); every version, through Warp only. */
@@ -183,7 +207,12 @@ async function crowd(ctx) {
       await Promise.all(switchers.map((bot) => bot.waitForGameMode(SURVIVAL_MODE, 30_000)));
       await sleep(2_000);
       for (const bot of bots) bot.healthy();
+      const stayers = bots.slice(switchers.length);
+      checkStayed(stayers);
       detail += `, ${switchers.length} switched at once`;
+      if (ctx.features.tabList) {
+        detail += `, ${checkTabLists(switchers, stayers.map((bot) => bot.username))}`;
+      }
     }
     const packets = bots.reduce((sum, bot) => sum + bot.stats.packets, 0);
     const chunks = bots.reduce((sum, bot) => sum + bot.stats.chunks, 0);

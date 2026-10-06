@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import { BACKEND_PROTOCOL_ERRORS } from '../src/backend.js';
 import { connectClient } from '../src/clients/index.js';
 import { announcedProtocol } from '../src/clients/mineflayer.js';
-import { SCENARIOS, checkStatus, features } from '../src/scenarios.js';
+import { LOBBY_MODE, SCENARIOS, SURVIVAL_MODE, checkStatus, checkStayed, checkTabLists, features } from '../src/scenarios.js';
 import { findEntry, jobsForTier, loadMatrix, resolveVariant } from '../src/versions.js';
 import { WARP_FAILURES } from '../src/warp.js';
 
@@ -131,6 +131,29 @@ describe('scenario features', () => {
     assert.equal(features(762).signedChat, false); // 1.19.4: Mojang's key is bundled in authlib
     assert.equal(features(763).signedChat, true);
     assert.equal(features(769).signedChat, true);
+  });
+
+  it('checks tab lists from 1.8, where they are keyed by UUID', () => {
+    assert.deepEqual([5, 47, 763, 764].map((protocol) => features(protocol).tabList), [false, true, true, true]);
+  });
+});
+
+describe('tab lists after a switch', () => {
+  const bot = (username, ...listed) => ({ username, listed: () => listed });
+
+  it('fails when a bot that did not switch left the lobby, which would pass for one left behind', () => {
+    const stayer = (username, gameMode) => ({ username, gameMode: () => gameMode });
+    assert.doesNotThrow(() => checkStayed([stayer('c', LOBBY_MODE), stayer('d', LOBBY_MODE)]));
+    assert.throws(() => checkStayed([stayer('c', LOBBY_MODE), stayer('d', SURVIVAL_MODE)]), /: d \(adventure\)$/);
+  });
+
+  it('passes when no switcher lists a player left behind', () => {
+    const detail = checkTabLists([bot('a', 'a', 'b'), bot('b', 'a', 'b')], ['c', 'd']);
+    assert.equal(detail, 'no player left behind in 2 tab lists');
+  });
+
+  it('fails when a switcher still lists a player of the previous server', () => {
+    assert.throws(() => checkTabLists([bot('a', 'a', 'c'), bot('b', 'b')], ['c', 'd']), /a lists c$/);
   });
 });
 

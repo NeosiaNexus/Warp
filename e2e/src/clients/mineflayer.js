@@ -202,6 +202,28 @@ class Bot {
     bot.on('kicked', (reason) => { this.stats.kicked = text(reason); });
     bot.on('end', (reason) => { if (!this.quitting) this.stats.ended = String(reason ?? 'unknown'); });
     bot.on('message', (message) => this.messages.push(message.toString()));
+    // The tab list as the game keeps it, by UUID, fed by the player info packets alone: mineflayer
+    // empties bot.players on every Join Game, but the game keeps its list across one before
+    // 1.20.2, and starts a new one with each configuration phase from 1.20.2.
+    this.tabList = new Map();
+    bot._client.on('player_info', (packet) => this.playerInfo(packet));
+    bot._client.on('player_remove', (packet) => packet.players.forEach((uuid) => this.tabList.delete(uuid)));
+    bot._client.on('state', (state) => { if (state === 'configuration') this.tabList.clear(); });
+  }
+
+  /** Follows a player info packet: one action by name before 1.19.3, action flags from 1.19.3. */
+  playerInfo(packet) {
+    const adds = typeof packet.action === 'object' ? packet.action.add_player : packet.action === 'add_player';
+    const removes = packet.action === 'remove_player';
+    for (const entry of packet.data) {
+      if (adds) this.tabList.set(entry.uuid, entry.player?.name ?? entry.name);
+      else if (removes) this.tabList.delete(entry.uuid);
+    }
+  }
+
+  /** The names in the bot's tab list. */
+  listed() {
+    return [...this.tabList.values()];
   }
 
   /** `survival`, `creative`, `adventure` or `spectator`, as last announced by the server. */

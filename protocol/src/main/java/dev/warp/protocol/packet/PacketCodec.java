@@ -25,11 +25,12 @@ import io.netty.buffer.ByteBuf;
  *
  * <p>Implementations are colocated with their packet definition as a {@code public static final}
  * field named {@code CODEC}. The {@link ProtocolVersion} parameter enables version-dependent
- * encoding within a single codec instance.
+ * encoding within a single codec instance. As a {@link PacketReader}, a codec decodes the packets
+ * registered as decoded; for the others it only writes.
  *
  * @param <T> the packet type this codec handles
  */
-public interface PacketCodec<T extends Packet> {
+public non-sealed interface PacketCodec<T extends Packet> extends PacketReader {
 
   /**
    * Decodes a packet from the buffer, advancing the reader index past all consumed bytes.

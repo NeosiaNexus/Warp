@@ -52,7 +52,9 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Most backend packets are blind-forwarded to the client as the frames they arrived in: no
  * deserialization, no allocation and, when both connections use compression, no inflate or deflate
- * either. Only the handful of packet types the proxy acts on are decoded.
+ * either. Only the handful of packet types the proxy acts on are decoded. Before 1.20.2 the tab
+ * list and boss bar packets are watched instead: the decoder reads their UUIDs in place and emits
+ * what changed ahead of the frame, which then takes the blind path like any other.
  *
  * <p>A backend's packets reach the client only while the client plays on it ({@link
  * ConnectedPlayer#isPlayingOn}): this handler claims the client when it is installed, and a server
@@ -124,11 +126,12 @@ final class BackendPlaySessionHandler implements SessionHandler {
       case BundleDelimiter delimiter -> handleBundleDelimiter(delimiter);
       case PlayPluginMessage pluginMessage -> handlePluginMessage(pluginMessage);
       case TabCompleteResponse response -> forwardToClient(response);
-      // Decoded before 1.20.2 only, to clear them from the client on a server switch.
-      case PlayerInfo info -> forwardTracked(info);
-      case PlayerInfoUpdate update -> forwardTracked(update);
-      case PlayerInfoRemove remove -> forwardTracked(remove);
-      case BossBar bossBar -> forwardTracked(bossBar);
+      // Watched before 1.20.2 only, to clear them from the client on a server switch. Their frame
+      // follows, forwarded untouched by handleBlind.
+      case PlayerInfo info -> track(info);
+      case PlayerInfoUpdate update -> track(update);
+      case PlayerInfoRemove remove -> track(remove);
+      case BossBar bossBar -> track(bossBar);
       case TabListHeaderFooter headerFooter -> forwardToClient(headerFooter);
       case ClearTitles clearTitles -> forwardToClient(clearTitles);
       // Serverbound packets should never arrive from a backend: a protocol violation, ignored.
@@ -222,11 +225,13 @@ final class BackendPlaySessionHandler implements SessionHandler {
     forwardToClient(pluginMessage);
   }
 
-  /** Forwards a packet that changes what a Join Game does not clear, and follows the change. */
-  private void forwardTracked(PlayPacket packet) {
+  /**
+   * Follows a change to what a Join Game does not clear. The packet is what the decoder read of a
+   * watched frame; the frame itself comes next and is forwarded like any other.
+   */
+  private void track(PlayPacket packet) {
     if (player.isPlayingOn(backendConnection)) {
       player.leftovers().track(packet);
-      player.clientConnection().write(packet);
     }
   }
 
