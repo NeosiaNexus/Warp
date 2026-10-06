@@ -1,0 +1,86 @@
+name: Fuzz
+
+# Reusable: fuzzes every fuzz test of the protocol module for a bounded time each, one JVM per
+# test, as many at once as the runner has cores (`./gradlew :protocol:fuzz`, configured in
+# build-logic/src/main/kotlin/warp.fuzz-conventions.gradle.kts).
+#
+# Each run starts from the corpus earlier runs grew: the runs on main save theirs, every run reads
+# the newest. Failing inputs are uploaded as the `fuzz-findings` artifact, at their path in the
+# repository: unpacked at its root, each one is a failing test.
+on:
+  workflow_call:
+    inputs:
+      duration:
+        description: How long to fuzz each fuzz test, as a Jazzer duration (30s, 10m, 1h).
+        type: string
+        required: true
+      timeout-minutes:
+        description: Timeout of the job, in minutes.
+        type: number
+        default: 20
+
+permissions: {}
+
+jobs:
+  fuzz:
+    name: Protocol decoders
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read # check out the code
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up build
+        uses: $/.github/actions/setup-build
+
+      # No entry has this run's key: the newest corpus saved by a run on main is restored.
+      - name: Restore the corpus
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: protocol/.cifuzz-corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+
+      - name: Fuzz for ${{ inputs.duration }} each
+        env:
+          DURATION: ${{ inputs.duration }}
+        run: |
+          python3 .github/scripts/fuzz-report.py corpus > "$RUNNER_TEMP/corpus-before.json"
+          ./gradlew :protocol:fuzz -Pfuzz.duration="$DURATION"
+
+      # Jazzer writes each failing input into the inputs directory of its fuzz test.
+      - name: Collect failing inputs
+        if: ${{ !cancelled() }}
+        run: |
+          git ls-files --others --exclude-standard -- ':(glob)*/src/test/resources/**/*Inputs/**' |
+            while read -r input; do
+              mkdir -p "$RUNNER_TEMP/findings/$(dirname "$input")"
+              cp "$input" "$RUNNER_TEMP/findings/$input"
+            done
+
+      - name: Report
+        if: ${{ !cancelled() }}
+        run: |
+          python3 .github/scripts/fuzz-report.py summary \
+            "$RUNNER_TEMP/corpus-before.json" "$RUNNER_TEMP/findings" >> "$GITHUB_STEP_SUMMARY"
+          python3 .github/scripts/fuzz-report.py annotations
+
+      - name: Upload failing inputs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-findings
+          path: ${{ runner.temp }}/findings/
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Save the corpus
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: protocol/.cifuzz-corpus
+          key: fuzz-corpus-${{ github.run_id }}

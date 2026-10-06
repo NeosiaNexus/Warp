@@ -1,0 +1,30 @@
+name: Fuzz nightly
+
+# The protocol decoders, fuzzed for ten minutes each every night, and for as long as asked on
+# demand. Pull requests and pushes to main fuzz them for two minutes each, as part of CI.
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: How long to fuzz each fuzz test (30s, 10m, 1h)
+        type: string
+        default: 10m
+
+permissions: {}
+
+# Runs go one at a time; a newer one waiting replaces an older one waiting.
+concurrency:
+  group: fuzz-nightly
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: Fuzz
+    permissions:
+      contents: read # check out the code
+    uses: $/.github/workflows/_fuzz.yml
+    with:
+      duration: ${{ inputs.duration || '10m' }}
+      timeout-minutes: 180

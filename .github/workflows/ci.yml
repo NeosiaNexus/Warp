@@ -145,12 +145,24 @@ jobs:
     with:
       tier: pr
 
+  # Two minutes of fuzzing per protocol decoder, alongside the build and the end-to-end tests. The
+  # nightly run (fuzz.yml) fuzzes them for longer.
+  fuzz:
+    name: Fuzz
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    permissions:
+      contents: read # check out the code
+    uses: $/.github/workflows/_fuzz.yml
+    with:
+      duration: 2m
+
   # The only check to mark as required: it fails if any job above failed or was cancelled, and
   # passes when they succeeded or were skipped on purpose.
   ci-ok:
     name: CI OK
     if: ${{ always() }}
-    needs: [changes, build, lint-workflows, e2e]
+    needs: [changes, build, lint-workflows, e2e, fuzz]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
