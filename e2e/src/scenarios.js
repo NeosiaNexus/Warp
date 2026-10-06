@@ -87,6 +87,47 @@ async function switching(ctx, rounds = 6) {
   }
 }
 
+/**
+ * After a switch the tab list shows the new server's players, none of the previous server's. Before
+ * 1.20.2 the client keeps its tab list across the new server's Join Game, so Warp removes what the
+ * previous server listed (by UUID, by name on 1.7); from 1.20.2 the configuration phase clears it.
+ * A witness stays on the lobby: listed there, it must be gone once the other bot is on survival.
+ */
+async function tabList(ctx) {
+  const witness = await joinWarp(ctx, 'e2e_tab_witness');
+  try {
+    const bot = await joinWarp(ctx, 'e2e_tab_mover');
+    try {
+      const onLobby = await waitForListed(bot, [witness.username, bot.username]);
+      await bot.command('server survival');
+      await bot.waitForGameMode(SURVIVAL_MODE, 20_000);
+      // Warp removes the leftovers before the new server's Join Game, which comes before its own
+      // entries: once survival has listed the bot, anything else from the lobby is a leftover.
+      const onSurvival = await waitForListed(bot, [bot.username]);
+      if (onSurvival.includes(witness.username)) {
+        throw new Error(`the tab list on survival still lists ${witness.username}, a lobby player: ${onSurvival.join(', ')}`);
+      }
+      witness.healthy();
+      bot.healthy();
+      return `lobby listed ${onLobby.join(', ')}; survival lists ${onSurvival.join(', ')}`;
+    } finally {
+      bot.quit();
+    }
+  } finally {
+    witness.quit();
+  }
+}
+
+/** Waits until every name in `names` is in the bot's tab list, and returns all it lists. */
+async function waitForListed(bot, names, timeoutMs = 10_000) {
+  try {
+    await bot.waitFor(() => names.every((name) => bot.listed().includes(name)), `${names.join(' and ')} in the tab list`, timeoutMs);
+  } catch (e) {
+    throw new Error(`${e.message}; it lists ${bot.listed().join(', ') || 'nobody'}`);
+  }
+  return bot.listed();
+}
+
 async function crowd(ctx) {
   const count = ctx.bots;
   const bots = [];
@@ -184,6 +225,7 @@ export const SCENARIOS = [
   { name: 'login', run: login },
   { name: 'keepalive', background: true },
   { name: 'switching', run: switching, requires: 'switching' },
+  { name: 'tab-list', run: tabList, requires: 'switching' },
   { name: 'crowd', run: crowd },
   { name: 'fallback-unreachable', run: fallbackUnreachable, requires: 'proxy' },
   { name: 'fallback-rejected', run: fallbackRejected, requires: 'proxy' },

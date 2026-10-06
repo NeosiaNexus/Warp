@@ -30,14 +30,20 @@ describe('versions.json', () => {
     }
   });
 
-  it('only lists versions mineflayer speaks natively, or bridges them through ViaProxy', () => {
+  it('only lists versions the bots speak natively, or bridges them through ViaProxy', () => {
     for (const v of matrix.versions) {
       if (v.via) {
-        assert.notEqual(announcedProtocol(v.via), null, `${v.version}: mineflayer cannot speak ${v.via}`);
+        assert.notEqual(announcedProtocol(v.via), null, `${v.version}: the bots cannot speak ${v.via}`);
       } else {
-        assert.equal(announcedProtocol(v.client ?? v.version), v.protocol, `${v.version}: mineflayer would announce another protocol`);
+        assert.equal(announcedProtocol(v.client ?? v.version), v.protocol, `${v.version}: the bots would announce another protocol`);
       }
     }
+  });
+
+  it('drives 1.7 with minecraft-protocol alone, as mineflayer starts at 1.8.8', () => {
+    assert.match(connectClient(findEntry(matrix, '1.7.10'), {}).description, /^minecraft-protocol 1\.7\.10$/);
+    assert.match(connectClient(findEntry(matrix, '1.7.2'), { ports: {}, targets: [] }).description, /^minecraft-protocol 1\.7\.10 → ViaProxy → 1\.7\.2$/);
+    assert.match(connectClient(findEntry(matrix, '1.8.8'), {}).description, /^mineflayer 1\.8\.8$/);
   });
 
   it('keeps every tier, variant and extra variant resolvable', () => {

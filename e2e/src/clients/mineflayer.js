@@ -1,6 +1,7 @@
-// Real-protocol bots built on mineflayer. Every packet a bot receives is fully parsed against the
-// protocol definition of its version: a packet the proxy corrupted or mis-framed surfaces as an
-// 'error' or a disconnect, which fails the scenario.
+// Real-protocol bots built on mineflayer, or on minecraft-protocol alone for 1.7 (legacy.js), which
+// mineflayer no longer loads. Every packet a bot receives is fully parsed against the protocol
+// definition of its version: a packet the proxy corrupted or mis-framed surfaces as an 'error' or a
+// disconnect, which fails the scenario.
 import { createRequire } from 'node:module';
 
 import * as legacy from './legacy.js';
@@ -73,6 +74,56 @@ function findMapper(type, test) {
 }
 
 // ---------------------------------------------------------------------------
+// Tab list
+// ---------------------------------------------------------------------------
+
+/** First protocol with the configuration phase (1.20.2), which gives the client a new tab list. */
+const CONFIGURATION_PHASE = 764;
+
+/**
+ * The tab list as the vanilla client keeps it, rebuilt from the packets it receives: entries by
+ * UUID from 1.8, by name on 1.7. mineflayer's `bot.players` cannot show what a server switch left
+ * behind, as it starts over at every Join Game. The client keeps its tab list for the whole
+ * connection before 1.20.2 (the player info map of its play packet listener, which a Join Game does
+ * not replace), and gets a new one with each configuration phase from 1.20.2, which a Join Game
+ * ends.
+ */
+export class TabList {
+  /** @param {number} protocol the protocol the client speaks */
+  constructor(protocol) {
+    this.protocol = protocol;
+    this.entries = new Map(); // UUID (1.7: the name) → listed name
+  }
+
+  /** Applies a packet the client received: its minecraft-protocol name and parsed fields. */
+  apply(name, data) {
+    if (name === 'login') {
+      if (this.protocol >= CONFIGURATION_PHASE) this.entries.clear();
+    } else if (name === 'player_remove') {
+      for (const uuid of data.players) this.entries.delete(uuid); // 1.19.3+
+    } else if (name !== 'player_info') {
+      // Nothing else changes the tab list.
+    } else if (data.playerName !== undefined) {
+      // 1.7: one name per packet, listed or not.
+      if (data.online) this.entries.set(data.playerName, data.playerName);
+      else this.entries.delete(data.playerName);
+    } else if (typeof data.action === 'object') {
+      // 1.19.3+: action flags; removals come as player_remove.
+      if (data.action.add_player) for (const entry of data.data) this.entries.set(entry.uuid, entry.player.name);
+    } else if (data.action === 'add_player') {
+      for (const entry of data.data) this.entries.set(entry.uuid, entry.name);
+    } else if (data.action === 'remove_player') {
+      for (const entry of data.data) this.entries.delete(entry.uuid);
+    }
+  }
+
+  /** The listed names, sorted. */
+  names() {
+    return [...this.entries.values()].sort();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Bots
 // ---------------------------------------------------------------------------
 
@@ -113,7 +164,7 @@ export function connect({ host, port, version, username, spawnTimeoutMs = 45_000
       hideErrors: true,
       logErrors: false,
     });
-    const handle = new Bot(bot, username);
+    const handle = new Bot(bot, username, announcedProtocol(version));
     const fail = (why) => {
       clearTimeout(timer);
       bot.quit();
@@ -135,17 +186,20 @@ class Bot {
    * @param {object} bot mineflayer bot, or its 1.7 stand-in ({@link legacy.createBot})
    * @param {string} username the name it logs in with (mineflayer only sets `bot.username` once
    *   the server has accepted the login)
+   * @param {number} protocol the protocol it speaks
    */
-  constructor(bot, username) {
+  constructor(bot, username, protocol) {
     this.bot = bot;
     this.username = username;
     this.stats = { packets: 0, chunks: 0, errors: [], kicked: null, ended: null };
     this.messages = [];
+    this.tabList = new TabList(protocol);
     this.quitting = false;
     bot._client.on('packet', (data, meta) => {
       this.stats.packets++;
       if (meta.name === 'map_chunk') this.stats.chunks++;
-      else if (meta.name === 'map_chunk_bulk') this.stats.chunks += data.meta?.length ?? 1; // 1.8
+      else if (meta.name === 'map_chunk_bulk') this.stats.chunks += data.meta?.length ?? 1; // 1.7, 1.8
+      this.tabList.apply(meta.name, data);
     });
     bot.on('error', (e) => this.stats.errors.push(String(e?.stack ?? e)));
     bot.on('kicked', (reason) => { this.stats.kicked = text(reason); });
@@ -156,6 +210,11 @@ class Bot {
   /** `survival`, `creative`, `adventure` or `spectator`, as last announced by the server. */
   gameMode() {
     return this.bot.game?.gameMode;
+  }
+
+  /** The names in the bot's tab list, sorted ({@link TabList}). */
+  listed() {
+    return this.tabList.names();
   }
 
   async waitFor(condition, what, timeoutMs) {

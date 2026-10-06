@@ -1,8 +1,9 @@
 // Chooses how bots reach Warp for a matrix entry:
-//   - natively: mineflayer speaks the entry's version itself;
-//   - bridged ("via" in versions.json): mineflayer speaks an older version to ViaProxy, which
-//     translates to the entry's version. Warp then sees genuine wire traffic of a version mineflayer
-//     cannot speak yet (or never could, e.g. 1.9.1), and every packet Warp forwards is still parsed,
+//   - natively: the bot speaks the entry's version itself (mineflayer, or minecraft-protocol alone
+//     for 1.7);
+//   - bridged ("via" in versions.json): the bot speaks another version to ViaProxy, which translates
+//     to the entry's version. Warp then sees genuine wire traffic of a version the bots cannot speak
+//     yet (or never could, e.g. 1.9.1 or 1.7.2), and every packet Warp forwards is still parsed,
 //     either by ViaVersion or by the bot.
 import * as mineflayer from './mineflayer.js';
 import { ViaProxy } from './viaproxy.js';

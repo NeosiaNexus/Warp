@@ -37,6 +37,7 @@
     "pr": {
       "description": "Every pull request (required): one passing version per protocol era, all variants on the newest.",
       "versions": [
+        "1.7.10",
         "1.8.8",
         "1.12.2",
         "1.16.5",
@@ -63,6 +64,9 @@
         "online"
       ],
       "extraVariants": {
+        "1.7.10": [
+          "offline"
+        ],
         "1.8.8": [
           "offline",
           "transcode",
