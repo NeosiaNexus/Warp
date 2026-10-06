@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791303323629,
+  "lastUpdate": 1791304510831,
   "repoUrl": "https://github.com/NeosiaNexus/Warp",
   "entries": {
     "Hot path on AMD EPYC 9V45 96-Core Processor (4 CPUs)": [
@@ -78,6 +78,86 @@ window.BENCHMARK_DATA = {
             "name": "PacketIdPeekBenchmark.peek[workload=MIXED]",
             "value": 878.8,
             "range": "± 5.6",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "63867369+NeosiaNexus@users.noreply.github.com",
+            "name": "NeosiaNexus",
+            "username": "NeosiaNexus"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b9d3c9b5a1688559cb869e97a24225ca9752c41b",
+          "message": "fix(proxy): log in 1.19 to 1.19.2 clients that sign the verify token with their profile key (#83)\n\nA 1.19 to 1.19.2 client with a chat signing key signs the verify token instead of encrypting it, and Warp failed its login with a padding error. Login Start now carries the profile key and Encryption Response the signed token; in online mode Warp checks the key against Mojang's certificate (or -Dwarp.profilekeys.signer) and verifies the token signature as vanilla and Velocity do, refusing a bad key with invalid_public_key_signature. Offline mode ignores the key, and the E2E harness signs bot keys to cover both modes on 1.19 to 1.19.2. Fixes #79.",
+          "timestamp": "2026-10-06T18:21:40+02:00",
+          "tree_id": "c86ae06713ff19db5bb451759990dffc09854a56",
+          "url": "https://github.com/NeosiaNexus/Warp/commit/b9d3c9b5a1688559cb869e97a24225ca9752c41b"
+        },
+        "date": 1791304510188,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 1638.4,
+            "range": "± 54.3",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 114.1,
+            "range": "± 0.9",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 286,
+            "range": "± 2.6",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 67311.2,
+            "range": "± 524.9",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 452.5,
+            "range": "± 7",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 4595.1,
+            "range": "± 51.2",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=CHUNK]",
+            "value": 1099.8,
+            "range": "± 10.2",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=MIXED]",
+            "value": 874.7,
+            "range": "± 10.8",
             "unit": "ns/packet",
             "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
           }
