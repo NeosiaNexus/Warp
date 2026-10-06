@@ -14,9 +14,10 @@ import { Backend, fetchPreseeded, fetchServerJar, serverCacheDir } from './backe
 import { connectClient } from './clients/index.js';
 import { library } from './clients/mineflayer.js';
 import { findJava } from './java.js';
+import { startMockMojang } from './mojang.js';
 import { killAll, run, sleep } from './proc.js';
+import { signerPem } from './profile-keys.js';
 import { SCENARIOS, features, startKeepAlive } from './scenarios.js';
-import { startSessionServer } from './session.js';
 import { E2E_DIR, findEntry, loadMatrix, resolveVariant } from './versions.js';
 import { Warp } from './warp.js';
 
@@ -32,7 +33,7 @@ Versions and variants
   --mc LIST               Minecraft versions (or protocol numbers) from e2e/versions.json
   --variants LIST         named variants from versions.json (default: online)
   --runs SPEC             per-version variants, e.g. "1.8.8=online,offline;1.12.2=online"
-  --online                ad-hoc variant: online mode against a mock session server
+  --online                ad-hoc variant: online mode against the mock Mojang
   --passthrough on|off    ad-hoc variant: compression passthrough (default on)
   --threshold N           ad-hoc variant: Warp's compression threshold (default 256)
   --backend-threshold N   ad-hoc variant: backends' network-compression-threshold (default: Warp's)
@@ -87,10 +88,16 @@ async function main() {
   const ports = await reservePorts(Number(opts['port-base']));
   const jar = opts.jar ? resolve(opts.jar) : await buildWarp();
   mkdirSync(opts.out, { recursive: true });
-
+  // Up for the whole run: it signs the bots' profile keys, which Warp and the backends trust, and
+  // Warp checks online logins against it.
+  const mojang = await startMockMojang(ports.mojang);
   const results = [];
-  for (const { entry, variants } of runs) {
-    results.push(await runVersion({ matrix, entry, variants: adaptVariants(entry, variants), scenarios, ports, jar, opts }));
+  try {
+    for (const { entry, variants } of runs) {
+      results.push(await runVersion({ matrix, entry, variants: adaptVariants(entry, variants), scenarios, ports, jar, mojang, opts }));
+    }
+  } finally {
+    await mojang.close();
   }
   report(results, opts);
   return results.some((r) => r.status === 'fail') ? 1 : 0;
@@ -100,7 +107,7 @@ async function main() {
 // One version: backends per threshold, Warp per variant
 // ---------------------------------------------------------------------------
 
-async function runVersion({ matrix, entry, variants, scenarios, ports, jar, opts }) {
+async function runVersion({ matrix, entry, variants, scenarios, ports, jar, mojang, opts }) {
   const cache = opts.cache;
   const runDir = join(opts.out, entry.version);
   rmSync(runDir, { recursive: true, force: true });
@@ -120,10 +127,10 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, jar, opts
     ]);
     const thresholds = [...new Set(variants.map((v) => v.backendThreshold))];
     for (const backendThreshold of thresholds) {
-      const backends = await startBackends({ entry, serverJar, serverJava, preseeded, backendThreshold, ports, runDir, logDir, cache });
+      const backends = await startBackends({ entry, serverJar, serverJava, preseeded, backendThreshold, ports, runDir, logDir, cache, mojang });
       try {
         for (const variant of variants.filter((v) => v.backendThreshold === backendThreshold)) {
-          result.variants.push(await runVariant({ matrix, entry, variant, scenarios, backends, ports, jar, warpJava, runDir, logDir, opts }));
+          result.variants.push(await runVariant({ matrix, entry, variant, scenarios, backends, ports, jar, warpJava, runDir, logDir, mojang, opts }));
         }
       } finally {
         await stopBackends(backends, result);
@@ -139,7 +146,7 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, jar, opts
   return result;
 }
 
-async function startBackends({ entry, serverJar, serverJava, preseeded, backendThreshold, ports, runDir, logDir, cache }) {
+async function startBackends({ entry, serverJar, serverJava, preseeded, backendThreshold, ports, runDir, logDir, cache, mojang }) {
   const template = join(serverCacheDir(entry.server, cache), 'template');
   const backends = ['lobby', 'survival'].map(
     (name, i) =>
@@ -154,6 +161,8 @@ async function startBackends({ entry, serverJar, serverJava, preseeded, backendT
         gameMode: i === 0 ? 1 : 2,
         logDir,
         logSuffix: `t${backendThreshold}`,
+        // Only where the bots sign chat: older servers ignore the hosts or keep Mojang's bundled key.
+        mojangHost: features(entry.protocol).signedChat ? mojang.host : null,
       }),
   );
   log(`booting backends (${entry.server.type} ${entry.server.version}, Java ${entry.java}, threshold ${backendThreshold})`);
@@ -184,17 +193,17 @@ async function stopBackends(backends, result) {
   if (forced.length) log(`backend(s) ${forced.join(', ')} ignored "stop" and were killed`);
 }
 
-async function runVariant({ matrix, entry, variant, scenarios, backends, ports, jar, warpJava, runDir, logDir, opts }) {
+async function runVariant({ matrix, entry, variant, scenarios, backends, ports, jar, warpJava, runDir, logDir, mojang, opts }) {
   const label = `${entry.version} ${variant.name}`;
   log(`variant ${variant.name}: ${describeVariant(variant)}`);
   const outcome = { name: variant.name, settings: describeVariant(variant), scenarios: [], failures: [], stacks: [] };
   const marks = { lobby: backends.lobby.process.mark(), survival: backends.survival.process.mark() };
-  const session = variant.online ? await startSessionServer(ports.session) : null;
   const common = {
     jar,
     java: warpJava,
     online: variant.online,
-    sessionServer: session?.url ?? null,
+    sessionServer: variant.online ? mojang.hasJoinedUrl : null,
+    profileKeySigner: signerPem(mojang.signer),
     passthrough: variant.passthrough,
     threshold: variant.threshold,
     logDir,
@@ -232,6 +241,7 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
     warpAlt: { port: targets.warpAlt },
     lobby: backends.lobby,
     survival: backends.survival,
+    mojang,
     bots: Number(opts.bots),
     // Scenarios that fail on this version because of a known Warp bug: they run and are reported,
     // but do not fail the version. Not in a control run (no Warp) or with --strict.
@@ -271,7 +281,6 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
       if (exit?.forced) outcome.failures.push(`${instance.name} did not shut down within 20 s (thread dump in logs/)`);
       for (const line of instance.failures()) outcome.failures.push(`${instance.name}: ${line}`);
     }
-    await session?.close();
   }
   for (const [name, backend] of Object.entries(backends)) {
     for (const line of backend.protocolErrors(marks[name])) outcome.failures.push(`${name}: ${line}`);
@@ -372,7 +381,7 @@ function selectScenarios(list) {
 
 /** Fixed ports from `base`; fails early if one is taken (a dev testbed, another run…). */
 async function reservePorts(base) {
-  const ports = { lobby: base, survival: base + 1, warp: base + 2, warpAlt: base + 3, session: base + 4, closed: base + 5, via: base + 6, viaAlt: base + 7 };
+  const ports = { lobby: base, survival: base + 1, warp: base + 2, warpAlt: base + 3, mojang: base + 4, closed: base + 5, via: base + 6, viaAlt: base + 7 };
   for (const [name, port] of Object.entries(ports)) {
     const free = await new Promise((done) => {
       const probe = createServer().once('error', () => done(false)).listen(port, '127.0.0.1', () => probe.close(() => done(true)));

@@ -22,9 +22,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.codec.McString;
+import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.compress.FrameDecompressor;
 import dev.warp.protocol.compress.JavaCompressor;
 import dev.warp.protocol.compress.PacketCompressor;
+import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
 
 import java.util.ArrayList;
@@ -52,6 +55,9 @@ class CompressionPassthroughTest {
 
   private static final int UNREGISTERED_ID = 0x7F;
   private static final ProtocolVersion MODERN = ProtocolVersion.MINECRAFT_1_21_4;
+  private static final ProtocolVersion LEGACY = ProtocolVersion.MINECRAFT_1_12_2;
+  private static final int PLAYER_INFO_1_12_2 = 0x2E;
+  private static final int BOSS_BAR_1_12_2 = 0x0C;
 
   @ParameterizedTest(name = "backend {0}, client {1}, {2}")
   @CsvSource({
@@ -131,6 +137,31 @@ class CompressionPassthroughTest {
     assertEquals(compressedOnBackend, relay.backendZlib.inflations());
   }
 
+  @ParameterizedTest(name = "backend {0}, client {1}")
+  @CsvSource({"256, 256", "64, 256", "1024, 256", "-1, 256", "256, -1"})
+  @DisplayName("should relay watched packets intact, inflating a compressed one once, to read it")
+  void watchedPackets(int backendThreshold, int clientThreshold) {
+    Relay relay = new Relay(backendThreshold, clientThreshold, LEGACY, true);
+    List<byte[]> packets = tabListAndBossBars(300);
+
+    List<byte[]> received = relay.run(packets);
+
+    assertEquals(packets.size(), received.size());
+    for (int i = 0; i < packets.size(); i++) {
+      assertArrayEquals(packets.get(i), received.get(i), "packet " + i);
+    }
+    assertEquals(
+        packets.stream().filter(CompressionPassthroughTest::addsOrRemoves).count(),
+        relay.watched.size(),
+        "what the decoder reported");
+    long compressedOnBackend =
+        packets.stream().filter(p -> backendThreshold >= 0 && p.length >= backendThreshold).count();
+    assertEquals(compressedOnBackend, relay.backendZlib.inflations(), "inflations to read");
+    if (backendThreshold >= 0 && backendThreshold <= clientThreshold) {
+      assertEquals(0, relay.clientZlib.deflations(), "deflations on the client leg");
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Fixture: one backend leg, one client leg, wired like the proxy wires them
   // ---------------------------------------------------------------------------
@@ -138,6 +169,10 @@ class CompressionPassthroughTest {
   private static final class Relay {
     final CountingCompressor backendZlib = new CountingCompressor();
     final CountingCompressor clientZlib = new CountingCompressor();
+
+    /** What the backend decoder reported of the watched packets, in order. */
+    final List<Packet> watched = new ArrayList<>();
+
     private final int backendThreshold;
     private final int clientThreshold;
     private final EmbeddedChannel backendLeg;
@@ -167,7 +202,11 @@ class CompressionPassthroughTest {
               new ChannelInboundHandlerAdapter() {
                 @Override
                 public void channelRead(ChannelHandlerContext ctx, Object msg) {
-                  toClient.forward((ByteBuf) msg, backendDecoder);
+                  if (msg instanceof Packet packet) {
+                    watched.add(packet); // its frame comes next
+                  } else {
+                    toClient.forward((ByteBuf) msg, backendDecoder);
+                  }
                 }
               });
 
@@ -268,6 +307,63 @@ class CompressionPassthroughTest {
       packets.add(Frames.packet(UNREGISTERED_ID, payload));
     }
     return packets;
+  }
+
+  /**
+   * Tab list and boss bar traffic of a 1.12.2 server, which the proxy watches: players joining with
+   * skins of every size, leaving, latency updates of up to 60 players, and boss bars shown, updated
+   * and removed.
+   */
+  private static List<byte[]> tabListAndBossBars(int count) {
+    Random random = new Random(7);
+    List<byte[]> packets = new ArrayList<>(count);
+    for (int i = 0; i < count; i++) {
+      ByteBuf buf = Unpooled.buffer();
+      int kind = random.nextInt(5);
+      if (kind < 3) {
+        buf.writeByte(PLAYER_INFO_1_12_2);
+        int action = kind == 0 ? 0 : kind == 1 ? 2 : 4; // add, latency, remove
+        VarInt.write(buf, action);
+        int players = 1 + random.nextInt(action == 2 ? 60 : 4);
+        VarInt.write(buf, players);
+        for (int p = 0; p < players; p++) {
+          buf.writeLong(random.nextLong()).writeLong(random.nextLong());
+          if (action == 0) {
+            McString.write(buf, "Player" + random.nextInt(1000));
+            VarInt.write(buf, 1);
+            McString.write(buf, "textures");
+            McString.write(buf, "t".repeat(random.nextInt(1500)));
+            buf.writeBoolean(true);
+            McString.write(buf, "s".repeat(random.nextInt(700)));
+            VarInt.write(buf, 0);
+            VarInt.write(buf, random.nextInt(300));
+            buf.writeBoolean(false);
+          } else if (action == 2) {
+            VarInt.write(buf, random.nextInt(300));
+          }
+        }
+      } else {
+        buf.writeByte(BOSS_BAR_1_12_2);
+        buf.writeLong(random.nextLong()).writeLong(random.nextLong());
+        int action = random.nextInt(3); // add, remove, health
+        VarInt.write(buf, action);
+        if (action == 0) {
+          McString.write(buf, "{\"text\":\"" + "b".repeat(random.nextInt(600)) + "\"}");
+          buf.writeFloat(1).writeByte(0).writeByte(0).writeByte(0);
+        } else if (action == 2) {
+          buf.writeFloat(random.nextFloat());
+        }
+      }
+      packets.add(Frames.drain(buf));
+    }
+    return packets;
+  }
+
+  /** Whether a packet of {@link #tabListAndBossBars} adds or removes a tab list entry or a bar. */
+  private static boolean addsOrRemoves(byte[] packet) {
+    return packet[0] == PLAYER_INFO_1_12_2
+        ? packet[1] == 0 || packet[1] == 4
+        : packet[1 + 16] == 0 || packet[1 + 16] == 1;
   }
 
   /** Counts zlib work, delegating to the JDK's zlib. */

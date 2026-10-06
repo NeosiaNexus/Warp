@@ -1,10 +1,11 @@
-// Corrections to minecraft-data and the tab list model (src/clients/mineflayer.js), checked by
-// parsing packets with the harness's strict parser: a packet must be read to its last byte.
+// Corrections to minecraft-data and mineflayer, and the tab list model (src/clients/mineflayer.js).
+// The data corrections and the tab list are checked by parsing packets with the harness's strict
+// parser: a packet must be read to its last byte.
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { describe, it } from 'node:test';
 
-import { TabList, correctProtocolData } from '../src/clients/mineflayer.js';
+import { TabList, correctProtocolData, endTicks } from '../src/clients/mineflayer.js';
 
 const require = createRequire(import.meta.url);
 const { createDeserializer, createSerializer } = require('minecraft-protocol');
@@ -58,6 +59,41 @@ describe('minecraft-data corrections', () => {
     correctProtocolData('1.20.4');
 
     assert.equal(JSON.stringify(minecraftData('1.21.4').protocol), before);
+  });
+});
+
+describe('mineflayer corrections', () => {
+  /** A client that records the name of every packet written to it. */
+  function recordingClient(state = 'play') {
+    const sent = [];
+    return { state, sent, write: (name) => sent.push(name) };
+  }
+
+  it('ends the tick after each movement packet, from 1.21.2', () => {
+    const client = recordingClient();
+
+    endTicks(client, '26.1');
+    for (const name of ['position', 'chat_command', 'position_look', 'flying']) client.write(name, {});
+
+    assert.deepEqual(client.sent, ['position', 'tick_end', 'chat_command', 'position_look', 'tick_end', 'flying', 'tick_end']);
+  });
+
+  it('leaves versions before 1.21.2 alone, which have no tick end', () => {
+    const client = recordingClient();
+
+    endTicks(client, '1.21.1');
+    client.write('position', {});
+
+    assert.deepEqual(client.sent, ['position']);
+  });
+
+  it('ends no tick outside the play state', () => {
+    const client = recordingClient('configuration');
+
+    endTicks(client, '26.1');
+    client.write('position', {});
+
+    assert.deepEqual(client.sent, ['position']);
   });
 });
 

@@ -9,7 +9,8 @@
   },
   "scripts": {
     "test": "node --test \"test/**/*.test.js\"",
-    "packet-ids": "node tools/packet-ids.js"
+    "packet-ids": "node tools/packet-ids.js",
+    "packet-reports": "node tools/packet-reports.js"
   },
   "dependencies": {
     "minecraft-data": "3.117.0",

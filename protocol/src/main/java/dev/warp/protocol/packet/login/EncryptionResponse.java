@@ -23,79 +23,104 @@ import dev.warp.protocol.packet.PacketCodec;
 import io.netty.buffer.ByteBuf;
 
 /**
- * Client responds with encrypted shared secret and verify token ({@code C→S, ID 0x01}).
+ * Client answers the encryption request with the shared secret, and proves it received the verify
+ * token ({@code C→S, ID 0x01}).
  *
  * <p>Version history:
  *
  * <ul>
- *   <li><b>1.7.2–1.18.2, 1.19.3+</b>: sharedSecret + verifyToken (both VarInt-prefixed byte arrays)
- *   <li><b>1.19–1.19.2</b>: sharedSecret + boolean prefix — if {@code true}, verifyToken (normal
- *       path); if {@code false}, salt (long) + message signature (alt crypto path, proxy stores
- *       empty verifyToken)
+ *   <li><b>1.7.2–1.7.10</b>: shared secret, encrypted verify token (unsigned-short-prefixed arrays)
+ *   <li><b>1.8–1.18.2, 1.19.3+</b>: shared secret, encrypted verify token (VarInt-prefixed arrays)
+ *   <li><b>1.19–1.19.2</b>: shared secret, then a boolean: {@code true} for the encrypted verify
+ *       token, {@code false} for a salt (long) and a signature (VarInt-prefixed array)
  * </ul>
  *
- * @param sharedSecret the RSA-encrypted shared secret (128 bytes encrypted)
- * @param verifyToken the RSA-encrypted verify token (empty if 1.19–1.19.2 alt crypto was used)
+ * <p>A 1.19 to 1.19.2 client that sent a profile public key in its {@link LoginStart} signs the
+ * token instead of encrypting it: a {@link SignedToken}. Every other client sends an {@link
+ * EncryptedToken}.
+ *
+ * @param sharedSecret the shared secret, encrypted with the server's public key
+ * @param verifyToken the proof that the client received the verify token
  */
-public record EncryptionResponse(byte[] sharedSecret, byte[] verifyToken) implements LoginPacket {
+@SuppressWarnings("ArrayRecordComponent") // the array is never mutated
+public record EncryptionResponse(byte[] sharedSecret, VerifyToken verifyToken)
+    implements LoginPacket {
 
-  /** Empty byte array reused for the alt crypto path. */
-  private static final byte[] EMPTY = new byte[0];
+  /**
+   * Longest array accepted: twice what the proxy's 1024-bit key encrypts to, and the length of a
+   * signature by a 2048-bit player key, the size Mojang issues.
+   */
+  private static final int MAX_ARRAY = 256;
+
+  /** How the client proves it received the verify token. */
+  public sealed interface VerifyToken permits EncryptedToken, SignedToken {}
+
+  /**
+   * The verify token, encrypted with the server's public key (RSA, PKCS #1 v1.5 padding).
+   *
+   * @param encrypted the encrypted token
+   */
+  @SuppressWarnings("ArrayRecordComponent") // the array is never mutated
+  public record EncryptedToken(byte[] encrypted) implements VerifyToken {}
+
+  /**
+   * The verify token signed with the player's profile key, 1.19 to 1.19.2 only: {@code
+   * SHA256withRSA} over the token followed by the salt as 8 big-endian bytes.
+   *
+   * @param salt the random salt the client mixed into the signature
+   * @param signature the signature
+   */
+  @SuppressWarnings("ArrayRecordComponent") // the array is never mutated
+  public record SignedToken(long salt, byte[] signature) implements VerifyToken {}
 
   /** Codec for reading and writing encryption response packets. */
   public static final PacketCodec<EncryptionResponse> CODEC =
       new PacketCodec<>() {
         @Override
         public EncryptionResponse decode(ByteBuf buf, ProtocolVersion version) {
-          byte[] sharedSecret;
-          if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_8)) {
-            sharedSecret = McByteArray.read(buf, 256);
-          } else {
-            sharedSecret = McByteArray.readShortPrefixed(buf, 256);
+          if (version.isOlderThan(ProtocolVersion.MINECRAFT_1_8)) {
+            byte[] sharedSecret = McByteArray.readShortPrefixed(buf, MAX_ARRAY);
+            byte[] token = McByteArray.readShortPrefixed(buf, MAX_ARRAY);
+            return new EncryptionResponse(sharedSecret, new EncryptedToken(token));
           }
-
-          if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_19)
-              && version.isOlderThan(ProtocolVersion.MINECRAFT_1_19_3)) {
-            // 1.19–1.19.2: boolean prefix selects normal vs alt crypto
-            if (buf.readBoolean()) {
-              // Normal path: encrypted verify token
-              byte[] verifyToken = McByteArray.read(buf, 256);
-              return new EncryptionResponse(sharedSecret, verifyToken);
-            } else {
-              // Alt crypto path: salt (long) + message signature — skip and store empty
-              buf.skipBytes(Long.BYTES); // salt
-              McByteArray.skip(buf); // message signature
-              return new EncryptionResponse(sharedSecret, EMPTY);
-            }
+          byte[] sharedSecret = McByteArray.read(buf, MAX_ARRAY);
+          if (hasSignedTokenOption(version) && !buf.readBoolean()) {
+            long salt = buf.readLong();
+            byte[] signature = McByteArray.read(buf, MAX_ARRAY);
+            return new EncryptionResponse(sharedSecret, new SignedToken(salt, signature));
           }
-
-          // 1.8+: VarInt-prefixed byte arrays
-          // 1.7.x: unsigned-short-prefixed byte arrays
-          byte[] verifyToken;
-          if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_8)) {
-            verifyToken = McByteArray.read(buf, 256);
-          } else {
-            verifyToken = McByteArray.readShortPrefixed(buf, 256);
-          }
-          return new EncryptionResponse(sharedSecret, verifyToken);
+          byte[] token = McByteArray.read(buf, MAX_ARRAY);
+          return new EncryptionResponse(sharedSecret, new EncryptedToken(token));
         }
 
         @Override
         public void encode(EncryptionResponse packet, ByteBuf buf, ProtocolVersion version) {
-          if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_8)) {
-            McByteArray.write(buf, packet.sharedSecret());
-
-            if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_19)
-                && version.isOlderThan(ProtocolVersion.MINECRAFT_1_19_3)) {
-              // 1.19–1.19.2: always encode as normal path (boolean true + verifyToken)
-              buf.writeBoolean(true);
-            }
-
-            McByteArray.write(buf, packet.verifyToken());
-          } else {
+          VerifyToken verifyToken = packet.verifyToken();
+          if (verifyToken instanceof SignedToken && !hasSignedTokenOption(version)) {
+            throw new IllegalStateException(
+                "A signed verify token exists only in 1.19 to 1.19.2, not in " + version);
+          }
+          if (version.isOlderThan(ProtocolVersion.MINECRAFT_1_8)) {
             McByteArray.writeShortPrefixed(buf, packet.sharedSecret());
-            McByteArray.writeShortPrefixed(buf, packet.verifyToken());
+            McByteArray.writeShortPrefixed(buf, ((EncryptedToken) verifyToken).encrypted());
+            return;
+          }
+          McByteArray.write(buf, packet.sharedSecret());
+          if (hasSignedTokenOption(version)) {
+            buf.writeBoolean(verifyToken instanceof EncryptedToken);
+          }
+          switch (verifyToken) {
+            case EncryptedToken(byte[] encrypted) -> McByteArray.write(buf, encrypted);
+            case SignedToken(long salt, byte[] signature) -> {
+              buf.writeLong(salt);
+              McByteArray.write(buf, signature);
+            }
           }
         }
       };
+
+  /** Whether {@code version} lets the client sign the verify token (1.19 to 1.19.2). */
+  private static boolean hasSignedTokenOption(ProtocolVersion version) {
+    return version.isBetween(ProtocolVersion.MINECRAFT_1_19, ProtocolVersion.MINECRAFT_1_19_2);
+  }
 }

@@ -14,7 +14,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Pull requests that only touch documentation skip the build and the end-to-end tests.
+  # Pull requests that only touch documentation skip the build, the allocation guard and the
+  # end-to-end tests.
   changes:
     name: Detect changes
     runs-on: ubuntu-24.04
@@ -100,6 +101,43 @@ jobs:
             */build/test-results/
           retention-days: 7
 
+  # Bytes allocated per packet on the hot path, against protocol/src/jmh/alloc-baseline.json, then
+  # one short run of every benchmark (bin/bench-guard.sh). Counted with escape analysis off, the
+  # allocation repeats within 0.3% from one run to the next, so unlike timings it can gate pull
+  # requests. A job of its own: as steps of Build & test it would delay E2E, so CI OK, by 1.5
+  # minutes; apart, it costs 2 runner minutes more (it compiles again) and no wait (measured on #76).
+  allocation-guard:
+    name: Allocation guard
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # check out the code
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test the guard script
+        run: python3 bin/bench-guard-test.py
+
+      - name: Set up build
+        uses: $/.github/actions/setup-build
+
+      - name: Guard allocation per packet
+        run: bin/bench-guard.sh
+
+      - name: Upload JMH results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: allocation-guard
+          path: protocol/build/results/jmh/*.json
+          if-no-files-found: warn
+          retention-days: ${{ github.event_name == 'push' && 30 || 7 }}
+
   # actionlint (syntax, expressions, shellcheck on `run:` scripts) and zizmor (workflow security,
   # strictest persona). Findings show up as annotations on the PR.
   lint-workflows:
@@ -134,8 +172,9 @@ jobs:
           advanced-security: false
           annotations: true
 
-  # One passing version per protocol era, plus the variants on the newest (e2e/versions.json, tier
-  # `pr`). The full matrix runs on main, nightly, and on PRs labelled `e2e: full` (e2e.yml).
+  # One passing version per protocol era and the newest version, plus every variant on the newest
+  # the bots speak natively (e2e/versions.json, tier `pr`). The full matrix runs on main, nightly,
+  # and on PRs labelled `e2e: full` (e2e.yml).
   e2e:
     name: E2E
     needs: build
@@ -150,7 +189,7 @@ jobs:
   ci-ok:
     name: CI OK
     if: ${{ always() }}
-    needs: [changes, build, lint-workflows, e2e]
+    needs: [changes, build, allocation-guard, lint-workflows, e2e]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}

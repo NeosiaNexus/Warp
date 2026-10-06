@@ -10,6 +10,15 @@ import { ManagedProcess } from './proc.js';
 const READY = /Done \(\d+[.,]\d+s\)!/;
 
 /**
+ * The authlib host properties (`minecraft.api.<name>.host`) of every server the bots sign chat on,
+ * a set authlib reads in full or not at all: auth, account, session and services in authlib 4
+ * (1.20.1); account, session and services in 5 (1.20.2); session and services in 6 (1.20.4 to
+ * 1.21.8); session, services and profiles in 7 to 9 (1.21.10 to 26.2). authlib 10 (26.3) reads a
+ * discovery host instead, which the mock does not serve: bots reach 26.3 through ViaProxy, offline.
+ */
+const AUTHLIB_HOSTS = ['auth', 'account', 'session', 'services', 'profiles'];
+
+/**
  * Backend log lines that mean a client connection broke on the server side, usually a packet the
  * proxy mangled. Benign disconnects ("Disconnected", "Timed out") are not listed.
  */
@@ -19,6 +28,9 @@ export const BACKEND_PROTOCOL_ERRORS = [
   /Failed to (decode|encode) packet/i,
   /Packet .* was larger than I expected/,
   /Badly compressed packet/i,
+  // 1.19.3+: a player's chat acknowledgements and the server's window over them disagree.
+  /Failed to validate message acknowledgements/,
+  /lost connection: Chat message validation failure/,
 ];
 
 /**
@@ -66,6 +78,8 @@ export class Backend {
    * @param {number} options.gameMode 1 = creative, 2 = adventure: tells bots which backend they reached
    * @param {string} options.logDir
    * @param {string} options.logSuffix distinguishes the logs of successive boots (one per threshold)
+   * @param {string|null} options.mojangHost mock Mojang (see mojang.js) the server takes its
+   *   services keys from, or null to keep Mojang's
    */
   constructor(options) {
     Object.assign(this, options);
@@ -118,6 +132,7 @@ export class Backend {
       // Paper 1.7.10 warns about its UUID conversion and sleeps 10 s unless this is set
       // (CraftBukkit's Main); a new server has nothing to convert. Other builds ignore it.
       '-DIReallyKnowWhatIAmDoingThisUpdate=true',
+      ...authlibHosts(this.mojangHost),
       '-jar',
       this.jar,
       'nogui',
@@ -151,9 +166,20 @@ export class Backend {
   }
 }
 
+/**
+ * Points authlib at the mock Mojang. From 1.20 (authlib 4) the server fetches the keys that verify
+ * player profile keys from the services host (`/publickeys`), so it then accepts the chat sessions of
+ * bots whose keys the mock signed. authlib only takes custom hosts when all the ones it reads are
+ * set (else it logs "Ignoring hosts properties"), and ignores the others.
+ */
+function authlibHosts(host) {
+  if (!host) return [];
+  return AUTHLIB_HOSTS.map((service) => `-Dminecraft.api.${service}.host=${host}`);
+}
+
 function serverProperties(b) {
   // Numeric game mode and difficulty: servers before 1.14 do not accept names. Unknown keys are
-  // ignored by every version, so one superset works from 1.8 to the latest.
+  // ignored by every version, so one superset works from 1.7 to the latest.
   const props = {
     'server-ip': '127.0.0.1',
     'server-port': b.port,
