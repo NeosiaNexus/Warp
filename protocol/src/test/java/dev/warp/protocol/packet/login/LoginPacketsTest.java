@@ -18,6 +18,7 @@ package dev.warp.protocol.packet.login;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -424,6 +425,121 @@ class LoginPacketsTest {
         SetCompression.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_21_4);
         SetCompression decoded = SetCompression.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_21_4);
         assertEquals(256, decoded.threshold());
+      } finally {
+        buf.release();
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // LoginDisconnect
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("LoginDisconnect")
+  class LoginDisconnectCodec {
+
+    private static final String REASON_JSON = "{\"text\":\"Invalid username\"}";
+
+    /** {@link #REASON_JSON} on the wire: its UTF-8 length as a VarInt (27), then its bytes. */
+    private static final byte[] REASON_WIRE =
+        ("\u001B" + REASON_JSON).getBytes(StandardCharsets.UTF_8);
+
+    static Stream<ProtocolVersion> allVersions() {
+      return ProtocolVersion.values().stream();
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("allVersions")
+    @DisplayName("should write a plain text reason as a VarInt-prefixed JSON string")
+    void writesPrefixedJson(ProtocolVersion version) {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        LoginDisconnect.CODEC.encode(LoginDisconnect.ofPlainText("Invalid username"), buf, version);
+
+        assertArrayEquals(REASON_WIRE, ByteBufUtil.getBytes(buf));
+      } finally {
+        buf.release();
+      }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("allVersions")
+    @DisplayName("should read a backend's reason as its JSON, without the length prefix")
+    void readsJson(ProtocolVersion version) {
+      ByteBuf buf = Unpooled.wrappedBuffer(REASON_WIRE);
+
+      LoginDisconnect decoded = LoginDisconnect.CODEC.decode(buf, version);
+
+      assertEquals(REASON_JSON, decoded.reason());
+      assertFalse(buf.isReadable());
+    }
+
+    @Test
+    @DisplayName("should reject a reason whose length runs past the packet")
+    void rejectsUnprefixedJson() {
+      // What Warp used to send: the JSON without its length, so '{' (123) reads as the length.
+      ByteBuf buf = Unpooled.wrappedBuffer(REASON_JSON.getBytes(StandardCharsets.UTF_8));
+
+      assertThrows(
+          DecoderException.class,
+          () -> LoginDisconnect.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_8));
+    }
+
+    /** The longest reason vanilla reads: 32 767 characters until 1.13.2, 262 144 from 1.14. */
+    static Stream<Arguments> versionsAcrossLengthBoundary() {
+      return Stream.of(
+          Arguments.of(ProtocolVersion.MINECRAFT_1_7_2, 32_767),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_13, 32_767),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_13_2, 32_767),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_14, 262_144),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_20_3, 262_144),
+          Arguments.of(ProtocolVersion.MINECRAFT_26_1, 262_144));
+    }
+
+    @ParameterizedTest(name = "{0}: {1}")
+    @MethodSource("versionsAcrossLengthBoundary")
+    @DisplayName("should write a reason as long as the client reads and refuse a longer one")
+    void writeLengthLimit(ProtocolVersion version, int maxLength) {
+      String longest = "x".repeat(maxLength);
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        LoginDisconnect.CODEC.encode(new LoginDisconnect(longest), buf, version);
+
+        assertArrayEquals(prefixedString(longest), ByteBufUtil.getBytes(buf));
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> LoginDisconnect.CODEC.encode(new LoginDisconnect(longest + "x"), buf, version));
+      } finally {
+        buf.release();
+      }
+    }
+
+    @ParameterizedTest(name = "{0}: {1}")
+    @MethodSource("versionsAcrossLengthBoundary")
+    @DisplayName("should read a reason as long as vanilla writes and reject a longer one")
+    void readLengthLimit(ProtocolVersion version, int maxLength) {
+      String longest = "x".repeat(maxLength);
+
+      LoginDisconnect decoded =
+          LoginDisconnect.CODEC.decode(Unpooled.wrappedBuffer(prefixedString(longest)), version);
+
+      assertEquals(longest, decoded.reason());
+      assertThrows(
+          DecoderException.class,
+          () ->
+              LoginDisconnect.CODEC.decode(
+                  Unpooled.wrappedBuffer(prefixedString(longest + "x")), version));
+    }
+
+    /** A protocol string written out independently of the codec: VarInt length, then UTF-8. */
+    private static byte[] prefixedString(String text) {
+      byte[] utf8 = text.getBytes(StandardCharsets.UTF_8);
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        VarInt.write(buf, utf8.length);
+        buf.writeBytes(utf8);
+        return ByteBufUtil.getBytes(buf);
       } finally {
         buf.release();
       }

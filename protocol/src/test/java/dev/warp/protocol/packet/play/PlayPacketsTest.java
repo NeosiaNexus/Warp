@@ -23,13 +23,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McString;
 
+import java.nio.charset.StandardCharsets;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 @DisplayName("Play packet codecs")
 class PlayPacketsTest {
@@ -134,6 +139,71 @@ class PlayPacketsTest {
       } finally {
         buf.release();
       }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // PlayDisconnect
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("PlayDisconnect")
+  class PlayDisconnectCodec {
+
+    static Stream<ProtocolVersion> jsonVersions() {
+      return ProtocolVersion.values().stream()
+          .filter(version -> version.isOlderThan(ProtocolVersion.MINECRAFT_1_20_3));
+    }
+
+    static Stream<ProtocolVersion> nbtVersions() {
+      return ProtocolVersion.values().stream()
+          .filter(version -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_3));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("jsonVersions")
+    @DisplayName("should write a plain text reason as a VarInt-prefixed JSON string before 1.20.3")
+    void plainTextJson(ProtocolVersion version) {
+      byte[] wire = encode(PlayDisconnect.ofPlainText("Kicked", version), version);
+
+      // VarInt 17, then {"text":"Kicked"}.
+      assertArrayEquals(utf8("\u0011{\"text\":\"Kicked\"}"), wire);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("nbtVersions")
+    @DisplayName("should write a plain text reason as an NBT string tag from 1.20.3")
+    void plainTextNbt(ProtocolVersion version) {
+      byte[] wire = encode(PlayDisconnect.ofPlainText("Kicked", version), version);
+
+      // TAG_String (8), unsigned-short length 6, then the text.
+      assertArrayEquals(utf8("\u0008\u0000\u0006Kicked"), wire);
+    }
+
+    @Test
+    @DisplayName("should roundtrip a backend's reason byte for byte")
+    void roundtrip() {
+      byte[] rawReason = utf8("\u0008\u0000\u0006Kicked");
+
+      PlayDisconnect decoded =
+          PlayDisconnect.CODEC.decode(
+              Unpooled.wrappedBuffer(rawReason), ProtocolVersion.MINECRAFT_1_21_4);
+
+      assertArrayEquals(rawReason, encode(decoded, ProtocolVersion.MINECRAFT_1_21_4));
+    }
+
+    private static byte[] encode(PlayDisconnect packet, ProtocolVersion version) {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        PlayDisconnect.CODEC.encode(packet, buf, version);
+        return ByteBufUtil.getBytes(buf);
+      } finally {
+        buf.release();
+      }
+    }
+
+    private static byte[] utf8(String text) {
+      return text.getBytes(StandardCharsets.UTF_8);
     }
   }
 

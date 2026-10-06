@@ -25,15 +25,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.VarInt;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.DecoderException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 @DisplayName("Config packet codecs")
 class ConfigPacketsTest {
@@ -86,6 +91,46 @@ class ConfigPacketsTest {
       } finally {
         buf.release();
       }
+    }
+
+    static Stream<ProtocolVersion> nbtVersions() {
+      return ProtocolVersion.values().stream()
+          .filter(version -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_3));
+    }
+
+    @Test
+    @DisplayName("should write a plain text reason as a VarInt-prefixed JSON string on 1.20.2")
+    void plainTextJson() {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_20_2;
+
+      byte[] wire = encode(ConfigDisconnect.ofPlainText("Kicked", version), version);
+
+      // VarInt 17, then {"text":"Kicked"}.
+      assertArrayEquals(utf8("\u0011{\"text\":\"Kicked\"}"), wire);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("nbtVersions")
+    @DisplayName("should write a plain text reason as an NBT string tag from 1.20.3")
+    void plainTextNbt(ProtocolVersion version) {
+      byte[] wire = encode(ConfigDisconnect.ofPlainText("Kicked", version), version);
+
+      // TAG_String (8), unsigned-short length 6, then the text.
+      assertArrayEquals(utf8("\u0008\u0000\u0006Kicked"), wire);
+    }
+
+    private static byte[] encode(ConfigDisconnect packet, ProtocolVersion version) {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        ConfigDisconnect.CODEC.encode(packet, buf, version);
+        return ByteBufUtil.getBytes(buf);
+      } finally {
+        buf.release();
+      }
+    }
+
+    private static byte[] utf8(String text) {
+      return text.getBytes(StandardCharsets.UTF_8);
     }
   }
 
