@@ -66,6 +66,8 @@ export class Backend {
    * @param {number} options.gameMode 1 = creative, 2 = adventure: tells bots which backend they reached
    * @param {string} options.logDir
    * @param {string} options.logSuffix distinguishes the logs of successive boots (one per threshold)
+   * @param {string|null} options.mojangHost mock Mojang (see mojang.js) the server takes its
+   *   services keys from, or null to keep Mojang's
    */
   constructor(options) {
     Object.assign(this, options);
@@ -111,6 +113,7 @@ export class Backend {
       '-Dlog4j2.formatMsgNoLookups=true',
       '-DPaper.IgnoreJavaVersion=true',
       '-Dpaper.disablePluginRemapping=true',
+      ...authlibHosts(this.mojangHost),
       '-jar',
       this.jar,
       'nogui',
@@ -142,6 +145,16 @@ export class Backend {
   protocolErrors(from = 0) {
     return this.process?.failures(from) ?? [];
   }
+}
+
+/**
+ * Points authlib at the mock Mojang. From 1.20 (authlib 4) the server fetches the keys that verify
+ * player profile keys from the services host (`/publickeys`), so it then accepts the chat sessions of
+ * bots whose keys the mock signed. authlib only takes custom hosts when all of them are set.
+ */
+function authlibHosts(host) {
+  if (!host) return [];
+  return ['auth', 'account', 'session', 'services'].map((service) => `-Dminecraft.api.${service}.host=${host}`);
 }
 
 function serverProperties(b) {

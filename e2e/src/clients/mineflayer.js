@@ -91,8 +91,12 @@ export async function ping({ host, port, version }) {
   return protocol.ping({ host, port, version, closeTimeout: 10_000 });
 }
 
-/** Connects a bot and resolves once it has spawned in the world. */
-export function connect({ host, port, version, username, spawnTimeoutMs = 45_000 }) {
+/**
+ * Connects a bot and resolves once it has spawned in the world.
+ * @param {object|null} profileKeys a profile key pair Mojang signed (see mojang.js): the bot then
+ *   opens a chat session and signs its chat, as a client logged in with a Microsoft account does
+ */
+export function connect({ host, port, version, username, profileKeys = null, spawnTimeoutMs = 45_000 }) {
   correctProtocolData(version);
   return new Promise((resolve, reject) => {
     const bot = mineflayer.createBot({
@@ -100,12 +104,12 @@ export function connect({ host, port, version, username, spawnTimeoutMs = 45_000
       port,
       username,
       version,
-      auth: 'offline',
+      auth: profileKeys ? keyedAuth(profileKeys) : 'offline',
       checkTimeoutInterval: 120_000,
       hideErrors: true,
       logErrors: false,
     });
-    const handle = new Bot(bot, username);
+    const handle = new Bot(bot, username, profileKeys !== null);
     const fail = (why) => {
       clearTimeout(timer);
       bot.quit();
@@ -122,22 +126,39 @@ export function connect({ host, port, version, username, spawnTimeoutMs = 45_000
   });
 }
 
+/**
+ * Offline login (no Mojang account) that still hands minecraft-protocol a profile and its key, the
+ * way its Microsoft login does. It opens a chat session at Join Game when the server announced that
+ * profile's UUID, over an encrypted connection only, and from then on signs chat.
+ */
+function keyedAuth(profileKeys) {
+  return (client, options) => {
+    client.username = options.username;
+    client.session = { selectedProfile: { id: profileKeys.uuid, name: options.username } };
+    client.profileKeys = profileKeys;
+    options.connect(client);
+  };
+}
+
 class Bot {
   /**
    * @param {object} bot mineflayer bot
    * @param {string} username the name it logs in with (mineflayer only sets `bot.username` once
    *   the server has accepted the login)
+   * @param {boolean} keyed whether it has a profile key to sign chat with
    */
-  constructor(bot, username) {
+  constructor(bot, username, keyed = false) {
     this.bot = bot;
     this.username = username;
-    this.stats = { packets: 0, chunks: 0, errors: [], kicked: null, ended: null };
+    this.keyed = keyed;
+    this.stats = { packets: 0, chunks: 0, signedChat: 0, errors: [], kicked: null, ended: null };
     this.messages = [];
     this.quitting = false;
     bot._client.on('packet', (data, meta) => {
       this.stats.packets++;
       if (meta.name === 'map_chunk') this.stats.chunks++;
       else if (meta.name === 'map_chunk_bulk') this.stats.chunks += data.meta?.length ?? 1; // 1.8
+      else if (meta.name === 'player_chat' && data.signature) this.stats.signedChat++;
     });
     bot.on('error', (e) => this.stats.errors.push(String(e?.stack ?? e)));
     bot.on('kicked', (reason) => { this.stats.kicked = text(reason); });
@@ -172,7 +193,14 @@ class Bot {
   /** Sends a chat command and resolves with the first chat line matching `reply`. */
   async command(command, reply, timeoutMs = 10_000) {
     const from = this.messages.length;
-    this.bot.chat(`/${command}`);
+    if (this.keyed && this.bot.supportFeature('seperateSignedChatCommandPacket')) {
+      // From 1.20.5 a vanilla client sends a command in the signed command packet only when its
+      // syntax has an argument to sign (/msg, /say); minecraft-protocol sends every command there
+      // once it can sign. Commands here have none: send them as a vanilla client would.
+      this.bot._client.write('chat_command', { command });
+    } else {
+      this.bot.chat(`/${command}`);
+    }
     if (!reply) return null;
     let found = null;
     await this.waitFor(() => (found = this.messages.slice(from).find((m) => reply.test(m))) !== undefined, `reply to /${command}`, timeoutMs);
@@ -181,6 +209,13 @@ class Bot {
 
   chat(message) {
     this.bot.chat(message);
+  }
+
+  /** Says `message` in chat and resolves once the server has sent it back to the bot. */
+  async say(message, timeoutMs = 10_000) {
+    const from = this.messages.length;
+    this.bot.chat(message);
+    await this.waitFor(() => this.messages.slice(from).some((m) => m.endsWith(message)), `chat line "${message}" back`, timeoutMs);
   }
 
   /** Throws if the bot saw a protocol error, was kicked, or lost its connection. */

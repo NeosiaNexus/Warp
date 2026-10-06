@@ -91,9 +91,14 @@ describe('variants', () => {
 
 describe('scenario features', () => {
   it('switches servers on every version', () => {
-    assert.deepEqual(features(47), { switching: true });
-    assert.deepEqual(features(763), { switching: true });
-    assert.deepEqual(features(764), { switching: true });
+    for (const protocol of [47, 762, 763, 764, 769]) assert.equal(features(protocol).switching, true, protocol);
+  });
+
+  it('signs chat from 1.20, whose servers take the keys that verify chat sessions from the mock', () => {
+    assert.equal(features(47).signedChat, false);
+    assert.equal(features(762).signedChat, false); // 1.19.4: Mojang's key is bundled in authlib
+    assert.equal(features(763).signedChat, true);
+    assert.equal(features(769).signedChat, true);
   });
 });
 

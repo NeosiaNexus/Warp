@@ -34,6 +34,7 @@ and one whose default server is a closed port) and run the scenarios:
 | `status` | Server list ping through Warp, advertising the protocol the bot speaks (else a client lists Warp as incompatible) |
 | `login` | Join, receive chunks, land on the lobby; `/server` answers |
 | `keepalive` | One bot stays connected through the whole run (at least 65 s, past Warp's first keep-alive time-out check) |
+| `chat` | Chat lines before and after each `/server` that Warp answers itself (list, unknown server, current server): the bot must not be kicked. From 1.20, online, the bot signs its chat, so the lobby checks every acknowledgement (see below) |
 | `switching` | Six `/server` switches back and forth (configuration phase from 1.20.2, Join Game and Respawn before) |
 | `crowd` | Ten bots at once, then half of them switch server at the same moment |
 | `fallback-unreachable` | Default server down: the player lands on the next one |
@@ -55,6 +56,23 @@ Strict parsing also catches errors in the bots' protocol data. Those are correct
 alone triggers them, never skipped: today, the recipe serializer ids of 1.20.5 to 1.21.1.
 
 Logs and `result.json` go to `e2e/build/<version>/`.
+
+## Signed chat
+
+From 1.19.3 a server checks, with every chat message and command, which of the signed messages it
+sent the player the client acknowledges; a proxy that keeps a command from the backend must pass
+those acknowledgements on (#81). Servers only track signed messages, so the harness lets bots sign:
+`src/mojang.js` is a mock Mojang, up for the whole run, that
+
+- vouches for each player in online mode (`-Dmojang.sessionserver` on Warp), with the UUID an
+  offline-mode backend gives it, so that the bot and the backend agree on the signer;
+- publishes its key as the services key set (`/publickeys`), and signs profile keys with it.
+
+Backends from 1.20 (authlib 4) are started with `-Dminecraft.api.{auth,account,session,services}.host`
+pointing at it, so they accept the chat session of a bot whose key it signed. A bot gets such a key
+in the `chat` scenario of online variants (minecraft-protocol opens a chat session over an encrypted
+connection only). Before 1.20, authlib bundles Mojang's key and no bot can sign: there, `chat` only
+checks that chat still flows.
 
 ## Variants
 

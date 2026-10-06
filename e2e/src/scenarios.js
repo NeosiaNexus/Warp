@@ -6,11 +6,18 @@ import { sleep } from './proc.js';
 export const LOBBY_MODE = 'creative';
 export const SURVIVAL_MODE = 'adventure';
 
+/** First protocol (1.20) whose servers can be made to trust the mock Mojang's key (see mojang.js). */
+export const SIGNED_CHAT = 763;
+
 export function features(protocol) {
   return {
     // Every version switches: through the configuration phase from 1.20.2, with the new server's
     // Join Game and a Respawn before.
     switching: true,
+    // Bots can sign their chat: from 1.20 a server fetches the keys that verify chat sessions from
+    // the services host, which the harness mocks. Before, it only trusts Mojang's own key, bundled in
+    // authlib, so no bot can open a chat session there.
+    signedChat: protocol >= SIGNED_CHAT,
   };
 }
 
@@ -22,8 +29,8 @@ async function proxyReportsServer(ctx, bot, expected) {
   if (current !== expected) throw new Error(`/server says ${current}, expected ${expected}`);
 }
 
-async function joinWarp(ctx, username, target = ctx.warp) {
-  return ctx.client.connect({ host: '127.0.0.1', port: target.port, username });
+async function joinWarp(ctx, username, target = ctx.warp, profileKeys = null) {
+  return ctx.client.connect({ host: '127.0.0.1', port: target.port, username, profileKeys });
 }
 
 // ---------------------------------------------------------------------------
@@ -59,6 +66,48 @@ async function login(ctx) {
     await sleep(500);
     bot.healthy();
     return `spawned on lobby, ${chunks} chunks, ${bot.stats.packets} packets parsed`;
+  } finally {
+    bot.quit();
+  }
+}
+
+/**
+ * Chat around the /server commands Warp answers itself, which never reach the backend.
+ *
+ * From 1.19.3 a server keeps, for each player, a window over the signed chat messages it sent them,
+ * and every chat message or command the client sends moves it: by how many messages the client saw
+ * since its last update (the offset), then checking which of the last 20 it acknowledges. A command
+ * the proxy keeps from the backend must still pass its offset on, or the backend's window lags
+ * behind the client's and the next message is refused: the player is kicked (#81).
+ *
+ * The backend only tracks signed messages, so this checks something only where the bot signs its
+ * chat: online variants (the bot opens a chat session over an encrypted connection only) from 1.20
+ * (see {@link features}). Elsewhere the chat is unsigned and it only checks that chat still flows.
+ */
+async function chat(ctx) {
+  const signed = ctx.features.signedChat && ctx.variant.online;
+  const bot = await joinWarp(ctx, 'e2e_chat', ctx.warp, signed ? ctx.mojang.profileKeys('e2e_chat') : null);
+  try {
+    await bot.waitForGameMode(LOBBY_MODE, 10_000);
+    let lines = 0;
+    const say = async (count) => {
+      for (let i = 0; i < count; i++) await bot.say(`chat line ${++lines}`);
+    };
+    // Each command acknowledges the line before it, which the lobby echoed (signed) to the bot.
+    await say(3);
+    await bot.command('server', /^Servers:/);
+    await say(3);
+    await bot.command('server nowhere', /^Unknown server: nowhere/);
+    await say(3);
+    await bot.command('server lobby', /^Already connected to lobby/);
+    await say(3);
+    await sleep(500);
+    bot.healthy();
+    await bot.waitForGameMode(LOBBY_MODE, 1_000);
+    if (signed && bot.stats.signedChat < lines) {
+      throw new Error(`${bot.stats.signedChat} of ${lines} chat lines came back signed: the lobby refused the bot's chat session`);
+    }
+    return `${lines} chat lines (${signed ? 'signed' : 'unsigned'}) around 3 /server commands Warp answered, still on the lobby`;
   } finally {
     bot.quit();
   }
@@ -183,6 +232,7 @@ export const SCENARIOS = [
   { name: 'status', run: status },
   { name: 'login', run: login },
   { name: 'keepalive', background: true },
+  { name: 'chat', run: chat, requires: 'proxy' },
   { name: 'switching', run: switching, requires: 'switching' },
   { name: 'crowd', run: crowd },
   { name: 'fallback-unreachable', run: fallbackUnreachable, requires: 'proxy' },
