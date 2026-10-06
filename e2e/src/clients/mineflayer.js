@@ -218,11 +218,16 @@ class Bot {
     try {
       await this.waitFor(() => (found = this.messages.slice(from).find((m) => pattern.test(m))) !== undefined, what, timeoutMs);
     } catch (e) {
-      const last = this.messages.slice(Math.max(from, this.messages.length - 3)).map((m) => JSON.stringify(m));
-      e.message += last.length ? `; last chat lines: ${last.join(', ')}` : '; no chat line received';
+      e.message += `; ${this.lastMessages(from)}`;
       throw e;
     }
     return found;
+  }
+
+  /** The last chat lines received from index `from` on, quoted, for error messages. */
+  lastMessages(from = 0) {
+    const last = this.messages.slice(Math.max(from, this.messages.length - 3)).map((m) => JSON.stringify(m));
+    return last.length ? `last chat lines: ${last.join(', ')}` : 'no chat line received';
   }
 
   /** Sends a chat command and resolves with the first chat line matching `reply`. */

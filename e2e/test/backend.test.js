@@ -74,6 +74,58 @@ describe('backend groups', () => {
   });
 });
 
+describe('backend boot', () => {
+  /** A backend whose successive boots hang, exit or get ready, in the order given. */
+  class ScriptedBackend extends Backend {
+    constructor(...outcomes) {
+      const logDir = mkdtempSync(join(tmpdir(), 'warp-e2e-boot-'));
+      dirs.push(logDir);
+      super({ name: 'lobby', logDir, logSuffix: 't256' });
+      Object.assign(this, { outcomes, tries: 0, signals: [] });
+    }
+
+    prepare() {}
+
+    start() {
+      this.tries++;
+      this.process = { alive: true, lines: [`try ${this.tries}`, 'Reloading ResourceManager: Default, bukkit'], child: { kill: (s) => this.signals.push(s) }, stop: async () => this.signals.push('stop') };
+    }
+
+    ready() {
+      const outcome = this.outcomes.shift();
+      if (outcome === 'ready') return Promise.resolve('Done (1.982s)! For help, type "help"');
+      if (outcome === 'exit') this.process.alive = false;
+      return Promise.reject(new Error(`lobby: ${outcome}`));
+    }
+  }
+
+  it('dumps the threads of a server that hangs, saves what it printed, and boots it again', async () => {
+    const backend = new ScriptedBackend('hang', 'ready');
+    const hangs = [];
+
+    await backend.boot(null, {}, 1, (e) => hangs.push(e.message));
+
+    assert.equal(backend.tries, 2);
+    assert.deepEqual(hangs, ['lobby: hang']);
+    assert.deepEqual(backend.signals, ['SIGQUIT', 'stop']);
+    assert.match(readFileSync(join(backend.logDir, 'lobby-t256-hung-boot.txt'), 'utf8'), /^try 1\nReloading ResourceManager/);
+  });
+
+  it('gives up when the second boot hangs too', async () => {
+    const backend = new ScriptedBackend('hang', 'hang');
+
+    await assert.rejects(backend.boot(null, {}, 1, () => {}), /lobby: hang/);
+    assert.equal(backend.tries, 2);
+  });
+
+  it('does not boot again a server that exited: a crash is not a hang', async () => {
+    const backend = new ScriptedBackend('exit', 'ready');
+
+    await assert.rejects(backend.boot(null, {}, 1, () => assert.fail('not a hang')), /lobby: exit/);
+    assert.equal(backend.tries, 1);
+  });
+});
+
 describe('backend configuration', () => {
   const PACK = { url: 'http://127.0.0.1:41234/lobby.zip', sha1: 'a'.repeat(40), id: '4b4f6f52-8d1e-4a6a-9a55-3e2f6c1d2b7a' };
 

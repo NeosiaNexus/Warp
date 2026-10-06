@@ -177,11 +177,11 @@ async function startBackends({ entry, serverJar, serverJava, preseeded, threshol
   const accepting = forwarding ? `, ${forwarding.mode} forwarding from an ${forwarding.online ? 'online' : 'offline'} proxy` : '';
   log(`booting backends (${entry.server.type} ${entry.server.version}, Java ${entry.java}, threshold ${threshold}${accepting})`);
   const booted = Date.now();
-  for (const b of backends) {
-    b.prepare(template, preseeded);
-    b.start();
-  }
-  await Promise.all(backends.map((b) => b.ready(240_000)));
+  const hung = (b) => (e) => {
+    log(`${b.name} hung while booting: its threads go to its log, and it boots again (#97). ${firstLine(e)}`);
+    if (GITHUB) console.log(`::warning title=E2E ${entry.version} ${b.name} hung while booting::booted again; its thread dump is in the logs (#97)`);
+  };
+  await Promise.all(backends.map((b) => b.boot(template, preseeded, 240_000, hung(b))));
   log(`backends ready in ${((Date.now() - booted) / 1000).toFixed(1)} s`);
   saveTemplate(backends[0].dir, template);
   return { lobby: backends[0], survival: backends[1] };

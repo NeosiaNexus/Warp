@@ -4,10 +4,13 @@ import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { download } from './download.js';
-import { ManagedProcess } from './proc.js';
+import { ManagedProcess, sleep } from './proc.js';
 
 /** Ready line printed by every vanilla-derived server since 1.7: `Done (3.21s)! For help, …`. */
 const READY = /Done \(\d+[.,]\d+s\)!/;
+
+/** Tries to boot a backend: a second one when the first hangs (see {@link Backend#boot}). */
+const BOOT_TRIES = 2;
 
 /**
  * First protocol whose Paper builds accept Velocity modern forwarding: 1.13.1. It travels in a login
@@ -201,6 +204,33 @@ export class Backend {
 
   ready(timeoutMs) {
     return this.process.waitFor(READY, timeoutMs);
+  }
+
+  /**
+   * Prepares and starts the server, and waits until it is ready. A boot that hangs gets one more
+   * try: Paper 1.16 builds sometimes freeze for good at "Reloading ResourceManager" on CI runners
+   * (#97), before any player connects. What the hung JVM printed, its threads included, is saved
+   * to `<log>-hung-boot.txt` first.
+   * @param {string} templateDir see {@link prepare}
+   * @param {Record<string, string>} preseeded see {@link prepare}
+   * @param {number} timeoutMs for each try
+   * @param {(error: Error) => void} onHang told before the second try
+   */
+  async boot(templateDir, preseeded, timeoutMs, onHang) {
+    for (let tries = 1; ; tries++) {
+      this.prepare(templateDir, preseeded);
+      this.start();
+      try {
+        return await this.ready(timeoutMs);
+      } catch (e) {
+        if (tries === BOOT_TRIES || !this.process.alive) throw e;
+        onHang(e);
+        this.process.child.kill('SIGQUIT'); // a JVM prints its threads to standard output
+        await sleep(1_000);
+        writeFileSync(join(this.logDir, `${this.name}-${this.logSuffix}-hung-boot.txt`), `${this.process.lines.join('\n')}\n`);
+        await this.process.stop({ graceMs: 5_000 });
+      }
+    }
   }
 
   /** Runs a console command and waits until the server acknowledges it with a matching line. */

@@ -191,8 +191,12 @@ async function chat(ctx) {
     for (const name of ['e2e_chat_a', 'e2e_chat_b']) bots.push(await joinWarp(ctx, name));
     const [alice, bob] = bots;
     const line = `e2e ${token()}`;
+    const sent = alice.messages.length;
     alice.chat(line);
-    await bob.waitForMessage(new RegExp(line), `${alice.username}'s chat line`, 10_000);
+    // The backend shows the line to its sender as well, or tells the sender why it refused it.
+    await bob.waitForMessage(new RegExp(line), `${alice.username}'s chat line`, 10_000).catch((e) => {
+      throw new Error(`${e.message}; ${alice.username} had: ${alice.lastMessages(sent)}`);
+    });
     // `/tell` on every version: 1.8 Paper does not know `/msg`, 1.13+ redirects `/tell` to it. The
     // sender is told what was sent ("You whisper to …"), the recipient receives it.
     const whisper = token();
