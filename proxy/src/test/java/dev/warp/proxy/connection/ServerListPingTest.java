@@ -40,6 +40,7 @@ import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Stream;
 import java.util.zip.Deflater;
 
@@ -156,23 +157,23 @@ class ServerListPingTest {
     }
 
     @Test
-    @DisplayName("should advertise the latest protocol to a client Warp does not support")
+    @DisplayName("should advertise the latest protocol and the supported range to another client")
     void unsupportedClient() {
       EmbeddedChannel ch = createFullPipeline();
 
       JsonObject advertised = requestStatusVersion(ch, 99999);
 
       assertEquals(ProtocolVersion.latest().protocol(), advertised.get("protocol").getAsInt());
+      assertEquals(StatusSessionHandler.VERSION_NAME, advertised.get("name").getAsString());
       ch.finishAndReleaseAll();
     }
 
     @Test
-    @DisplayName("should name the range of supported versions")
+    @DisplayName("should name the range of supported versions, from 1.7.2 to the latest")
     void versionName() {
       String name = StatusSessionHandler.VERSION_NAME;
 
-      assertEquals(
-          "Warp " + ProtocolVersion.oldest().name() + "-" + ProtocolVersion.latest().name(), name);
+      assertEquals("Warp 1.7.2-" + ProtocolVersion.latest().name(), name);
     }
 
     @Test
@@ -188,7 +189,7 @@ class ServerListPingTest {
     /** One version per protocol Warp supports. */
     static Stream<ProtocolVersion> supportedVersions() {
       return ProtocolVersion.values().stream()
-          .filter(v -> ProtocolVersion.byProtocolId(v.protocol()) == v);
+          .filter(v -> Objects.equals(ProtocolVersion.byProtocolId(v.protocol()), v));
     }
 
     /** Sends a handshake and a status request, and returns the "version" of the answer. */
@@ -200,9 +201,9 @@ class ServerListPingTest {
       try {
         VarInt.read(responseFrame); // frame length
         assertEquals(0x00, VarInt.read(responseFrame), "StatusResponse packet ID should be 0x00");
-        return JsonParser.parseString(McString.read(responseFrame))
-            .getAsJsonObject()
-            .getAsJsonObject("version");
+        String json = McString.read(responseFrame);
+        assertFalse(responseFrame.isReadable(), "StatusResponse should consume all bytes");
+        return JsonParser.parseString(json).getAsJsonObject().getAsJsonObject("version");
       } finally {
         responseFrame.release();
       }
