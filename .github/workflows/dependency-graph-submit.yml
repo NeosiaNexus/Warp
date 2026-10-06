@@ -78,6 +78,21 @@ jobs:
             exit 1
           fi
 
+          # Every snapshot is checked before any is submitted.
+          for snapshot in "${snapshots[@]}"; do
+            name=$(basename "$snapshot")
+            # The name is printed: refuse anything but the plain names the Gradle action writes.
+            if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+              echo "::error::A snapshot has an unexpected file name; nothing submitted."
+              exit 1
+            fi
+            if ! jq -e --arg sha "$HEAD_SHA" --arg ref "$ref_pattern" \
+                '.sha == $sha and (.ref | type == "string" and test($ref))' "$snapshot" > /dev/null; then
+              echo "::error::$name does not describe $HEAD_SHA on a ref matching $ref_pattern; nothing submitted."
+              exit 1
+            fi
+          done
+
           {
             echo '### Dependency graph'
             echo
@@ -85,20 +100,9 @@ jobs:
             echo '|---|---|---|'
           } >> "$GITHUB_STEP_SUMMARY"
           for snapshot in "${snapshots[@]}"; do
-            name=$(basename "$snapshot")
-            # The name is printed below: refuse anything but the plain names the Gradle action writes.
-            if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
-              echo "::error::A snapshot has an unexpected file name; not submitted."
-              exit 1
-            fi
-            if ! jq -e --arg sha "$HEAD_SHA" --arg ref "$ref_pattern" \
-                '.sha == $sha and (.ref | type == "string" and test($ref))' "$snapshot" > /dev/null; then
-              echo "::error::$name does not describe $HEAD_SHA on a ref matching $ref_pattern; not submitted."
-              exit 1
-            fi
             gh api --method POST "repos/$GITHUB_REPOSITORY/dependency-graph/snapshots" --input "$snapshot" \
               --jq '"Submitted snapshot \(.id): \(.result) (\(.message))"'
             # shellcheck disable=SC2016 # backticks are Markdown code spans, not command substitution
-            jq -r --arg name "$name" \
+            jq -r --arg name "$(basename "$snapshot")" \
               '"| `\($name)` | `\(.ref)` | \([.manifests[].resolved | length] | add // 0) |"' "$snapshot" >> "$GITHUB_STEP_SUMMARY"
           done

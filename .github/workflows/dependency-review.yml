@@ -27,8 +27,42 @@ jobs:
         with:
           persist-credentials: false
 
-      # Waits for the Gradle snapshot of the pull request (submitted a few minutes after it is
-      # pushed) for up to 10 minutes. Build tools and test libraries count too: they run in CI.
+      # The Gradle snapshot of the pull request is submitted a few minutes after the push. The
+      # action's own retry cannot wait for it: the compare API caches each answer for several
+      # minutes, so every retry gets the answer from before the submission
+      # (actions/dependency-review-action#632). This step polls with a different page size each
+      # time, so each answer is fresh, and leaves the action's page size (5) unqueried until the
+      # snapshot is there. Up to 10 minutes; a missing snapshot is then reported by the action.
+      - name: Wait for the Gradle snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          response="$RUNNER_TEMP/comparison.txt"
+          deadline=$((SECONDS + 600))
+          per_page=100
+          while true; do
+            if gh api --include "repos/$GITHUB_REPOSITORY/dependency-graph/compare/$BASE_SHA...$HEAD_SHA?per_page=$per_page" > "$response"; then
+              warnings=$(awk 'tolower($1) == "x-github-dependency-graph-snapshot-warnings:" { print $2 } /^\r?$/ { exit }' "$response" \
+                | tr -d '\r' | base64 --decode)
+              if [[ -z "$warnings" ]]; then
+                echo "Snapshots in place for $BASE_SHA and $HEAD_SHA."
+                break
+              fi
+            else
+              warnings='The comparison failed.'
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "::warning title=Dependency review::No matching snapshots after 10 minutes, reviewing anyway: $warnings"
+              break
+            fi
+            echo "$warnings Checking again in 15 seconds."
+            sleep 15
+            per_page=$((per_page - 1))
+          done
+
+      # Build tools and test libraries count too: they run in CI.
       - name: Review vulnerabilities
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
@@ -36,8 +70,6 @@ jobs:
           fail-on-scopes: runtime, development, unknown
           license-check: false
           show-patched-versions: true
-          retry-on-snapshot-warnings: true
-          retry-on-snapshot-warnings-timeout: 600
           comment-summary-in-pr: never
 
       # Licences matter for what Warp distributes: the runtime scope only. Runs even when the step
