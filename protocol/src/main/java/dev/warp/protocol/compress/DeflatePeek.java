@@ -279,10 +279,13 @@ public final class DeflatePeek {
         repeat = 11 + ((int) bitBuffer & 127);
         drop(7);
       }
-      if (index + repeat > total) {
+      // The run must end within the declared code lengths. total <= lengths.length (checked
+      // above), so this keeps every write below in bounds.
+      int end = index + repeat;
+      if (end > total) {
         return UNKNOWN;
       }
-      for (int end = index + repeat; index < end; index++) {
+      for (; index < end; index++) {
         lengths[index] = (byte) length;
         count(length, index, literalCodes);
       }
