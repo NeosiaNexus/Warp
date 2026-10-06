@@ -27,9 +27,20 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.login.LoginAcknowledged;
 import dev.warp.protocol.packet.login.LoginStart;
+import dev.warp.protocol.packet.play.BossBar;
+import dev.warp.protocol.packet.play.ChatCommand;
+import dev.warp.protocol.packet.play.ChatMessage;
+import dev.warp.protocol.packet.play.ClearTitles;
+import dev.warp.protocol.packet.play.PlayerInfo;
+import dev.warp.protocol.packet.play.PlayerInfoRemove;
+import dev.warp.protocol.packet.play.PlayerInfoUpdate;
+import dev.warp.protocol.packet.play.Respawn;
+import dev.warp.protocol.packet.play.TabListHeaderFooter;
 import dev.warp.protocol.packet.status.PingRequest;
 import dev.warp.protocol.packet.status.StatusRequest;
 import dev.warp.protocol.packet.status.StatusResponse;
+
+import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -211,6 +222,53 @@ class PacketRegistryTest {
       // 1.20.2 should have it
       assertNotNull(registry.lookup(ProtocolVersion.MINECRAFT_1_20_2, 0x03));
     }
+
+    @Test
+    @DisplayName("should not register packets past the maxVersion of their last mapping")
+    void afterMaxVersion() {
+      PacketRegistry registry =
+          PacketRegistry.builder()
+              .register(
+                  StatusRequest.class,
+                  StatusRequest.CODEC,
+                  VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_8),
+                  VersionMapping.map(
+                      0x05, ProtocolVersion.MINECRAFT_1_9, ProtocolVersion.MINECRAFT_1_12_2))
+              .build();
+
+      assertEquals(0x05, registry.packetId(ProtocolVersion.MINECRAFT_1_12_2, StatusRequest.class));
+      assertNull(registry.lookup(ProtocolVersion.MINECRAFT_1_13, 0x05));
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> registry.packetId(ProtocolVersion.MINECRAFT_1_13, StatusRequest.class));
+    }
+
+    @Test
+    @DisplayName("should register packets again from a mapping that follows a bounded one")
+    void afterGap() {
+      PacketRegistry registry =
+          PacketRegistry.builder()
+              .register(
+                  StatusRequest.class,
+                  StatusRequest.CODEC,
+                  VersionMapping.map(
+                      0x01, ProtocolVersion.MINECRAFT_1_8, ProtocolVersion.MINECRAFT_1_12_2),
+                  VersionMapping.map(0x02, ProtocolVersion.MINECRAFT_1_14))
+              .build();
+
+      assertNull(registry.lookup(ProtocolVersion.MINECRAFT_1_13_2, 0x01));
+      assertEquals(0x02, registry.packetId(ProtocolVersion.MINECRAFT_1_14, StatusRequest.class));
+    }
+
+    @Test
+    @DisplayName("should reject a mapping that ends before it starts")
+    void emptyRange() {
+      assertThrows(
+          IllegalArgumentException.class,
+          () ->
+              VersionMapping.map(
+                  0x01, ProtocolVersion.MINECRAFT_1_9, ProtocolVersion.MINECRAFT_1_8));
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -260,6 +318,64 @@ class PacketRegistryTest {
           () -> serverbound.packetId(ProtocolVersion.MINECRAFT_1_19_4, LoginAcknowledged.class));
       assertEquals(
           0x03, serverbound.packetId(ProtocolVersion.MINECRAFT_1_20_2, LoginAcknowledged.class));
+    }
+
+    @Test
+    @DisplayName("should decode the tab list and boss bars before 1.20.2 only")
+    void switchTrackingBefore1202() {
+      PacketRegistry clientbound =
+          StateRegistry.get(ProtocolState.PLAY, PacketDirection.CLIENTBOUND);
+
+      assertSame(
+          BossBar.CODEC,
+          clientbound.lookup(
+              ProtocolVersion.MINECRAFT_1_20_1,
+              clientbound.packetId(ProtocolVersion.MINECRAFT_1_20_1, BossBar.class)));
+      assertSame(
+          PlayerInfo.CODEC,
+          clientbound.lookup(
+              ProtocolVersion.MINECRAFT_1_19_2,
+              clientbound.packetId(ProtocolVersion.MINECRAFT_1_19_2, PlayerInfo.class)));
+      assertSame(
+          PlayerInfoUpdate.CODEC,
+          clientbound.lookup(
+              ProtocolVersion.MINECRAFT_1_20_1,
+              clientbound.packetId(ProtocolVersion.MINECRAFT_1_20_1, PlayerInfoUpdate.class)));
+      for (var type :
+          List.of(
+              BossBar.class,
+              PlayerInfoUpdate.class,
+              PlayerInfoRemove.class,
+              TabListHeaderFooter.class,
+              ClearTitles.class,
+              Respawn.class)) {
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> clientbound.packetId(ProtocolVersion.MINECRAFT_1_20_2, type),
+            type.getSimpleName());
+      }
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> clientbound.packetId(ProtocolVersion.MINECRAFT_1_19_3, PlayerInfo.class));
+      // From 1.20.2 the configuration phase resets the client: boss bars stay opaque.
+      assertNull(clientbound.lookup(ProtocolVersion.MINECRAFT_1_20_2, 0x0A));
+    }
+
+    @Test
+    @DisplayName("should decode chat lines up to 1.18.2 and chat commands from 1.19")
+    void commandsAcrossVersions() {
+      PacketRegistry serverbound =
+          StateRegistry.get(ProtocolState.PLAY, PacketDirection.SERVERBOUND);
+
+      assertEquals(0x01, serverbound.packetId(ProtocolVersion.MINECRAFT_1_8, ChatMessage.class));
+      assertEquals(0x02, serverbound.packetId(ProtocolVersion.MINECRAFT_1_12_2, ChatMessage.class));
+      assertEquals(0x03, serverbound.packetId(ProtocolVersion.MINECRAFT_1_18_2, ChatMessage.class));
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> serverbound.packetId(ProtocolVersion.MINECRAFT_1_19, ChatMessage.class));
+      assertEquals(0x03, serverbound.packetId(ProtocolVersion.MINECRAFT_1_19, ChatCommand.class));
+      assertEquals(0x04, serverbound.packetId(ProtocolVersion.MINECRAFT_1_19_2, ChatCommand.class));
+      assertEquals(0x04, serverbound.packetId(ProtocolVersion.MINECRAFT_1_19_3, ChatCommand.class));
     }
 
     @Test

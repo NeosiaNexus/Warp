@@ -131,7 +131,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
   @Override
   public void disconnected() {
     logger.info("Backend disconnected during login for player {}", player.username());
-    player.scheduleBackendFailure();
+    player.scheduleBackendFailure(backendConnection);
   }
 
   // ---------------------------------------------------------------------------
@@ -198,20 +198,10 @@ final class BackendLoginSessionHandler implements SessionHandler {
 
   @SuppressWarnings("UnusedVariable")
   private void handleLoginSuccess(LoginSuccess loginSuccess) {
-    ProtocolVersion version = player.protocolVersion();
     adviseIfBackendUncompressed();
-
-    if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
-      // Send LoginAcknowledged and transition to CONFIGURATION.
-      backendConnection.writeAndFlush(new LoginAcknowledged());
-      backendConnection.setState(ProtocolState.CONFIGURATION);
-      backendConnection.setSessionHandler(
-          new BackendConfigSessionHandler(player, backendConnection));
-    } else {
-      // Pre-1.20.2: transition directly to PLAY.
-      backendConnection.setState(ProtocolState.PLAY);
-      transitionToPlay();
-    }
+    // The configuration phase from 1.20.2, straight to PLAY before: the server switch strategy
+    // knows which, and installs the next handler.
+    player.serverSwitch().loggedIn(backendConnection);
   }
 
   private void handleLoginDisconnect(LoginDisconnect packet) {
@@ -220,28 +210,6 @@ final class BackendLoginSessionHandler implements SessionHandler {
         serverAddress,
         player.username(),
         new String(packet.rawReason(), StandardCharsets.UTF_8));
-    player.scheduleBackendFailure();
-  }
-
-  // ---------------------------------------------------------------------------
-  // Transition
-  // ---------------------------------------------------------------------------
-
-  private void transitionToPlay() {
-    // Install backend play handler (we are on the backend event loop).
-    backendConnection.setSessionHandler(new BackendPlaySessionHandler(player, backendConnection));
-
-    // Install client play handler on the client's event loop.
-    MinecraftConnection clientConn = player.clientConnection();
-    clientConn
-        .channel()
-        .eventLoop()
-        .execute(
-            () -> {
-              if (!clientConn.channel().isActive()) {
-                return;
-              }
-              clientConn.setSessionHandler(new ClientPlaySessionHandler(player));
-            });
+    player.scheduleBackendFailure(backendConnection);
   }
 }

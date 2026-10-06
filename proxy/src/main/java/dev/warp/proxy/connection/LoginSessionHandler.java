@@ -113,6 +113,10 @@ final class LoginSessionHandler implements SessionHandler {
   private final ServerLoginContext loginContext;
 
   private LoginState state = LoginState.AWAITING_LOGIN_START;
+
+  /** The player once logged in, until the client enters its first server. */
+  private @Nullable ConnectedPlayer player;
+
   private @Nullable String username;
   private byte @Nullable [] verifyToken;
   private @Nullable GameProfile authenticatedProfile;
@@ -260,6 +264,11 @@ final class LoginSessionHandler implements SessionHandler {
   @Override
   public void disconnected() {
     logger.info("Client disconnected during login: {} (state={})", username, state);
+    ConnectedPlayer loggedIn = this.player;
+    if (loggedIn != null) {
+      // Logged in but not on a server yet: drop the backend it is joining.
+      loggedIn.disconnect();
+    }
   }
 
   @SuppressWarnings("unused")
@@ -418,57 +427,17 @@ final class LoginSessionHandler implements SessionHandler {
   // ---------------------------------------------------------------------------
 
   /**
-   * Creates a {@link ConnectedPlayer} and initiates a connection to the backend server.
+   * Creates the {@link ConnectedPlayer} and connects it to the default server.
    *
-   * <p>The backend connection runs asynchronously. On success, the player is linked to the backend
-   * and KeepAlive starts. On failure, the client is disconnected with an error message.
+   * <p>The backend connection runs asynchronously. A default server that cannot be reached or
+   * refuses the player sends it down the fallback order, whatever its version.
    */
   private void initiateBackendConnection(GameProfile profile) {
     InetSocketAddress remoteAddr = (InetSocketAddress) connection.channel().remoteAddress();
-    ConnectedPlayer player =
+    ConnectedPlayer joining =
         new ConnectedPlayer(connection, clientVersion(), profile, remoteAddr, loginContext);
-
-    var defaultServer = loginContext.serverRegistry().defaultServer();
-    logger.info("Connecting {} to server '{}'", profile.name(), defaultServer.name());
-
-    var _ =
-        BackendConnection.connect(
-                loginContext.channelClass(),
-                player,
-                defaultServer.address(),
-                loginContext.forwardingSecret())
-            .whenComplete(
-                (backend, ex) ->
-                    connection
-                        .channel()
-                        .eventLoop()
-                        .execute(
-                            () -> {
-                              if (!connection.channel().isActive()) {
-                                // Client disconnected while we were connecting to backend.
-                                if (backend != null) {
-                                  backend.disconnect();
-                                }
-                                return;
-                              }
-                              if (ex != null) {
-                                logger.warn(
-                                    "Failed to connect {} to server '{}': {}",
-                                    profile.name(),
-                                    defaultServer.name(),
-                                    ex.getMessage());
-                                if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
-                                  // The client waits in CONFIG: try the fallback order, as when
-                                  // a backend refuses the player.
-                                  player.handleBackendFailure(defaultServer.name());
-                                } else {
-                                  disconnect("Could not connect to backend server");
-                                }
-                                return;
-                              }
-                              player.setBackendConnection(backend);
-                              player.setCurrentServerName(defaultServer.name());
-                            }));
+    this.player = joining;
+    joining.join();
   }
 
   // ---------------------------------------------------------------------------

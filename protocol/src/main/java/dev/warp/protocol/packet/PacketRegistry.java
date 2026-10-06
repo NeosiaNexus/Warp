@@ -145,8 +145,9 @@ public final class PacketRegistry {
    * Collects packet registrations and builds an immutable {@link PacketRegistry}.
    *
    * <p>Registrations use version-range mappings: each {@link VersionMapping} declares a packet ID
-   * that applies from its {@code minVersion} until the next mapping overrides it. This range-based
-   * approach (proven by Velocity and Gate) compactly handles ID changes across Minecraft versions.
+   * that applies from its {@code minVersion} until the next mapping overrides it, or until its
+   * {@code maxVersion} when it has one. This range-based approach (proven by Velocity and Gate)
+   * compactly handles ID changes across Minecraft versions.
    */
   public static final class Builder {
     private final List<Registration<?>> registrations = new ArrayList<>();
@@ -266,13 +267,15 @@ public final class PacketRegistry {
 
     /**
      * Finds the active packet ID for a given version from a sorted array of mappings. Returns -1 if
-     * no mapping applies (the packet does not exist at this version).
+     * no mapping applies (the packet does not exist at this version): the version is before the
+     * first mapping, or past the {@link VersionMapping#maxVersion()} of the last one that starts at
+     * or before it.
      */
     private static int resolvePacketId(ProtocolVersion version, VersionMapping[] mappings) {
       int packetId = -1;
       for (VersionMapping mapping : mappings) {
         if (version.isAtLeast(mapping.minVersion())) {
-          packetId = mapping.packetId();
+          packetId = mapping.packetIdFor(version);
         } else {
           break; // mappings are ascending — no further match possible
         }

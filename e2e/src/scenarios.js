@@ -6,15 +6,15 @@ import { sleep } from './proc.js';
 export const LOBBY_MODE = 'creative';
 export const SURVIVAL_MODE = 'adventure';
 
-/** Proxy-side `/server` command: Warp intercepts it from 1.19.3 (signed chat commands). */
+/** Proxy-side `/server` replies: Warp answers in chat from 1.19.3 (system chat packet). */
 const PROXY_COMMANDS_MIN_PROTOCOL = 761;
-/** Server switching goes through the configuration phase, introduced in 1.20.2. */
-const SWITCHING_MIN_PROTOCOL = 764;
 
 export function features(protocol) {
   return {
     proxyCommands: protocol >= PROXY_COMMANDS_MIN_PROTOCOL,
-    switching: protocol >= SWITCHING_MIN_PROTOCOL,
+    // Every version switches: through the configuration phase from 1.20.2, with the new server's
+    // Join Game and a Respawn before. `/server` is intercepted on every version.
+    switching: true,
   };
 }
 

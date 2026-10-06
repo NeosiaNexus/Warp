@@ -24,10 +24,14 @@ import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_15;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_16;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_16_2;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_17;
+import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_18;
+import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_18_2;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_19;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_19_1;
+import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_19_2;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_19_3;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_19_4;
+import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_20_1;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_20_2;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_20_3;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_20_5;
@@ -36,6 +40,7 @@ import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_21_4;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_7_2;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_8;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_9;
+import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_9_4;
 import static dev.warp.protocol.packet.VersionMapping.map;
 
 import dev.warp.protocol.ProtocolState;
@@ -54,19 +59,26 @@ import dev.warp.protocol.packet.login.LoginStart;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.login.SetCompression;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
+import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatCommand;
+import dev.warp.protocol.packet.play.ChatMessage;
+import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPluginMessage;
+import dev.warp.protocol.packet.play.PlayerInfo;
+import dev.warp.protocol.packet.play.PlayerInfoRemove;
+import dev.warp.protocol.packet.play.PlayerInfoUpdate;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.Respawn;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
+import dev.warp.protocol.packet.play.TabListHeaderFooter;
 import dev.warp.protocol.packet.play.Transfer;
 import dev.warp.protocol.packet.status.PingRequest;
 import dev.warp.protocol.packet.status.PongResponse;
@@ -271,6 +283,10 @@ public final class StateRegistry {
   // settings, state transitions, bundles, disconnects, the entity id). Encode-only: packets the
   // proxy may send but forwards untouched when received, so they keep their original compressed
   // form end to end.
+  //
+  // Before 1.20.2 a server switch keeps the client's tab list, boss bars and titles: the proxy
+  // also decodes the packets that fill them, and sends the ones that clear them, up to 1.20.1
+  // only. From 1.20.2 the configuration phase resets the client and those packets stay opaque.
   // ---------------------------------------------------------------------------
 
   private static void registerPlay() {
@@ -328,9 +344,18 @@ public final class StateRegistry {
                     map(0x0B, MINECRAFT_1_20_5),
                     map(0x0D, MINECRAFT_1_21_2))
                 .register(
+                    ChatMessage.class,
+                    ChatMessage.CODEC,
+                    map(0x01, MINECRAFT_1_7_2),
+                    map(0x02, MINECRAFT_1_9),
+                    map(0x03, MINECRAFT_1_12),
+                    map(0x02, MINECRAFT_1_12_1),
+                    map(0x03, MINECRAFT_1_14, MINECRAFT_1_18_2))
+                .register(
                     ChatCommand.class,
                     ChatCommand.CODEC,
-                    map(0x04, MINECRAFT_1_19_3),
+                    map(0x03, MINECRAFT_1_19),
+                    map(0x04, MINECRAFT_1_19_1),
                     map(0x05, MINECRAFT_1_20_5))
                 .register(
                     AcknowledgeConfiguration.class,
@@ -465,11 +490,72 @@ public final class StateRegistry {
                     map(0x3B, MINECRAFT_1_19),
                     map(0x3E, MINECRAFT_1_19_1),
                     map(0x3D, MINECRAFT_1_19_3),
-                    map(0x41, MINECRAFT_1_19_4),
-                    map(0x43, MINECRAFT_1_20_2),
-                    map(0x45, MINECRAFT_1_20_3),
-                    map(0x47, MINECRAFT_1_20_5),
-                    map(0x4C, MINECRAFT_1_21_2))
+                    map(0x41, MINECRAFT_1_19_4, MINECRAFT_1_20_1))
+                .register(
+                    BossBar.class,
+                    BossBar.CODEC,
+                    map(0x0C, MINECRAFT_1_9),
+                    map(0x0D, MINECRAFT_1_15),
+                    map(0x0C, MINECRAFT_1_16),
+                    map(0x0D, MINECRAFT_1_17),
+                    map(0x0A, MINECRAFT_1_19),
+                    map(0x0B, MINECRAFT_1_19_4, MINECRAFT_1_20_1))
+                .register(
+                    PlayerInfo.class,
+                    PlayerInfo.CODEC,
+                    map(0x38, MINECRAFT_1_8),
+                    map(0x2D, MINECRAFT_1_9),
+                    map(0x2E, MINECRAFT_1_12_1),
+                    map(0x30, MINECRAFT_1_13),
+                    map(0x33, MINECRAFT_1_14),
+                    map(0x34, MINECRAFT_1_15),
+                    map(0x33, MINECRAFT_1_16),
+                    map(0x32, MINECRAFT_1_16_2),
+                    map(0x36, MINECRAFT_1_17),
+                    map(0x34, MINECRAFT_1_19),
+                    map(0x37, MINECRAFT_1_19_1, MINECRAFT_1_19_2))
+                .register(
+                    PlayerInfoUpdate.class,
+                    PlayerInfoUpdate.CODEC,
+                    map(0x36, MINECRAFT_1_19_3),
+                    map(0x3A, MINECRAFT_1_19_4, MINECRAFT_1_20_1))
+                .register(
+                    PlayerInfoRemove.class,
+                    PlayerInfoRemove.CODEC,
+                    map(0x35, MINECRAFT_1_19_3),
+                    map(0x39, MINECRAFT_1_19_4, MINECRAFT_1_20_1))
+                .registerEncodeOnly(
+                    TabListHeaderFooter.class,
+                    TabListHeaderFooter.CODEC,
+                    map(0x47, MINECRAFT_1_8),
+                    map(0x48, MINECRAFT_1_9),
+                    map(0x47, MINECRAFT_1_9_4),
+                    map(0x49, MINECRAFT_1_12),
+                    map(0x4A, MINECRAFT_1_12_1),
+                    map(0x4E, MINECRAFT_1_13),
+                    map(0x53, MINECRAFT_1_14),
+                    map(0x54, MINECRAFT_1_15),
+                    map(0x53, MINECRAFT_1_16),
+                    map(0x5E, MINECRAFT_1_17),
+                    map(0x5F, MINECRAFT_1_18),
+                    map(0x60, MINECRAFT_1_19),
+                    map(0x63, MINECRAFT_1_19_1),
+                    map(0x61, MINECRAFT_1_19_3),
+                    map(0x65, MINECRAFT_1_19_4, MINECRAFT_1_20_1))
+                .registerEncodeOnly(
+                    ClearTitles.class,
+                    ClearTitles.CODEC,
+                    map(0x45, MINECRAFT_1_8),
+                    map(0x47, MINECRAFT_1_12),
+                    map(0x48, MINECRAFT_1_12_1),
+                    map(0x4B, MINECRAFT_1_13),
+                    map(0x4F, MINECRAFT_1_14),
+                    map(0x50, MINECRAFT_1_15),
+                    map(0x4F, MINECRAFT_1_16),
+                    map(0x10, MINECRAFT_1_17),
+                    map(0x0D, MINECRAFT_1_19),
+                    map(0x0C, MINECRAFT_1_19_3),
+                    map(0x0E, MINECRAFT_1_19_4, MINECRAFT_1_20_1))
                 .registerEncodeOnly(
                     SystemChatMessage.class,
                     SystemChatMessage.CODEC,

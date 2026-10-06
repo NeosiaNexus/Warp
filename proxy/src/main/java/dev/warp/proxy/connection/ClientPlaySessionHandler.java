@@ -22,20 +22,27 @@ import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
+import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatCommand;
+import dev.warp.protocol.packet.play.ChatMessage;
+import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPacket;
 import dev.warp.protocol.packet.play.PlayPluginMessage;
+import dev.warp.protocol.packet.play.PlayerInfo;
+import dev.warp.protocol.packet.play.PlayerInfoRemove;
+import dev.warp.protocol.packet.play.PlayerInfoUpdate;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.Respawn;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
+import dev.warp.protocol.packet.play.TabListHeaderFooter;
 import dev.warp.protocol.packet.play.Transfer;
 import dev.warp.proxy.server.ServerRegistry;
 
@@ -104,6 +111,7 @@ final class ClientPlaySessionHandler implements SessionHandler {
     switch (playPacket) {
       case KeepAlive keepAlive -> handleKeepAlive(keepAlive);
       case ChatCommand chatCommand -> handleChatCommand(chatCommand);
+      case ChatMessage chatMessage -> handleChatMessage(chatMessage);
       case PlayClientSettings settings -> handleClientSettings(settings);
       case ResourcePackResponse response -> forwardToBackend(response);
       case AcknowledgeConfiguration ignored -> handleAcknowledgeConfiguration();
@@ -132,6 +140,24 @@ final class ClientPlaySessionHandler implements SessionHandler {
         /* protocol violation */
       }
       case TabCompleteResponse ignored -> {
+        /* protocol violation */
+      }
+      case PlayerInfo ignored -> {
+        /* protocol violation */
+      }
+      case PlayerInfoUpdate ignored -> {
+        /* protocol violation */
+      }
+      case PlayerInfoRemove ignored -> {
+        /* protocol violation */
+      }
+      case BossBar ignored -> {
+        /* protocol violation */
+      }
+      case TabListHeaderFooter ignored -> {
+        /* protocol violation */
+      }
+      case ClearTitles ignored -> {
         /* protocol violation */
       }
     }
@@ -186,12 +212,30 @@ final class ClientPlaySessionHandler implements SessionHandler {
   }
 
   private void handleChatCommand(ChatCommand chatCommand) {
-    String command = chatCommand.command();
+    if (!handleProxyCommand(chatCommand.command())) {
+      forwardToBackend(chatCommand);
+    }
+  }
+
+  private void handleChatMessage(ChatMessage chatMessage) {
+    // Before 1.19, commands are chat lines that start with a slash.
+    String message = chatMessage.message();
+    if (!message.startsWith("/") || !handleProxyCommand(message.substring(1))) {
+      forwardToBackend(chatMessage);
+    }
+  }
+
+  /**
+   * Runs {@code command} (without its slash) if it is a proxy command.
+   *
+   * @return {@code true} if the proxy handled it, {@code false} if it belongs to the backend
+   */
+  private boolean handleProxyCommand(String command) {
     if (command.equals("server") || command.startsWith("server ")) {
       handleServerCommand(command.length() > 7 ? command.substring(7).trim() : "");
-      return;
+      return true;
     }
-    forwardToBackend(chatCommand);
+    return false;
   }
 
   private void handleServerCommand(String args) {
@@ -204,25 +248,13 @@ final class ClientPlaySessionHandler implements SessionHandler {
           registry.allServers().stream()
               .map(s -> s.name().equals(current) ? "[" + s.name() + "]" : s.name())
               .collect(Collectors.joining(", "));
-      player
-          .clientConnection()
-          .writeAndFlush(
-              new SystemChatMessage(
-                  dev.warp.protocol.packet.TextComponent.plainText(
-                      "Servers: " + list, player.protocolVersion()),
-                  false));
+      player.sendSystemMessage("Servers: " + list);
       return;
     }
 
     ServerInfo target = registry.getServer(args);
     if (target == null) {
-      player
-          .clientConnection()
-          .writeAndFlush(
-              new SystemChatMessage(
-                  dev.warp.protocol.packet.TextComponent.plainText(
-                      "Unknown server: " + args, player.protocolVersion()),
-                  false));
+      player.sendSystemMessage("Unknown server: " + args);
       return;
     }
 
@@ -253,9 +285,11 @@ final class ClientPlaySessionHandler implements SessionHandler {
   private void handleAcknowledgeConfiguration() {
     // Client acknowledges re-entering configuration state.
     ServerInfo target = player.pendingSwitchTarget();
-    if (target != null && player.isSwitching()) {
+    if (target != null
+        && player.isSwitching()
+        && player.serverSwitch() instanceof ReconfigurationSwitch reconfiguration) {
       // Proxy-initiated server switch.
-      player.onSwitchAcknowledged(target);
+      reconfiguration.acknowledged(target);
     } else {
       // Backend-initiated reconfiguration (e.g. data pack reload).
       // Transition both sides to CONFIG state and relay config packets.
