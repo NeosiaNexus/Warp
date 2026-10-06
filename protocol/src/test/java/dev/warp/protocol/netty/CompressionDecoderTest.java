@@ -19,6 +19,7 @@ package dev.warp.protocol.netty;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -170,6 +171,16 @@ class CompressionDecoderTest {
   @Nested
   @DisplayName("lifecycle")
   class Lifecycle {
+
+    @Test
+    @DisplayName("should expose the decompressor it was given")
+    void exposesDecompressor() {
+      FrameDecompressor decompressor =
+          new FrameDecompressor(
+              THRESHOLD, true, 1024, new JavaCompressor(Deflater.DEFAULT_COMPRESSION));
+
+      assertSame(decompressor, new CompressionDecoder(decompressor).decompressor());
+    }
 
     @Test
     @DisplayName("should close its decompressor when removed from the pipeline")

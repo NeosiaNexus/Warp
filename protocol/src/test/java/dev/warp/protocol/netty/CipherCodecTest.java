@@ -145,30 +145,22 @@ class CipherCodecTest {
     return cipher.update(input);
   }
 
+  /** Everything the channel wrote, in one array. */
   private static byte[] drainOutbound(EmbeddedChannel ch) {
     ByteArrayOutputStream out = new ByteArrayOutputStream();
     for (ByteBuf buf; (buf = ch.readOutbound()) != null; ) {
-      append(out, buf);
+      out.writeBytes(Frames.drain(buf));
     }
     return out.toByteArray();
   }
 
+  /** Everything the channel read, in one array. */
   private static byte[] drainInbound(EmbeddedChannel ch) {
     ByteArrayOutputStream out = new ByteArrayOutputStream();
     for (ByteBuf buf; (buf = ch.readInbound()) != null; ) {
-      append(out, buf);
+      out.writeBytes(Frames.drain(buf));
     }
     return out.toByteArray();
-  }
-
-  private static void append(ByteArrayOutputStream out, ByteBuf buf) {
-    try {
-      byte[] bytes = new byte[buf.readableBytes()];
-      buf.readBytes(bytes);
-      out.writeBytes(bytes);
-    } finally {
-      buf.release();
-    }
   }
 
   private static SecretKey randomKey() {

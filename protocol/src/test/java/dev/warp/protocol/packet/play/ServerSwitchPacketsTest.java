@@ -347,9 +347,12 @@ class ServerSwitchPacketsTest {
       assertEquals(expected, read.dataKept());
     }
 
+    static Stream<ProtocolVersion> deathLocationVersions() {
+      return respawnVersions().filter(v -> v.isAtLeast(ProtocolVersion.MINECRAFT_1_19));
+    }
+
     @ParameterizedTest(name = "{0}")
-    @MethodSource(
-        "dev.warp.protocol.packet.play.ServerSwitchPacketsTest$JoinGameCodec#deathLocationVersions")
+    @MethodSource("deathLocationVersions")
     @DisplayName("should write and read back a respawn of a player who never died")
     void noDeathLocation(ProtocolVersion version) {
       Respawn respawn = decode(Respawn.CODEC, version, "respawn");

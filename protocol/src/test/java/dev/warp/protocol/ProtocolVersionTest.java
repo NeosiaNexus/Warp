@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.HashSet;
 import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
@@ -42,11 +43,11 @@ class ProtocolVersionTest {
     void values() {
       List<ProtocolVersion> values = ProtocolVersion.values();
 
+      assertEquals(values.size(), new HashSet<>(values).size(), "every version once");
       for (int i = 1; i < values.size(); i++) {
         assertTrue(
             values.get(i - 1).protocol() <= values.get(i).protocol(),
             values.get(i - 1) + " before " + values.get(i));
-        assertNotEquals(values.get(i - 1), values.get(i));
       }
       assertThrows(
           UnsupportedOperationException.class, () -> values.add(ProtocolVersion.MINECRAFT_1_8));
