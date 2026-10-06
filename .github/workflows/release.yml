@@ -57,7 +57,7 @@ jobs:
       name: release
       url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.release-please.outputs.tag_name }}
     permissions:
-      contents: write # upload the jar and its checksum to the release
+      contents: write # upload the jar, its checksum and its provenance to the release
       id-token: write # sign the provenance attestation (Sigstore)
       attestations: write # store the attestation on the repository
     steps:
@@ -73,18 +73,40 @@ jobs:
       - name: Build shadow jar
         run: ./gradlew shadowJar
 
+      # Exactly one jar is released: the provenance below is named after it.
       - name: Checksum
+        id: jar
         working-directory: proxy/build/libs
-        run: sha256sum warp-*.jar | tee SHA256SUMS
+        run: |
+          shopt -s nullglob
+          jars=(warp-*.jar)
+          if (( ${#jars[@]} != 1 )); then
+            echo "::error::Expected exactly one warp-*.jar, found ${#jars[@]}."
+            exit 1
+          fi
+          sha256sum -- "${jars[0]}" | tee SHA256SUMS
+          echo "name=${jars[0]}" >> "$GITHUB_OUTPUT"
 
-      # Verifiable with: gh attestation verify warp-<version>.jar --repo NeosiaNexus/Warp
+      # Signs SLSA provenance for the jar with the workflow's Sigstore identity and stores it on the
+      # repository. Verifiable with: gh attestation verify warp-<version>.jar --repo NeosiaNexus/Warp
       - name: Attest build provenance
+        id: provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: proxy/build/libs/warp-*.jar
+          subject-path: proxy/build/libs/${{ steps.jar.outputs.name }}
 
+      # The signed bundle also ships with the release, under the name SLSA tooling gives provenance
+      # (<artifact>.intoto.jsonl, one Sigstore bundle per line), so that the jar can be verified
+      # without the attestations API:
+      #   gh attestation verify warp-<version>.jar --repo NeosiaNexus/Warp \
+      #     --bundle warp-<version>.jar.intoto.jsonl
       - name: Upload to the GitHub release
+        working-directory: proxy/build/libs
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
-        run: gh release upload "$TAG_NAME" proxy/build/libs/warp-*.jar proxy/build/libs/SHA256SUMS --clobber
+          JAR: ${{ steps.jar.outputs.name }}
+          BUNDLE_PATH: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          cp -- "$BUNDLE_PATH" "$JAR.intoto.jsonl"
+          gh release upload "$TAG_NAME" "$JAR" "$JAR.intoto.jsonl" SHA256SUMS --clobber

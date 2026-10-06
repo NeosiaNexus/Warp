@@ -34,7 +34,8 @@ import io.netty.buffer.Unpooled;
  *
  * <ul>
  *   <li><b>Pre-1.20.3</b>: VarInt-prefixed JSON string ({@code {"text":"..."}})
- *   <li><b>1.20.3+</b>: NBT string tag (type byte {@code 0x08} + unsigned-short length + UTF-8)
+ *   <li><b>1.20.3+</b>: NBT string tag (type byte {@code 0x08} + unsigned-short length + UTF-8),
+ *       except in the login state, which keeps JSON ({@link #plainTextJson(String)})
  * </ul>
  */
 public final class TextComponent {
@@ -55,11 +56,19 @@ public final class TextComponent {
     if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_3)) {
       return nbtString(text);
     }
-    return jsonText(text);
+    return plainTextJson(text);
   }
 
-  /** Encodes as a VarInt-prefixed JSON string (pre-1.20.3). */
-  private static byte[] jsonText(String text) {
+  /**
+   * Encodes a plain text message as a JSON text component, whatever the protocol version.
+   *
+   * <p>This is the format of the login disconnect reason in every version: 1.20.3 moved the
+   * configuration and play states to NBT, not the login state.
+   *
+   * @param text the plain text message
+   * @return the raw bytes, a VarInt-prefixed JSON string
+   */
+  public static byte[] plainTextJson(String text) {
     String json = "{\"text\":\"" + escapeJson(text) + "\"}";
     int byteCount = ByteBufUtil.utf8Bytes(json);
     ByteBuf buf = Unpooled.buffer(VarInt.size(byteCount) + byteCount);
