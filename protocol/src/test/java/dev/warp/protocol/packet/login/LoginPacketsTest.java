@@ -147,14 +147,25 @@ class LoginPacketsTest {
       assertEquals(expectedDecoded, decoded);
     }
 
-    @Test
-    @DisplayName("should flag the uuid as absent when 1.19.1 to 1.20.1 has none to send")
-    void writesAbsentUuid() {
-      byte[] wire1192 = encode(NOTCH_WITHOUT_UUID, ProtocolVersion.MINECRAFT_1_19_2);
-      byte[] wire1201 = encode(NOTCH_WITHOUT_UUID, ProtocolVersion.MINECRAFT_1_20_1);
+    /** The optional uuid flagged as absent, on each side of the signature data removal. */
+    static Stream<Arguments> absentUuidLayouts() {
+      return Stream.of(
+          // name, signature data (absent), uuid (absent)
+          Arguments.of(ProtocolVersion.MINECRAFT_1_19_2, concat(NOTCH_ON_WIRE, FALSE, FALSE)),
+          // name, uuid (absent)
+          Arguments.of(ProtocolVersion.MINECRAFT_1_19_3, concat(NOTCH_ON_WIRE, FALSE)),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_20_1, concat(NOTCH_ON_WIRE, FALSE)));
+    }
 
-      assertArrayEquals(concat(NOTCH_ON_WIRE, FALSE, FALSE), wire1192);
-      assertArrayEquals(concat(NOTCH_ON_WIRE, FALSE), wire1201);
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("absentUuidLayouts")
+    @DisplayName("should flag the uuid as absent when 1.19.1 to 1.20.1 has none, and read it back")
+    void roundtripsAbsentUuid(ProtocolVersion version, byte[] expectedWire) {
+      byte[] wire = encode(NOTCH_WITHOUT_UUID, version);
+      LoginStart decoded = decode(wire, version);
+
+      assertArrayEquals(expectedWire, wire);
+      assertEquals(NOTCH_WITHOUT_UUID, decoded);
     }
 
     @Test
