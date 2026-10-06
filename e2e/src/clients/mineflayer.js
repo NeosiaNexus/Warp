@@ -98,6 +98,20 @@ export function endTicks(client, version) {
   };
 }
 
+/**
+ * Answers a resource pack offer with the pack's UUID. mineflayer accepts the packs offered in the
+ * configuration phase, but passes their UUID as a `uuid-1345` object, which minecraft-protocol
+ * writes as the nil UUID. From protocol 772 (1.21.8) a server only takes the answer for the pack it
+ * offered as the end of the pack's configuration task, so the bot never left the phase.
+ *
+ * @param {object} client the bot's minecraft-protocol client
+ */
+export function answerPacksByUuid(client) {
+  const write = client.write.bind(client);
+  client.write = (name, params) =>
+    write(name, name === 'resource_pack_receive' && params?.uuid !== undefined ? { ...params, uuid: String(params.uuid) } : params);
+}
+
 // ---------------------------------------------------------------------------
 // Tab list
 // ---------------------------------------------------------------------------
@@ -197,6 +211,7 @@ export function connect({ host, port, version, username, profileKeys = null, spa
       logErrors: false,
     });
     endTicks(bot._client, version);
+    answerPacksByUuid(bot._client);
     const handle = new Bot(bot, username, announcedProtocol(version), profileKeys !== null);
     const fail = (why) => {
       clearTimeout(timer);
@@ -213,6 +228,19 @@ export function connect({ host, port, version, username, profileKeys = null, spa
     bot.once('error', (e) => fail(`error before spawn: ${e?.stack ?? e}`));
   });
 }
+
+/**
+ * UUIDs a Player Info packet adds `username` under: the backend's own view of who the player is.
+ * Up to 1.19.2 the packet carries one action, from 1.19.3 a set of them.
+ */
+export function listedUuids(packet, username) {
+  const adds = typeof packet.action === 'object' ? packet.action.add_player : packet.action === 'add_player';
+  if (!adds) return [];
+  return packet.data.filter((entry) => (entry.player?.name ?? entry.name) === username).map((entry) => entry.uuid);
+}
+
+/** Resource pack offers: one pack at a time up to 1.20.2, packs added by UUID from 1.20.3. */
+const RESOURCE_PACK_PACKETS = new Set(['resource_pack_send', 'add_resource_pack']);
 
 /**
  * Offline login (no Mojang account) that still hands minecraft-protocol a profile and its key, the
@@ -244,6 +272,13 @@ class Bot {
     this.keyed = keyed;
     this.stats = { packets: 0, chunks: 0, signedChat: 0, lastPacket: Date.now(), errors: [], kicked: null, ended: null };
     this.messages = [];
+    /**
+     * What the servers it played on said, in order: brands (with the protocol state and game mode
+     * the bot was in when each arrived), resource pack offers, the UUIDs it was listed under.
+     */
+    this.brands = [];
+    this.resourcePacks = [];
+    this.listedAs = [];
     this.tabList = new TabList(protocol);
     this.quitting = false;
     this.chatSession = false;
@@ -254,6 +289,8 @@ class Bot {
       if (meta.name === 'map_chunk') this.stats.chunks++;
       else if (meta.name === 'map_chunk_bulk') this.stats.chunks += data.meta?.length ?? 1; // 1.7, 1.8
       else if (meta.name === 'player_chat' && data.signature) this.stats.signedChat++;
+      else if (RESOURCE_PACK_PACKETS.has(meta.name)) this.resourcePacks.push({ url: data.url, hash: data.hash, id: data.uuid });
+      else if (meta.name === 'player_info') this.listedAs.push(...listedUuids(data, username));
       this.tabList.apply(meta.name, data);
     });
     // From 1.19.3 a server announces a player's chat session to everyone, the player included,
@@ -262,10 +299,19 @@ class Bot {
       const own = sameUuid(bot._client.uuid);
       if (Array.isArray(packet.data) && packet.data.some((p) => p.chatSession && own(p.uuid))) this.chatSession = true;
     });
+    // mineflayer decodes the brand on the channel of the version: `MC|Brand` before 1.13.
+    for (const channel of ['MC|Brand', 'minecraft:brand']) {
+      bot._client.on(channel, (brand) => this.brands.push({ brand, state: bot._client.state, gameMode: this.gameMode() }));
+    }
     bot.on('error', (e) => this.stats.errors.push(String(e?.stack ?? e)));
     bot.on('kicked', (reason) => { this.stats.kicked = text(reason); });
     bot.on('end', (reason) => { if (!this.quitting) this.stats.ended = String(reason ?? 'unknown'); });
     bot.on('message', (message) => this.messages.push(message.toString()));
+  }
+
+  /** The UUID the proxy gave the player in its Login Success. */
+  get uuid() {
+    return this.bot._client.uuid;
   }
 
   /** `survival`, `creative`, `adventure` or `spectator`, as last announced by the server. */
@@ -297,6 +343,31 @@ class Bot {
     return this.waitFor(() => this.gameMode() === mode, `game mode ${mode} (is ${this.gameMode()})`, timeoutMs);
   }
 
+  /**
+   * Waits until one of the lists the bot keeps (`brands`, `resourcePacks`, `listedAs`) has an entry
+   * at `index`, and returns it.
+   */
+  async waitForEntry(list, index, what, timeoutMs) {
+    await this.waitFor(() => this[list].length > index, what, timeoutMs);
+    return this[list][index];
+  }
+
+  /**
+   * Resolves with the first chat line from index `from` on that matches `pattern`; on a time-out,
+   * the error quotes the last lines received instead.
+   */
+  async waitForMessage(pattern, what, timeoutMs, from = 0) {
+    let found;
+    try {
+      await this.waitFor(() => (found = this.messages.slice(from).find((m) => pattern.test(m))) !== undefined, what, timeoutMs);
+    } catch (e) {
+      const last = this.messages.slice(Math.max(from, this.messages.length - 3)).map((m) => JSON.stringify(m));
+      e.message += last.length ? `; last chat lines: ${last.join(', ')}` : '; no chat line received';
+      throw e;
+    }
+    return found;
+  }
+
   /** Sends a chat command and resolves with the first chat line matching `reply`. */
   async command(command, reply, timeoutMs = 10_000) {
     const from = this.messages.length;
@@ -308,10 +379,7 @@ class Bot {
     } else {
       this.bot.chat(`/${command}`);
     }
-    if (!reply) return null;
-    let found = null;
-    await this.waitFor(() => (found = this.messages.slice(from).find((m) => reply.test(m))) !== undefined, `reply to /${command}`, timeoutMs);
-    return found;
+    return reply ? this.waitForMessage(reply, `reply to /${command}`, timeoutMs, from) : null;
   }
 
   chat(message) {

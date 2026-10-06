@@ -3,10 +3,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { BACKEND_PROTOCOL_ERRORS } from '../src/backend.js';
+import { BACKEND_PROTOCOL_ERRORS, backendGroups } from '../src/backend.js';
 import { connectClient } from '../src/clients/index.js';
 import { announcedProtocol } from '../src/clients/mineflayer.js';
-import { LOBBY_MODE, SCENARIOS, SURVIVAL_MODE, checkStatus, checkStayed, checkTabLists, features } from '../src/scenarios.js';
+import { LOBBY_MODE, QUIRKS, SCENARIOS, SURVIVAL_MODE, checkStatus, checkStayed, checkTabLists, features, fromSurvival } from '../src/scenarios.js';
 import { findEntry, jobsForTier, loadMatrix, resolveVariant } from '../src/versions.js';
 import { WARP_FAILURES } from '../src/warp.js';
 
@@ -67,9 +67,23 @@ describe('versions.json', () => {
     assert.ok(protocols.some((p) => p >= CONFIGURATION_PHASE), 'no version from 1.20.2');
   });
 
+  it('tests modern forwarding on pull requests', () => {
+    const variants = jobsForTier(matrix, 'pr').flatMap((job) => job.variants.split(','));
+    assert.ok(variants.some((name) => resolveVariant(matrix, name).forwarding !== 'none'));
+  });
+
+  it('only schedules variants that each version can run', () => {
+    for (const tier of Object.keys(matrix.tiers)) {
+      for (const job of jobsForTier(matrix, tier)) {
+        const variants = job.variants.split(',').map((name) => resolveVariant(matrix, name));
+        for (const group of backendGroups(findEntry(matrix, job.mc), variants)) assert.equal(group.skip, null, `${tier} ${job.mc}: ${group.skip}`);
+      }
+    }
+  });
+
   it('tests the profile key login of 1.19 to 1.19.2 on pull requests', () => {
     const protocols = jobsForTier(matrix, 'pr').map((job) => job.protocol);
-    assert.ok(protocols.some((p) => features(p).profileKeys), 'no version from 1.19 to 1.19.2');
+    assert.ok(protocols.some((p) => features(p).profileKeys === true), 'no version from 1.19 to 1.19.2');
   });
 
   it('requires the newest version, and every variant on the newest the bots speak natively, on pull requests', () => {
@@ -88,6 +102,17 @@ describe('versions.json', () => {
     for (const job of jobsForTier(matrix, 'pr')) {
       for (const variant of job.variants.split(',')) {
         assert.ok(full.get(job.mc)?.has(variant), `${job.mc} ${variant} runs on pull requests but not in the full tier`);
+      }
+    }
+  });
+
+  it('works around only the server quirks the scenarios know, each with its issue', () => {
+    const quirky = matrix.versions.filter((v) => v.server.quirks);
+    assert.ok(quirky.length, 'no server quirk left: drop QUIRKS and what reads them');
+    for (const v of quirky) {
+      for (const [name, reason] of Object.entries(v.server.quirks)) {
+        assert.ok(Object.hasOwn(QUIRKS, name), `${v.version}: unknown server quirk "${name}"`);
+        assert.match(reason, /\(#\d+\)/, `${v.version} ${name}: reason links no issue`);
       }
     }
   });
@@ -118,25 +143,59 @@ describe('variants', () => {
     assert.equal(v.online, false);
     assert.equal(v.passthrough, false);
   });
+
+  it('forward nothing unless they say so', () => {
+    assert.equal(resolveVariant(matrix, 'online').forwarding, 'none');
+    assert.equal(resolveVariant(matrix, 'velocity').forwarding, 'velocity');
+  });
+
+  it('refuse a forwarding mode Warp does not have', () => {
+    assert.throws(() => resolveVariant(matrix, 'online', { forwarding: 'bungeecord' }), /forwarding "bungeecord" is not one of none, velocity/);
+  });
 });
 
 describe('scenario features', () => {
-  it('switches servers on every version', () => {
-    for (const protocol of [47, 762, 763, 764, 769]) assert.equal(features(protocol).switching, true, String(protocol));
+  it('switches servers on every version, through Warp', () => {
+    for (const protocol of [47, 762, 763, 764, 769, 777]) assert.equal(features(protocol).switching, true, String(protocol));
+    assert.equal(features(769, { direct: true }).switching, 'no proxy in a control run');
+  });
+
+  it('checks forwarded identities where they differ from what a backend derives itself: online', () => {
+    assert.equal(features(769, { forwarding: 'velocity', online: true }).forwarding, true);
+    assert.equal(features(769, { forwarding: 'velocity' }).forwarding, 'offline, Warp forwards the UUID a backend derives itself');
+    assert.equal(features(769, { online: true }).forwarding, 'the variant forwards no player info');
+    assert.equal(features(769, { direct: true, forwarding: 'velocity', online: true }).forwarding, 'no proxy in a control run');
+  });
+
+  it('tells survival’s brand from a late one of the lobby, by when it arrives', () => {
+    assert.equal(fromSurvival({ state: 'configuration', gameMode: LOBBY_MODE }), true, 'configuration phase of the switch (1.20.2+)');
+    assert.equal(fromSurvival({ state: 'play', gameMode: SURVIVAL_MODE }), true, 'after survival’s Join Game (before 1.20.2)');
+    assert.equal(fromSurvival({ state: 'play', gameMode: LOBBY_MODE }), false, 'still on the lobby');
+  });
+
+  it('offers resource packs from 1.8, where they became a packet of their own', () => {
+    assert.equal(features(47).resourcePack, true);
+    assert.equal(features(5).resourcePack, 'no Resource Pack Send packet before 1.8');
   });
 
   it('logs in with a profile key on 1.19 to 1.19.2 only, the versions whose Login Start carries one', () => {
     assert.deepEqual(
-      [758, 759, 760, 761].map((protocol) => features(protocol).profileKeys),
+      [758, 759, 760, 761].map((protocol) => features(protocol).profileKeys === true),
       [false, true, true, false],
     );
+    assert.equal(features(758).profileKeys, 'only 1.19 to 1.19.2 clients send a profile key in Login Start');
   });
 
   it('signs chat from 1.20, whose servers take the keys that verify chat sessions from the mock', () => {
-    assert.equal(features(47).signedChat, false);
-    assert.equal(features(762).signedChat, false); // 1.19.4: Mojang's key is bundled in authlib
+    assert.equal(features(47).signedChat, "before 1.20 a server trusts only Mojang's own key to verify chat");
+    assert.notEqual(features(762).signedChat, true); // 1.19.4: Mojang's key is bundled in authlib
     assert.equal(features(763).signedChat, true);
     assert.equal(features(769).signedChat, true);
+  });
+
+  it('knows every feature a scenario requires', () => {
+    const known = Object.keys(features(769));
+    for (const s of SCENARIOS.filter((x) => x.requires)) assert.ok(known.includes(s.requires), `${s.name} requires "${s.requires}"`);
   });
 });
 

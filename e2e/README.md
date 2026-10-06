@@ -2,11 +2,14 @@
 
 Real-protocol bots connect through Warp to real Minecraft servers, for every protocol version Warp
 supports. Unit tests check that each piece does what its author meant; these check that a player
-can actually join, play, switch servers and survive a fallback, on every version.
+can actually join, play, switch servers and survive a fallback, on every version, and that what
+the servers and players say to each other gets through: brand, chat, resource packs, and the
+player's identity when Warp forwards it.
 
 ```bash
 e2e/run.sh --mc 1.21.4                                   # one version, default variant (online)
 e2e/run.sh --mc 1.8.8,1.20.2 --variants online,offline   # several versions and variants
+e2e/run.sh --mc 1.21.4 --variants velocity               # Velocity modern forwarding
 e2e/run.sh --mc 1.21.4 --passthrough off --scenarios login,switching
 e2e/run.sh --mc 26.3 --strict                            # known-broken flags ignored: fails for real
 e2e/run.sh --mc 1.21.1 --direct                          # control run without Warp
@@ -18,13 +21,15 @@ e2e/run.sh --help
 Requirements: Node.js 22+ and a JDK that runs Gradle. Everything else (Paper or vanilla servers,
 the JDK each server needs, ViaProxy) is downloaded on first use, checked against a pinned checksum
 and cached in `~/.cache/warp-e2e` (override with `WARP_E2E_CACHE`). Without `--jar`, Warp's shadow
-jar is built with Gradle. The harness uses 8 local ports from 26100 (`--port-base` to move them).
+jar is built with Gradle. The harness uses 8 local ports from 26100 (`--port-base` to move them),
+and serves the resource packs on one the system picks.
 
 The bots are [mineflayer](https://github.com/PrismarineJS/mineflayer) bots from 1.8.8, the oldest
 version mineflayer loads. For 1.7 the harness drives
 [minecraft-protocol](https://github.com/PrismarineJS/node-minecraft-protocol) alone
 (`src/clients/legacy.js`), behind the same interface: it logs in, answers keep-alives and
-teleports, sends a movement packet every tick and reads the chat, as the vanilla 1.7 client does.
+teleports, sends a movement packet every tick and reads the chat and the server's brand, as the
+vanilla 1.7 client does.
 
 The npm dependencies are pinned in `package-lock.json`. `package.json` overrides `uuid` to 11.1.1+
 (GHSA-w5hq-g745-h8pq): the bots' Mojang and Microsoft login libraries still ask for older releases,
@@ -33,21 +38,31 @@ which the harness never uses (bots log in offline) but the dependency review rej
 ## What a run does
 
 For each version: boot two backends (`lobby` in creative mode, `survival` in adventure mode, so
-bots can tell them apart on any version), then for each variant boot Warp twice (a normal instance,
-and one whose default server is a closed port) and run the scenarios:
+bots can tell them apart on any version, each offering a resource pack of its own that the harness
+serves), then for each variant boot Warp twice (a normal instance, and one whose default server is
+a closed port) and run the scenarios:
 
 | Scenario | Checks |
 |---|---|
 | `status` | Server list ping through Warp, advertising the protocol the bot speaks (else a client lists Warp as incompatible) |
 | `login` | Join, receive chunks, land on the lobby; `/server` answers |
+| `forwarding` | Online forwarding variants only: lobby, then survival after a switch, list the player under the UUID Warp authenticated (the mock Mojang gives `e2e_forwarded` one of its own), not the one an offline-mode server derives from the name |
 | `keepalive` | One bot stays connected through the whole run (at least 65 s, past Warp's first keep-alive time-out check) |
+| `brand` | The backend's brand (`Paper`, `PaperSpigot` on 1.8, `vanilla`) reaches the player on joining, and survival's after a switch. Both brands read the same: survival's is the one that arrives in the switch's configuration phase (1.20.2+) or once the player is in adventure mode; a late one from the lobby fails |
 | `chat` | Chat lines before and after each `/server` that Warp answers itself (list, unknown server, current server): the bot must not be kicked. From 1.20, online, the bot signs its chat, so the lobby checks every acknowledgement (see below) |
+| `player-chat` | Two players on the lobby, each listing the other: a chat line from one comes back to it and reaches the other, and so does a `/tell`, a command Warp does not own and only the backend can deliver |
+| `resource-pack` | Lobby's resource pack offer (URL, SHA-1, and its id from 1.20.3) reaches the player, then survival's after a switch; each pack downloads with the SHA-1 offered |
 | `switching` | Six `/server` switches back and forth (configuration phase from 1.20.2, Join Game and Respawn before) |
 | `tab-list` | After a switch, the tab list lists none of the previous server's players: a witness stays on the lobby while another bot moves to survival. Each bot keeps the tab list as the vanilla client does (by name on 1.7, by UUID after, across a Join Game before 1.20.2), not as mineflayer does |
 | `profile-key` | 1.19 to 1.19.2 only: a bot with a chat signing key, as every client of a Microsoft account, joins (online, it signs the verify token instead of encrypting it), chats and switches. Online, Warp refuses a key Mojang did not sign, an expired one and, from 1.19.1, a key issued to another player; offline, it ignores the key and lets the first two in |
-| `crowd` | Ten bots at once, then half of them switch server at the same moment while the others stay on the lobby; those that switched must list none of those left behind |
+| `crowd` | Ten bots at once, then half of them switch server at the same moment (50 ms apart on a server with the `concurrentLogins` quirk) while the others stay on the lobby; those that switched must list none of those left behind |
 | `fallback-unreachable` | Default server down: the player lands on the next one |
 | `fallback-rejected` | Lobby refuses the login (whitelist): the player lands on survival |
+
+A scenario a run cannot hold is skipped and says why: `forwarding` without forwarding or offline
+(Warp then forwards the UUID a backend derives itself, so nothing tells them apart), `switching`
+and the fallbacks in a `--direct` run, `resource-pack` before 1.8 (offers were a plugin message,
+without the SHA-1). The features are in `features()` in `src/scenarios.js`.
 
 A run fails if a scenario fails, and also if:
 
@@ -64,7 +79,15 @@ Strict parsing also catches errors in the bots' protocol data. Those are correct
 (`correctProtocolData` in `src/clients/mineflayer.js`) once a `--direct` run proves the server
 alone triggers them, never skipped: today, the recipe serializer ids of 1.20.5 to 1.21.1. Bots also
 end their ticks as the game does from 1.21.2 (`endTicks`): mineflayer never sends a Client Tick End,
-and a 26.3 server kicks a player that sends two positions in the same tick.
+and a 26.3 server kicks a player that sends two positions in the same tick. And they answer a
+resource pack with its UUID (`answerPacksByUuid`): mineflayer's answer carries the nil UUID, which a
+server from 1.21.8 does not take for the pack it offered, so the bot never left the configuration
+phase.
+
+A backend that hangs while booting (alive, without its ready line after 240 s) has its threads
+dumped into its log (`SIGQUIT`) and is booted once more: Paper 1.16 sometimes freezes for good on
+CI runners before Warp or any player is involved (#97). Each retry is logged, annotated on GitHub,
+and listed in `result.json` (`bootRetries`) and both reports. Scenarios are never retried.
 
 Logs and `result.json` go to `e2e/build/<version>/`.
 
@@ -76,7 +99,8 @@ those acknowledgements on (#81). Servers only track signed messages, so the harn
 `src/mojang.js` is a mock Mojang, up for the whole run, that
 
 - vouches for each player in online mode (`-Dmojang.sessionserver` on Warp), with the UUID an
-  offline-mode backend gives it, so that the bot and the backend agree on the signer;
+  offline-mode backend gives it, so that the bot and the backend agree on the signer with
+  forwarding or without; `e2e_forwarded`, the `forwarding` bot, gets a UUID of its own instead;
 - signs the bots' profile keys with its own key pair, which Warp trusts through
   `-Dwarp.profilekeys.signer` in every variant (the 1.19 to 1.19.2 logins of `profile-key`);
 - publishes that key as the services key set (`/publickeys`).
@@ -91,11 +115,18 @@ still flows.
 ## Variants
 
 Defined in `versions.json`: `online` (mock Mojang session server, encryption on), `offline`,
-`transcode` (compression passthrough off), and backends compressing from a lower (`backend-lower`),
-higher (`backend-higher`) or no (`backend-uncompressed`) threshold than Warp. Variants that share a
-backend threshold share the backends; only Warp restarts between them. Ad-hoc flags (`--online`,
-`--passthrough`, `--threshold`, `--backend-threshold`) build a one-off variant. 1.7 predates
+`transcode` (compression passthrough off), backends compressing from a lower (`backend-lower`),
+higher (`backend-higher`) or no (`backend-uncompressed`) threshold than Warp, and `velocity`
+(online, with Velocity modern forwarding). Variants that share a backend threshold and forwarding
+share the backends; only Warp restarts between them. Ad-hoc flags (`--online`, `--passthrough`,
+`--threshold`, `--backend-threshold`, `--forwarding`) build a one-off variant. 1.7 predates
 compression: on 1.7.x the compression variants run uncompressed, like any 1.7 connection.
+
+With forwarding, the backends only accept players whose identity Warp vouches for: Paper's Velocity
+support is turned on (`paper.yml` up to 1.18.2, `config/paper-global.yml` from 1.19) with a secret
+generated for each boot and given to Warp in `WARP_FORWARDING_SECRET`. The identity travels in a
+login plugin message, which 1.13 introduced; Paper reads it from 1.13.1, vanilla servers never do.
+Those versions, and a `--direct` run, skip the variant and say why in the report.
 
 ## Soak
 
@@ -204,6 +235,10 @@ One entry per protocol number:
   entries run their online variants offline.
 - `server.type` is `paper`, or `vanilla` for the few versions Paper never released (1.7.2, 1.9 to
   1.9.2, 1.11, 1.16). `server.preseed` lists files an old build expects before its first boot.
+- `server.quirks`: server bugs the harness works around, by name, each with its reason and issue.
+  `concurrentLogins` (Paper 1.19 build 81: logins race on a random source it shares between
+  threads) makes `crowd` switch its bots 50 ms apart instead of at once. Quirks go into
+  `result.json` and both reports; `npm test` checks that each one is known and links an issue.
 - `knownBroken`: why the version fails, with the issue. It still runs and is reported, but does
   not fail CI (it shows as ⚠️ known broken). When it starts passing, CI says so: remove the field.
 - `knownBrokenScenarios`: the same for single scenarios, when the rest of the version works
@@ -216,12 +251,19 @@ One entry per protocol number:
 Tiers pick what runs where:
 
 - `pr`, on every pull request (required): one version per protocol era among those that pass,
-  every variant on the newest version the bots speak natively, and the newest version, through
-  ViaProxy if need be (so offline, with the transcode and backend-lower variants). A known-broken
-  version never goes there, a version with known-broken scenarios can. `npm test` fails when the
-  newest version that passes, or a variant on the newest the bots speak, is missing from it.
-- `full`, on every push to `main`, nightly, on demand, and on pull requests labelled
-  `e2e: full`: every version, more variants at era boundaries, and everything `pr` runs.
+  every variant on the newest version the bots speak natively (`velocity` included), and the
+  newest version, through ViaProxy if need be (so offline, with the transcode and backend-lower
+  variants). A known-broken version never goes there, a version with known-broken scenarios can.
+  `npm test` fails when the newest version that passes, or a variant on the newest the bots speak,
+  is missing from it.
+- `full`, on pull requests that change Warp's modules (`api/`, `protocol/`, `proxy/`, `jni/`) or
+  what the end-to-end tests run with (the harness, its npm dependencies and workflow), tests aside
+  (required, instead of `pr`; `.github/actions/changes` lists the paths), on every push to `main`,
+  nightly, on demand, and on pull requests labelled `e2e: full` (a Netty bump, say): every
+  version, more variants at era boundaries, and everything `pr` runs. `velocity` runs where
+  Paper's Velocity support changes: 1.13.1 and 1.18.2 for `paper.yml`, 1.19 for
+  `paper-global.yml`, 1.20.1 and 1.20.2 on each side of the configuration phase, and 1.21.4 and
+  26.1.2. `npm test` checks that no tier schedules a variant its version cannot run.
 
 ## Adding a Minecraft version
 
@@ -243,7 +285,8 @@ Tiers pick what runs where:
    tier's newest version to it (`npm test` says what is missing).
 
 The harness itself is tested with `npm test` (matrix consistency, failure patterns, downloads, the
-report, protocol data corrections), which CI runs before every end-to-end matrix.
+report, protocol data corrections, what the bots read from packets, backend configuration, resource
+packs, player identities), which CI runs before every end-to-end matrix.
 
 ## Packet id references
 

@@ -5,9 +5,9 @@
 //     -Dwarp.profilekeys.signer (1.19 to 1.19.2 logins), and it is published as the services key set
 //     (`/publickeys`), which backends from 1.20 fetch to verify the chat sessions those keys open.
 //
-// It vouches for each player with the UUID an offline-mode backend gives it (backends get no player
-// forwarding), so the bot and the backend agree on who signs: a chat signature covers the sender's
-// UUID.
+// It vouches for each player with the UUID an offline-mode backend gives it, so that the bot and the
+// backend agree on who signs, with player info forwarding or without: a chat signature covers the
+// sender's UUID. The exception is FORWARDED_PLAYER, which only forwarding can name right.
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 
@@ -23,6 +23,22 @@ const PROFILE_KEY_LIFETIME_MS = 24 * 60 * 60 * 1000;
 export function offlineUuid(name) {
   const hash = createHash('md5').update(`OfflinePlayer:${name}`, 'utf8').digest();
   hash[6] = (hash[6] & 0x0f) | 0x30; // version 3, name-based
+  hash[8] = (hash[8] & 0x3f) | 0x80; // IETF variant
+  return hash.toString('hex');
+}
+
+/**
+ * The one player the mock knows under a UUID of its own, as Mojang knows every player, rather than
+ * under its offline one: a backend lists it under that UUID only when it takes Warp's word on who
+ * the player is (player info forwarding). The forwarding scenario logs in with it.
+ */
+export const FORWARDED_PLAYER = 'e2e_forwarded';
+
+/** The UUID the mock vouches for `name` with, as 32 hex digits. */
+export function mojangUuid(name) {
+  if (name !== FORWARDED_PLAYER) return offlineUuid(name);
+  const hash = createHash('sha256').update(`mojang:${name}`, 'utf8').digest().subarray(0, 16);
+  hash[6] = (hash[6] & 0x0f) | 0x40; // version 4, as Mojang's
   hash[8] = (hash[8] & 0x3f) | 0x80; // IETF variant
   return hash.toString('hex');
 }
@@ -48,12 +64,12 @@ export function startMockMojang(port, signer = createSigner()) {
       return;
     }
     const name = url.searchParams.get('username') ?? 'unknown';
-    res.end(JSON.stringify({ id: offlineUuid(name), name, properties: [] }));
+    res.end(JSON.stringify({ id: mojangUuid(name), name, properties: [] }));
   });
 
   /** A valid profile key for `name`, issued to the UUID the mock vouches for. */
   const profileKeys = (name) =>
-    createProfileKeys({ signer, uuid: offlineUuid(name), expiresAt: Date.now() + PROFILE_KEY_LIFETIME_MS });
+    createProfileKeys({ signer, uuid: mojangUuid(name), expiresAt: Date.now() + PROFILE_KEY_LIFETIME_MS });
 
   return new Promise((resolve, reject) => {
     server.once('error', reject);

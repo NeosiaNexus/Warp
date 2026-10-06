@@ -71,6 +71,17 @@ describe('1.7 bot', () => {
     }
   });
 
+  it('reads the server’s brand, a bare string on 1.7, as mineflayer emits it', async () => {
+    const { bot, player } = await join();
+    try {
+      const brand = once(bot._client, 'MC|Brand');
+      player.write('custom_payload', { channel: 'MC|Brand', data: Buffer.from('PaperSpigot') });
+      assert.deepEqual(await brand, ['PaperSpigot']);
+    } finally {
+      bot.quit();
+    }
+  });
+
   it('chats and reports a kick', async () => {
     const { bot, player } = await join();
     try {

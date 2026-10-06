@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { verify } from 'node:crypto';
 import { after, before, describe, it } from 'node:test';
 
-import { offlineUuid, startMockMojang } from '../src/mojang.js';
+import { FORWARDED_PLAYER, mojangUuid, offlineUuid, startMockMojang } from '../src/mojang.js';
 import { createSigner } from '../src/profile-keys.js';
 
 /** Java: UUID.nameUUIDFromBytes("OfflinePlayer:Notch".getBytes(UTF_8)). */
@@ -23,6 +23,16 @@ describe('mock Mojang', () => {
   it('vouches for a player with that UUID, so that Warp and the backend agree on it', async () => {
     const response = await fetch(`${mojang.hasJoinedUrl}?username=Notch&serverId=-1f2e`);
     assert.deepEqual(await response.json(), { id: NOTCH_OFFLINE, name: 'Notch', properties: [] });
+  });
+
+  it('vouches for the forwarded player with a UUID of its own, which only forwarding can tell a backend', async () => {
+    const response = await fetch(`${mojang.hasJoinedUrl}?username=${FORWARDED_PLAYER}&serverId=-1f2e`);
+    const { id } = await response.json();
+
+    assert.equal(id, mojangUuid(FORWARDED_PLAYER));
+    assert.notEqual(id, offlineUuid(FORWARDED_PLAYER));
+    assert.match(id, /^[0-9a-f]{12}4[0-9a-f]{3}[89ab][0-9a-f]{15}$/, 'a version 4 UUID, as Mojang gives');
+    assert.equal(mojang.profileKeys(FORWARDED_PLAYER).uuid, id, 'its profile key is issued to it');
   });
 
   it('publishes its signer as authlib reads the services key set', async () => {

@@ -1,26 +1,29 @@
 // Warp end-to-end runner. See `e2e/run.sh --help`.
 //
 // For each requested Minecraft version: download the pinned server, boot two backends (lobby and
-// survival), then for each variant (online/offline, passthrough, thresholds) boot Warp, run the
-// scenarios with real-protocol bots, and check Warp's log for errors and buffer leaks. Backends are
-// shared by every variant that uses the same compression threshold.
+// survival), then for each variant (online/offline, passthrough, thresholds, forwarding) boot Warp,
+// run the scenarios with real-protocol bots, and check Warp's log for errors and buffer leaks.
+// Backends are shared by every variant that uses the same compression threshold and forwarding.
+import { randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, cpSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
-import { Backend, fetchPreseeded, fetchServerJar, serverCacheDir } from './backend.js';
+import { Backend, backendGroups, fetchPreseeded, fetchServerJar, serverCacheDir } from './backend.js';
 import { connectClient } from './clients/index.js';
 import { library } from './clients/mineflayer.js';
 import { findJava } from './java.js';
 import { startMockMojang } from './mojang.js';
 import { Netem } from './netem.js';
+import { startPackServer } from './packs.js';
 import { killAll, run, sleep } from './proc.js';
 import { signerPem } from './profile-keys.js';
 import { SCENARIOS, features, startKeepAlive } from './scenarios.js';
 import { SOAK, soakJvmArgs, soakMarkdown } from './soak.js';
-import { E2E_DIR, findEntry, loadMatrix, resolveVariant } from './versions.js';
+import { variantStatus, versionNotes, versionStatus } from './status.js';
+import { E2E_DIR, FORWARDING_MODES, findEntry, loadMatrix, resolveVariant } from './versions.js';
 import { Warp } from './warp.js';
 
 const ROOT = resolve(E2E_DIR, '..');
@@ -39,6 +42,7 @@ Versions and variants
   --passthrough on|off    ad-hoc variant: compression passthrough (default on)
   --threshold N           ad-hoc variant: Warp's compression threshold (default 256)
   --backend-threshold N   ad-hoc variant: backends' network-compression-threshold (default: Warp's)
+  --forwarding MODE       ad-hoc variant: player info forwarding, ${FORWARDING_MODES.join(' or ')} (default none)
   --scenarios LIST        subset of: ${SCENARIOS.map((s) => s.name).join(', ')}
 
 Soak and network
@@ -70,6 +74,7 @@ async function main() {
       passthrough: { type: 'string' },
       threshold: { type: 'string' },
       'backend-threshold': { type: 'string' },
+      forwarding: { type: 'string' },
       scenarios: { type: 'string' },
       soak: { type: 'string' },
       netem: { type: 'string' },
@@ -106,34 +111,45 @@ async function main() {
   // Warp checks online logins against it.
   const mojang = await startMockMojang(ports.mojang);
   const results = [];
+  const packServer = await startPackServer(['lobby', 'survival']);
   try {
     if (netem) {
       await netem.start();
       log(`netem on 127.0.0.1:${netem.ports.join(', ')}, both ways: ${netem.spec}`);
     }
     for (const { entry, variants } of runs) {
-      results.push(await runVersion({ matrix, entry, variants: adaptVariants(entry, variants), scenarios, ports, netem, jar, mojang, opts }));
+      results.push(await runVersion({ matrix, entry, variants: adaptVariants(entry, variants), scenarios, ports, netem, packs: packServer.packs, jar, mojang, opts }));
     }
   } finally {
     netem?.stop();
-    await mojang.close();
+    await Promise.all([mojang.close(), packServer.close()]);
   }
   report(results, opts);
   return results.some((r) => r.status === 'fail') ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
-// One version: backends per threshold, Warp per variant
+// One version: backends per threshold and forwarding, Warp per variant
 // ---------------------------------------------------------------------------
 
-async function runVersion({ matrix, entry, variants, scenarios, ports, netem, jar, mojang, opts }) {
+async function runVersion({ matrix, entry, variants, scenarios, ports, netem, packs, jar, mojang, opts }) {
   const cache = opts.cache;
   const runDir = join(opts.out, entry.version);
   rmSync(runDir, { recursive: true, force: true });
   const logDir = join(runDir, 'logs');
   mkdirSync(logDir, { recursive: true });
   const started = Date.now();
-  const result = { version: entry.version, protocol: entry.protocol, server: describeServer(entry.server), knownBroken: entry.knownBroken ?? null, variants: [] };
+  const result = {
+    version: entry.version,
+    protocol: entry.protocol,
+    server: describeServer(entry.server),
+    knownBroken: entry.knownBroken ?? null,
+    // What the harness does differently on this server, and why (versions.json `server.quirks`).
+    quirks: entry.server.quirks ?? {},
+    // Backends that hung while booting and were booted again (Backend#boot).
+    bootRetries: [],
+    variants: [],
+  };
   const knownBroken = Boolean(entry.knownBroken) && !opts.strict;
 
   group(`Minecraft ${entry.version} (protocol ${entry.protocol}) on ${result.server}`);
@@ -144,12 +160,17 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, netem, ja
       fetchServerJar(entry.server, cache),
       fetchPreseeded(entry.server, cache),
     ]);
-    const thresholds = [...new Set(variants.map((v) => v.backendThreshold))];
-    for (const backendThreshold of thresholds) {
-      const backends = await startBackends({ entry, serverJar, serverJava, preseeded, backendThreshold, ports, runDir, logDir, cache, mojang });
+    for (const group of backendGroups(entry, variants, { direct: opts.direct })) {
+      if (group.skip) {
+        for (const variant of group.variants) result.variants.push(skipVariant(variant, group.skip));
+        continue;
+      }
+      // A fresh secret for each boot of forwarding backends, shared with the Warp instances.
+      const forwarding = group.forwarding && { ...group.forwarding, secret: randomBytes(16).toString('hex') };
+      const backends = await startBackends({ entry, serverJar, serverJava, preseeded, threshold: group.threshold, forwarding, packs, ports, runDir, logDir, cache, mojang, retries: result.bootRetries });
       try {
-        for (const variant of variants.filter((v) => v.backendThreshold === backendThreshold)) {
-          result.variants.push(await runVariant({ matrix, entry, variant, scenarios, backends, ports, netem, jar, warpJava, runDir, logDir, mojang, opts }));
+        for (const variant of group.variants) {
+          result.variants.push(await runVariant({ matrix, entry, variant, scenarios, backends, forwarding, packs, ports, netem, jar, warpJava, runDir, logDir, mojang, opts }));
         }
       } finally {
         await stopBackends(backends, result);
@@ -159,13 +180,14 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, netem, ja
     result.variants.push({ name: 'setup', status: 'fail', scenarios: [], failures: [String(e.stack ?? e)] });
   }
   result.seconds = Math.round((Date.now() - started) / 1000);
-  result.status = classify(result.variants.every((v) => v.status === 'pass'), knownBroken);
+  const ran = result.variants.filter((v) => v.status !== 'skip');
+  result.status = ran.length ? versionStatus(ran.every((v) => v.status === 'pass'), knownBroken) : 'skip';
   writeFileSync(join(runDir, 'result.json'), `${JSON.stringify(result, null, 2)}\n`);
   endGroup();
   return result;
 }
 
-async function startBackends({ entry, serverJar, serverJava, preseeded, backendThreshold, ports, runDir, logDir, cache, mojang }) {
+async function startBackends({ entry, serverJar, serverJava, preseeded, threshold, forwarding, packs, ports, runDir, logDir, cache, mojang, retries }) {
   const template = join(serverCacheDir(entry.server, cache), 'template');
   const backends = ['lobby', 'survival'].map(
     (name, i) =>
@@ -173,24 +195,30 @@ async function startBackends({ entry, serverJar, serverJava, preseeded, backendT
         name,
         dir: join(runDir, name),
         server: entry.server,
+        protocol: entry.protocol,
         jar: serverJar,
         java: serverJava,
         port: ports[name],
-        compressionThreshold: backendThreshold,
+        compressionThreshold: threshold,
         gameMode: i === 0 ? 1 : 2,
+        resourcePack: packs[name],
+        forwarding,
         logDir,
-        logSuffix: `t${backendThreshold}`,
+        logSuffix: `t${threshold}${forwarding ? `-${forwarding.mode}-${forwarding.online ? 'online' : 'offline'}` : ''}`,
         // Only where the bots sign chat: older servers ignore the hosts or keep Mojang's bundled key.
-        mojangHost: features(entry.protocol).signedChat ? mojang.host : null,
+        mojangHost: features(entry.protocol).signedChat === true ? mojang.host : null,
       }),
   );
-  log(`booting backends (${entry.server.type} ${entry.server.version}, Java ${entry.java}, threshold ${backendThreshold})`);
+  const accepting = forwarding ? `, ${forwarding.mode} forwarding from an ${forwarding.online ? 'online' : 'offline'} proxy` : '';
+  log(`booting backends (${entry.server.type} ${entry.server.version}, Java ${entry.java}, threshold ${threshold}${accepting})`);
   const booted = Date.now();
-  for (const b of backends) {
-    b.prepare(template, preseeded);
-    b.start();
-  }
-  await Promise.all(backends.map((b) => b.ready(240_000)));
+  // Each backend booted again goes into `retries` (the version's result) and is announced.
+  const onHang = (b) => (reason) => {
+    const retry = { backend: b.name, reason, log: `logs/${basename(b.logFile)}` };
+    retries.push(retry);
+    warn(`E2E ${entry.version} backend hung while booting`, `${b.name} hung while booting (${reason}): its threads are in ${retry.log}; booting it again (#97)`);
+  };
+  await Promise.all(backends.map((b) => b.boot(template, preseeded, { onHang: onHang(b) })));
   log(`backends ready in ${((Date.now() - booted) / 1000).toFixed(1)} s`);
   saveTemplate(backends[0].dir, template);
   return { lobby: backends[0], survival: backends[1] };
@@ -212,7 +240,13 @@ async function stopBackends(backends, result) {
   if (forced.length) log(`backend(s) ${forced.join(', ')} ignored "stop" and were killed`);
 }
 
-async function runVariant({ matrix, entry, variant, scenarios, backends, ports, netem, jar, warpJava, runDir, logDir, mojang, opts }) {
+/** The outcome of a variant the version cannot run, and why. */
+function skipVariant(variant, reason) {
+  log(`variant ${variant.name}: skipped, ${reason}`);
+  return { name: variant.name, settings: describeVariant(variant), status: 'skip', reason, scenarios: [], failures: [] };
+}
+
+async function runVariant({ matrix, entry, variant, scenarios, backends, forwarding, packs, ports, netem, jar, warpJava, runDir, logDir, mojang, opts }) {
   const label = `${entry.version} ${variant.name}`;
   log(`variant ${variant.name}: ${describeVariant(variant)}`);
   const outcome = { name: variant.name, settings: describeVariant(variant), scenarios: [], failures: [], stacks: [], shutdown: [] };
@@ -225,6 +259,7 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
     profileKeySigner: signerPem(mojang.signer),
     passthrough: variant.passthrough,
     threshold: variant.threshold,
+    forwarding,
     logDir,
   };
   // --direct: control run without Warp, to tell a proxy bug from a client or server quirk.
@@ -256,12 +291,13 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
     entry,
     variant,
     direct: opts.direct,
-    features: opts.direct ? { proxy: false, switching: false } : { proxy: true, ...features(entry.protocol) },
+    features: features(entry.protocol, { direct: opts.direct, forwarding: variant.forwarding, online: variant.online }),
     client: connectClient(entry, { tools: matrix.tools, cache: opts.cache, java: warpJava, ports, targets: Object.values(targets), logDir, runDir }),
     warp: { port: targets.warp, instance: instances[0] ?? null },
     warpAlt: { port: targets.warpAlt },
     lobby: backends.lobby,
     survival: backends.survival,
+    packs,
     mojang,
     bots: Number(opts.bots),
     // --soak: its duration, where it writes its time series, and the report it leaves for the summary.
@@ -324,9 +360,9 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
 }
 
 async function runScenario(scenario, ctx) {
-  if (scenario.requires && !ctx.features[scenario.requires]) {
-    return record({ name: scenario.name, status: 'skip', seconds: 0, detail: `needs ${scenario.requires} (not in protocol ${ctx.entry.protocol})` });
-  }
+  // `true`, or why this run lacks the feature the scenario needs.
+  const support = scenario.requires ? ctx.features[scenario.requires] : true;
+  if (support !== true) return record({ name: scenario.name, status: 'skip', seconds: 0, detail: support });
   const knownBroken = ctx.knownBrokenScenarios[scenario.name];
   const marks = knownBroken ? ctx.processes().map((p) => [p, p.mark()]) : [];
   const result = await attempt(scenario.name, () => scenario.run(ctx));
@@ -375,9 +411,18 @@ function resolveVariants(matrix, opts) {
   }
   if (opts.threshold) adHoc.threshold = Number(opts.threshold);
   if (opts['backend-threshold']) adHoc.backendThreshold = Number(opts['backend-threshold']);
+  if (opts.forwarding) {
+    if (!FORWARDING_MODES.includes(opts.forwarding)) throw new UsageError(`--forwarding takes ${FORWARDING_MODES.join(' or ')}`);
+    adHoc.forwarding = opts.forwarding;
+  }
   if (Object.keys(adHoc).length && opts.variants) throw new UsageError('use either --variants or ad-hoc flags, not both');
   if (Object.keys(adHoc).length) {
-    const name = [adHoc.online ? 'online' : 'offline', adHoc.passthrough === false ? 'transcode' : null, adHoc.backendThreshold !== undefined ? `backend${adHoc.backendThreshold}` : null]
+    const name = [
+      adHoc.online ? 'online' : 'offline',
+      adHoc.passthrough === false ? 'transcode' : null,
+      adHoc.backendThreshold !== undefined ? `backend${adHoc.backendThreshold}` : null,
+      adHoc.forwarding !== 'none' ? adHoc.forwarding : null,
+    ]
       .filter(Boolean)
       .join('-');
     return [{ ...resolveVariant(matrix, 'offline', adHoc), name }];
@@ -437,11 +482,6 @@ async function buildWarp() {
 // Reporting
 // ---------------------------------------------------------------------------
 
-function classify(passed, knownBroken) {
-  if (knownBroken) return passed ? 'xpass' : 'xfail';
-  return passed ? 'pass' : 'fail';
-}
-
 const ICONS = { pass: '✅', fail: '❌', xfail: '⚠️ known broken', xpass: '🎉 fixed?', skip: '⏭️' };
 const SCENARIO_ICONS = { pass: '✅', fail: '❌', xfail: '⚠️', xpass: '🎉', skip: '⏭️' };
 
@@ -449,6 +489,7 @@ function report(results, opts) {
   console.log('\nSummary');
   for (const r of results) {
     console.log(`  ${r.status.toUpperCase().padEnd(5)} ${r.version.padEnd(8)} ${r.seconds}s  ${r.variants.map((v) => `${v.name}:${v.status}`).join(' ')}`);
+    for (const note of versionNotes(r)) console.log(`        ${note}`);
     if (!GITHUB) continue;
     if (r.status === 'xpass') {
       console.log(`::warning title=E2E ${r.version} passes::${r.version} is listed as known broken but passed: remove it from the list in e2e/versions.json`);
@@ -468,13 +509,13 @@ function markdown(results) {
   const soaks = results.flatMap((r) => r.variants.filter((v) => v.soak).map((v) => soakMarkdown(r, v)));
   const rows = results.flatMap((r) =>
     r.variants.filter((v) => !v.soak).map((v) => {
-      const cells = v.scenarios.map((s) => `${SCENARIO_ICONS[s.status]} ${s.name}`).join(' · ');
-      const status = r.knownBroken && v.status === 'fail' ? 'xfail' : r.knownBroken ? 'xpass' : v.status;
-      return `| ${r.version} | ${r.protocol} | ${v.name} | ${ICONS[status]} | ${cells}${v.failures?.length ? ` · ❌ ${v.failures.length} log failure(s)` : ''} | ${r.seconds}s |`;
+      const cells = v.status === 'skip' ? v.reason : v.scenarios.map((s) => `${SCENARIO_ICONS[s.status]} ${s.name}`).join(' · ');
+      return `| ${r.version} | ${r.protocol} | ${v.name} | ${ICONS[variantStatus(r, v)]} | ${cells}${v.failures?.length ? ` · ❌ ${v.failures.length} log failure(s)` : ''} | ${r.seconds}s |`;
     }),
   );
   const table = rows.length ? `| Version | Protocol | Variant | Result | Scenarios | Time |\n|---|---|---|---|---|---|\n${rows.join('\n')}\n` : '';
-  return [...soaks, table].filter(Boolean).join('\n');
+  const notes = results.flatMap((r) => versionNotes(r).map((note) => `- ${r.version}: ${note}\n`)).join('');
+  return [...soaks, table, notes].filter(Boolean).join('\n');
 }
 
 function printMatrix(matrix) {
@@ -491,12 +532,18 @@ function describeServer(server) {
 }
 
 function describeVariant(v) {
-  return `${v.online ? 'online' : 'offline'}, passthrough ${v.passthrough ? 'on' : 'off'}, threshold warp=${v.threshold} backend=${v.backendThreshold}`;
+  const forwarding = v.forwarding === 'none' ? '' : `, ${v.forwarding} forwarding`;
+  return `${v.online ? 'online' : 'offline'}, passthrough ${v.passthrough ? 'on' : 'off'}, threshold warp=${v.threshold} backend=${v.backendThreshold}${forwarding}`;
 }
 
 const firstLine = (e) => String(e?.message ?? e).split('\n')[0];
 const secondsSince = (t) => Math.round((Date.now() - t) / 100) / 10;
 const log = (message) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${message}`);
+/** Logs `message`; on GitHub, also as a warning annotation of the run. */
+const warn = (title, message) => {
+  log(message);
+  if (GITHUB) console.log(`::warning title=${title}::${message}`);
+};
 const group = (title) => console.log(GITHUB ? `::group::${title}` : `\n=== ${title}`);
 const endGroup = () => GITHUB && console.log('::endgroup::');
 

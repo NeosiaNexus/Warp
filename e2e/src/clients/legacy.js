@@ -1,7 +1,8 @@
 // Bots for the versions mineflayer no longer loads (1.7.x, below its oldest supported 1.8.8):
 // minecraft-protocol alone, behind the small part of mineflayer's interface the harness uses. They
 // log in, answer keep-alives (minecraft-protocol does), confirm teleports and send a movement
-// packet every tick like the vanilla client, follow the game mode and read the chat.
+// packet every tick like the vanilla client, follow the game mode, and read the chat and the
+// server's brand.
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 
@@ -72,6 +73,11 @@ export function createBot({ host, port, username, version, auth, checkTimeoutInt
       return;
     }
     bot.emit('message', new ChatMessage(json));
+  });
+  // The server's brand, on the event mineflayer decodes it to: on 1.7 the payload is the bare
+  // UTF-8 string, without the length prefix of 1.8 and later.
+  client.on('custom_payload', (packet) => {
+    if (packet.channel === 'MC|Brand') client.emit('MC|Brand', packet.data.toString('utf8'));
   });
   client.on('kick_disconnect', (packet) => bot.emit('kicked', packet.reason));
   client.on('disconnect', (packet) => bot.emit('kicked', packet.reason)); // during login

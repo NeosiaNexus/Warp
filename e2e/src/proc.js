@@ -145,6 +145,11 @@ export class ManagedProcess {
     });
   }
 
+  /** Sends `signal` to the process, if it still runs. */
+  signal(signal) {
+    if (this.alive) this.child.kill(signal);
+  }
+
   /** Writes a line to the process's standard input (a server console command). */
   send(line) {
     if (this.alive) this.child.stdin.write(`${line}\n`);

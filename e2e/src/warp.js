@@ -41,6 +41,8 @@ export class Warp {
    * @param {number} options.threshold `compression.threshold`
    * @param {Record<string, number>} options.servers name → port of each backend
    * @param {string[]} options.fallbackOrder first entry is the default server
+   * @param {{mode: string, secret: string}|null} options.forwarding player info forwarding, with the
+   *   secret the backends share, or null for none
    * @param {string} options.logDir
    * @param {string[]} [options.jvmArgs] JVM options after the defaults (the last -Xmx wins)
    */
@@ -70,7 +72,7 @@ ${servers}
 default-server = "${this.fallbackOrder[0]}"
 fallback-order = [${this.fallbackOrder.map((s) => `"${s}"`).join(', ')}]
 forwarding {
-  mode = "none"
+  mode = "${this.forwarding?.mode ?? 'none'}"
 }
 compression {
   threshold = ${this.threshold}
@@ -95,6 +97,9 @@ compression {
     ];
     this.process = new ManagedProcess(this.name, this.java, args, {
       cwd: this.dir,
+      // The secret goes in the variable that overrides `forwarding.secret-file`, so that one set in
+      // the caller's environment cannot replace it.
+      env: this.forwarding ? { WARP_FORWARDING_SECRET: this.forwarding.secret } : undefined,
       logFile: join(this.logDir, `${this.name}.log`),
       failures: WARP_FAILURES,
     }).start();

@@ -1,31 +1,58 @@
 // End-to-end scenarios. Each one drives real-protocol bots through Warp and throws on the first
 // sign of trouble. Backends are told apart by game mode, which every version announces when a
 // player joins: lobby = creative, survival = adventure.
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 
-import { offlineUuid } from './mojang.js';
+import { FORWARDED_PLAYER, mojangUuid, offlineUuid } from './mojang.js';
+import { sha1 } from './packs.js';
 import { sleep } from './proc.js';
 import { FIRST_PROTOCOL, LAST_PROTOCOL, createProfileKeys, createSigner } from './profile-keys.js';
 
 export const LOBBY_MODE = 'creative';
 export const SURVIVAL_MODE = 'adventure';
 
+/** How servers of each type announce themselves: "Paper" ("PaperSpigot" on 1.8), "vanilla". */
+const BRANDS = { paper: /Paper/, vanilla: /vanilla/ };
+
 /** First protocol (1.20) whose servers can be made to trust the mock Mojang's key (see mojang.js). */
 export const SIGNED_CHAT = 763;
 
-export function features(protocol) {
+/**
+ * What a run offers the scenarios that require it: `true`, or why the run lacks it, which the
+ * skipped scenario reports. `proxy` and `forwarding` depend on the run, the others on the protocol.
+ * @param {number} protocol
+ * @param {{direct?: boolean, forwarding?: string, online?: boolean}} run `direct`: a control run,
+ *   without Warp; `forwarding` and `online`: the variant's forwarding mode and online mode
+ * @returns {Record<string, true|string>}
+ */
+export function features(protocol, { direct = false, forwarding = 'none', online = false } = {}) {
+  const proxy = direct ? 'no proxy in a control run' : true;
   return {
+    proxy,
     // Every version switches: through the configuration phase from 1.20.2, with the new server's
     // Join Game and a Respawn before.
-    switching: true,
+    switching: proxy,
+    // Offline, Warp forwards the UUID a backend derives from the name anyway: nothing to tell apart.
+    forwarding: all(
+      proxy,
+      forwarding !== 'none' || 'the variant forwards no player info',
+      online || 'offline, Warp forwards the UUID a backend derives itself',
+    ),
+    // Offers carry the pack's SHA-1 in a packet of their own from 1.8 (a plugin message before).
+    resourcePack: protocol >= 47 || 'no Resource Pack Send packet before 1.8',
     // 1.19 to 1.19.2 clients send their chat signing key in Login Start.
-    profileKeys: protocol >= FIRST_PROTOCOL && protocol <= LAST_PROTOCOL,
+    profileKeys: (protocol >= FIRST_PROTOCOL && protocol <= LAST_PROTOCOL) || 'only 1.19 to 1.19.2 clients send a profile key in Login Start',
     // Bots can sign their chat: from 1.20 a server fetches the keys that verify chat sessions from
     // the services host, which the harness mocks. Before, it only trusts Mojang's own key, bundled in
     // authlib, so no bot can open a chat session there.
-    signedChat: protocol >= SIGNED_CHAT,
+    signedChat: protocol >= SIGNED_CHAT || "before 1.20 a server trusts only Mojang's own key to verify chat",
   };
 }
+
+/** `true` if every condition is, else the reason of the first one that is not. */
+const all = (...conditions) => conditions.find((condition) => condition !== true) ?? true;
+
+const has = (ctx, feature) => ctx.features[feature] === true;
 
 /**
  * Checks that the bots that did not switch are still on the lobby. One the lobby dropped, which
@@ -50,7 +77,7 @@ export function checkTabLists(switchers, stayed) {
 
 /** Asks Warp where the bot is ("Servers: [lobby], survival"); every version, through Warp only. */
 async function proxyReportsServer(ctx, bot, expected) {
-  if (!ctx.features.proxy) return;
+  if (!has(ctx, 'proxy')) return;
   const reply = await bot.command('server', /^Servers:/);
   const current = /\[(\w+)\]/.exec(reply)?.[1];
   if (current !== expected) throw new Error(`/server says ${current}, expected ${expected}`);
@@ -59,6 +86,14 @@ async function proxyReportsServer(ctx, bot, expected) {
 async function joinWarp(ctx, username, target = ctx.warp, profileKeys = null) {
   return ctx.client.connect({ host: '127.0.0.1', port: target.port, username, profileKeys });
 }
+
+/** Moves the bot to survival with Warp's /server, and waits until it plays there. */
+async function switchToSurvival(bot) {
+  await bot.command('server survival');
+  await bot.waitForGameMode(SURVIVAL_MODE, 20_000);
+}
+
+const token = () => randomBytes(4).toString('hex');
 
 // ---------------------------------------------------------------------------
 // Scenarios
@@ -99,6 +134,91 @@ async function login(ctx) {
 }
 
 /**
+ * Modern forwarding: the backends (offline-mode servers) trust Warp's word on who the player is, so
+ * each one lists the player under the UUID Warp authenticated, the one the mock Mojang vouched for,
+ * rather than the one it would derive from the name ({@link FORWARDED_PLAYER} has one of its own).
+ */
+async function forwarding(ctx) {
+  const name = FORWARDED_PLAYER;
+  const expected = mojangUuid(name);
+  const bot = await joinWarp(ctx, name);
+  try {
+    if (undashed(bot.uuid) !== expected) throw new Error(`Warp logged ${name} in as ${bot.uuid}, not ${expected} from the mock Mojang`);
+    const servers = ['lobby'];
+    await expectListedAs(bot, 0, expected, 'lobby');
+    if (has(ctx, 'switching')) {
+      const listed = bot.listedAs.length;
+      await switchToSurvival(bot);
+      await expectListedAs(bot, listed, expected, 'survival');
+      servers.push('survival');
+    }
+    bot.healthy();
+    return `${servers.join(' and ')} know ${name} as ${expected}, the UUID from the mock Mojang`;
+  } finally {
+    bot.quit();
+  }
+}
+
+/**
+ * Checks the `index`-th UUID a backend listed the bot under (its Player Info entry), against
+ * `expected` (32 hex digits).
+ */
+async function expectListedAs(bot, index, expected, server) {
+  const uuid = undashed(await bot.waitForEntry('listedAs', index, `${server} listing ${bot.username}`, 10_000));
+  if (uuid === expected) return;
+  const own = uuid === offlineUuid(bot.username) ? ', the UUID it derives from the name: it took no forwarded identity' : '';
+  throw new Error(`${server} knows ${bot.username} as ${uuid}, not ${expected}${own}`);
+}
+
+/** A UUID as 32 hex digits: packets carry them dashed. */
+const undashed = (uuid) => String(uuid).replaceAll('-', '');
+
+/**
+ * The backend's brand reaches the player through Warp, on joining and after a switch. Both backends
+ * run the same server, so their brands read the same. Survival's is told apart by when it arrives:
+ * in the configuration phase the switch opens (from 1.20.2), or once survival has put the player in
+ * adventure mode (before). A brand from the lobby arriving after the switch fails the scenario.
+ */
+async function brand(ctx) {
+  const expected = BRANDS[ctx.entry.server.type];
+  const bot = await joinWarp(ctx, 'e2e_brand');
+  try {
+    const lobby = await bot.waitForEntry('brands', 0, 'the lobby brand', 10_000);
+    checkBrand(lobby, expected, 'lobby');
+    let detail = `"${lobby.brand}" from lobby`;
+    if (has(ctx, 'switching')) {
+      const before = bot.brands.length;
+      await switchToSurvival(bot);
+      await bot.waitForEntry('brands', before, 'the survival brand', 10_000);
+      for (const received of bot.brands.slice(before)) {
+        if (!fromSurvival(received)) {
+          throw new Error(`brand "${received.brand}" arrived after the switch but from lobby (${received.state}, game mode ${received.gameMode})`);
+        }
+        checkBrand(received, expected, 'survival');
+      }
+      detail += ', then from survival after a switch';
+    }
+    bot.healthy();
+    return detail;
+  } finally {
+    bot.quit();
+  }
+}
+
+/**
+ * Whether a brand the bot received after asking to switch to survival is survival's: it arrived in
+ * the configuration phase of the switch, or once the bot was in survival's game mode.
+ * @param {{state: string, gameMode: string|undefined}} received an entry of the bot's `brands`
+ */
+export function fromSurvival({ state, gameMode }) {
+  return state === 'configuration' || gameMode === SURVIVAL_MODE;
+}
+
+function checkBrand({ brand }, expected, server) {
+  if (!expected.test(brand)) throw new Error(`${server} brand "${brand}" does not match ${expected}`);
+}
+
+/**
  * Pause after each chat line: a server kicks a player who chats too fast ("Kicked for spamming":
  * each line adds 20, each tick takes 1 off, over 200 is a kick), about 10 lines in a burst.
  */
@@ -119,7 +239,7 @@ const CHAT_PACE_MS = 250;
  * (see {@link features}). Elsewhere the chat is unsigned and it only checks that chat still flows.
  */
 async function chat(ctx) {
-  const signed = ctx.features.signedChat && ctx.variant.online;
+  const signed = has(ctx, 'signedChat') && ctx.variant.online;
   const bot = await joinWarp(ctx, 'e2e_chat', ctx.warp, signed ? ctx.mojang.profileKeys('e2e_chat') : null);
   try {
     await bot.waitForGameMode(LOBBY_MODE, 10_000);
@@ -161,6 +281,71 @@ async function chat(ctx) {
   } finally {
     bot.quit();
   }
+}
+
+/**
+ * Chat between two players on the lobby, which only the backend delivers: a chat line, which it
+ * shows every player, and a `/tell`, a command Warp does not own. Each bot first lists the other, so
+ * both are in the lobby's player list, and the line must also come back to its sender: one the lobby
+ * never sent anyone fails apart from one that only missed the other player.
+ */
+async function playerChat(ctx) {
+  const bots = [];
+  try {
+    for (const name of ['e2e_chat_a', 'e2e_chat_b']) bots.push(await joinWarp(ctx, name));
+    const [alice, bob] = bots;
+    await waitForListed(alice, [bob.username]);
+    await waitForListed(bob, [alice.username]);
+    const from = bob.messages.length;
+    const line = `e2e ${token()}`;
+    await alice.say(line);
+    await bob.waitForMessage(new RegExp(line), `${alice.username}'s chat line`, 10_000, from);
+    // `/tell` on every version: 1.8 Paper does not know `/msg`, 1.13+ redirects `/tell` to it. The
+    // sender is told what was sent ("You whisper to …"), the recipient receives it.
+    const whisper = token();
+    await bob.command(`tell ${alice.username} ${whisper}`, new RegExp(whisper));
+    await alice.waitForMessage(new RegExp(whisper), `${bob.username}'s private message`, 10_000);
+    for (const bot of bots) bot.healthy();
+    return 'a chat line and a /tell went from one player to the other through lobby';
+  } finally {
+    for (const bot of bots) bot.quit();
+  }
+}
+
+/**
+ * The backend's resource pack offer reaches the player through Warp, on joining and on every
+ * switch, and the pack it points to is the one it announces.
+ */
+async function resourcePack(ctx) {
+  const bot = await joinWarp(ctx, 'e2e_pack');
+  try {
+    await expectPack(bot, 0, ctx.packs.lobby, 'lobby');
+    let detail = 'lobby offered its pack';
+    if (has(ctx, 'switching')) {
+      await switchToSurvival(bot);
+      await expectPack(bot, 1, ctx.packs.survival, 'survival');
+      detail += ', survival its own after a switch';
+    }
+    bot.healthy();
+    return `${detail}; each download has the SHA-1 offered`;
+  } finally {
+    bot.quit();
+  }
+}
+
+/**
+ * Checks the `index`-th pack offer: `server`'s pack (and its UUID, sent from 1.20.3), whose download
+ * matches the SHA-1 offered.
+ */
+async function expectPack(bot, index, pack, server) {
+  const offer = await bot.waitForEntry('resourcePacks', index, `${server}'s resource pack`, 10_000);
+  if (offer.url !== pack.url || offer.hash !== pack.sha1 || (offer.id !== undefined && offer.id !== pack.id)) {
+    const id = offer.id === undefined ? '' : `, id ${offer.id}`;
+    throw new Error(`offered ${offer.url} (SHA-1 ${offer.hash}${id}), expected ${server}'s ${pack.url} (SHA-1 ${pack.sha1}, id ${pack.id})`);
+  }
+  const response = await fetch(offer.url);
+  const downloaded = sha1(Buffer.from(await response.arrayBuffer()));
+  if (downloaded !== offer.hash) throw new Error(`${offer.url}: HTTP ${response.status}, SHA-1 ${downloaded} instead of ${offer.hash}`);
 }
 
 async function switching(ctx, rounds = 6) {
@@ -227,6 +412,17 @@ async function waitForListed(bot, names, timeoutMs = 10_000) {
   return bot.listed();
 }
 
+/** How far apart the crowd's switches go on a server with the `concurrentLogins` quirk. */
+const STAGGERED_LOGINS_MS = 50;
+
+/**
+ * What the harness does differently on a server with each quirk (versions.json `server.quirks`,
+ * each with the reason and its issue), for the reports.
+ */
+export const QUIRKS = {
+  concurrentLogins: `the crowd's switches go ${STAGGERED_LOGINS_MS} ms apart instead of at once`,
+};
+
 async function crowd(ctx) {
   const count = ctx.bots;
   const bots = [];
@@ -238,16 +434,21 @@ async function crowd(ctx) {
     await sleep(15_000);
     for (const bot of bots) bot.healthy();
     let detail = `${count} bots for 15 s`;
-    if (ctx.features.switching) {
-      // Half of them switch server at the same moment.
+    if (has(ctx, 'switching')) {
+      // Half of them switch server at the same moment, unless the server cannot log them in at once.
       const switchers = bots.slice(0, Math.ceil(count / 2));
-      for (const bot of switchers) bot.command('server survival');
+      const stagger = ctx.entry.server.quirks?.concurrentLogins ? STAGGERED_LOGINS_MS : 0;
+      for (const bot of switchers) {
+        bot.command('server survival');
+        if (stagger) await sleep(stagger);
+      }
       await Promise.all(switchers.map((bot) => bot.waitForGameMode(SURVIVAL_MODE, 30_000)));
       await sleep(2_000);
       for (const bot of bots) bot.healthy();
       const stayers = bots.slice(switchers.length);
       checkStayed(stayers);
-      detail += `, ${switchers.length} switched at once, ${checkTabLists(switchers, stayers.map((bot) => bot.username))}`;
+      const how = stagger ? `${stagger} ms apart (server quirk concurrentLogins)` : 'at once';
+      detail += `, ${switchers.length} switched ${how}, ${checkTabLists(switchers, stayers.map((bot) => bot.username))}`;
     }
     const packets = bots.reduce((sum, bot) => sum + bot.stats.packets, 0);
     const chunks = bots.reduce((sum, bot) => sum + bot.stats.chunks, 0);
@@ -335,7 +536,7 @@ async function profileKey(ctx) {
     const username = `e2e_signed_no${i}`;
     const profileKeys = createProfileKeys({
       signer: bad.signer ?? ctx.mojang.signer,
-      uuid: bad.uuid ?? offlineUuid(username),
+      uuid: bad.uuid ?? mojangUuid(username),
       expiresAt: bad.expiresAt ?? Date.now() + DAY_MS,
     });
     if (ctx.variant.online) await expectRefused(ctx, username, profileKeys, bad.what);
@@ -399,12 +600,16 @@ export async function startKeepAlive(ctx) {
 // Registry
 // ---------------------------------------------------------------------------
 
-/** Scenarios in execution order. `requires` names a feature: `proxy` (not a --direct run) or one from {@link features}. */
+/** Scenarios in execution order. `requires` names one of the {@link features}: without it, the scenario is skipped. */
 export const SCENARIOS = [
   { name: 'status', run: status },
   { name: 'login', run: login },
+  { name: 'forwarding', run: forwarding, requires: 'forwarding' },
   { name: 'keepalive', background: true },
+  { name: 'brand', run: brand },
   { name: 'chat', run: chat, requires: 'proxy' },
+  { name: 'player-chat', run: playerChat },
+  { name: 'resource-pack', run: resourcePack, requires: 'resourcePack' },
   { name: 'switching', run: switching, requires: 'switching' },
   { name: 'tab-list', run: tabList, requires: 'switching' },
   { name: 'profile-key', run: profileKey, requires: 'profileKeys' },

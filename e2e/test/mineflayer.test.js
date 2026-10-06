@@ -1,15 +1,18 @@
-// Corrections to minecraft-data and mineflayer, and the tab list model (src/clients/mineflayer.js).
-// The data corrections and the tab list are checked by parsing packets with the harness's strict
-// parser: a packet must be read to its last byte.
+// Corrections to minecraft-data and mineflayer, the tab list model, and what bots read from the
+// packets servers send (src/clients/mineflayer.js). The data corrections, the tab list and the
+// readings are checked by parsing packets with the harness's strict parser: a packet must be read
+// to its last byte.
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { describe, it } from 'node:test';
 
-import { TabList, correctProtocolData, endTicks } from '../src/clients/mineflayer.js';
+import { TabList, answerPacksByUuid, correctProtocolData, endTicks, listedUuids } from '../src/clients/mineflayer.js';
 
 const require = createRequire(import.meta.url);
 const { createDeserializer, createSerializer } = require('minecraft-protocol');
 const minecraftData = require('minecraft-data');
+// What mineflayer's resource pack plugin builds its answers with.
+const UUID = require('uuid-1345');
 
 const varInt = (value) => {
   const bytes = [];
@@ -62,12 +65,62 @@ describe('minecraft-data corrections', () => {
   });
 });
 
+/** A clientbound packet as a bot reads it, once a server has encoded it. */
+function received(version, name, params) {
+  const packet = createSerializer({ state: 'play', isServer: true, version }).createPacketBuffer({ name, params });
+  return createDeserializer({ state: 'play', isServer: false, version, noErrorLogging: true }).parsePacketBuffer(packet).data.params;
+}
+
+describe('player listings', () => {
+  const PLAYER = { name: 'e2e_forwarded', uuid: 'b9d8f59d-b9be-9abf-8372-413c0185f8dc' };
+  const OTHER = { name: 'e2e_other', uuid: '077ede02-8786-33c5-a811-ebb70f18af8a' };
+
+  it('read the UUID a server lists the player under, from one action per packet up to 1.19.2', () => {
+    const entry = ({ name, uuid }) => ({ uuid, name, properties: [], gamemode: 1, ping: 0 });
+
+    const packet = received('1.8.8', 'player_info', { action: 'add_player', data: [entry(OTHER), entry(PLAYER)] });
+
+    assert.deepEqual(listedUuids(packet, PLAYER.name), [PLAYER.uuid]);
+  });
+
+  it('read it from a set of actions from 1.19.3', () => {
+    const entry = ({ name, uuid }) => ({ uuid, player: { name, properties: [] }, listed: true });
+
+    const packet = received('1.21.4', 'player_info', { action: { add_player: true, update_listed: true }, data: [entry(PLAYER), entry(OTHER)] });
+
+    assert.deepEqual(listedUuids(packet, PLAYER.name), [PLAYER.uuid]);
+  });
+
+  it('ignore updates that add no player', () => {
+    const legacy = received('1.8.8', 'player_info', { action: 'update_latency', data: [{ uuid: PLAYER.uuid, ping: 5 }] });
+    const modern = received('1.21.4', 'player_info', { action: { update_latency: true }, data: [{ uuid: PLAYER.uuid, latency: 5 }] });
+
+    assert.deepEqual(listedUuids(legacy, PLAYER.name), []);
+    assert.deepEqual(listedUuids(modern, PLAYER.name), []);
+  });
+});
+
 describe('mineflayer corrections', () => {
   /** A client that records the name of every packet written to it. */
   function recordingClient(state = 'play') {
     const sent = [];
     return { state, sent, write: (name) => sent.push(name) };
   }
+
+  it('answers a resource pack with its UUID, which the pack offer gave as an object', () => {
+    const PACK = '8905415d-c434-4951-b900-8429e562767c';
+    const written = [];
+    const client = { write: (name, params) => written.push([name, params]) };
+
+    answerPacksByUuid(client);
+    client.write('resource_pack_receive', { uuid: new UUID(PACK), result: 3 });
+    client.write('position', { x: 1 });
+
+    assert.deepEqual(written, [['resource_pack_receive', { uuid: PACK, result: 3 }], ['position', { x: 1 }]]);
+    const serializer = createSerializer({ state: 'configuration', isServer: false, version: '26.1' });
+    const packet = serializer.createPacketBuffer({ name: 'resource_pack_receive', params: written[0][1] });
+    assert.equal(packet.subarray(1, 17).toString('hex'), PACK.replaceAll('-', ''), 'the UUID on the wire, not the nil one');
+  });
 
   it('ends the tick after each movement packet, from 1.21.2', () => {
     const client = recordingClient();
