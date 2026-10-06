@@ -168,6 +168,7 @@ describe('failure patterns', () => {
       '# A fatal error has been detected by the Java Runtime Environment:',
       '2026-10-06 03:12:27.004 [multiThreadIoEventLoopGroup-3-2] WARN  dev.warp.proxy.connection.ClientPlaySessionHandler - Invalid KeepAlive ID from player e2e_keepalive',
       '2026-10-06 03:13:12.001 [multiThreadIoEventLoopGroup-3-2] INFO  dev.warp.proxy.connection.ConnectedPlayer - Player e2e_keepalive timed out (no KeepAlive response in 44999ms)',
+      '2026-10-06 12:13:13.939 [multiThreadIoEventLoopGroup-3-6] INFO  dev.warp.proxy.connection.MinecraftConnection - Connection /127.0.0.1:38044 timed out in PLAY: the client sent nothing for 30 s (reads on, 0 bytes queued to send)',
     ]) {
       assert.ok(matches(WARP_FAILURES, line), line);
     }
