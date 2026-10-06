@@ -194,6 +194,7 @@ class MinecraftDecoderTest {
      */
     static Stream<Arguments> clientSettingsPackets() {
       return Stream.of(
+          Arguments.of(ProtocolVersion.MINECRAFT_1_7_6, 0x15, "05656e5f47420c01010201"),
           Arguments.of(ProtocolVersion.MINECRAFT_1_8, 0x15, "05656e5f47420c01017f"),
           Arguments.of(ProtocolVersion.MINECRAFT_1_12_2, 0x04, "05656e5f47420c01017f00"),
           Arguments.of(ProtocolVersion.MINECRAFT_1_16_4, 0x05, "05656e5f47420c01017f00"),

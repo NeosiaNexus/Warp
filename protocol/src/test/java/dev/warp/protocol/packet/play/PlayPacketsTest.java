@@ -365,6 +365,18 @@ class PlayPacketsTest {
           Arguments.of(ProtocolVersion.latest(), 14));
     }
 
+    /**
+     * Chat mode {@code 0x82}, a value with its high bit set, where a byte and a VarInt differ on
+     * the wire: one byte before 1.9, the two-byte VarInt {@code 82 01} from 1.9. Read the wrong
+     * way, it swallows or leaves a byte and misaligns every later field.
+     */
+    static Stream<Arguments> chatModeWithHighBit() {
+      return Stream.of(
+          Arguments.of(ProtocolVersion.MINECRAFT_1_7_6, "05656e5f47420c82010201"),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_8, "05656e5f47420c82017f"),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_9, "05656e5f47420c8201017f01"));
+    }
+
     @ParameterizedTest(name = "{0}")
     @MethodSource("capturedPackets")
     @DisplayName("should decode a client's packet completely, field by field")
@@ -415,19 +427,17 @@ class PlayPacketsTest {
       assertEquals(0, decoded.particleStatus(), "particles: all");
     }
 
-    @Test
-    @DisplayName("should read the chat mode of a 1.8 client as one byte, high bit included")
-    void readsPre19ChatModeAsOneByte() {
-      // A VarInt read would take 0x82 as a continuation byte and swallow the chat colors.
-      byte[] wire = HexFormat.of().parseHex("05656e5f47420c82017f");
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("chatModeWithHighBit")
+    @DisplayName("should keep the chat mode one byte before 1.9 and a VarInt from 1.9")
+    void keepsTheChatModeEncodingOfEachLayout(ProtocolVersion version, String wireHex) {
+      byte[] wire = HexFormat.of().parseHex(wireHex);
 
-      PlayClientSettings decoded = decode(wire, ProtocolVersion.MINECRAFT_1_8);
+      PlayClientSettings decoded = decode(wire, version);
 
       assertEquals(0x82, decoded.chatMode());
       assertTrue(decoded.chatColors());
-      assertEquals(
-          "05656e5f47420c82017f",
-          HexFormat.of().formatHex(encode(decoded, ProtocolVersion.MINECRAFT_1_8)));
+      assertEquals(wireHex, HexFormat.of().formatHex(encode(decoded, version)));
     }
 
     private static PlayClientSettings settings(
