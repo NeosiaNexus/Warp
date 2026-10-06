@@ -15,7 +15,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
-from unittest import mock
+import unittest.mock
 
 # bench-guard.py is a script, not a module: load it by path, without a __pycache__ next to it.
 sys.dont_write_bytecode = True
@@ -52,7 +52,7 @@ class GuardTest(unittest.TestCase):
         self.baseline = self.path / "alloc-baseline.json"
         self.output = self.path / "github-output"
         environment = {"GITHUB_ACTIONS": "true", "GITHUB_OUTPUT": str(self.output)}
-        patcher = mock.patch.dict(os.environ, environment)
+        patcher = unittest.mock.patch.dict(os.environ, environment)
         patcher.start()
         self.addCleanup(patcher.stop)
 
