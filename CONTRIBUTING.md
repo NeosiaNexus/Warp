@@ -67,6 +67,29 @@ type(scope): description
 - Unit tests in `src/test/java/`, integration tests in `src/integrationTest/java/`
 - All public API changes must include tests
 
+### Mutation testing
+
+[PIT](https://pitest.org) measures how much the unit tests of `protocol` and `proxy` actually
+check: it plants small bugs (mutants) in the main code, such as a flipped comparison, a removed
+call or a constant return value, and runs the tests against each one. A mutant that no test
+notices points at a gap in the tests, or at code that no behaviour depends on.
+
+```bash
+./gradlew pitest              # both modules, a few minutes
+./gradlew :protocol:pitest    # one module
+```
+
+The report is `<module>/build/reports/pitest/index.html`. Each module's mutation score, the share
+of its mutants that the tests kill, has a threshold in
+[`config/pitest/thresholds.properties`](config/pitest/thresholds.properties), and `pitest` fails
+below it. It is a ratchet: when your tests raise a score, raise the threshold to the new score
+rounded down in the same pull request, and never lower one to let a change in.
+
+The [Mutation testing](.github/workflows/mutation.yml) workflow runs on every push to `main`,
+nightly, and on demand on any branch (`gh workflow run mutation.yml --ref <branch>`). Its summary
+has the scores and, for each class, the mutants still alive with links to their lines; the HTML
+reports are attached to the run.
+
 ## Continuous Integration
 
 Every pull request runs the checks below. **CI OK** aggregates the build, the end-to-end tests and

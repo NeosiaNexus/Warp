@@ -1,0 +1,60 @@
+name: Mutation testing
+
+# PIT mutation testing of the protocol and proxy modules (warp.pitest-conventions): it fails when a
+# module's mutation score drops below its threshold in config/pitest/thresholds.properties. The run
+# summary has the scores and the mutants left alive in each class, and the HTML report is attached.
+#
+# A full analysis takes longer than pull requests should wait (and PIT's incremental analysis cannot
+# be trusted with @Nested tests), so it runs on every push to main, nightly and on demand, on any
+# branch: gh workflow run mutation.yml --ref <branch>
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
+  schedule:
+    - cron: '41 2 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+# Runs go one at a time per branch; a newer one waiting replaces an older one waiting.
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pitest:
+    name: Mutation testing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read # check out the code
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up build
+        uses: $/.github/actions/setup-build
+
+      # --continue: a module below its threshold still lets the others report.
+      - name: Run PIT
+        run: ./gradlew pitest --continue
+
+      - name: Report mutation scores
+        if: ${{ !cancelled() }}
+        run: python3 .github/scripts/mutation-summary.py >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload PIT reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-reports
+          path: '*/build/reports/pitest/'
+          if-no-files-found: warn
+          retention-days: 30

@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/NeosiaNexus/Warp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/NeosiaNexus/Warp/actions/workflows/ci.yml?query=branch%3Amain)
 [![E2E matrix](https://github.com/NeosiaNexus/Warp/actions/workflows/e2e.yml/badge.svg?branch=main)](https://github.com/NeosiaNexus/Warp/actions/workflows/e2e.yml?query=branch%3Amain)
+[![Mutation testing](https://github.com/NeosiaNexus/Warp/actions/workflows/mutation.yml/badge.svg?branch=main)](https://github.com/NeosiaNexus/Warp/actions/workflows/mutation.yml?query=branch%3Amain)
 [![CodeQL](https://github.com/NeosiaNexus/Warp/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/NeosiaNexus/Warp/actions/workflows/codeql.yml?query=branch%3Amain)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/NeosiaNexus/Warp/badge)](https://scorecard.dev/viewer/?uri=github.com/NeosiaNexus/Warp)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
@@ -96,7 +97,10 @@ Planned, not implemented yet:
 
 ## Tested on every Minecraft version
 
-Unit tests check that each piece does what its author meant. The
+Unit tests check that each piece does what its author meant, and
+[mutation testing](CONTRIBUTING.md#mutation-testing) checks the unit tests: thousands of small bugs
+are planted in the protocol and proxy code, and the share of them the tests catch can only go up,
+which every push to `main` checks. The
 [end-to-end suite](e2e/README.md) checks that a player can actually play: real-protocol bots go
 through Warp to real Paper or vanilla servers for every protocol from 1.8 to 26.3. They join,
 receive chunks, switch servers, survive a fallback and stay connected. A run also fails
