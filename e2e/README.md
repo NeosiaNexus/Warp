@@ -37,7 +37,7 @@ and one whose default server is a closed port) and run the scenarios:
 | `chat` | Chat lines before and after each `/server` that Warp answers itself (list, unknown server, current server): the bot must not be kicked. From 1.20, online, the bot signs its chat, so the lobby checks every acknowledgement (see below) |
 | `switching` | Six `/server` switches back and forth (configuration phase from 1.20.2, Join Game and Respawn before) |
 | `profile-key` | 1.19 to 1.19.2 only: a bot with a chat signing key, as every client of a Microsoft account, joins (online, it signs the verify token instead of encrypting it), chats and switches. Online, Warp refuses a key Mojang did not sign, an expired one and, from 1.19.1, a key issued to another player; offline, it ignores the key and lets the first two in |
-| `crowd` | Ten bots at once, then half of them switch server at the same moment; from 1.8 those that switched must list none of those left behind (the tab list survives a Join Game before 1.20.2) |
+| `crowd` | Ten bots at once, then half of them switch server at the same moment while the others stay on the lobby; from 1.8 those that switched must list none of those left behind (the tab list survives a Join Game before 1.20.2) |
 | `fallback-unreachable` | Default server down: the player lands on the next one |
 | `fallback-rejected` | Lobby refuses the login (whitelist): the player lands on survival |
 
