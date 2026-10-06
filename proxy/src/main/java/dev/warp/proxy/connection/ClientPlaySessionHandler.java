@@ -24,6 +24,7 @@ import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
+import dev.warp.protocol.packet.play.ChatAcknowledgement;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
@@ -114,6 +115,7 @@ final class ClientPlaySessionHandler implements SessionHandler {
     switch (playPacket) {
       case KeepAlive keepAlive -> handleKeepAlive(keepAlive);
       case ChatCommand chatCommand -> handleChatCommand(chatCommand);
+      case ChatAcknowledgement acknowledgement -> forwardToBackend(acknowledgement);
       case LegacyChatMessage chatMessage -> handleLegacyChatMessage(chatMessage);
       case PlayClientSettings settings -> handleClientSettings(settings);
       case ResourcePackResponse response -> forwardToBackend(response);
@@ -187,32 +189,51 @@ final class ClientPlaySessionHandler implements SessionHandler {
   }
 
   private void handleChatCommand(ChatCommand chatCommand) {
-    if (!handleProxyCommand(chatCommand.command())) {
+    String command = chatCommand.command();
+    if (!isProxyCommand(command)) {
       forwardToBackend(chatCommand);
+      return;
     }
+    // From 1.19.3 to 1.20.4 the client counts the chat messages a command acknowledges as
+    // delivered. The backend never sees this one, so it must still move its last-seen window by as
+    // many, or the client's next message no longer lines up with it and the player is kicked.
+    // Velocity does the same (SessionCommandHandler#consumeCommand). Sent before the command runs,
+    // while the backend is still the player's, and ahead of anything the client sends next: both
+    // connections of a player write from one event loop.
+    int offset = chatCommand.lastSeenOffset();
+    if (offset > 0) {
+      forwardToBackend(new ChatAcknowledgement(offset));
+    }
+    runProxyCommand(command);
   }
 
   private void handleLegacyChatMessage(LegacyChatMessage chatMessage) {
     // Before 1.19, a command is a chat line starting with '/'.
     String message = chatMessage.message();
-    if (message.startsWith("/") && handleProxyCommand(message.substring(1))) {
+    if (message.startsWith("/") && isProxyCommand(message.substring(1))) {
+      runProxyCommand(message.substring(1));
       return;
     }
     forwardToBackend(chatMessage);
   }
 
   /**
-   * Runs a command the proxy owns.
+   * Tells the proxy's own commands from the backend's.
    *
    * @param command the command line, without its leading {@code /}
-   * @return {@code true} if the proxy handled it, {@code false} if it belongs to the backend
+   * @return {@code true} if the proxy runs it, {@code false} if it belongs to the backend
    */
-  private boolean handleProxyCommand(String command) {
-    if (command.equals(SERVER_COMMAND) || command.startsWith(SERVER_COMMAND + " ")) {
-      handleServerCommand(command.substring(SERVER_COMMAND.length()).trim());
-      return true;
-    }
-    return false;
+  private static boolean isProxyCommand(String command) {
+    return command.equals(SERVER_COMMAND) || command.startsWith(SERVER_COMMAND + " ");
+  }
+
+  /**
+   * Runs a command the proxy owns (see {@link #isProxyCommand}).
+   *
+   * @param command the command line, without its leading {@code /}
+   */
+  private void runProxyCommand(String command) {
+    handleServerCommand(command.substring(SERVER_COMMAND.length()).trim());
   }
 
   private void handleServerCommand(String args) {

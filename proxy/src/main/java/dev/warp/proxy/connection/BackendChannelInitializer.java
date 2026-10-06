@@ -46,9 +46,6 @@ import io.netty.handler.timeout.ReadTimeoutHandler;
  */
 final class BackendChannelInitializer extends ChannelInitializer<Channel> {
 
-  /** Read timeout for backend connections. */
-  private static final int READ_TIMEOUT_SECONDS = 30;
-
   private final ConnectedPlayer player;
 
   BackendChannelInitializer(ConnectedPlayer player) {
@@ -72,7 +69,7 @@ final class BackendChannelInitializer extends ChannelInitializer<Channel> {
     ch.pipeline()
         .addLast(
             ServerChannelInitializer.READ_TIMEOUT,
-            new ReadTimeoutHandler(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+            new ReadTimeoutHandler(MinecraftConnection.READ_TIMEOUT_SECONDS, TimeUnit.SECONDS))
         .addLast(ServerChannelInitializer.FRAME_DECODER, new FrameDecoder())
         .addLast(ServerChannelInitializer.MINECRAFT_DECODER, decoder)
         .addLast(ServerChannelInitializer.FRAME_ENCODER, FrameEncoder.INSTANCE)

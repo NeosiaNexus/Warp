@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
@@ -35,6 +36,7 @@ import java.util.stream.Stream;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
+import io.netty.handler.codec.DecoderException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -114,19 +116,173 @@ class ChatCommandTest {
     }
 
     private void assertRoundtrip(ByteBuf wire, ProtocolVersion version, String command) {
-      byte[] sent = ByteBufUtil.getBytes(wire);
-      ByteBuf out = Unpooled.buffer();
-      try {
-        ChatCommand decoded = ChatCommand.CODEC.decode(wire, version);
-        ChatCommand.CODEC.encode(decoded, out, version);
+      ChatCommand decoded = roundtrip(wire, version);
 
-        assertEquals(command, decoded.command());
-        assertFalse(wire.isReadable(), "unread bytes");
-        assertArrayEquals(sent, ByteBufUtil.getBytes(out));
+      assertEquals(command, decoded.command());
+      assertEquals(0, decoded.lastSeenOffset(), "the last seen messages are sent in full");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Session commands (1.19.3 to 1.20.4)
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("session commands (1.19.3 to 1.20.4)")
+  class Session {
+
+    /** Every protocol whose commands end with an offset-based last-seen update. */
+    static Stream<ProtocolVersion> versions() {
+      return Stream.of(
+          ProtocolVersion.MINECRAFT_1_19_3,
+          ProtocolVersion.MINECRAFT_1_19_4,
+          ProtocolVersion.MINECRAFT_1_20_1,
+          ProtocolVersion.MINECRAFT_1_20_2,
+          ProtocolVersion.MINECRAFT_1_20_4);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versions")
+    @DisplayName("should read the last-seen offset of a command and write its bytes back unchanged")
+    void readsLastSeenOffset(ProtocolVersion version) {
+      ChatCommand decoded = roundtrip(sessionCommand("server", 0, 1), version);
+
+      assertEquals("server", decoded.command());
+      assertEquals(1, decoded.lastSeenOffset());
+    }
+
+    @Test
+    @DisplayName("should read the offset of /server acknowledging one message, byte for byte")
+    void exactLayout() {
+      ByteBuf wire =
+          Unpooled.wrappedBuffer(
+              ByteBufUtil.decodeHexDump(
+                  "06736572766572" // "server"
+                      + "0000018bcfe56800" // timestamp: 1700000000000
+                      + "5a175a175a175a17" // salt
+                      + "00" // no argument signatures
+                      + "01" // last-seen offset
+                      + "000008")); // acknowledged: the newest of the last 20
+
+      ChatCommand decoded = roundtrip(wire, ProtocolVersion.MINECRAFT_1_20_4);
+
+      assertEquals(1, decoded.lastSeenOffset());
+      assertEquals(8 + 8 + 1 + 1 + 3, decoded.rawSignatureData().length);
+    }
+
+    @Test
+    @DisplayName("should read the offset after argument signatures, and a multi-byte offset")
+    void signedCommand() {
+      ChatCommand decoded =
+          roundtrip(sessionCommand("msg Steve hello", 2, 300), ProtocolVersion.MINECRAFT_1_20_1);
+
+      assertEquals("msg Steve hello", decoded.command());
+      assertEquals(300, decoded.lastSeenOffset());
+    }
+
+    @Test
+    @DisplayName("should read a zero offset when the client saw nothing new")
+    void zeroOffset() {
+      ChatCommand decoded =
+          roundtrip(sessionCommand("server lobby", 0, 0), ProtocolVersion.MINECRAFT_1_19_4);
+
+      assertEquals(0, decoded.lastSeenOffset());
+    }
+
+    @Test
+    @DisplayName("should reject more argument signatures than a client sends")
+    void tooManySignatures() {
+      assertRejected(sessionCommand("msg Steve hello", 9, 0), "argument signature count: 9");
+    }
+
+    @Test
+    @DisplayName("should reject a negative last-seen offset, which a server refuses")
+    void negativeOffset() {
+      assertRejected(sessionCommand("server", 0, -1), "Negative last-seen offset");
+    }
+
+    @Test
+    @DisplayName("should reject a command cut short in its last-seen update")
+    void truncated() {
+      ByteBuf wire = sessionCommand("server", 0, 1);
+      ByteBuf cut = wire.retainedSlice(0, wire.writerIndex() - 1);
+      wire.release();
+
+      assertThrows(
+          IndexOutOfBoundsException.class,
+          () -> ChatCommand.CODEC.decode(cut, ProtocolVersion.MINECRAFT_1_20_4));
+      cut.release();
+    }
+
+    @Test
+    @DisplayName("should reject bytes after the last-seen update")
+    void trailingBytes() {
+      ByteBuf wire = sessionCommand("server", 0, 1).writeByte(0);
+
+      assertRejected(wire, "Unexpected bytes after the last-seen update: 1");
+    }
+
+    @Test
+    @DisplayName("should read no offset from 1.20.5, whose unsigned commands carry none")
+    void noOffsetFrom1205() {
+      ByteBuf wire = Unpooled.buffer();
+      McString.write(wire, "server");
+
+      ChatCommand decoded = roundtrip(wire, ProtocolVersion.MINECRAFT_1_20_5);
+
+      assertEquals(0, decoded.lastSeenOffset());
+      assertEquals(0, decoded.rawSignatureData().length);
+    }
+
+    /**
+     * A command as a 1.19.3 to 1.20.4 client sends it: {@code signatures} 256-byte argument
+     * signatures, then the last-seen update.
+     */
+    private static ByteBuf sessionCommand(String command, int signatures, int offset) {
+      ByteBuf wire = Unpooled.buffer();
+      McString.write(wire, command);
+      wire.writeLong(1_700_000_000_000L); // timestamp
+      wire.writeLong(0x5A17_5A17_5A17_5A17L); // salt
+      VarInt.write(wire, signatures);
+      for (int i = 0; i < signatures; i++) {
+        McString.write(wire, "message");
+        for (int b = 0; b < 256; b++) {
+          wire.writeByte(i + 1);
+        }
+      }
+      VarInt.write(wire, offset);
+      wire.writeMedium(0x0F_00_08); // acknowledged
+      return wire;
+    }
+
+    private static void assertRejected(ByteBuf wire, String reason) {
+      try {
+        DecoderException e =
+            assertThrows(
+                DecoderException.class,
+                () -> ChatCommand.CODEC.decode(wire, ProtocolVersion.MINECRAFT_1_20_4));
+        String message = String.valueOf(e.getMessage());
+        assertTrue(message.contains(reason), message);
       } finally {
         wire.release();
-        out.release();
       }
+    }
+  }
+
+  /** Decodes {@code wire} to its last byte and checks that encoding gives the same bytes back. */
+  private static ChatCommand roundtrip(ByteBuf wire, ProtocolVersion version) {
+    byte[] sent = ByteBufUtil.getBytes(wire);
+    ByteBuf out = Unpooled.buffer();
+    try {
+      ChatCommand decoded = ChatCommand.CODEC.decode(wire, version);
+      ChatCommand.CODEC.encode(decoded, out, version);
+
+      assertFalse(wire.isReadable(), "unread bytes");
+      assertArrayEquals(sent, ByteBufUtil.getBytes(out));
+      return decoded;
+    } finally {
+      wire.release();
+      out.release();
     }
   }
 

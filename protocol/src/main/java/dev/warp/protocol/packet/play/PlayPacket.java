@@ -39,6 +39,7 @@ public sealed interface PlayPacket extends Packet
         TabCompleteRequest,
         TabCompleteResponse,
         ChatCommand,
+        ChatAcknowledgement,
         LegacyChatMessage,
         ResourcePackResponse,
         PlayClientSettings,
