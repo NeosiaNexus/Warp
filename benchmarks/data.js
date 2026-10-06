@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791316290969,
+  "lastUpdate": 1791317756501,
   "repoUrl": "https://github.com/NeosiaNexus/Warp",
   "entries": {
     "Hot path on AMD EPYC 9V45 96-Core Processor (4 CPUs)": [
@@ -642,6 +642,86 @@ window.BENCHMARK_DATA = {
             "name": "PacketIdPeekBenchmark.peek[workload=MIXED]",
             "value": 1088.2,
             "range": "± 1.7",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "63867369+NeosiaNexus@users.noreply.github.com",
+            "name": "NeosiaNexus",
+            "username": "NeosiaNexus"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "062b3233de127e59ce29395e2056bbe51603ccac",
+          "message": "test(e2e): run Minecraft 1.7 end to end, and check the tab list after a switch on every version (#98)\n\nAdds 1.7.2 (vanilla, bridged through ViaProxy) and 1.7.10 (Paper, native) to the E2E matrix, with 1.7 bots built on minecraft-protocol alone since mineflayer starts at 1.8.8, and runs 1.7.10 on every pull request. A new tab-list scenario checks on every version that a switch leaves none of the previous server's players listed. One tab list model, keyed by name on 1.7 and by UUID after, now serves both that scenario and the crowd check, which therefore covers 1.7 too. Fixes #87.",
+          "timestamp": "2026-10-06T22:01:38+02:00",
+          "tree_id": "e3b32803899d7466eac43f486a444400bfc27b55",
+          "url": "https://github.com/NeosiaNexus/Warp/commit/062b3233de127e59ce29395e2056bbe51603ccac"
+        },
+        "date": 1791317754952,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 2318.1,
+            "range": "± 42.7",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 152.6,
+            "range": "± 1.6",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 424.4,
+            "range": "± 6",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 109532.1,
+            "range": "± 1198.4",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 731.3,
+            "range": "± 4.4",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 7659.3,
+            "range": "± 23.2",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=CHUNK]",
+            "value": 1773.9,
+            "range": "± 4.8",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=MIXED]",
+            "value": 1478.9,
+            "range": "± 2.3",
             "unit": "ns/packet",
             "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
           }
