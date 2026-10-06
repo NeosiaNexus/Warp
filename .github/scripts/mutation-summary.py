@@ -41,6 +41,11 @@ def pit_score(killed, total):
     return min(99, math.floor(100 * killed / total + 0.5))
 
 
+def annotate(level, line, title, message):
+    """Annotates a line of the thresholds file, through stderr: stdout is the summary."""
+    print(f"::{level} file={THRESHOLDS},line={line},title={title}::{message}", file=sys.stderr)
+
+
 def percent(part, whole):
     return f"{100 * part / whole:.1f}%" if whole else "n/a"
 
@@ -52,7 +57,8 @@ def bar(part, whole):
 
 def source_link(module, mutation, text):
     """Links text to the mutated line on GitHub when running in Actions, else returns it as is."""
-    server, repo, sha = (os.environ.get(k) for k in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_SHA"))
+    names = ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_SHA")
+    server, repo, sha = (os.environ.get(name) for name in names)
     if not (server and repo and sha):
         return text
     package = mutation["class"].rsplit(".", 1)[0].replace(".", "/")
@@ -70,7 +76,7 @@ def load(path):
             "class": node.findtext("mutatedClass"),
             "method": node.findtext("mutatedMethod"),
             "line": int(node.findtext("lineNumber")),
-            # "replaced int return with 0 for dev/warp/...::read": the method has its own column.
+            # "replaced int return with 0 for dev/warp/...::read": the method is listed apart.
             "description": node.findtext("description").split(" for ")[0],
         })
     return mutations
@@ -92,32 +98,31 @@ def main(paths):
         uncovered = sum(m["status"] == "NO_COVERAGE" for m in mutations)
         modules.append((module, mutations, total, killed, uncovered))
 
-    print("| Module | Mutation score | Test strength | Threshold | Mutants | Killed | Survived | No coverage |")
+    print("| Module | Mutation score | Test strength | Threshold"
+          " | Mutants | Killed | Survived | No coverage |")
     print("|---|---|---|---|---|---|---|---|")
     for module, mutations, total, killed, uncovered in modules:
-        score = pit_score(killed, total)
+        score, scored = pit_score(killed, total), f"{module} scores {percent(killed, total)}"
         threshold, line = floors.get(module, (None, None))
         if threshold is None:
             verdict = "none"
         elif score < threshold:
             verdict = f"❌ {threshold}%"
-            print(f"::error file={THRESHOLDS},line={line},title=Mutation score below threshold::"
-                  f"{module} scores {percent(killed, total)}, below its threshold of {threshold}%.",
-                  file=sys.stderr)
+            annotate("error", line, "Mutation score below threshold",
+                     f"{scored}, below its threshold of {threshold}%.")
         else:
             verdict = f"✅ {threshold}%"
             reached = math.floor(100 * killed / total) if total else 100
             if reached > threshold:
-                print(f"::notice file={THRESHOLDS},line={line},title=Mutation score above threshold::"
-                      f"{module} scores {percent(killed, total)}: raise its threshold to {reached}.",
-                      file=sys.stderr)
+                annotate("notice", line, "Mutation score above threshold",
+                         f"{scored}: raise its threshold to {reached}.")
         survived = total - killed - uncovered
         print(f"| `{module}` | {bar(killed, total)} {percent(killed, total)} "
               f"| {percent(killed, total - uncovered)} | {verdict} "
               f"| {total} | {killed} | {survived} | {uncovered} |")
 
-    print("\nA mutant is a small bug planted in the code; it is killed when a test fails because of it."
-          " Test strength leaves out the mutants no test covers.\n")
+    print("\nA mutant is a small bug planted in the code; it is killed when a test fails because of"
+          " it. Test strength leaves out the mutants no test covers.\n")
     for module, mutations, total, killed, uncovered in modules:
         alive = collections.defaultdict(list)
         for mutation in mutations:
@@ -138,6 +143,7 @@ def main(paths):
                       f" {m['description']} in `{m['method']}`{status}")
             print("\n</details>\n")
         print("</details>\n")
+
 
 if __name__ == "__main__":
     main(sys.argv[1:])
