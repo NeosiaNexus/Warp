@@ -529,12 +529,10 @@ public final class ConnectedPlayer {
    */
   private void disconnectWithReason(String reason) {
     if (clientConnection.channel().isActive()) {
-      byte[] raw = TextComponent.plainText(reason, protocolVersion);
-      ProtocolState state = clientConnection.decoder().state();
-      if (state == ProtocolState.CONFIGURATION) {
-        clientConnection.writeAndFlush(new ConfigDisconnect(raw));
+      if (clientConnection.decoder().state() == ProtocolState.CONFIGURATION) {
+        clientConnection.writeAndFlush(ConfigDisconnect.ofPlainText(reason, protocolVersion));
       } else {
-        clientConnection.writeAndFlush(new PlayDisconnect(raw));
+        clientConnection.writeAndFlush(PlayDisconnect.ofPlainText(reason, protocolVersion));
       }
     }
     disconnect();

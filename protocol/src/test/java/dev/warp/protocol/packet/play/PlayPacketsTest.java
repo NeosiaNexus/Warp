@@ -25,6 +25,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McString;
 
+import java.nio.charset.StandardCharsets;
+import java.util.HexFormat;
 import java.util.UUID;
 import java.util.stream.Stream;
 
@@ -215,6 +217,71 @@ class PlayPacketsTest {
   }
 
   // ---------------------------------------------------------------------------
+  // PlayDisconnect
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("PlayDisconnect")
+  class PlayDisconnectCodec {
+
+    static Stream<ProtocolVersion> jsonVersions() {
+      return ProtocolVersion.values().stream()
+          .filter(version -> version.isOlderThan(ProtocolVersion.MINECRAFT_1_20_3));
+    }
+
+    static Stream<ProtocolVersion> nbtVersions() {
+      return ProtocolVersion.values().stream()
+          .filter(version -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_3));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("jsonVersions")
+    @DisplayName("should write a plain text reason as a VarInt-prefixed JSON string before 1.20.3")
+    void plainTextJson(ProtocolVersion version) {
+      byte[] wire = encode(PlayDisconnect.ofPlainText("Kicked", version), version);
+
+      // VarInt 17, then {"text":"Kicked"}.
+      assertArrayEquals(utf8("\u0011{\"text\":\"Kicked\"}"), wire);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("nbtVersions")
+    @DisplayName("should write a plain text reason as an NBT string tag from 1.20.3")
+    void plainTextNbt(ProtocolVersion version) {
+      byte[] wire = encode(PlayDisconnect.ofPlainText("Kicked", version), version);
+
+      // TAG_String (8), unsigned-short length 6, then the text.
+      assertArrayEquals(utf8("\u0008\u0000\u0006Kicked"), wire);
+    }
+
+    @Test
+    @DisplayName("should roundtrip a backend's reason byte for byte")
+    void roundtrip() {
+      byte[] rawReason = utf8("\u0008\u0000\u0006Kicked");
+
+      PlayDisconnect decoded =
+          PlayDisconnect.CODEC.decode(
+              Unpooled.wrappedBuffer(rawReason), ProtocolVersion.MINECRAFT_1_21_4);
+
+      assertArrayEquals(rawReason, encode(decoded, ProtocolVersion.MINECRAFT_1_21_4));
+    }
+
+    private static byte[] encode(PlayDisconnect packet, ProtocolVersion version) {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        PlayDisconnect.CODEC.encode(packet, buf, version);
+        return ByteBufUtil.getBytes(buf);
+      } finally {
+        buf.release();
+      }
+    }
+
+    private static byte[] utf8(String text) {
+      return text.getBytes(StandardCharsets.UTF_8);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // JoinGame (minimal decode)
   // ---------------------------------------------------------------------------
 
@@ -375,36 +442,175 @@ class PlayPacketsTest {
   @DisplayName("PlayClientSettings")
   class PlayClientSettingsCodec {
 
+    /** Settings of a 1.21.4 client, every field away from its default. */
+    private static final PlayClientSettings NEWEST_SETTINGS =
+        settings((byte) 0, (byte) 0x7F, 0, true, false, 2);
+
+    /**
+     * Settings packets as node-minecraft-protocol 1.68 (the protocol library of the end-to-end
+     * bots) serialises them, packet id excluded: locale {@code en_GB}, view distance 12, chat
+     * commands only, chat colors on, then every later field away from its default (all skin parts,
+     * left hand, text filtering on, server listing refused, minimal particles), so that a field
+     * read at the wrong place cannot go unnoticed. 1.7.x sends difficulty 2 and shows the cape.
+     */
+    static Stream<Arguments> capturedPackets() {
+      return Stream.of(
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_7_6,
+              "05656e5f47420c01010201",
+              settings((byte) 2, (byte) 0x01, 1, false, true, 0)),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_8,
+              "05656e5f47420c01017f",
+              settings((byte) 0, (byte) 0x7F, 1, false, true, 0)),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_12_2,
+              "05656e5f47420c01017f00",
+              settings((byte) 0, (byte) 0x7F, 0, false, true, 0)),
+          // 1.16.4 and 1.16.5 share protocol 754
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_16_4,
+              "05656e5f47420c01017f00",
+              settings((byte) 0, (byte) 0x7F, 0, false, true, 0)),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_17_1,
+              "05656e5f47420c01017f0001",
+              settings((byte) 0, (byte) 0x7F, 0, true, true, 0)),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_18_2,
+              "05656e5f47420c01017f000100",
+              settings((byte) 0, (byte) 0x7F, 0, true, false, 0)),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_21_4,
+              "05656e5f47420c01017f00010002",
+              settings((byte) 0, (byte) 0x7F, 0, true, false, 2)));
+    }
+
+    /** Payload sizes on each side of every layout change, for {@link #NEWEST_SETTINGS}. */
+    static Stream<Arguments> payloadSizeAcrossLayoutChanges() {
+      return Stream.of(
+          Arguments.of(ProtocolVersion.MINECRAFT_1_7_2, 11),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_7_6, 11),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_8, 10),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_9, 11),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_16_4, 11),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_17, 12),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_17_1, 12),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_18, 13),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_21, 13),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_21_2, 14),
+          Arguments.of(ProtocolVersion.latest(), 14));
+    }
+
+    /**
+     * Chat mode {@code 0x82}, a value with its high bit set, where a byte and a VarInt differ on
+     * the wire: one byte before 1.9, the two-byte VarInt {@code 82 01} from 1.9. Read the wrong
+     * way, it swallows or leaves a byte and misaligns every later field.
+     */
+    static Stream<Arguments> chatModeWithHighBit() {
+      return Stream.of(
+          Arguments.of(ProtocolVersion.MINECRAFT_1_7_6, "05656e5f47420c82010201"),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_8, "05656e5f47420c82017f"),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_9, "05656e5f47420c8201017f01"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("capturedPackets")
+    @DisplayName("should decode a client's packet completely, field by field")
+    void decodesCapturedPacket(
+        ProtocolVersion version, String wireHex, PlayClientSettings expected) {
+      byte[] wire = HexFormat.of().parseHex(wireHex);
+
+      PlayClientSettings decoded = decode(wire, version);
+
+      assertEquals(expected, decoded);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("capturedPackets")
+    @DisplayName("should encode the decoded settings back to the client's exact bytes")
+    void encodesCapturedPacketIdentically(
+        ProtocolVersion version, String wireHex, PlayClientSettings decoded) {
+      byte[] forwarded = encode(decoded, version);
+
+      assertEquals(wireHex, HexFormat.of().formatHex(forwarded));
+    }
+
+    @ParameterizedTest(name = "{0}: {1} bytes")
+    @MethodSource("payloadSizeAcrossLayoutChanges")
+    @DisplayName("should write exactly the fields of each layout and read all of them back")
+    void writesOnlyTheFieldsOfEachLayout(ProtocolVersion version, int expectedSize) {
+      byte[] wire = encode(NEWEST_SETTINGS, version);
+
+      byte[] reencoded = encode(decode(wire, version), version);
+
+      assertEquals(expectedSize, wire.length);
+      assertArrayEquals(wire, reencoded);
+    }
+
     @Test
-    @DisplayName("should roundtrip at 1.20.2 (no particleStatus)")
-    void roundtrip1202() {
-      PlayClientSettings original =
-          new PlayClientSettings("en_US", (byte) 12, 0, true, (byte) 127, 1, false, true, 0);
+    @DisplayName("should give a 1.8 client the neutral defaults of the fields it does not send")
+    void defaultsFieldsAnOldClientDoesNotSend() {
+      byte[] wire = HexFormat.of().parseHex("05656e5f47420c01017f");
+
+      PlayClientSettings decoded = decode(wire, ProtocolVersion.MINECRAFT_1_8);
+
+      assertEquals(0, decoded.difficulty(), "difficulty");
+      assertEquals(1, decoded.mainHand(), "main hand: right");
+      assertFalse(decoded.enableTextFiltering(), "text filtering: off");
+      assertTrue(decoded.allowServerListings(), "server listing: allowed");
+      assertEquals(0, decoded.particleStatus(), "particles: all");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("chatModeWithHighBit")
+    @DisplayName("should keep the chat mode one byte before 1.9 and a VarInt from 1.9")
+    void keepsTheChatModeEncodingOfEachLayout(ProtocolVersion version, String wireHex) {
+      byte[] wire = HexFormat.of().parseHex(wireHex);
+
+      PlayClientSettings decoded = decode(wire, version);
+
+      assertEquals(0x82, decoded.chatMode());
+      assertTrue(decoded.chatColors());
+      assertEquals(wireHex, HexFormat.of().formatHex(encode(decoded, version)));
+    }
+
+    private static PlayClientSettings settings(
+        byte difficulty,
+        byte skinParts,
+        int mainHand,
+        boolean textFiltering,
+        boolean serverListings,
+        int particleStatus) {
+      return new PlayClientSettings(
+          "en_GB",
+          (byte) 12,
+          1,
+          true,
+          difficulty,
+          skinParts,
+          mainHand,
+          textFiltering,
+          serverListings,
+          particleStatus);
+    }
+
+    private static byte[] encode(PlayClientSettings packet, ProtocolVersion version) {
       ByteBuf buf = Unpooled.buffer();
       try {
-        PlayClientSettings.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_20_2);
-        PlayClientSettings decoded =
-            PlayClientSettings.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_2);
-        assertEquals("en_US", decoded.locale());
-        assertEquals(12, decoded.viewDistance());
-        assertEquals(0, decoded.particleStatus());
+        PlayClientSettings.CODEC.encode(packet, buf, version);
+        return ByteBufUtil.getBytes(buf);
       } finally {
         buf.release();
       }
     }
 
-    @Test
-    @DisplayName("should roundtrip at 1.21.4 (with particleStatus)")
-    void roundtrip1214() {
-      PlayClientSettings original =
-          new PlayClientSettings("fr_FR", (byte) 8, 1, false, (byte) 0, 0, true, false, 2);
-      ByteBuf buf = Unpooled.buffer();
+    private static PlayClientSettings decode(byte[] wire, ProtocolVersion version) {
+      ByteBuf buf = Unpooled.wrappedBuffer(wire);
       try {
-        PlayClientSettings.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_21_4);
-        PlayClientSettings decoded =
-            PlayClientSettings.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_21_4);
-        assertEquals("fr_FR", decoded.locale());
-        assertEquals(2, decoded.particleStatus());
+        PlayClientSettings decoded = PlayClientSettings.CODEC.decode(buf, version);
+        assertEquals(0, buf.readableBytes(), "bytes left after PlayClientSettings");
+        return decoded;
       } finally {
         buf.release();
       }
