@@ -34,7 +34,7 @@ jmh-plugin = "0.7.3"
 velocity-native = "4.2.0"
 
 # Build plugins
-shadow = "9.0.0"
+shadow = "9.6.1"
 
 [libraries]
 # Netty
