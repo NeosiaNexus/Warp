@@ -167,9 +167,10 @@ bin/bench-guard.sh --timings  # the timings of the trend (~10 minutes)
 ./gradlew :protocol:jmh -Pjmh.includes=ForwardingPath   # any benchmark, with its own settings
 ```
 
-The script builds the benchmarks and runs them on JDK 25 (`JAVA_HOME_25_X64`, `JAVA_HOME`, the
-`PATH` or the JDK that Gradle provisioned for the toolchain). Update the baseline and commit it in
-the same pull request when:
+The script builds the benchmarks and runs them on the JDK of Gradle's toolchain, the one that
+compiles them (`./gradlew :protocol:jmhJava` prints its path). Every benchmark extends
+`AbstractMicrobenchmark`, which sets its iterations and its JVM: change them there, for all of
+them. Update the baseline and commit it in the same pull request when:
 
 - the guard reports less allocation: lock the gain in, or a later change could spend it unnoticed;
 - a change allocates more on the hot path on purpose: say why in the pull request;

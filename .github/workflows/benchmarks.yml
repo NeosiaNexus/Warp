@@ -22,9 +22,11 @@ on:
 
 permissions: {}
 
-# One run per commit; runs for different commits go in parallel, each on its own runner.
+# Runs on a branch go one at a time, so that the history follows the commits and each one is
+# compared with the one measured before it. A newer run waiting replaces an older one waiting: in a
+# burst of merges, the next point covers the commits in between.
 concurrency:
-  group: benchmarks-${{ github.sha }}
+  group: benchmarks-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -35,7 +37,7 @@ jobs:
     permissions:
       contents: read # check out the code
     outputs:
-      cpu: ${{ steps.cpu.outputs.model }}
+      cpu: ${{ steps.timings.outputs.cpu }} # set by bench-guard.py, which labels the points with it
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,13 +47,8 @@ jobs:
       - name: Set up build
         uses: $/.github/actions/setup-build
 
-      - name: Identify the CPU
-        id: cpu
-        run: |
-          model=$(awk -F ': ' '/^model name/ { print $2; exit }' /proc/cpuinfo)
-          echo "model=${model:-unknown CPU}" >> "$GITHUB_OUTPUT"
-
       - name: Time the hot path
+        id: timings
         run: bin/bench-guard.sh --timings
 
       - name: Upload JMH results
