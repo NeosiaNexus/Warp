@@ -391,14 +391,12 @@ class PlayPacketsTest {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("capturedPackets")
-    @DisplayName("should forward a client's packet to the backend byte for byte")
-    void reencodesCapturedPacketIdentically(
-        ProtocolVersion version, String wireHex, PlayClientSettings ignored) {
-      byte[] wire = HexFormat.of().parseHex(wireHex);
+    @DisplayName("should encode the decoded settings back to the client's exact bytes")
+    void encodesCapturedPacketIdentically(
+        ProtocolVersion version, String wireHex, PlayClientSettings decoded) {
+      byte[] forwarded = encode(decoded, version);
 
-      byte[] reencoded = encode(decode(wire, version), version);
-
-      assertEquals(wireHex, HexFormat.of().formatHex(reencoded));
+      assertEquals(wireHex, HexFormat.of().formatHex(forwarded));
     }
 
     @ParameterizedTest(name = "{0}: {1} bytes")
