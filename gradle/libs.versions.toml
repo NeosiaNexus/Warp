@@ -5,11 +5,12 @@ adventure = "4.26.1"
 log4j = "2.26.1"
 slf4j = "2.0.17"
 guice = "7.0.0"
+guava = "33.7.2-jre"
 
 # Utilities
 caffeine = "3.2.3"
 disruptor = "4.0.0"
-gson = "2.13.2"
+gson = "2.14.0"
 configurate = "4.2.0"
 jspecify = "1.0.0"
 
@@ -21,7 +22,7 @@ errorprone-core = "2.48.0"
 errorprone-plugin = "4.2.0"
 nullaway = "0.13.1"
 spotless = "7.0.4"
-checkstyle = "13.3.0"
+checkstyle = "13.11.0"
 jacoco = "0.8.15"
 
 # Testing
@@ -35,6 +36,7 @@ velocity-native = "4.2.0"
 
 # Build plugins
 shadow = "9.0.0"
+plexus-utils = "4.0.3"
 
 [libraries]
 # Netty
@@ -67,6 +69,8 @@ disruptor = { group = "com.lmax", name = "disruptor", version.ref = "disruptor" 
 
 # DI
 guice = { group = "com.google.inject", name = "guice", version.ref = "guice" }
+# Not a direct dependency: the minimum version of the Guava that Guice brings (api/build.gradle.kts).
+guava = { group = "com.google.guava", name = "guava", version.ref = "guava" }
 
 # Utilities
 caffeine = { group = "com.github.ben-manes.caffeine", name = "caffeine", version.ref = "caffeine" }
@@ -99,6 +103,9 @@ mockito-junit-jupiter = { group = "org.mockito", name = "mockito-junit-jupiter",
 jmh-core = { group = "org.openjdk.jmh", name = "jmh-core", version.ref = "jmh" }
 jmh-generator-annprocess = { group = "org.openjdk.jmh", name = "jmh-generator-annprocess", version.ref = "jmh" }
 velocity-native = { group = "com.velocitypowered", name = "velocity-native", version.ref = "velocity-native" }
+
+# Build classpath: minimum versions of what the build plugins bring (build-logic/build.gradle.kts)
+plexus-utils = { group = "org.codehaus.plexus", name = "plexus-utils", version.ref = "plexus-utils" }
 
 [bundles]
 netty = ["netty-buffer", "netty-codec", "netty-handler", "netty-transport"]
