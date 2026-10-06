@@ -41,7 +41,7 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 **Proxying**
 
 - **Minecraft Java Edition 1.7.2 to 26.3**: every release protocol in between, each one played
-  end to end from 1.8 on (see [below](#tested-on-every-minecraft-version)).
+  end to end (see [below](#tested-on-every-minecraft-version)).
 - **Online mode**: Mojang authentication and AES/CFB8 encryption. The session server call runs on a
   virtual thread and never blocks the event loop. On 1.19 to 1.19.2, the chat signing key a client
   sends is checked against Mojang's certificate, and the client proves it holds the key by signing
@@ -103,7 +103,7 @@ Planned, not implemented yet:
 
 Unit tests check that each piece does what its author meant. The
 [end-to-end suite](e2e/README.md) checks that a player can actually play: real-protocol bots go
-through Warp to real Paper or vanilla servers for every protocol from 1.8 to 26.3. They join,
+through Warp to real Paper or vanilla servers for every protocol from 1.7.2 to 26.3. They join,
 receive chunks, switch servers, survive a fallback and stay connected. A run also fails
 if Warp logs an error, leaks a Netty buffer, or a backend drops a connection with a protocol error.
 

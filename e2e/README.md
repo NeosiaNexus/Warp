@@ -19,6 +19,12 @@ the JDK each server needs, ViaProxy) is downloaded on first use, checked against
 and cached in `~/.cache/warp-e2e` (override with `WARP_E2E_CACHE`). Without `--jar`, Warp's shadow
 jar is built with Gradle. The harness uses 8 local ports from 26100 (`--port-base` to move them).
 
+The bots are [mineflayer](https://github.com/PrismarineJS/mineflayer) bots from 1.8.8, the oldest
+version mineflayer loads. For 1.7 the harness drives
+[minecraft-protocol](https://github.com/PrismarineJS/node-minecraft-protocol) alone
+(`src/clients/legacy.js`), behind the same interface: it logs in, answers keep-alives and
+teleports, sends a movement packet every tick and reads the chat, as the vanilla 1.7 client does.
+
 The npm dependencies are pinned in `package-lock.json`. `package.json` overrides `uuid` to 11.1.1+
 (GHSA-w5hq-g745-h8pq): the bots' Mojang and Microsoft login libraries still ask for older releases,
 which the harness never uses (bots log in offline) but the dependency review rejects.
@@ -36,8 +42,9 @@ and one whose default server is a closed port) and run the scenarios:
 | `keepalive` | One bot stays connected through the whole run (at least 65 s, past Warp's first keep-alive time-out check) |
 | `chat` | Chat lines before and after each `/server` that Warp answers itself (list, unknown server, current server): the bot must not be kicked. From 1.20, online, the bot signs its chat, so the lobby checks every acknowledgement (see below) |
 | `switching` | Six `/server` switches back and forth (configuration phase from 1.20.2, Join Game and Respawn before) |
+| `tab-list` | After a switch, the tab list lists none of the previous server's players: a witness stays on the lobby while another bot moves to survival. Each bot keeps the tab list as the vanilla client does (by name on 1.7, by UUID after, across a Join Game before 1.20.2), not as mineflayer does |
 | `profile-key` | 1.19 to 1.19.2 only: a bot with a chat signing key, as every client of a Microsoft account, joins (online, it signs the verify token instead of encrypting it), chats and switches. Online, Warp refuses a key Mojang did not sign, an expired one and, from 1.19.1, a key issued to another player; offline, it ignores the key and lets the first two in |
-| `crowd` | Ten bots at once, then half of them switch server at the same moment while the others stay on the lobby; from 1.8 those that switched must list none of those left behind (the tab list survives a Join Game before 1.20.2) |
+| `crowd` | Ten bots at once, then half of them switch server at the same moment while the others stay on the lobby; those that switched must list none of those left behind |
 | `fallback-unreachable` | Default server down: the player lands on the next one |
 | `fallback-rejected` | Lobby refuses the login (whitelist): the player lands on survival |
 
@@ -86,7 +93,8 @@ Defined in `versions.json`: `online` (mock Mojang session server, encryption on)
 `transcode` (compression passthrough off), and backends compressing from a lower (`backend-lower`),
 higher (`backend-higher`) or no (`backend-uncompressed`) threshold than Warp. Variants that share a
 backend threshold share the backends; only Warp restarts between them. Ad-hoc flags (`--online`,
-`--passthrough`, `--threshold`, `--backend-threshold`) build a one-off variant.
+`--passthrough`, `--threshold`, `--backend-threshold`) build a one-off variant. 1.7 predates
+compression: on 1.7.x the compression variants run uncompressed, like any 1.7 connection.
 
 ## The matrix (`versions.json`)
 
@@ -105,12 +113,12 @@ One entry per protocol number:
 - `client`: the version string the bot announces, when it differs from `version`. The protocol
   library silently maps version strings it has no data for to a neighbouring protocol, so the
   harness refuses any entry whose bot would announce a protocol other than `protocol`.
-- `via`: for protocols the bots cannot speak (1.9.1, 1.14.2, versions newer than the library),
-  the version they speak to [ViaProxy](https://github.com/ViaVersion/ViaProxy), which translates
-  to `version`. ViaProxy cannot authenticate against an online-mode proxy, so these entries run
-  their online variants offline.
-- `server.type` is `paper`, or `vanilla` for the few versions Paper never released (1.9 to 1.9.2,
-  1.11, 1.16). `server.preseed` lists files an old build expects before its first boot.
+- `via`: for protocols the bots cannot speak (1.7.2 to 1.7.5, 1.9.1, 1.14.2, versions newer than
+  the library), the version they speak to [ViaProxy](https://github.com/ViaVersion/ViaProxy), which
+  translates to `version`. ViaProxy cannot authenticate against an online-mode proxy, so these
+  entries run their online variants offline.
+- `server.type` is `paper`, or `vanilla` for the few versions Paper never released (1.7.2, 1.9 to
+  1.9.2, 1.11, 1.16). `server.preseed` lists files an old build expects before its first boot.
 - `knownBroken`: why the version fails, with the issue. It still runs and is reported, but does
   not fail CI (it shows as ⚠️ known broken). When it starts passing, CI says so: remove the field.
 - `knownBrokenScenarios`: the same for single scenarios, when the rest of the version works

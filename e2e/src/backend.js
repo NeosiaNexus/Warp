@@ -109,6 +109,10 @@ export class Backend {
       writeFileSync(join(this.dir, 'plugins', 'bStats', 'config.yml'), 'enabled: false\n');
       mkdirSync(join(this.dir, 'plugins', 'PluginMetrics'), { recursive: true });
       writeFileSync(join(this.dir, 'plugins', 'PluginMetrics', 'config.yml'), 'opt-out: true\n');
+      // Paper 1.7.10 shows its EULA notice and sleeps 10 s unless this file exists, then creates
+      // it. Its -Dcom.mojang.eula.agree=true would skip the notice too, but that path also skips
+      // the server's setup and crashes it (Spigot's DedicatedServer#init).
+      writeFileSync(join(this.dir, '.eula-lock'), '');
     }
   }
 
@@ -125,6 +129,9 @@ export class Backend {
       '-Dlog4j2.formatMsgNoLookups=true',
       '-DPaper.IgnoreJavaVersion=true',
       '-Dpaper.disablePluginRemapping=true',
+      // Paper 1.7.10 warns about its UUID conversion and sleeps 10 s unless this is set
+      // (CraftBukkit's Main); a new server has nothing to convert. Other builds ignore it.
+      '-DIReallyKnowWhatIAmDoingThisUpdate=true',
       ...authlibHosts(this.mojangHost),
       '-jar',
       this.jar,
@@ -172,7 +179,7 @@ function authlibHosts(host) {
 
 function serverProperties(b) {
   // Numeric game mode and difficulty: servers before 1.14 do not accept names. Unknown keys are
-  // ignored by every version, so one superset works from 1.8 to the latest.
+  // ignored by every version, so one superset works from 1.7 to the latest.
   const props = {
     'server-ip': '127.0.0.1',
     'server-port': b.port,

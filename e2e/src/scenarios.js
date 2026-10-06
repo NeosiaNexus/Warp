@@ -18,9 +18,6 @@ export function features(protocol) {
     // Every version switches: through the configuration phase from 1.20.2, with the new server's
     // Join Game and a Respawn before.
     switching: true,
-    // Before 1.20.2 Warp clears the tab list on a switch. The bots follow it from 1.8, where it is
-    // keyed by UUID; 1.7 keys it by name, with a packet they do not read.
-    tabList: protocol >= 47,
     // 1.19 to 1.19.2 clients send their chat signing key in Login Start.
     profileKeys: protocol >= FIRST_PROTOCOL && protocol <= LAST_PROTOCOL,
     // Bots can sign their chat: from 1.20 a server fetches the keys that verify chat sessions from
@@ -189,6 +186,47 @@ async function switching(ctx, rounds = 6) {
   }
 }
 
+/**
+ * After a switch the tab list shows the new server's players, none of the previous server's. Before
+ * 1.20.2 the client keeps its tab list across the new server's Join Game, so Warp removes what the
+ * previous server listed (by UUID, by name on 1.7); from 1.20.2 the configuration phase clears it.
+ * A witness stays on the lobby: listed there, it must be gone once the other bot is on survival.
+ */
+async function tabList(ctx) {
+  const witness = await joinWarp(ctx, 'e2e_tab_witness');
+  try {
+    const bot = await joinWarp(ctx, 'e2e_tab_mover');
+    try {
+      const onLobby = await waitForListed(bot, [witness.username, bot.username]);
+      await bot.command('server survival');
+      await bot.waitForGameMode(SURVIVAL_MODE, 20_000);
+      // Warp removes the leftovers before the new server's Join Game, which comes before its own
+      // entries: once survival has listed the bot, anything else from the lobby is a leftover.
+      const onSurvival = await waitForListed(bot, [bot.username]);
+      if (onSurvival.includes(witness.username)) {
+        throw new Error(`the tab list on survival still lists ${witness.username}, a lobby player: ${onSurvival.join(', ')}`);
+      }
+      witness.healthy();
+      bot.healthy();
+      return `lobby listed ${onLobby.join(', ')}; survival lists ${onSurvival.join(', ')}`;
+    } finally {
+      bot.quit();
+    }
+  } finally {
+    witness.quit();
+  }
+}
+
+/** Waits until every name in `names` is in the bot's tab list, and returns all it lists. */
+async function waitForListed(bot, names, timeoutMs = 10_000) {
+  try {
+    await bot.waitFor(() => names.every((name) => bot.listed().includes(name)), `${names.join(' and ')} in the tab list`, timeoutMs);
+  } catch (e) {
+    throw new Error(`${e.message}; it lists ${bot.listed().join(', ') || 'nobody'}`);
+  }
+  return bot.listed();
+}
+
 async function crowd(ctx) {
   const count = ctx.bots;
   const bots = [];
@@ -209,10 +247,7 @@ async function crowd(ctx) {
       for (const bot of bots) bot.healthy();
       const stayers = bots.slice(switchers.length);
       checkStayed(stayers);
-      detail += `, ${switchers.length} switched at once`;
-      if (ctx.features.tabList) {
-        detail += `, ${checkTabLists(switchers, stayers.map((bot) => bot.username))}`;
-      }
+      detail += `, ${switchers.length} switched at once, ${checkTabLists(switchers, stayers.map((bot) => bot.username))}`;
     }
     const packets = bots.reduce((sum, bot) => sum + bot.stats.packets, 0);
     const chunks = bots.reduce((sum, bot) => sum + bot.stats.chunks, 0);
@@ -371,6 +406,7 @@ export const SCENARIOS = [
   { name: 'keepalive', background: true },
   { name: 'chat', run: chat, requires: 'proxy' },
   { name: 'switching', run: switching, requires: 'switching' },
+  { name: 'tab-list', run: tabList, requires: 'switching' },
   { name: 'profile-key', run: profileKey, requires: 'profileKeys' },
   { name: 'crowd', run: crowd },
   { name: 'fallback-unreachable', run: fallbackUnreachable, requires: 'proxy' },
