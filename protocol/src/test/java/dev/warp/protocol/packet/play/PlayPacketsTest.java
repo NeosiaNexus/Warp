@@ -484,6 +484,31 @@ class PlayPacketsTest {
           Arguments.of(
               ProtocolVersion.MINECRAFT_1_21_4,
               "05656e5f47420c01017f00010002",
+              settings((byte) 0, (byte) 0x7F, 0, true, false, 2)),
+          // Every protocol since sends the same bytes: vanilla 26.1 still writes these fields
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_21_5,
+              "05656e5f47420c01017f00010002",
+              settings((byte) 0, (byte) 0x7F, 0, true, false, 2)),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_21_6,
+              "05656e5f47420c01017f00010002",
+              settings((byte) 0, (byte) 0x7F, 0, true, false, 2)),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_21_8,
+              "05656e5f47420c01017f00010002",
+              settings((byte) 0, (byte) 0x7F, 0, true, false, 2)),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_21_9,
+              "05656e5f47420c01017f00010002",
+              settings((byte) 0, (byte) 0x7F, 0, true, false, 2)),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_21_11,
+              "05656e5f47420c01017f00010002",
+              settings((byte) 0, (byte) 0x7F, 0, true, false, 2)),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_26_1,
+              "05656e5f47420c01017f00010002",
               settings((byte) 0, (byte) 0x7F, 0, true, false, 2)));
     }
 
