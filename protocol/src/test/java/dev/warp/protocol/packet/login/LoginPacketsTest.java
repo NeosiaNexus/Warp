@@ -27,15 +27,26 @@ import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.codec.McUuid;
 import dev.warp.protocol.codec.VarInt;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.DecoderException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("Login packet codecs")
 class LoginPacketsTest {
@@ -109,21 +120,141 @@ class LoginPacketsTest {
   @DisplayName("LoginSuccess")
   class LoginSuccessCodec {
 
+    /** Both halves have their sign bit set, so a signed/unsigned slip would show up. */
+    private static final UUID PLAYER_UUID = UUID.fromString("f81d4fae-7dec-11d0-a765-00a0c91e6bf6");
+
+    private static final String DASHED_UUID = "f81d4fae-7dec-11d0-a765-00a0c91e6bf6";
+    private static final String UNDASHED_UUID = "f81d4fae7dec11d0a76500a0c91e6bf6";
+    private static final byte[] BINARY_UUID =
+        HexFormat.of().parseHex("f81d4fae7dec11d0a76500a0c91e6bf6");
+
+    /** The VarInt-prefixed username {@code "Notch"} as it follows the UUID on the wire. */
+    private static final byte[] NOTCH_ON_WIRE = concat(new byte[] {5}, ascii("Notch"));
+
+    /** How the player UUID is laid out on the wire. */
+    enum UuidForm {
+      UNDASHED,
+      DASHED,
+      BINARY
+    }
+
+    static Stream<Arguments> versionsAcrossUuidBoundaries() {
+      return Stream.of(
+          Arguments.of(ProtocolVersion.MINECRAFT_1_7_2, UuidForm.UNDASHED),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_7_6, UuidForm.DASHED),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_8, UuidForm.DASHED),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_12_2, UuidForm.DASHED),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_15_2, UuidForm.DASHED),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_16, UuidForm.BINARY),
+          // 1.16.4 and 1.16.5 share protocol 754
+          Arguments.of(ProtocolVersion.MINECRAFT_1_16_4, UuidForm.BINARY),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_19, UuidForm.BINARY),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_20_5, UuidForm.BINARY),
+          Arguments.of(ProtocolVersion.latest(), UuidForm.BINARY));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versionsAcrossUuidBoundaries")
+    @DisplayName("should roundtrip the uuid and username on each side of every uuid format change")
+    void roundtripAcrossUuidBoundaries(ProtocolVersion version, UuidForm form) {
+      LoginSuccess original = new LoginSuccess(PLAYER_UUID, "Notch", List.of(), false);
+
+      LoginSuccess decoded = decode(encode(original, version), version);
+
+      assertEquals(PLAYER_UUID, decoded.uuid(), form + " uuid");
+      assertEquals("Notch", decoded.username());
+      assertTrue(decoded.properties().isEmpty());
+    }
+
+    @ParameterizedTest(name = "{0} uses the {1} form")
+    @MethodSource("versionsAcrossUuidBoundaries")
+    @DisplayName("should write the uuid in the wire form of each version")
+    void writesUuidInVersionForm(ProtocolVersion version, UuidForm form) {
+      LoginSuccess packet = new LoginSuccess(PLAYER_UUID, "Notch", List.of(), false);
+
+      byte[] wire = encode(packet, version);
+
+      byte[] expected =
+          switch (form) {
+            case UNDASHED -> concat(new byte[] {32}, ascii(UNDASHED_UUID));
+            case DASHED -> concat(new byte[] {36}, ascii(DASHED_UUID));
+            case BINARY -> BINARY_UUID;
+          };
+      assertArrayEquals(expected, Arrays.copyOf(wire, expected.length));
+    }
+
     @Test
-    @DisplayName("should roundtrip for 1.8 (no properties)")
-    void roundtrip18() {
-      UUID uuid = UUID.randomUUID();
-      LoginSuccess original = new LoginSuccess(uuid, "Notch", List.of(), false);
-      ByteBuf buf = Unpooled.buffer();
-      try {
-        LoginSuccess.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_8);
-        LoginSuccess decoded = LoginSuccess.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_8);
-        assertEquals(uuid, decoded.uuid());
-        assertEquals("Notch", decoded.username());
-        assertTrue(decoded.properties().isEmpty());
-      } finally {
-        buf.release();
-      }
+    @DisplayName("should send a 1.7.2 client the uuid as a 32-character string without dashes")
+    void writesExactUndashedStringBytes() {
+      LoginSuccess packet = new LoginSuccess(PLAYER_UUID, "Notch", List.of(), false);
+
+      byte[] wire = encode(packet, ProtocolVersion.MINECRAFT_1_7_2);
+
+      assertArrayEquals(concat(new byte[] {32}, ascii(UNDASHED_UUID), NOTCH_ON_WIRE), wire);
+    }
+
+    @Test
+    @DisplayName("should send a 1.12.2 client the uuid as a 36-character dashed string")
+    void writesExactDashedStringBytes() {
+      LoginSuccess packet = new LoginSuccess(PLAYER_UUID, "Notch", List.of(), false);
+
+      byte[] wire = encode(packet, ProtocolVersion.MINECRAFT_1_12_2);
+
+      assertArrayEquals(concat(new byte[] {36}, ascii(DASHED_UUID), NOTCH_ON_WIRE), wire);
+    }
+
+    @Test
+    @DisplayName("should send a 1.16 client the uuid as 16 raw bytes")
+    void writesExactBinaryBytes() {
+      LoginSuccess packet = new LoginSuccess(PLAYER_UUID, "Notch", List.of(), false);
+
+      byte[] wire = encode(packet, ProtocolVersion.MINECRAFT_1_16);
+
+      assertArrayEquals(concat(BINARY_UUID, NOTCH_ON_WIRE), wire);
+    }
+
+    @ParameterizedTest(name = "protocol {0}")
+    @ValueSource(ints = {5, 47, 340, 578})
+    @DisplayName("should decode the dashed uuid string a 1.7.6 to 1.15.2 backend sends")
+    void decodesBackendDashedString(int protocol) {
+      ProtocolVersion version = versionOf(protocol);
+      byte[] wire = concat(new byte[] {36}, ascii(DASHED_UUID), NOTCH_ON_WIRE);
+
+      LoginSuccess decoded = decode(wire, version);
+
+      assertEquals(PLAYER_UUID, decoded.uuid());
+      assertEquals("Notch", decoded.username());
+    }
+
+    @Test
+    @DisplayName("should accept an undashed uuid string from a 1.7.6 to 1.15.2 server")
+    void acceptsUndashedStringAfter176() {
+      byte[] wire = concat(new byte[] {32}, ascii(UNDASHED_UUID), NOTCH_ON_WIRE);
+
+      LoginSuccess decoded = decode(wire, ProtocolVersion.MINECRAFT_1_8);
+
+      assertEquals(PLAYER_UUID, decoded.uuid());
+    }
+
+    @Test
+    @DisplayName("should accept a dashed uuid string from a 1.7.2 server")
+    void acceptsDashedStringAt172() {
+      byte[] wire = concat(new byte[] {36}, ascii(DASHED_UUID), NOTCH_ON_WIRE);
+
+      LoginSuccess decoded = decode(wire, ProtocolVersion.MINECRAFT_1_7_2);
+
+      assertEquals(PLAYER_UUID, decoded.uuid());
+    }
+
+    @Test
+    @DisplayName("should accept an uppercase uuid string")
+    void acceptsUppercaseString() {
+      byte[] wire =
+          concat(new byte[] {36}, ascii(DASHED_UUID.toUpperCase(Locale.ROOT)), NOTCH_ON_WIRE);
+
+      LoginSuccess decoded = decode(wire, ProtocolVersion.MINECRAFT_1_15_2);
+
+      assertEquals(PLAYER_UUID, decoded.uuid());
     }
 
     @Test
@@ -146,6 +277,47 @@ class LoginPacketsTest {
       } finally {
         buf.release();
       }
+    }
+
+    private static byte[] encode(LoginSuccess packet, ProtocolVersion version) {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        LoginSuccess.CODEC.encode(packet, buf, version);
+        return ByteBufUtil.getBytes(buf);
+      } finally {
+        buf.release();
+      }
+    }
+
+    private static LoginSuccess decode(byte[] wire, ProtocolVersion version) {
+      ByteBuf buf = Unpooled.wrappedBuffer(wire);
+      try {
+        LoginSuccess decoded = LoginSuccess.CODEC.decode(buf, version);
+        assertEquals(0, buf.readableBytes(), "bytes left after LoginSuccess");
+        return decoded;
+      } finally {
+        buf.release();
+      }
+    }
+
+    private static ProtocolVersion versionOf(int protocol) {
+      ProtocolVersion version = ProtocolVersion.byProtocolId(protocol);
+      if (version == null) {
+        throw new IllegalArgumentException("Unknown protocol " + protocol);
+      }
+      return version;
+    }
+
+    private static byte[] ascii(String str) {
+      return str.getBytes(StandardCharsets.US_ASCII);
+    }
+
+    private static byte[] concat(byte[]... parts) {
+      ByteArrayOutputStream out = new ByteArrayOutputStream();
+      for (byte[] part : parts) {
+        out.writeBytes(part);
+      }
+      return out.toByteArray();
     }
   }
 
@@ -371,6 +543,32 @@ class LoginPacketsTest {
         assertThrows(
             DecoderException.class,
             () -> LoginSuccess.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_5));
+      } finally {
+        buf.release();
+      }
+    }
+
+    @ParameterizedTest(name = "\"{0}\"")
+    @ValueSource(
+        strings = {
+          "",
+          "not-a-uuid",
+          "f81d4fae7dec11d0a76500a0c91e6bf",
+          "f81d4fae7dec11d0a76500a0c91e6bfg",
+          "f81d4fae-7dec-11d0-a765-00a0c91e6bfg",
+          "f81d4fae7-dec-11d0-a765-00a0c91e6bf6",
+          "+81d4fae-7dec-11d0-a765-00a0c91e6bf6",
+          "f81d4fae-7dec-11d0-a765-00a0c91e6bf6-"
+        })
+    @DisplayName("should reject a malformed uuid string before 1.16")
+    void rejectMalformedUuidString(String uuid) {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        McString.write(buf, uuid);
+        McString.write(buf, "Notch", 16);
+        assertThrows(
+            DecoderException.class,
+            () -> LoginSuccess.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_12_2));
       } finally {
         buf.release();
       }
