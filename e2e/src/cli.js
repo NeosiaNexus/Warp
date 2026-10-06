@@ -40,10 +40,10 @@ Versions and variants
 Environment
   --jar PATH              Warp shadow jar (default: build it with Gradle)
   --bots N                bots in the crowd scenario (default 10)
-  --port-base N           first of the 10 local ports used (default 26100)
+  --port-base N           first of the 8 local ports used (default 26100)
   --out DIR               run directory (default e2e/build)
   --cache DIR             download cache (default $WARP_E2E_CACHE or ~/.cache/warp-e2e)
-  --strict                treat known-broken versions like any other (fail on failure)
+  --strict                treat known-broken versions and scenarios like any other
   --direct                control run: bots connect straight to the lobby, without Warp
   --list                  print the version matrix and exit
 `;
@@ -232,6 +232,11 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
     lobby: backends.lobby,
     survival: backends.survival,
     bots: Number(opts.bots),
+    // Scenarios that fail on this version because of a known Warp bug: they run and are reported,
+    // but do not fail the version. Not in a control run (no Warp) or with --strict.
+    knownBrokenScenarios: opts.direct || opts.strict ? {} : (entry.knownBrokenScenarios ?? {}),
+    // Every process whose log can fail the variant.
+    processes: () => [...instances, backends.lobby, backends.survival, ...(ctx.client.bridges?.() ?? [])].map((x) => x.process).filter(Boolean),
   };
   try {
     for (const instance of instances) instance.prepare();
@@ -240,18 +245,13 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
 
     let finishKeepAlive = null;
     if (scenarios.some((s) => s.name === 'keepalive')) {
-      finishKeepAlive = await startKeepAlive(ctx).catch((e) => {
-        outcome.scenarios.push(fail('keepalive', Date.now(), e));
-        return null;
-      });
+      const joined = await attempt('keepalive', async () => { finishKeepAlive = await startKeepAlive(ctx); });
+      if (joined.status === 'fail') outcome.scenarios.push(record(joined));
     }
     for (const scenario of scenarios.filter((s) => !s.background)) {
       outcome.scenarios.push(await runScenario(scenario, ctx));
     }
-    if (finishKeepAlive) {
-      const t = Date.now();
-      outcome.scenarios.push(await finishKeepAlive().then((detail) => pass('keepalive', t, detail), (e) => fail('keepalive', t, e)));
-    }
+    if (finishKeepAlive) outcome.scenarios.push(record(await attempt('keepalive', finishKeepAlive)));
 
     // Leaked buffers are only reported once collected and Netty allocates again.
     if (instances.length) {
@@ -275,6 +275,7 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
   for (const [name, backend] of Object.entries(backends)) {
     for (const line of backend.protocolErrors(marks[name])) outcome.failures.push(`${name}: ${line}`);
   }
+  // Known-broken scenarios (xfail, xpass) do not decide the outcome.
   const passed = outcome.scenarios.every((s) => s.status !== 'fail') && outcome.failures.length === 0;
   outcome.status = passed ? 'pass' : 'fail';
   for (const failure of outcome.failures) log(`  ✗ ${failure.split('\n')[0]}`);
@@ -287,29 +288,38 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
 
 async function runScenario(scenario, ctx) {
   if (scenario.requires && !ctx.features[scenario.requires]) {
-    const result = { name: scenario.name, status: 'skip', seconds: 0, detail: `needs ${scenario.requires} (not in protocol ${ctx.entry.protocol})` };
-    log(`  SKIP ${scenario.name}: ${result.detail}`);
-    return result;
+    return record({ name: scenario.name, status: 'skip', seconds: 0, detail: `needs ${scenario.requires} (not in protocol ${ctx.entry.protocol})` });
   }
+  const knownBroken = ctx.knownBrokenScenarios[scenario.name];
+  const marks = knownBroken ? ctx.processes().map((p) => [p, p.mark()]) : [];
+  const result = await attempt(scenario.name, () => scenario.run(ctx));
+  await sleep(500);
+  if (knownBroken) {
+    // What the logs reported while it ran is part of the known failure: it goes with the scenario
+    // instead of failing the variant. A scenario that passes with nothing logged is fixed.
+    const excused = marks.flatMap(([p, from]) => p.excuse(from).map((line) => `${p.name}: ${line}`));
+    Object.assign(result, { status: result.status === 'pass' && !excused.length ? 'xpass' : 'xfail', knownBroken, excused });
+  }
+  return record(result);
+}
+
+/** Runs a scenario step: a pass is detailed by what `body` returns, a fail by what it throws. */
+async function attempt(name, body) {
   const started = Date.now();
   try {
-    return pass(scenario.name, started, await scenario.run(ctx));
+    const detail = await body();
+    return { name, status: 'pass', seconds: secondsSince(started), detail };
   } catch (e) {
-    return fail(scenario.name, started, e);
-  } finally {
-    await sleep(500);
+    return { name, status: 'fail', seconds: secondsSince(started), detail: firstLine(e), stack: String(e?.stack ?? e) };
   }
 }
 
-function pass(name, started, detail) {
-  const result = { name, status: 'pass', seconds: secondsSince(started), detail };
-  log(`  PASS ${name} (${result.seconds}s): ${detail}`);
-  return result;
-}
-
-function fail(name, started, error) {
-  const result = { name, status: 'fail', seconds: secondsSince(started), detail: firstLine(error), stack: String(error?.stack ?? error) };
-  log(`  FAIL ${name} (${result.seconds}s): ${result.detail}`);
+/** Logs a scenario result (PASS, FAIL, SKIP, or XFAIL and XPASS for a known-broken one). */
+function record(result) {
+  const time = result.status === 'skip' ? '' : ` (${result.seconds}s)`;
+  const excused = result.excused?.length ? `, ${result.excused.length} log failure(s) excused` : '';
+  const known = result.knownBroken ? ` [known broken: ${result.knownBroken}${excused}]` : '';
+  log(`  ${result.status.toUpperCase()} ${result.name}${time}: ${result.detail}${known}`);
   return result;
 }
 
@@ -388,24 +398,30 @@ function classify(passed, knownBroken) {
 }
 
 const ICONS = { pass: '✅', fail: '❌', xfail: '⚠️ known broken', xpass: '🎉 fixed?', skip: '⏭️' };
+const SCENARIO_ICONS = { pass: '✅', fail: '❌', xfail: '⚠️', xpass: '🎉', skip: '⏭️' };
 
 function report(results, opts) {
   console.log('\nSummary');
   for (const r of results) {
     console.log(`  ${r.status.toUpperCase().padEnd(5)} ${r.version.padEnd(8)} ${r.seconds}s  ${r.variants.map((v) => `${v.name}:${v.status}`).join(' ')}`);
-    if (r.status === 'xpass' && GITHUB) {
+    if (!GITHUB) continue;
+    if (r.status === 'xpass') {
       console.log(`::warning title=E2E ${r.version} passes::${r.version} is listed as known broken but passed: remove it from the list in e2e/versions.json`);
     }
-    if (r.status === 'xfail' && GITHUB) console.log(`::notice title=E2E ${r.version} known broken::${r.knownBroken}`);
+    if (r.status === 'xfail') console.log(`::notice title=E2E ${r.version} known broken::${r.knownBroken}`);
+    const fixed = new Set(r.variants.flatMap((v) => v.scenarios.filter((s) => s.status === 'xpass').map((s) => s.name)));
+    for (const name of fixed) {
+      console.log(`::warning title=E2E ${r.version} ${name} passes::${name} is listed as known broken on ${r.version} but passed: remove it from knownBrokenScenarios in e2e/versions.json`);
+    }
   }
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown(results));
   writeFileSync(join(opts.out, 'summary.md'), markdown(results));
 }
 
-export function markdown(results) {
+function markdown(results) {
   const rows = results.flatMap((r) =>
     r.variants.map((v) => {
-      const cells = v.scenarios.map((s) => `${s.status === 'pass' ? '✅' : s.status === 'skip' ? '⏭️' : '❌'} ${s.name}`).join(' · ');
+      const cells = v.scenarios.map((s) => `${SCENARIO_ICONS[s.status]} ${s.name}`).join(' · ');
       const status = r.knownBroken && v.status === 'fail' ? 'xfail' : r.knownBroken ? 'xpass' : v.status;
       return `| ${r.version} | ${r.protocol} | ${v.name} | ${ICONS[status]} | ${cells}${v.failures?.length ? ` · ❌ ${v.failures.length} log failure(s)` : ''} | ${r.seconds}s |`;
     }),
@@ -416,7 +432,8 @@ export function markdown(results) {
 function printMatrix(matrix) {
   for (const v of matrix.versions) {
     const client = v.via ? `mineflayer ${v.via} → ViaProxy` : 'mineflayer';
-    console.log(`${String(v.protocol).padStart(4)}  ${v.version.padEnd(8)} ${describeServer(v.server).padEnd(24)} Java ${String(v.java).padEnd(3)} ${client}${v.knownBroken ? `  [known broken: ${v.knownBroken}]` : ''}`);
+    const broken = v.knownBroken ?? (v.knownBrokenScenarios ? Object.keys(v.knownBrokenScenarios).join(', ') : null);
+    console.log(`${String(v.protocol).padStart(4)}  ${v.version.padEnd(8)} ${describeServer(v.server).padEnd(24)} Java ${String(v.java).padEnd(3)} ${client}${broken ? `  [known broken: ${broken}]` : ''}`);
   }
 }
 

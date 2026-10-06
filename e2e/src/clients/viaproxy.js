@@ -39,6 +39,7 @@ export class ViaProxy {
     this.process = new ManagedProcess(this.name, this.env.java, args, {
       cwd: dir,
       logFile: join(this.env.logDir, `${this.name}.log`),
+      failures: VIA_FAILURES,
     }).start();
     await this.process.waitFor(/Binding proxy server to/, 90_000);
     await waitForPort(this.port, 30_000);
@@ -49,6 +50,6 @@ export class ViaProxy {
   }
 
   failures() {
-    return this.process ? this.process.lines.filter((l) => VIA_FAILURES.some((p) => p.test(l))).map((l) => `${this.name}: ${l}`) : [];
+    return (this.process?.failures() ?? []).map((line) => `${this.name}: ${line}`);
   }
 }

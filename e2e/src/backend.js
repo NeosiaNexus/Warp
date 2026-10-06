@@ -118,6 +118,7 @@ export class Backend {
     this.process = new ManagedProcess(this.name, this.java, args, {
       cwd: this.dir,
       logFile: join(this.logDir, `${this.name}-${this.logSuffix}.log`),
+      failures: BACKEND_PROTOCOL_ERRORS,
     }).start();
     return this.process;
   }
@@ -139,8 +140,7 @@ export class Backend {
 
   /** Lines from this backend's log (from line `from` on) that indicate a broken client connection. */
   protocolErrors(from = 0) {
-    if (!this.process) return [];
-    return this.process.lines.slice(from).filter((line) => BACKEND_PROTOCOL_ERRORS.some((p) => p.test(line)));
+    return this.process?.failures(from) ?? [];
   }
 }
 

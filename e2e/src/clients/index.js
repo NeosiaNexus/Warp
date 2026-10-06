@@ -47,5 +47,6 @@ export function connectClient(entry, env) {
     connect: (options) => mineflayer.connect(bridged(options)),
     ping: (options) => mineflayer.ping(bridged(options)),
     failures: () => [...bridges.values()].flatMap((b) => b.failures()),
+    bridges: () => [...bridges.values()],
   };
 }

@@ -6,13 +6,16 @@ import { ManagedProcess, run } from './proc.js';
 
 /**
  * Warp output lines that fail a run: anything logged at ERROR or FATAL, Netty buffer leaks,
- * uncaught exceptions printed by the JVM itself, and JVM crashes.
+ * uncaught exceptions printed by the JVM itself, JVM crashes, and keep-alive trouble (bots always
+ * echo the keep-alive id they received, at once, so a mismatch or a time-out is a proxy bug).
  */
 export const WARP_FAILURES = [
   /^\S+ \S+ \[[^\]]*\] (ERROR|FATAL) /,
   /LEAK: /,
   /^Exception in thread /,
   /^# A fatal error has been detected by the Java Runtime Environment/,
+  /Invalid KeepAlive ID from player /,
+  /timed out \(no KeepAlive response/,
 ];
 
 export class Warp {
@@ -80,6 +83,7 @@ compression {
     this.process = new ManagedProcess(this.name, this.java, args, {
       cwd: this.dir,
       logFile: join(this.logDir, `${this.name}.log`),
+      failures: WARP_FAILURES,
     }).start();
     return this.process.waitFor(/Warp is listening/, 60_000);
   }
@@ -107,8 +111,7 @@ compression {
   }
 
   failures() {
-    if (!this.process) return [];
-    return this.process.lines.filter((line) => WARP_FAILURES.some((p) => p.test(line)));
+    return this.process?.failures() ?? [];
   }
 }
 

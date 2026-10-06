@@ -142,9 +142,11 @@ async function fallbackRejected(ctx) {
 
 /**
  * Background soak: one bot stays connected while every other scenario runs, then must still be
- * healthy. It has to survive at least three of Warp's 15 s keep-alive rounds.
+ * healthy. Warp sends a keep-alive every 15 s and drops a player whose answer is more than 30 s
+ * late, a check made on those same 15 s ticks: a bad answer to the first keep-alive is only acted
+ * on 60 s after joining. The bot stays past that point.
  */
-export const KEEPALIVE_MIN_MS = 50_000;
+export const KEEPALIVE_MIN_MS = 65_000;
 
 export async function startKeepAlive(ctx) {
   const bot = await joinWarp(ctx, 'e2e_keepalive');

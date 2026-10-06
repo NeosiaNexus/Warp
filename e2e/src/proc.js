@@ -1,6 +1,6 @@
-// Child processes (Paper, Warp, client drivers) with their output captured to a log file and
-// searchable line by line. Every process is tracked so that the harness can always stop what it
-// started, even when a scenario throws or the run is interrupted.
+// Child processes (Paper, Warp, ViaProxy) with their output captured to a log file and searchable
+// line by line. Every process is tracked so that the harness can always stop what it started, even
+// when a scenario throws or the run is interrupted.
 import { spawn, execFile } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { connect } from 'node:net';
@@ -16,16 +16,20 @@ export class ManagedProcess {
    * @param {string} name label used in logs and error messages
    * @param {string} command executable
    * @param {string[]} args arguments
-   * @param {{cwd: string, env?: object, logFile: string}} options
+   * @param {{cwd: string, env?: object, logFile: string, failures?: RegExp[]}} options `failures`:
+   *   patterns of the output lines that fail a run (see {@link failures})
    */
-  constructor(name, command, args, { cwd, env, logFile }) {
+  constructor(name, command, args, { cwd, env, logFile, failures = [] }) {
     this.name = name;
     this.command = command;
     this.args = args;
     this.cwd = cwd;
     this.env = env;
     this.logFile = logFile;
+    this.failurePatterns = failures;
     this.lines = [];
+    /** `[from, to)` line ranges whose failures belong to a known-broken scenario. */
+    this.excused = [];
     this.waiters = [];
     this.child = null;
     this.exit = null;
@@ -96,6 +100,30 @@ export class ManagedProcess {
   /** Index to pass to {@link waitFor} so that only lines printed after this call match. */
   mark() {
     return this.lines.length;
+  }
+
+  /** Output lines (from line `from` on) that match a failure pattern, except excused ones. */
+  failures(from = 0) {
+    const found = [];
+    for (let i = from; i < this.lines.length; i++) {
+      if (this.isFailure(this.lines[i]) && !this.excused.some(([start, end]) => i >= start && i < end)) found.push(this.lines[i]);
+    }
+    return found;
+  }
+
+  /**
+   * Excuses the failures printed from line `from` until now: they belong to a known-broken
+   * scenario, which reports them, so they no longer fail the run.
+   * @returns {string[]} the excused failure lines
+   */
+  excuse(from) {
+    const to = this.lines.length;
+    this.excused.push([from, to]);
+    return this.lines.slice(from, to).filter((line) => this.isFailure(line));
+  }
+
+  isFailure(line) {
+    return this.failurePatterns.some((pattern) => pattern.test(line));
   }
 
   /** Resolves with the first line matching `pattern` printed at or after line `from`. */

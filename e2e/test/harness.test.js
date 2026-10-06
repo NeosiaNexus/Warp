@@ -5,12 +5,14 @@ import { describe, it } from 'node:test';
 
 import { BACKEND_PROTOCOL_ERRORS } from '../src/backend.js';
 import { announcedProtocol } from '../src/clients/mineflayer.js';
-import { features } from '../src/scenarios.js';
+import { SCENARIOS, features } from '../src/scenarios.js';
 import { findEntry, jobsForTier, loadMatrix, resolveVariant } from '../src/versions.js';
 import { WARP_FAILURES } from '../src/warp.js';
 
 const matrix = loadMatrix();
 const matches = (patterns, line) => patterns.some((p) => p.test(line));
+/** First protocol with the configuration phase (1.20.2): switching and fallbacks work differently before. */
+const CONFIGURATION_PHASE = 764;
 
 describe('versions.json', () => {
   it('has exactly one entry per protocol version, in ascending order', () => {
@@ -51,6 +53,26 @@ describe('versions.json', () => {
   it('never requires a known-broken version on pull requests', () => {
     for (const job of jobsForTier(matrix, 'pr')) assert.equal(job.known_broken, false, job.mc);
   });
+
+  it('tests both sides of the configuration phase on pull requests', () => {
+    const protocols = jobsForTier(matrix, 'pr').map((job) => job.protocol);
+    assert.ok(protocols.some((p) => p < CONFIGURATION_PHASE), 'no version before 1.20.2');
+    assert.ok(protocols.some((p) => p >= CONFIGURATION_PHASE), 'no version from 1.20.2');
+  });
+
+  it('says why each known-broken version or scenario fails, with an issue', () => {
+    const scenarios = new Map(SCENARIOS.map((s) => [s.name, s]));
+    for (const v of matrix.versions) {
+      if (v.knownBroken !== undefined) assert.match(v.knownBroken, /\(#\d+\)/, `${v.version}: knownBroken links no issue`);
+      if (v.knownBrokenScenarios === undefined) continue;
+      assert.equal(v.knownBroken, undefined, `${v.version}: knownBroken already covers every scenario`);
+      for (const [name, reason] of Object.entries(v.knownBrokenScenarios)) {
+        // The keep-alive bot runs in the background, across the others: it cannot be excused alone.
+        assert.ok(scenarios.has(name) && !scenarios.get(name).background, `${v.version}: no scenario "${name}" to mark known broken`);
+        assert.match(reason, /\(#\d+\)/, `${v.version} ${name}: reason links no issue`);
+      }
+    }
+  });
 });
 
 describe('variants', () => {
@@ -82,6 +104,8 @@ describe('failure patterns', () => {
       '2026-10-06 01:21:01.123 [epollEventLoopGroup-3-1] ERROR io.netty.util.ResourceLeakDetector - LEAK: ByteBuf.release() was not called before it\'s garbage-collected.',
       'Exception in thread "main" java.lang.NoClassDefFoundError: dev/warp/Foo',
       '# A fatal error has been detected by the Java Runtime Environment:',
+      '2026-10-06 03:12:27.004 [multiThreadIoEventLoopGroup-3-2] WARN  dev.warp.proxy.connection.ClientPlaySessionHandler - Invalid KeepAlive ID from player e2e_keepalive',
+      '2026-10-06 03:13:12.001 [multiThreadIoEventLoopGroup-3-2] INFO  dev.warp.proxy.connection.ConnectedPlayer - Player e2e_keepalive timed out (no KeepAlive response in 44999ms)',
     ]) {
       assert.ok(matches(WARP_FAILURES, line), line);
     }

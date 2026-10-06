@@ -27,7 +27,13 @@ if (opts.variants) jobs = jobs.map((job) => ({ ...job, variants: opts.variants }
 const include = jobs.map((job) => {
   const entry = findEntry(matrix, job.mc);
   const variants = job.variants.split(',').length;
-  const notes = [variants > 1 ? `${variants} variants` : null, entry.via ? 'via ViaProxy' : null, job.known_broken ? 'known broken' : null];
+  const brokenScenarios = Object.keys(entry.knownBrokenScenarios ?? {}).length;
+  const notes = [
+    variants > 1 ? `${variants} variants` : null,
+    entry.via ? 'via ViaProxy' : null,
+    job.known_broken ? 'known broken' : null,
+    brokenScenarios ? `${brokenScenarios} known-broken scenario${brokenScenarios > 1 ? 's' : ''}` : null,
+  ];
   return {
     id: job.mc,
     label: [`${job.mc} (${job.protocol})`, ...notes.filter(Boolean)].join(' · '),
