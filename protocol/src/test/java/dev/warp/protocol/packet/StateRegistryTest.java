@@ -53,6 +53,7 @@ import dev.warp.protocol.packet.login.SetCompression;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
+import dev.warp.protocol.packet.play.ChatAcknowledgement;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
@@ -160,6 +161,8 @@ class StateRegistryTest {
             new ReferenceName(PLAY, SERVERBOUND, TabCompleteRequest.class, "tab_complete"),
             new ReferenceName(PLAY, SERVERBOUND, LegacyChatMessage.class, "chat"),
             new ReferenceName(PLAY, SERVERBOUND, ChatCommand.class, "chat_command"),
+            new ReferenceName(
+                PLAY, SERVERBOUND, ChatAcknowledgement.class, "message_acknowledgement"),
             new ReferenceName(
                 PLAY, SERVERBOUND, AcknowledgeConfiguration.class, "configuration_acknowledged"),
             new ReferenceName(PLAY, SERVERBOUND, PlayClientSettings.class, "settings"),

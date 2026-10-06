@@ -21,6 +21,7 @@ import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
+import dev.warp.protocol.packet.play.ChatAcknowledgement;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
@@ -132,6 +133,7 @@ final class BackendPlaySessionHandler implements SessionHandler {
       case ClearTitles clearTitles -> forwardToClient(clearTitles);
       // Serverbound packets should never arrive from a backend: a protocol violation, ignored.
       case ChatCommand _,
+          ChatAcknowledgement _,
           LegacyChatMessage _,
           PlayClientSettings _,
           ResourcePackResponse _,

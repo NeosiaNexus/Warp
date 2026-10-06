@@ -383,7 +383,7 @@ class PlayPacketsTest {
     @Test
     @DisplayName("should write an unsigned command longer than 256 characters as the string alone")
     void writeLongUnsignedCommand() {
-      ChatCommand packet = new ChatCommand(LONG_COMMAND, new byte[0]);
+      ChatCommand packet = new ChatCommand(LONG_COMMAND, new byte[0], 0);
       ByteBuf expected = Unpooled.buffer();
       ByteBuf buf = Unpooled.buffer();
       try {
@@ -416,7 +416,8 @@ class PlayPacketsTest {
     @Test
     @DisplayName("should keep the signing fields after the command before 1.20.5")
     void signingFieldsBefore1205() {
-      byte[] signingFields = {0, 0, 1, -110, 42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0};
+      // Timestamp, salt, no argument signatures, last-seen offset 0, 3 bytes of acknowledgements.
+      byte[] signingFields = {0, 0, 1, -110, 42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0};
       ByteBuf buf = Unpooled.buffer();
       try {
         McString.write(buf, "server survival");

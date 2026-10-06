@@ -61,6 +61,7 @@ import dev.warp.protocol.packet.login.SetCompression;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
+import dev.warp.protocol.packet.play.ChatAcknowledgement;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
@@ -360,6 +361,14 @@ public final class StateRegistry {
                     map(0x03, MINECRAFT_1_19),
                     map(0x04, MINECRAFT_1_19_1),
                     map(0x05, MINECRAFT_1_21_2))
+                // Sent in the client's place for a command the proxy keeps from the backend, with
+                // the last-seen offset the command carried: from 1.19.3, which made it an offset,
+                // to 1.20.4. From 1.20.5 the commands the proxy decodes carry none. A client's own
+                // acknowledgements are forwarded untouched.
+                .registerEncodeOnly(
+                    ChatAcknowledgement.class,
+                    ChatAcknowledgement.CODEC,
+                    map(0x03, MINECRAFT_1_19_3, MINECRAFT_1_20_3))
                 .register(
                     AcknowledgeConfiguration.class,
                     AcknowledgeConfiguration.CODEC,
