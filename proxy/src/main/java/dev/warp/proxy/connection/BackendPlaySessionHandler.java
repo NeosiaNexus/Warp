@@ -23,6 +23,7 @@ import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPacket;
@@ -104,6 +105,9 @@ final class BackendPlaySessionHandler implements SessionHandler {
       case TabCompleteResponse response -> forwardToClient(response);
       // Serverbound packets should never arrive from a backend — silently ignore.
       case ChatCommand ignored -> {
+        /* protocol violation */
+      }
+      case LegacyChatMessage ignored -> {
         /* protocol violation */
       }
       case PlayClientSettings ignored -> {

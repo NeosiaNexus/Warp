@@ -16,14 +16,18 @@
  */
 package dev.warp.protocol.packet;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolVersion;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Objects;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("TextComponent utility")
 class TextComponentTest {
@@ -52,6 +56,22 @@ class TextComponentTest {
     // Should start with 0x08 (TAG_String)
     assertTrue(result.length > 3);
     assertTrue(result[0] == 0x08, "Should start with TAG_String (0x08)");
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @ValueSource(ints = {4, 47, 340, 578, 735, 754, 758, 759, 760, 764})
+  @DisplayName("should write the same plain JSON component for every version before 1.20.3")
+  void sameJsonBefore1203(int protocol) {
+    // Plain text has no hover or click event, the only parts whose JSON changed (in 1.16).
+    ProtocolVersion version = Objects.requireNonNull(ProtocolVersion.byProtocolId(protocol));
+    String json = "{\"text\":\"Servers: [lobby]\"}";
+
+    byte[] result = TextComponent.plainText("Servers: [lobby]", version);
+
+    byte[] expected = new byte[1 + json.length()];
+    expected[0] = (byte) json.length();
+    System.arraycopy(json.getBytes(StandardCharsets.US_ASCII), 0, expected, 1, json.length());
+    assertArrayEquals(expected, result);
   }
 
   @Test

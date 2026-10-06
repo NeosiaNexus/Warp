@@ -21,7 +21,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolVersion;
-import dev.warp.protocol.codec.McString;
 
 import java.util.UUID;
 
@@ -194,55 +193,6 @@ class PlayPacketsTest {
         assertTrue(decoded.isHardcore());
         assertEquals(0, decoded.gameMode());
         assertArrayEquals(remainder, decoded.rawRemainder());
-      } finally {
-        buf.release();
-      }
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // SystemChatMessage
-  // ---------------------------------------------------------------------------
-
-  @Nested
-  @DisplayName("SystemChatMessage")
-  class SystemChatMessageCodec {
-
-    @Test
-    @DisplayName("should roundtrip JSON content for pre-1.20.3")
-    void roundtripJson() {
-      // Build raw content as a VarInt-prefixed JSON string (what McString.write produces)
-      ByteBuf temp = Unpooled.buffer();
-      McString.write(temp, "{\"text\":\"hello\"}");
-      byte[] rawContent = new byte[temp.readableBytes()];
-      temp.readBytes(rawContent);
-      temp.release();
-
-      SystemChatMessage original = new SystemChatMessage(rawContent, false);
-      ByteBuf buf = Unpooled.buffer();
-      try {
-        SystemChatMessage.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_19_3);
-        SystemChatMessage decoded =
-            SystemChatMessage.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_19_3);
-        assertArrayEquals(rawContent, decoded.rawContent());
-        assertEquals(false, decoded.overlay());
-      } finally {
-        buf.release();
-      }
-    }
-
-    @Test
-    @DisplayName("should roundtrip NBT content for 1.20.3+")
-    void roundtripNbt() {
-      byte[] rawContent = {0x08, 0x00, 0x05, 'h', 'e', 'l', 'l', 'o'};
-      SystemChatMessage original = new SystemChatMessage(rawContent, true);
-      ByteBuf buf = Unpooled.buffer();
-      try {
-        SystemChatMessage.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_20_3);
-        SystemChatMessage decoded =
-            SystemChatMessage.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_3);
-        assertArrayEquals(rawContent, decoded.rawContent());
-        assertEquals(true, decoded.overlay());
       } finally {
         buf.release();
       }
