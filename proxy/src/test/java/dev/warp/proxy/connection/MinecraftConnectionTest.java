@@ -37,8 +37,6 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NotYetConnectedException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -353,18 +351,19 @@ class MinecraftConnectionTest {
         // Written but not flushed: still in the channel's outbound buffer.
         var _ = ch.write(Unpooled.wrappedBuffer(new byte[1500]));
 
-        String text =
+        String description =
             MinecraftConnection.describeTimeout(
                 ch, decoder(PacketDirection.SERVERBOUND, ProtocolState.LOGIN));
-        Matcher description =
-            Pattern.compile(
-                    "in LOGIN: the client sent nothing for 30 s \\(reads on, (\\d+) bytes queued to"
-                        + " send\\)")
-                .matcher(text);
-        assertTrue(description.matches(), text);
+
         // The packet, and Netty's bookkeeping per queued message.
-        long queued = Long.parseLong(description.group(1));
+        long queued = ch.unsafe().outboundBuffer().totalPendingWriteBytes();
         assertTrue(queued >= 1500 && queued < 1500 + 256, "queued " + queued);
+        assertEquals(
+            "in LOGIN: the client sent nothing for 30 s (reads on, "
+                + queued
+                + " bytes queued to"
+                + " send)",
+            description);
       } finally {
         ch.finishAndReleaseAll();
       }
