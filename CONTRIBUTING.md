@@ -2,17 +2,22 @@
 
 Thanks for your interest in contributing. This document covers everything you need to get started.
 
+Everyone taking part is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md). Security
+vulnerabilities are reported privately, never in an issue: see the [security policy](SECURITY.md).
+
 ## Getting Started
 
 **Requirements:**
-- JDK 25+
 - Git
+- JDK 21 to run Gradle 8.12, which does not run on newer JDKs yet. Gradle compiles and tests with
+  JDK 25 through its toolchain support, and downloads one if none is installed.
+- Node.js 22+, only for the [end-to-end tests](#end-to-end-tests)
 
 **Build & test:**
 
 ```bash
-git clone git@github.com:NeosiaNexus/warp.git
-cd warp
+git clone git@github.com:NeosiaNexus/Warp.git
+cd Warp
 ./gradlew build
 ```
 
@@ -70,8 +75,11 @@ be green before merging.
 | Check | What it verifies |
 |---|---|
 | **Build & test** | Spotless formatting, compilation with ErrorProne and NullAway, unit and integration tests, Checkstyle, JaCoCo coverage, shadow jar. Failed tests are annotated on the diff; the run summary shows test and coverage tables |
+| **E2E** | Real clients through Warp to real servers, one Minecraft version per era (see [End-to-end tests](#end-to-end-tests)) |
 | **Lint workflows** | [actionlint](https://github.com/rhysd/actionlint) (with ShellCheck on `run:` scripts) and [zizmor](https://docs.zizmor.sh) at its strictest persona |
 | **PR title** | Conventional Commits format (the title becomes the squash commit) |
+
+Pull requests that only touch documentation skip the build and the end-to-end tests.
 
 Workflow conventions, enforced in review and by the linters:
 
@@ -81,6 +89,29 @@ Workflow conventions, enforced in review and by the linters:
   comment saying why.
 - Every job has a `timeout-minutes`; runners are pinned (`ubuntu-24.04`), never `-latest`.
 - Pull-request runs are cancelled by a newer push; runs on `main` always complete.
+
+## End-to-end tests
+
+[`e2e/`](e2e/README.md) runs real-protocol bots through Warp to real Paper or vanilla servers and
+checks that players can join, play, switch servers and fall back, for every protocol from 1.8 to
+26.3. Locally (Node.js 22+; servers, their JDKs and ViaProxy are downloaded and cached on first
+use, and Warp's jar is built if needed):
+
+```bash
+e2e/run.sh --mc 1.21.4                                   # one version
+e2e/run.sh --mc 1.8.8,1.20.2 --variants online,offline   # several versions and variants
+e2e/run.sh --list                                        # the whole matrix
+```
+
+| Where | What runs |
+|---|---|
+| Every pull request (**E2E**, part of **CI OK**) | One version per era, plus the online, offline and compression variants on the reference version |
+| Every push to `main`, nightly, on demand (`e2e.yml`) | Every protocol of the matrix |
+| Pull requests labelled `e2e: full` | The whole matrix as well. Use it for changes to the protocol, compression, login, forwarding or server switching; ask a maintainer if you cannot set labels |
+
+Versions marked `knownBroken` in `e2e/versions.json` run and are reported without failing CI. To
+add a Minecraft version, follow
+[Adding a Minecraft version](e2e/README.md#adding-a-minecraft-version).
 
 ## Release Automation
 
@@ -122,6 +153,7 @@ api/        Public plugin API, the stable contract for plugins
 protocol/   Minecraft protocol codec and packets
 proxy/      Core proxy implementation (shadow JAR)
 jni/        Native bindings (compression, crypto)
+e2e/        End-to-end tests (Node.js harness)
 build-logic/ Gradle convention plugins
 ```
 
