@@ -26,6 +26,7 @@ import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
+import dev.warp.protocol.packet.play.LegacyPlayerInfo;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPacket;
@@ -124,6 +125,7 @@ final class BackendPlaySessionHandler implements SessionHandler {
       case PlayPluginMessage pluginMessage -> handlePluginMessage(pluginMessage);
       case TabCompleteResponse response -> forwardToClient(response);
       // Decoded before 1.20.2 only, to clear them from the client on a server switch.
+      case LegacyPlayerInfo info -> forwardTracked(info);
       case PlayerInfo info -> forwardTracked(info);
       case PlayerInfoUpdate update -> forwardTracked(update);
       case PlayerInfoRemove remove -> forwardTracked(remove);

@@ -38,6 +38,7 @@ import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
+import dev.warp.protocol.packet.play.LegacyPlayerInfo;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
@@ -186,11 +187,12 @@ class RespawnSwitchTest {
       List<Sent> sent = setup.sentToClient();
 
       List<Class<? extends Packet>> expected = new ArrayList<>();
-      if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_8)) {
-        expected.add(
-            version.isAtLeast(ProtocolVersion.MINECRAFT_1_19_3)
-                ? PlayerInfoRemove.class
-                : PlayerInfo.class);
+      if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_19_3)) {
+        expected.add(PlayerInfoRemove.class);
+      } else if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_8)) {
+        expected.add(PlayerInfo.class);
+      } else {
+        expected.add(LegacyPlayerInfo.class);
       }
       if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_9)) {
         expected.add(BossBar.class);
@@ -251,6 +253,29 @@ class RespawnSwitchTest {
       assertEquals(BossBar.REMOVE, sent.get(1).as(BossBar.class).action());
       assertFalse(sent.get(3).as(ClearTitles.class).reset(), "the title hidden");
       assertTrue(sent.get(4).as(ClearTitles.class).reset(), "then its times reset");
+    }
+
+    @Test
+    @DisplayName("should remove exactly the names a 1.7 server listed, one packet each")
+    void legacyLeftovers() {
+      SwitchHarness setup = harness(ProtocolVersion.MINECRAFT_1_7_6);
+      MinecraftConnection lobby = setup.spawnOn(LOBBY);
+      setup.sentToClient();
+      setup.receive(lobby, frame(setup.version, new LegacyPlayerInfo("Alice", true, (short) 5)));
+      setup.receive(lobby, frame(setup.version, new LegacyPlayerInfo("Bob", true, (short) 3)));
+      setup.receive(lobby, frame(setup.version, new LegacyPlayerInfo("Bob", false, (short) 0)));
+      List<Sent> forwarded = setup.sentToClient();
+
+      setup.switchTo(SURVIVAL);
+      List<Sent> sent = setup.sentToClient();
+
+      assertEquals(
+          List.of(LegacyPlayerInfo.class, LegacyPlayerInfo.class, LegacyPlayerInfo.class),
+          types(forwarded),
+          "the server's own tab list packets reach the client");
+      assertEquals(
+          List.of(LegacyPlayerInfo.class, JoinGame.class, Respawn.class), types(sent), "sequence");
+      assertEquals(LegacyPlayerInfo.remove("Alice"), sent.getFirst().as(LegacyPlayerInfo.class));
     }
 
     @Test
@@ -491,6 +516,8 @@ class RespawnSwitchTest {
       setup.receive(backend, frame(version, addPlayerUpdate()));
     } else if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_8)) {
       setup.receive(backend, frame(version, addPlayer(version)));
+    } else {
+      setup.receive(backend, frame(version, new LegacyPlayerInfo("Alice", true, (short) 5)));
     }
     if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_9)) {
       setup.receive(backend, frame(version, new BossBar(BOSS, BossBar.ADD, bossBarAdd())));

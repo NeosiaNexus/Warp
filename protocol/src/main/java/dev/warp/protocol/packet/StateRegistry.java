@@ -38,6 +38,7 @@ import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_20_5;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_21_2;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_21_4;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_7_2;
+import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_7_6;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_8;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_9;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_9_4;
@@ -66,6 +67,7 @@ import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
+import dev.warp.protocol.packet.play.LegacyPlayerInfo;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPluginMessage;
@@ -500,6 +502,10 @@ public final class StateRegistry {
                     map(0x0D, MINECRAFT_1_17),
                     map(0x0A, MINECRAFT_1_19),
                     map(0x0B, MINECRAFT_1_19_4, MINECRAFT_1_20_1))
+                .register(
+                    LegacyPlayerInfo.class,
+                    LegacyPlayerInfo.CODEC,
+                    map(0x38, MINECRAFT_1_7_2, MINECRAFT_1_7_6))
                 .register(
                     PlayerInfo.class,
                     PlayerInfo.CODEC,

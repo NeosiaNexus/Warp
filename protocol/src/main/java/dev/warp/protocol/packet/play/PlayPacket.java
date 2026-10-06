@@ -43,6 +43,7 @@ public sealed interface PlayPacket extends Packet
         ResourcePackResponse,
         PlayClientSettings,
         BossBar,
+        LegacyPlayerInfo,
         PlayerInfo,
         PlayerInfoUpdate,
         PlayerInfoRemove,

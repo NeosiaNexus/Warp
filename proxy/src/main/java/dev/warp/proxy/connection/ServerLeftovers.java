@@ -19,6 +19,7 @@ package dev.warp.proxy.connection;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.ClearTitles;
+import dev.warp.protocol.packet.play.LegacyPlayerInfo;
 import dev.warp.protocol.packet.play.PlayPacket;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
@@ -40,9 +41,9 @@ import java.util.UUID;
  * interface instead and stay: the tab list would keep listing the previous server's players, its
  * boss bars would stay on screen forever. Velocity clears the same things. The header, footer and
  * title are always reset; the tab list entries and boss bars are removed one by one, so their UUIDs
- * are followed here as the server adds and removes them. A loaded resource pack stays as well, but
- * no packet before 1.20.3 can unload it. 1.7 clients key their tab list by name instead of UUID: it
- * is not followed, and the previous server's names stay listed.
+ * are followed here as the server adds and removes them; a 1.7 client keys its tab list by name
+ * instead, so its names are followed (Velocity's {@code VelocityTabListLegacy}). A loaded resource
+ * pack stays as well, but no packet before 1.20.3 can unload it.
  *
  * <p>Only fed before 1.20.2, where the packets it follows are decoded. Accessed from the player's
  * event loop only.
@@ -51,6 +52,9 @@ final class ServerLeftovers {
 
   /** Tab list entries the current server added. */
   private final Set<UUID> tabListEntries = new HashSet<>();
+
+  /** Names the current server listed on a 1.7 client, whose tab list is keyed by name. */
+  private final Set<String> legacyTabListNames = new HashSet<>();
 
   /** Boss bars the current server shows. */
   private final Set<UUID> bossBars = new HashSet<>();
@@ -62,6 +66,14 @@ final class ServerLeftovers {
    */
   void track(PlayPacket packet) {
     switch (packet) {
+      case LegacyPlayerInfo info -> {
+        // Listing a name already listed only updates its latency: the set keeps it once.
+        if (info.online()) {
+          legacyTabListNames.add(info.name());
+        } else {
+          legacyTabListNames.remove(info.name());
+        }
+      }
       case PlayerInfo info -> {
         if (info.action() == PlayerInfo.ADD_PLAYER) {
           tabListEntries.addAll(info.profileIds());
@@ -96,7 +108,11 @@ final class ServerLeftovers {
    * @return the packets to send before the next server's Join Game
    */
   List<PlayPacket> clear(ProtocolVersion version) {
-    List<PlayPacket> packets = new ArrayList<>(bossBars.size() + 4);
+    List<PlayPacket> packets = new ArrayList<>(legacyTabListNames.size() + bossBars.size() + 4);
+    for (String name : legacyTabListNames) {
+      packets.add(LegacyPlayerInfo.remove(name)); // one entry per packet on 1.7
+    }
+    legacyTabListNames.clear();
     if (!tabListEntries.isEmpty()) {
       List<UUID> entries = List.copyOf(tabListEntries);
       packets.add(

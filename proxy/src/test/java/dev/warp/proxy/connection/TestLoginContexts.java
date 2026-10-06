@@ -53,6 +53,17 @@ final class TestLoginContexts {
    * @return the context
    */
   static ServerLoginContext offline() {
+    return offline(-1);
+  }
+
+  /**
+   * Returns an offline-mode context without forwarding, compressing from {@code
+   * compressionThreshold} bytes, whose only server is unreachable (see {@link #offline()}).
+   *
+   * @param compressionThreshold the configured threshold, or {@code -1} for no compression
+   * @return the context
+   */
+  static ServerLoginContext offline(int compressionThreshold) {
     ServerRegistry registry =
         new ServerRegistry(
             Map.of("lobby", new InetSocketAddress(InetAddress.getLoopbackAddress(), 1)),
@@ -61,7 +72,7 @@ final class TestLoginContexts {
     return new ServerLoginContext(
         KEY_PAIR,
         false, // offline mode
-        -1, // compression disabled
+        compressionThreshold,
         Deflater.DEFAULT_COMPRESSION,
         true,
         new MojangSessionService(),

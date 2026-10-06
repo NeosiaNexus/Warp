@@ -42,7 +42,8 @@ import io.netty.handler.codec.DecoderException;
  * <p>Layout: VarInt action, VarInt count, then per entry a UUID and the action's fields. Adding a
  * player sends its name, properties, game mode, latency and optional display name, plus from 1.19
  * an optional public key (Velocity's {@code LegacyPlayerListItemPacket}, minecraft-data's {@code
- * packet_player_info}). 1.7 keys the list by name instead of UUID; the proxy does not follow it.
+ * packet_player_info}). 1.7 keys the list by name instead of UUID, with its own packet: {@link
+ * LegacyPlayerInfo}.
  *
  * @param action {@link #ADD_PLAYER}, {@link #UPDATE_GAME_MODE}, {@link #UPDATE_LATENCY}, {@link
  *     #UPDATE_DISPLAY_NAME} or {@link #REMOVE_PLAYER}

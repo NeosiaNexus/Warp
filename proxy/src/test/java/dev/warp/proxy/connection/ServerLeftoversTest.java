@@ -23,6 +23,7 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.LegacyPlayerInfo;
 import dev.warp.protocol.packet.play.PlayPacket;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
@@ -50,6 +51,33 @@ class ServerLeftoversTest {
   @Nested
   @DisplayName("tab list")
   class TabList {
+
+    @Test
+    @DisplayName("should remove the names listed and not removed since, one packet each, on 1.7")
+    void legacyPlayerInfo() {
+      leftovers.track(new LegacyPlayerInfo("Alice", true, (short) 5));
+      leftovers.track(new LegacyPlayerInfo("\u00a7cBob", true, (short) 7));
+      leftovers.track(new LegacyPlayerInfo("Carol", true, (short) 9));
+      leftovers.track(new LegacyPlayerInfo("Alice", true, (short) 40)); // a latency update
+      leftovers.track(new LegacyPlayerInfo("Carol", false, (short) 9999));
+
+      List<PlayPacket> packets = leftovers.clear(ProtocolVersion.MINECRAFT_1_7_6);
+
+      assertEquals(
+          new HashSet<>(
+              List.of(LegacyPlayerInfo.remove("Alice"), LegacyPlayerInfo.remove("\u00a7cBob"))),
+          new HashSet<>(packets));
+      assertEquals(2, packets.size(), "each name removed once, and nothing 1.7 cannot read");
+    }
+
+    @Test
+    @DisplayName("should forget the names it removed: the next server starts clean")
+    void legacyPlayerInfoForgotten() {
+      leftovers.track(new LegacyPlayerInfo("Alice", true, (short) 5));
+      leftovers.clear(ProtocolVersion.MINECRAFT_1_7_2);
+
+      assertEquals(List.of(), leftovers.clear(ProtocolVersion.MINECRAFT_1_7_2));
+    }
 
     @Test
     @DisplayName("should remove the players added and not removed since, before 1.19.3")
