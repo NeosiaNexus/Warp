@@ -70,8 +70,8 @@ type(scope): description
 ## Continuous Integration
 
 Every pull request runs the checks below. **CI OK** aggregates the build, the allocation guard, the
-end-to-end tests and the workflow lint into one check. It must be green before merging, as must **Conventional Commits**
-and the security checks of the [next section](#security-and-dependencies).
+end-to-end tests and the workflow lint into one check. It must be green before merging, as must
+**Conventional Commits** and the security checks of the [next section](#security-and-dependencies).
 
 | Check | What it verifies |
 |---|---|
@@ -91,7 +91,8 @@ Workflow conventions, enforced in review and by the linters:
 - `permissions: {}` at the top of each workflow; each job asks for the least it needs, with a
   comment saying why.
 - Every job has a `timeout-minutes`; runners are pinned (`ubuntu-24.04`), never `-latest`.
-- Pull-request runs are cancelled by a newer push; runs on `main` always complete.
+- Pull-request runs are cancelled by a newer push; runs on `main` always complete (the timing
+  trend, which measures one commit at a time, skips to the newest of those waiting).
 
 ## Security and Dependencies
 
@@ -144,26 +145,28 @@ add a Minecraft version, follow
 ## Benchmarks
 
 The JMH benchmarks in [`protocol/src/jmh`](protocol/src/jmh) measure the forwarding path and the
-codecs ([results and methodology](docs/benchmarks/)). Two checks watch the hot path: relaying
-clientbound packets with compression passthrough, and peeking at the id of a compressed packet.
+codecs ([results and methodology](docs/benchmarks/)). Two checks watch the benchmarks of the hot
+path, relaying clientbound packets with compression passthrough and peeking at the id of a
+compressed packet:
 
 | Where | What runs |
 |---|---|
 | Every pull request (**Allocation guard**, part of **CI OK**) | Bytes allocated per packet, against [`alloc-baseline.json`](protocol/src/jmh/alloc-baseline.json), then every benchmark once so that none breaks unnoticed |
-| Every push to `main` (`benchmarks.yml`) | The timings of the same benchmarks, charted at [neosianexus.github.io/Warp/benchmarks](https://neosianexus.github.io/Warp/benchmarks/) |
+| Every push to `main` (`benchmarks.yml`) | The timings of the same benchmarks, charted at [neosianexus.github.io/Warp/benchmarks](https://neosianexus.github.io/Warp/benchmarks/). Runs go one at a time: pushes that land while one measures are measured together, at the newest |
 
 Allocation gates pull requests; timings do not. The guard counts allocation with escape analysis
 off: the count then covers everything the code allocates, not what the JIT happened to keep in one
-run, and it is the same from one run or machine to the next. A benchmark fails when it allocates
-more than its baseline plus the larger of 2 B and 1%. Timings depend on the runner's CPU model,
-which varies, so each model has its own series; on the same model, two runs agree within 3%. A
-benchmark 25% slower than on the previous run on the same model comments on the commit, and fails
+run, and it moves by less than 0.3% from one run or machine to the next. A benchmark fails when it
+allocates more than its baseline plus the larger of 2 B and 1%. Timings depend on the runner's CPU
+model, which varies, so each model has its own series; on the same model, two runs agree within 3%.
+A benchmark 25% slower than on the previous run on the same model comments on the commit, and fails
 nothing.
 
 ```bash
-bin/bench-guard.sh            # what CI runs: the allocation guard and the smoke run (~1 minute)
+bin/bench-guard.sh            # what CI runs: the allocation guard and the smoke run (~2 minutes)
 bin/bench-guard.sh --update   # measure allocation and rewrite the baseline
-bin/bench-guard.sh --timings  # the timings of the trend (~10 minutes)
+bin/bench-guard.sh --timings  # the timings of the trend (~13 minutes)
+bin/bench-guard-test.py       # tests of the guard's verdict (CI runs them first)
 ./gradlew :protocol:jmh -Pjmh.includes=ForwardingPath   # any benchmark, with its own settings
 ```
 

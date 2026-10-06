@@ -6,8 +6,8 @@ import net.ltgt.gradle.errorprone.errorprone
 //   ./gradlew :protocol:jmh -Pjmh.includes=ForwardingPath    # run benchmarks matching a regex
 //
 // Results are written as JSON to build/results/jmh/results.json for archiving and comparison.
-// Iteration, fork and warmup settings belong on the benchmark classes themselves so that each
-// benchmark documents its own methodology.
+// Iteration, fork and warmup settings belong on AbstractMicrobenchmark, which every benchmark
+// extends, so that they all share one documented methodology.
 
 plugins {
     id("me.champeau.jmh")

@@ -28,11 +28,11 @@ import org.openjdk.jmh.annotations.Warmup;
 /**
  * Methodology shared by every benchmark: the mode, the unit, the iterations and the forked JVM.
  *
- * <p>Benchmarks extend this class, and JMH reads these annotations from it, so no benchmark can run
- * in a JVM set up differently from the others, as Netty's own microbench module does. Where it
- * changes the code under test, each fork runs like {@code bin/warp.sh} runs the proxy: Netty keeps
- * {@code sun.misc.Unsafe} (Netty stops using it on Java 25 unless memory access is allowed) and
- * leak detection is off. Benchmark threads are Netty {@code FastThreadLocalThread}s, like event
+ * <p>As in Netty's own microbench module, every benchmark extends this class and JMH reads these
+ * annotations from it, so that no benchmark runs in a JVM set up differently from the others. Where
+ * it changes the code under test, each fork runs like {@code bin/warp.sh} runs the proxy: Netty
+ * keeps {@code sun.misc.Unsafe} (Netty stops using it on Java 25 unless memory access is allowed)
+ * and leak detection is off. Benchmark threads are Netty {@code FastThreadLocalThread}s, like event
  * loops ({@link EventLoopLikeExecutor}). The heap is fixed and pre-touched, which keeps resizing
  * and page faults out of the measurement.
  */
