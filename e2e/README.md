@@ -19,6 +19,10 @@ the JDK each server needs, ViaProxy) is downloaded on first use, checked against
 and cached in `~/.cache/warp-e2e` (override with `WARP_E2E_CACHE`). Without `--jar`, Warp's shadow
 jar is built with Gradle. The harness uses 8 local ports from 26100 (`--port-base` to move them).
 
+The npm dependencies are pinned in `package-lock.json`. `package.json` overrides `uuid` to 11.1.1+
+(GHSA-w5hq-g745-h8pq): the bots' Mojang and Microsoft login libraries still ask for older releases,
+which the harness never uses (bots log in offline) but the dependency review rejects.
+
 ## What a run does
 
 For each version: boot two backends (`lobby` in creative mode, `survival` in adventure mode, so
