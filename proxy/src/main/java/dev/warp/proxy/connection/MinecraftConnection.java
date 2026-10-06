@@ -29,6 +29,7 @@ import dev.warp.protocol.packet.Packet;
 
 import java.io.IOException;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.NotYetConnectedException;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
@@ -140,19 +141,44 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   @Override
   public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-    if (cause instanceof ClosedChannelException) {
-      // A write raced with the peer closing the connection: expected, nothing went wrong.
-      logger.debug("Write to closed connection {}", channel.remoteAddress());
-    } else if (cause instanceof IOException) {
-      // The peer vanished (connection reset, broken pipe): routine for players, not a fault.
-      logger.debug("Connection {} lost: {}", channel.remoteAddress(), cause.getMessage());
+    String routine = describeRoutine(cause, ctx.channel().isActive());
+    if (routine != null) {
+      logger.debug("{} ({}): {}", routine, channel.remoteAddress(), cause.toString());
     } else {
-      // Everything else is logged in full — never gated on isActive(), which can hide real bugs.
+      // Everything else is logged in full.
       logger.error("Exception in pipeline for {}", channel.remoteAddress(), cause);
     }
     if (ctx.channel().isActive()) {
       var _ = ctx.close();
     }
+  }
+
+  /**
+   * Describes an exception that is part of normal operation, or returns {@code null} for one that
+   * may reveal a bug and must be logged in full. Never decided on the channel state alone, which
+   * would hide real bugs.
+   *
+   * @param cause the exception caught in the pipeline
+   * @param active whether the channel is connected
+   * @return a short description for the debug log, or {@code null}
+   */
+  static @Nullable String describeRoutine(Throwable cause, boolean active) {
+    if (cause instanceof ClosedChannelException) {
+      // A write raced with the peer closing the connection: expected, nothing went wrong.
+      return "Write to closed connection";
+    }
+    if (cause instanceof IOException) {
+      // The peer vanished (connection reset, broken pipe): routine for players, not a fault.
+      return "Connection lost";
+    }
+    if (cause instanceof NotYetConnectedException && !active) {
+      // A read on a backend socket that is still connecting. epoll reports readiness by
+      // descriptor number: when a server switch closes the old backend and connects the new one
+      // in the same batch of events, the new socket can reuse the old descriptor and receive its
+      // pending read event. Nothing is read, and the connection completes normally.
+      return "Stale read event before connect";
+    }
+    return null;
   }
 
   // ---------------------------------------------------------------------------
