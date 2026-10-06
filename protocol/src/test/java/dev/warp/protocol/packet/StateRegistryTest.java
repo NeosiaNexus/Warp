@@ -51,8 +51,10 @@ import dev.warp.protocol.packet.login.LoginStart;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.login.SetCompression;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
+import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatCommand;
+import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
@@ -60,12 +62,16 @@ import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPacket;
 import dev.warp.protocol.packet.play.PlayPluginMessage;
+import dev.warp.protocol.packet.play.PlayerInfo;
+import dev.warp.protocol.packet.play.PlayerInfoRemove;
+import dev.warp.protocol.packet.play.PlayerInfoUpdate;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.Respawn;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
+import dev.warp.protocol.packet.play.TabListHeaderFooter;
 import dev.warp.protocol.packet.play.Transfer;
 import dev.warp.protocol.packet.status.PingRequest;
 import dev.warp.protocol.packet.status.PongResponse;
@@ -174,7 +180,19 @@ class StateRegistryTest {
                 ProtocolVersion.MINECRAFT_1_19),
             new ReferenceName(PLAY, CLIENTBOUND, StartConfiguration.class, "start_configuration"),
             new ReferenceName(PLAY, CLIENTBOUND, Transfer.class, "transfer"),
-            new ReferenceName(PLAY, CLIENTBOUND, TabCompleteResponse.class, "tab_complete"));
+            new ReferenceName(PLAY, CLIENTBOUND, TabCompleteResponse.class, "tab_complete"),
+            new ReferenceName(PLAY, CLIENTBOUND, BossBar.class, "boss_bar"),
+            new ReferenceName(PLAY, CLIENTBOUND, PlayerInfo.class, "player_info"),
+            new ReferenceName(PLAY, CLIENTBOUND, PlayerInfoUpdate.class, "player_info"),
+            new ReferenceName(PLAY, CLIENTBOUND, PlayerInfoRemove.class, "player_remove"),
+            new ReferenceName(PLAY, CLIENTBOUND, TabListHeaderFooter.class, "playerlist_header"),
+            new ReferenceName(PLAY, CLIENTBOUND, ClearTitles.class, "title"),
+            new ReferenceName(
+                PLAY,
+                CLIENTBOUND,
+                ClearTitles.class,
+                "clear_titles",
+                ProtocolVersion.MINECRAFT_1_17));
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("protocols")

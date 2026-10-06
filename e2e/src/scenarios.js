@@ -6,12 +6,11 @@ import { sleep } from './proc.js';
 export const LOBBY_MODE = 'creative';
 export const SURVIVAL_MODE = 'adventure';
 
-/** Server switching goes through the configuration phase, introduced in 1.20.2. */
-const SWITCHING_MIN_PROTOCOL = 764;
-
 export function features(protocol) {
   return {
-    switching: protocol >= SWITCHING_MIN_PROTOCOL,
+    // Every version switches: through the configuration phase from 1.20.2, with the new server's
+    // Join Game and a Respawn before.
+    switching: true,
   };
 }
 

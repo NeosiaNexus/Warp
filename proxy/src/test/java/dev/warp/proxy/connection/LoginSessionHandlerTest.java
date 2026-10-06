@@ -113,7 +113,8 @@ class LoginSessionHandlerTest {
 
         nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version);
         byte[] reason = nextPacket(channel, ProtocolState.PLAY, PlayDisconnect.class, version);
-        assertArrayEquals(jsonString("{\"text\":\"Could not connect to backend server\"}"), reason);
+        assertArrayEquals(
+            jsonString("{\"text\":\"Could not connect to any available server.\"}"), reason);
         assertClosed(channel);
       } finally {
         channel.finishAndReleaseAll();

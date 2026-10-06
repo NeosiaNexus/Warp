@@ -90,9 +90,9 @@ describe('variants', () => {
 });
 
 describe('scenario features', () => {
-  it('switches servers from 1.20.2', () => {
-    assert.deepEqual(features(47), { switching: false });
-    assert.deepEqual(features(763), { switching: false });
+  it('switches servers on every version', () => {
+    assert.deepEqual(features(47), { switching: true });
+    assert.deepEqual(features(763), { switching: true });
     assert.deepEqual(features(764), { switching: true });
   });
 });

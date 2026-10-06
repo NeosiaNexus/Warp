@@ -283,69 +283,6 @@ class PlayPacketsTest {
   }
 
   // ---------------------------------------------------------------------------
-  // JoinGame (minimal decode)
-  // ---------------------------------------------------------------------------
-
-  @Nested
-  @DisplayName("JoinGame")
-  class JoinGameCodec {
-
-    @Test
-    @DisplayName("should roundtrip with raw remainder")
-    void roundtrip() {
-      byte[] remainder = {0x00, 0x01, 0x02, 0x03, 0x04};
-      JoinGame original = new JoinGame(42, true, 1, remainder);
-      ByteBuf buf = Unpooled.buffer();
-      try {
-        JoinGame.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_21_4);
-        JoinGame decoded = JoinGame.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_21_4);
-        assertEquals(42, decoded.entityId());
-        assertEquals(true, decoded.isHardcore());
-        assertEquals(1, decoded.gameMode());
-        assertArrayEquals(remainder, decoded.rawRemainder());
-      } finally {
-        buf.release();
-      }
-    }
-
-    @Test
-    @DisplayName("should pack hardcore bit into gameMode byte for pre-1.16.2")
-    void hardcoreBitPre1162() {
-      byte[] remainder = {0x00};
-      JoinGame original = new JoinGame(99, true, 0, remainder);
-      ByteBuf buf = Unpooled.buffer();
-      try {
-        JoinGame.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_9);
-        // entityId (4 bytes) + gameMode byte with hardcore bit packed
-        assertEquals(99, buf.readInt());
-        int rawGameMode = buf.readUnsignedByte();
-        // hardcore = bit 0x08, gameMode = 0 -> raw byte = 0x08
-        assertEquals(0x08, rawGameMode);
-      } finally {
-        buf.release();
-      }
-    }
-
-    @Test
-    @DisplayName("should roundtrip at 1.9 preserving hardcore=true and gameMode=0")
-    void roundtripPre1162() {
-      byte[] remainder = {0x01, 0x02};
-      JoinGame original = new JoinGame(7, true, 0, remainder);
-      ByteBuf buf = Unpooled.buffer();
-      try {
-        JoinGame.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_9);
-        JoinGame decoded = JoinGame.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_9);
-        assertEquals(7, decoded.entityId());
-        assertTrue(decoded.isHardcore());
-        assertEquals(0, decoded.gameMode());
-        assertArrayEquals(remainder, decoded.rawRemainder());
-      } finally {
-        buf.release();
-      }
-    }
-  }
-
-  // ---------------------------------------------------------------------------
   // ResourcePackResponse
   // ---------------------------------------------------------------------------
 

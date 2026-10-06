@@ -16,6 +16,8 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.server.ServerInfo;
+
 import java.net.InetSocketAddress;
 import java.util.concurrent.CompletableFuture;
 
@@ -29,7 +31,7 @@ import io.netty.channel.WriteBufferWaterMark;
 /**
  * Represents a connection to a backend Minecraft server.
  *
- * <p>Wraps a {@link MinecraftConnection} with backend-specific state: the target server address and
+ * <p>Wraps a {@link MinecraftConnection} with backend-specific state: the target server and
  * active/teardown tracking. Created via the static {@link #connect} factory which returns a {@link
  * CompletableFuture} that completes when the TCP connection is established.
  *
@@ -54,16 +56,16 @@ public final class BackendConnection {
   // ---------------------------------------------------------------------------
 
   private final MinecraftConnection connection;
-  private final InetSocketAddress serverAddress;
+  private final ServerInfo server;
   private volatile boolean active = true;
 
   // ---------------------------------------------------------------------------
   // Constructor
   // ---------------------------------------------------------------------------
 
-  private BackendConnection(MinecraftConnection connection, InetSocketAddress serverAddress) {
+  BackendConnection(MinecraftConnection connection, ServerInfo server) {
     this.connection = connection;
-    this.serverAddress = serverAddress;
+    this.server = server;
   }
 
   // ---------------------------------------------------------------------------
@@ -84,17 +86,18 @@ public final class BackendConnection {
    *
    * @param channelClass the socket channel class matching the transport
    * @param player the connected player (used to initialise the backend pipeline)
-   * @param serverAddress the backend server address
+   * @param server the backend server
    * @param forwardingSecret the shared HMAC secret for Velocity modern forwarding
    * @return a future that completes with the backend connection
    */
   public static CompletableFuture<BackendConnection> connect(
       Class<? extends Channel> channelClass,
       ConnectedPlayer player,
-      InetSocketAddress serverAddress,
+      ServerInfo server,
       byte[] forwardingSecret) {
 
     CompletableFuture<BackendConnection> future = new CompletableFuture<>();
+    InetSocketAddress serverAddress = server.address();
 
     new Bootstrap()
         .group(player.clientConnection().channel().eventLoop())
@@ -118,7 +121,7 @@ public final class BackendConnection {
                     conn.setSessionHandler(
                         new BackendLoginSessionHandler(
                             player, conn, serverAddress, forwardingSecret));
-                    future.complete(new BackendConnection(conn, serverAddress));
+                    future.complete(new BackendConnection(conn, server));
                   } else {
                     future.completeExceptionally(channelFuture.cause());
                   }
@@ -141,12 +144,21 @@ public final class BackendConnection {
   }
 
   /**
+   * Returns the backend server.
+   *
+   * @return the server this connection leads to
+   */
+  public ServerInfo server() {
+    return server;
+  }
+
+  /**
    * Returns the backend server address.
    *
    * @return the server address
    */
   public InetSocketAddress serverAddress() {
-    return serverAddress;
+    return server.address();
   }
 
   /**

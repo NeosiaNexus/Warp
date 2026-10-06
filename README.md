@@ -29,9 +29,9 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 
 > [!IMPORTANT]
 > **Pre-release.** Warp is under active development and not ready for production. Players can
-> join through it today (online or offline mode) and play; on 1.20.2 and newer clients they can
-> also switch servers and fall back when a server fails. The plugin API, operations features and
-> the rest of the [roadmap](#roadmap) are not built yet. Releases are `0.1.0-beta` pre-releases;
+> join through it today (online or offline mode), play, switch servers and fall back when a server
+> fails. The plugin API, operations features and the rest of the [roadmap](#roadmap) are not built
+> yet. Releases are `0.1.0-beta` pre-releases;
 > see the [changelog](CHANGELOG.md).
 
 ## Features
@@ -44,11 +44,12 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
   virtual thread and never blocks the event loop. Offline mode is available for development.
 - **Player info forwarding**: [Velocity modern forwarding](https://docs.papermc.io/velocity/player-information-forwarding)
   (HMAC-SHA256 signed, Minecraft 1.13+ backends such as Paper), or none.
-- **Several backend servers**: `/server` lists them (every client version) and switches between
-  them. Switching uses the configuration phase, so it needs 1.20.2+ clients.
-- **Fallback** (1.20.2+ clients): when the server a player joins or switches to is unreachable or
-  refuses the login, or kicks them during play, Warp tries the servers of `fallback-order` in turn
-  before disconnecting the player. Older clients are disconnected instead.
+- **Several backend servers**: `/server` lists them and switches between them, on every client
+  version: through the configuration phase from 1.20.2, and before it with the new server's Join
+  Game and a Respawn, clearing the old server's tab list, boss bars and titles.
+- **Fallback**: when the server a player joins or switches to is unreachable or refuses the
+  login, or kicks them during play, Warp tries the servers of `fallback-order` in turn before
+  disconnecting the player.
 - **Server list ping** answered by Warp itself (a fixed response for now).
 
 **Performance**
@@ -89,7 +90,6 @@ Planned, not implemented yet:
 - **Graceful drain** with Transfer packets, for rolling deployments and Kubernetes.
 - **Observability**: `/livez`, `/readyz` and `/startupz` health probes, Prometheus metrics,
   OpenTelemetry tracing.
-- **Server switching and fallback for clients older than 1.20.2.**
 - **Configurable server list ping** (MOTD, player counts).
 - **Native compression and cryptography** (libdeflate, AES): `jni/` is a placeholder today.
 - **Plugin API on Maven Central.**
@@ -99,7 +99,7 @@ Planned, not implemented yet:
 Unit tests check that each piece does what its author meant. The
 [end-to-end suite](e2e/README.md) checks that a player can actually play: real-protocol bots go
 through Warp to real Paper or vanilla servers for every protocol from 1.8 to 26.3. They join,
-receive chunks, switch servers (1.20.2+), survive a fallback and stay connected. A run also fails
+receive chunks, switch servers, survive a fallback and stay connected. A run also fails
 if Warp logs an error, leaks a Netty buffer, or a backend drops a connection with a protocol error.
 
 | When | What runs |
