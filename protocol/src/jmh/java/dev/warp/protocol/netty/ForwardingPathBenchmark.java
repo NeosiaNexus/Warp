@@ -17,6 +17,7 @@
 package dev.warp.protocol.netty;
 
 import dev.warp.protocol.ProtocolState;
+import dev.warp.protocol.bench.AbstractMicrobenchmark;
 import dev.warp.protocol.bench.BenchmarkConfig;
 import dev.warp.protocol.bench.EventLoopLikeExecutor;
 import dev.warp.protocol.bench.PacketCorpus;
@@ -28,7 +29,6 @@ import dev.warp.protocol.packet.PacketDirection;
 
 import java.security.GeneralSecurityException;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.zip.Deflater;
 
 import javax.crypto.SecretKey;
@@ -44,19 +44,13 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.embedded.EmbeddedChannel;
 import org.jspecify.annotations.Nullable;
 import org.openjdk.jmh.annotations.Benchmark;
-import org.openjdk.jmh.annotations.BenchmarkMode;
-import org.openjdk.jmh.annotations.Fork;
 import org.openjdk.jmh.annotations.Level;
-import org.openjdk.jmh.annotations.Measurement;
-import org.openjdk.jmh.annotations.Mode;
 import org.openjdk.jmh.annotations.OperationsPerInvocation;
-import org.openjdk.jmh.annotations.OutputTimeUnit;
 import org.openjdk.jmh.annotations.Param;
 import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
-import org.openjdk.jmh.annotations.Warmup;
 
 /**
  * CPU cost of relaying clientbound PLAY traffic from a backend to a player, per packet.
@@ -77,22 +71,8 @@ import org.openjdk.jmh.annotations.Warmup;
  */
 @State(Scope.Thread)
 @SuppressWarnings("checkstyle:VisibilityModifier") // JMH injects @Param fields directly
-@BenchmarkMode(Mode.AverageTime)
-@OutputTimeUnit(TimeUnit.NANOSECONDS)
-@Warmup(iterations = 5, time = 2)
-@Measurement(iterations = 10, time = 2)
-@Fork(
-    value = 2,
-    jvmArgsAppend = {
-      "-Xms2g",
-      "-Xmx2g",
-      "-XX:+AlwaysPreTouch",
-      "-Dio.netty.leakDetection.level=disabled",
-      EventLoopLikeExecutor.JMH_EXECUTOR,
-      EventLoopLikeExecutor.JMH_EXECUTOR_CLASS
-    })
 @OperationsPerInvocation(BenchmarkConfig.PACKETS)
-public class ForwardingPathBenchmark {
+public class ForwardingPathBenchmark extends AbstractMicrobenchmark {
 
   private static final int READ_SIZE = 16 * 1024;
 

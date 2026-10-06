@@ -5,13 +5,13 @@
   },
   "jdk": "25.0.2",
   "benchmarks": {
-    "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=CHUNK]": 102.8,
+    "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=CHUNK]": 16.4,
     "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=ENTITY_MOVE]": 44.5,
-    "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=MIXED]": 31.1,
-    "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=CHUNK]": 8331.6,
+    "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=MIXED]": 20.1,
+    "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=CHUNK]": 8189.1,
     "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=ENTITY_MOVE]": 308.9,
-    "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=MIXED]": 831.6,
-    "PacketIdPeekBenchmark.peek[workload=CHUNK]": 0.0,
+    "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=MIXED]": 811.2,
+    "PacketIdPeekBenchmark.peek[workload=CHUNK]": 0.1,
     "PacketIdPeekBenchmark.peek[workload=MIXED]": 0.0
   }
 }
