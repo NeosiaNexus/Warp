@@ -155,9 +155,10 @@ clientbound packets with compression passthrough, and peeking at the id of a com
 Allocation gates pull requests; timings do not. The guard counts allocation with escape analysis
 off: the count then covers everything the code allocates, not what the JIT happened to keep in one
 run, and it is the same from one run or machine to the next. A benchmark fails when it allocates
-more than its baseline plus the larger of 2 B and 1%. Timings on shared runners vary by tens of
-percent, so a benchmark 1.5× slower than on the previous push only comments on the commit; each
-point of the chart names the CPU it ran on.
+more than its baseline plus the larger of 2 B and 1%. Timings depend on the runner's CPU model,
+which varies, so each model has its own series; on the same model, two runs agree within 3%. A
+benchmark 25% slower than on the previous run on the same model comments on the commit, and fails
+nothing.
 
 ```bash
 bin/bench-guard.sh            # what CI runs: the allocation guard and the smoke run (~1 minute)

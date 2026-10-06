@@ -3,10 +3,11 @@ name: Benchmarks
 # Timing trend of the hot path. Every push to main times the benchmarks that the allocation guard
 # covers, with their own forks, warm-up and iterations (bin/bench-guard.sh --timings), and appends
 # the result to the history kept on the gh-pages branch, charted at
-# https://neosianexus.github.io/Warp/benchmarks/. Shared runners are too noisy for timings to
-# block anything: a benchmark much slower than on the previous run only raises an alert, a comment
-# on the commit and a warning in the run. Run on demand from another branch, it measures without
-# publishing.
+# https://neosianexus.github.io/Warp/benchmarks/. Runners come with different CPU models, and
+# timings are only comparable on the same one, so each model has its own series. Shared runners
+# cannot gate anything on timings: a benchmark much slower than on the previous run with the same
+# CPU only raises an alert, a comment on the commit and a warning in the run. Run on demand from
+# another branch, it measures without publishing.
 on:
   push:
     branches: [main]
@@ -33,6 +34,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read # check out the code
+    outputs:
+      cpu: ${{ steps.cpu.outputs.model }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -41,6 +44,12 @@ jobs:
 
       - name: Set up build
         uses: $/.github/actions/setup-build
+
+      - name: Identify the CPU
+        id: cpu
+        run: |
+          model=$(awk -F ': ' '/^model name/ { print $2; exit }' /proc/cpuinfo)
+          echo "model=${model:-unknown CPU}" >> "$GITHUB_OUTPUT"
 
       - name: Time the hot path
         run: bin/bench-guard.sh --timings
@@ -78,11 +87,12 @@ jobs:
           name: benchmark-timings
           path: ${{ runner.temp }}/timings
 
-      # Compares each benchmark with the previous run: 50% slower raises an alert, without failing.
+      # Compares each benchmark with the previous run on the same CPU model, whose results vary by
+      # less than 3% from one run to the next: 25% slower raises an alert, without failing.
       - name: Append to the trend
         uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
-          name: Hot path
+          name: Hot path on ${{ needs.measure.outputs.cpu }}
           tool: customSmallerIsBetter
           output-file-path: ${{ runner.temp }}/timings/timings-chart.json
           gh-pages-branch: gh-pages
@@ -90,7 +100,7 @@ jobs:
           github-token: ${{ github.token }}
           auto-push: true
           summary-always: true
-          alert-threshold: '150%'
+          alert-threshold: '125%'
           comment-on-alert: true
           alert-comment-cc-users: '@${{ github.repository_owner }}'
           fail-on-alert: false
