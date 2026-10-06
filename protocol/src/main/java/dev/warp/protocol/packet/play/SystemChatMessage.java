@@ -42,7 +42,8 @@ import io.netty.handler.codec.DecoderException;
  *   <li><b>1.16–1.18.2</b> (Chat Message): the position byte, then the sender UUID. The proxy
  *       writes the nil UUID: no player sent the message, so the client never hides it.
  *   <li><b>1.19</b> (System Chat Message): a VarInt chat type, {@code 1} (system) or {@code 2}
- *       (game info).
+ *       (game info): the ids of {@code minecraft:system} and {@code minecraft:game_info} in the
+ *       {@code chat_type} registry the server sends at join.
  *   <li><b>1.19.1+</b> (System Chat Message): the overlay boolean.
  * </ul>
  *

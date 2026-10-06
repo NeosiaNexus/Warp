@@ -44,8 +44,8 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
   virtual thread and never blocks the event loop. Offline mode is available for development.
 - **Player info forwarding**: [Velocity modern forwarding](https://docs.papermc.io/velocity/player-information-forwarding)
   (HMAC-SHA256 signed, Minecraft 1.13+ backends such as Paper), or none.
-- **Several backend servers**: `/server` lists them (1.19.3+ clients) and switches between them.
-  Switching uses the configuration phase, so it needs 1.20.2+ clients.
+- **Several backend servers**: `/server` lists them (every client version) and switches between
+  them. Switching uses the configuration phase, so it needs 1.20.2+ clients.
 - **Fallback** (1.20.2+ clients): when the server a player joins or switches to is unreachable or
   refuses the login, or kicks them during play, Warp tries the servers of `fallback-order` in turn
   before disconnecting the player. Older clients are disconnected instead.
