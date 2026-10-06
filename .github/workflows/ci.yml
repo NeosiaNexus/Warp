@@ -14,8 +14,35 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Pull requests that only touch documentation skip the build and the end-to-end tests.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read # list the files of the pull request
+    outputs:
+      code: ${{ steps.filter.outputs.code || 'true' }}
+    steps:
+      - name: Filter paths
+        id: filter
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          predicate-quantifier: every
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!docs/**'
+              - '!LICENSE'
+              - '!.github/ISSUE_TEMPLATE/**'
+              - '!.github/PULL_REQUEST_TEMPLATE.md'
+
   build:
     name: Build & test
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -107,12 +134,23 @@ jobs:
           advanced-security: false
           annotations: true
 
+  # One passing version per protocol era, plus the variants on the newest (e2e/versions.json, tier
+  # `pr`). The full matrix runs on main, nightly, and on PRs labelled `e2e: full` (e2e.yml).
+  e2e:
+    name: E2E
+    needs: build
+    permissions:
+      contents: read # check out the harness
+    uses: $/.github/workflows/_e2e.yml
+    with:
+      tier: pr
+
   # The only check to mark as required: it fails if any job above failed or was cancelled, and
   # passes when they succeeded or were skipped on purpose.
   ci-ok:
     name: CI OK
     if: ${{ always() }}
-    needs: [build, lint-workflows]
+    needs: [changes, build, lint-workflows, e2e]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
