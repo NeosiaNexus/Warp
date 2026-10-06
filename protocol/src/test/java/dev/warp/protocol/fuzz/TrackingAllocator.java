@@ -26,15 +26,17 @@ import io.netty.buffer.UnpooledHeapByteBuf;
 
 /**
  * An allocator that keeps every buffer it hands out, so that a fuzz test can check that the code
- * under test released them all, and never asked for more memory than its input justifies.
+ * under test released them all, and never took more memory than its input justifies.
  *
  * <p>Buffers are unpooled: a leaked buffer is reported by {@link #assertAllReleased()}, never
- * recycled into another test.
+ * recycled into another test. They report every change of capacity, so that a buffer allocated
+ * small and grown by {@link ByteBuf#ensureWritable(int)} or {@link ByteBuf#capacity(int)} counts at
+ * its largest.
  */
 public final class TrackingAllocator extends AbstractByteBufAllocator {
 
   private final List<ByteBuf> buffers = new ArrayList<>();
-  private int largestRequest;
+  private int largestCapacity;
 
   /** Creates an allocator that prefers direct buffers, as Netty's default allocator does. */
   public TrackingAllocator() {
@@ -43,12 +45,26 @@ public final class TrackingAllocator extends AbstractByteBufAllocator {
 
   @Override
   protected ByteBuf newHeapBuffer(int initialCapacity, int maxCapacity) {
-    return track(new UnpooledHeapByteBuf(this, initialCapacity, maxCapacity));
+    return track(
+        new UnpooledHeapByteBuf(this, initialCapacity, maxCapacity) {
+          @Override
+          public ByteBuf capacity(int newCapacity) {
+            grew(newCapacity);
+            return super.capacity(newCapacity);
+          }
+        });
   }
 
   @Override
   protected ByteBuf newDirectBuffer(int initialCapacity, int maxCapacity) {
-    return track(new UnpooledDirectByteBuf(this, initialCapacity, maxCapacity));
+    return track(
+        new UnpooledDirectByteBuf(this, initialCapacity, maxCapacity) {
+          @Override
+          public ByteBuf capacity(int newCapacity) {
+            grew(newCapacity);
+            return super.capacity(newCapacity);
+          }
+        });
   }
 
   @Override
@@ -57,13 +73,13 @@ public final class TrackingAllocator extends AbstractByteBufAllocator {
   }
 
   /**
-   * Returns the largest initial capacity requested so far: what the code under test allocated up
-   * front, before it read the bytes that would fill it.
+   * Returns the largest capacity a buffer had so far, when allocated or grown: the most memory the
+   * code under test took at once for one buffer, whether or not it then filled it.
    *
-   * @return the largest request, in bytes
+   * @return the largest capacity, in bytes
    */
-  public int largestRequest() {
-    return largestRequest;
+  public int largestCapacity() {
+    return largestCapacity;
   }
 
   /**
@@ -81,7 +97,11 @@ public final class TrackingAllocator extends AbstractByteBufAllocator {
 
   private ByteBuf track(ByteBuf buf) {
     buffers.add(buf);
-    largestRequest = Math.max(largestRequest, buf.capacity());
+    grew(buf.capacity());
     return buf;
+  }
+
+  private void grew(int capacity) {
+    largestCapacity = Math.max(largestCapacity, capacity);
   }
 }

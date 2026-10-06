@@ -22,7 +22,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.compress.FrameDecompressor;
 import dev.warp.protocol.compress.JavaCompressor;
-import dev.warp.protocol.compress.ZlibStreams;
 import dev.warp.protocol.fuzz.FuzzSeeds;
 import dev.warp.protocol.fuzz.InboundRecorder;
 import dev.warp.protocol.fuzz.Rejections;
@@ -32,25 +31,21 @@ import dev.warp.protocol.fuzz.Wire;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.zip.DataFormatException;
-import java.util.zip.Deflater;
-import java.util.zip.Inflater;
 
 import com.code_intelligence.jazzer.api.FuzzedDataProvider;
 import com.code_intelligence.jazzer.junit.FuzzTest;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.channel.embedded.EmbeddedChannel;
-import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Fuzzes {@link CompressionDecoder}, behind a {@link FrameDecoder}, against a reference of what a
- * vanilla server accepts: a declared size within its limits, which inflating then yields exactly.
+ * Fuzzes {@link CompressionDecoder}, behind a {@link FrameDecoder}, against the reference of {@link
+ * Wire#decompressed}: a declared size within the limits, which the stream inflates to exactly.
  */
 @DisplayName("CompressionDecoder fuzzing")
 class CompressionDecoderFuzzTest {
@@ -61,28 +56,24 @@ class CompressionDecoderFuzzTest {
   };
 
   /**
-   * How the stream is built. {@link #RAW} takes the input as the stream; the others take it as the
-   * packets of an uncompressed stream, which they frame for a compressed connection, declaring the
-   * size of each compressed packet truthfully or not.
+   * How the stream is built: {@code RAW} takes the input as the stream, and {@code 1 + f} takes it
+   * as the packets of an uncompressed stream, which it frames for a compressed connection with the
+   * {@link Wire#compressedBody} framing {@code f}.
    */
   private static final int RAW = 0;
 
-  private static final int TRUTHFUL = 1;
-  private static final int ONE_MORE = 2;
-  private static final int ONE_LESS = 3;
-  private static final int BEYOND_DEFLATE = 4;
-
   @FuzzTest
-  @DisplayName("should inflate exactly the frames vanilla accepts, reject the rest, release all")
+  @DisplayName("should inflate exactly the frames Warp accepts, reject the rest, release all")
   void decode(FuzzedDataProvider data) {
     boolean direct = data.consumeBoolean();
     int threshold = data.consumeInt(0, 255);
     boolean validateThreshold = data.consumeBoolean();
     int maxSize = data.pickValue(MAX_SIZES);
-    int framing = data.consumeInt(RAW, BEYOND_DEFLATE);
+    int framing = data.consumeInt(RAW, 1 + Wire.TRUNCATED);
     boolean compressAll = data.consumeBoolean();
+    int at = framing == RAW ? 0 : data.consumeInt(0, 255);
     byte[] input = data.consumeRemainingAsBytes();
-    byte[] stream = framing == RAW ? input : frames(input, framing, threshold, compressAll);
+    byte[] stream = framing == RAW ? input : frames(input, threshold, compressAll, framing - 1, at);
 
     TrackingAllocator alloc = new TrackingAllocator();
     InboundRecorder recorder = new InboundRecorder();
@@ -99,7 +90,7 @@ class CompressionDecoderFuzzTest {
     List<byte[]> expected = new ArrayList<>();
     boolean rejected = frames.malformed();
     for (byte[] body : frames.payloads()) {
-      byte[] packet = accepted(body, threshold, validateThreshold, maxSize);
+      byte[] packet = Wire.decompressed(body, threshold, validateThreshold, maxSize);
       if (packet == null) {
         rejected = true;
         break;
@@ -122,74 +113,34 @@ class CompressionDecoderFuzzTest {
     // DEFLATE can expand the received bytes to.
     long plausible = Math.min(maxSize, 1032L * stream.length + 258);
     assertTrue(
-        alloc.largestRequest() <= Math.max(64 + 2L * stream.length, plausible),
-        () -> "allocated " + alloc.largestRequest() + " bytes for " + stream.length);
+        alloc.largestCapacity() <= Math.max(64 + 2L * stream.length, plausible),
+        () -> "allocated " + alloc.largestCapacity() + " bytes for " + stream.length);
   }
 
   @Test
   @DisplayName("should keep its checked-in seeds up to date")
   void seeds() throws IOException {
     ByteArrayOutputStream packets = new ByteArrayOutputStream();
-    packets.writeBytes(Wire.frame(packet(0x01, 4)));
-    packets.writeBytes(Wire.frame(packet(0x22, 100)));
-    packets.writeBytes(Wire.frame(packet(0x7f, 300)));
+    packets.writeBytes(Wire.frame(Wire.packet(new byte[] {0x01}, 4)));
+    packets.writeBytes(Wire.frame(Wire.packet(new byte[] {0x22}, 100)));
+    packets.writeBytes(Wire.frame(Wire.packet(new byte[] {0x7f}, 300)));
     byte[] stream = packets.toByteArray();
     byte[] corrupt = HexFormat.of().parseHex("0a789cffffffff00000000");
 
-    // Choices: direct, threshold, validate the threshold, cap, framing, compress all.
+    // Choices: direct, threshold, validate the threshold, cap, framing, compress all, then where
+    // to damage a stream, unless raw.
     new FuzzSeeds(CompressionDecoderFuzzTest.class, "decode")
-        .add("truthful", stream, 0, 64, 1, 2, TRUTHFUL, 0)
-        .add("truthful-direct-all-compressed", stream, 1, 64, 0, 2, TRUTHFUL, 1)
-        .add("compressed-below-threshold", stream, 0, 64, 1, 2, TRUTHFUL, 1)
-        .add("above-cap", stream, 0, 64, 1, 0, TRUTHFUL, 0)
-        .add("declared-one-more", stream, 0, 64, 1, 2, ONE_MORE, 0)
-        .add("declared-one-less", stream, 0, 64, 1, 2, ONE_LESS, 0)
-        .add("declared-beyond-deflate", stream, 0, 64, 1, 2, BEYOND_DEFLATE, 0)
+        .add("truthful", stream, 0, 64, 1, 2, 1 + Wire.TRUTHFUL, 0, 0)
+        .add("truthful-direct-all-compressed", stream, 1, 64, 0, 2, 1 + Wire.TRUTHFUL, 1, 0)
+        .add("compressed-below-threshold", stream, 0, 64, 1, 2, 1 + Wire.TRUTHFUL, 1, 0)
+        .add("above-cap", stream, 0, 64, 1, 0, 1 + Wire.TRUTHFUL, 0, 0)
+        .add("declared-one-more", stream, 0, 64, 1, 2, 1 + Wire.ONE_MORE, 0, 0)
+        .add("declared-one-less", stream, 0, 64, 1, 2, 1 + Wire.ONE_LESS, 0, 0)
+        .add("declared-beyond-deflate", stream, 0, 64, 1, 2, 1 + Wire.BEYOND_DEFLATE, 0, 0)
+        .add("corrupt-stream", stream, 0, 64, 1, 2, 1 + Wire.CORRUPT, 0, 7)
+        .add("truncated-stream", stream, 0, 64, 1, 2, 1 + Wire.TRUNCATED, 0, 200)
         .add("raw-corrupt-stream", Wire.frame(corrupt), 0, 0, 1, 2, RAW, 0)
         .verify();
-  }
-
-  // ---------------------------------------------------------------------------
-  // Reference
-  // ---------------------------------------------------------------------------
-
-  /**
-   * What a vanilla server makes of a frame body, {@code [Data Length][payload]}: the packet it
-   * carries, or {@code null} if it rejects it. Unlike Warp, it inflates whatever size is declared
-   * below its cap: a size DEFLATE cannot reach must fail here too.
-   */
-  private static byte @Nullable [] accepted(
-      byte[] body, int threshold, boolean validateThreshold, int maxSize) {
-    Wire.VarNum dataLength = Wire.varNum(body, 0, 5);
-    if (dataLength == null) {
-      return null;
-    }
-    byte[] payload = Arrays.copyOfRange(body, dataLength.length(), body.length);
-    int declared = (int) dataLength.value();
-    if (declared == 0) {
-      return payload;
-    }
-    if (declared < 0 || (validateThreshold && declared < threshold) || declared > maxSize) {
-      return null;
-    }
-    Inflater inflater = new Inflater();
-    try {
-      inflater.setInput(payload);
-      ByteArrayOutputStream packet = new ByteArrayOutputStream();
-      byte[] chunk = new byte[8192];
-      while (!inflater.finished() && packet.size() <= declared) {
-        int inflated = inflater.inflate(chunk);
-        packet.write(chunk, 0, inflated);
-        if (inflated == 0 && !inflater.finished()) {
-          return null; // truncated, or needs a preset dictionary
-        }
-      }
-      return inflater.finished() && packet.size() == declared ? packet.toByteArray() : null;
-    } catch (DataFormatException malformed) {
-      return null;
-    } finally {
-      inflater.end();
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -197,37 +148,12 @@ class CompressionDecoderFuzzTest {
   // ---------------------------------------------------------------------------
 
   /** Frames the packets of an uncompressed stream for a compressed connection. */
-  private static byte[] frames(byte[] input, int framing, int threshold, boolean compressAll) {
+  private static byte[] frames(
+      byte[] input, int threshold, boolean compressAll, int framing, int at) {
     ByteArrayOutputStream out = new ByteArrayOutputStream();
     for (byte[] packet : Wire.frames(input).payloads()) {
-      ByteArrayOutputStream body = new ByteArrayOutputStream();
-      if (packet.length < threshold && !compressAll) {
-        body.write(0);
-        body.writeBytes(packet);
-      } else {
-        byte[] zlib = ZlibStreams.zlib(packet, 6, Deflater.DEFAULT_STRATEGY);
-        int declared =
-            switch (framing) {
-              case ONE_MORE -> packet.length + 1;
-              case ONE_LESS -> packet.length - 1;
-              case BEYOND_DEFLATE -> zlib.length * 1033 + 259;
-              default -> packet.length;
-            };
-        body.writeBytes(Wire.varInt(declared));
-        body.writeBytes(zlib);
-      }
-      out.writeBytes(Wire.frame(body.toByteArray()));
+      out.writeBytes(Wire.frame(Wire.compressedBody(packet, threshold, compressAll, framing, at)));
     }
     return out.toByteArray();
-  }
-
-  /** A packet: a one-byte id, then a compressible body of {@code size} bytes. */
-  private static byte[] packet(int id, int size) {
-    byte[] packet = new byte[1 + size];
-    packet[0] = (byte) id;
-    for (int i = 1; i < packet.length; i++) {
-      packet[i] = (byte) (i % 11 * 5);
-    }
-    return packet;
   }
 }

@@ -39,7 +39,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.handler.codec.DecoderException;
 
 /**
  * Server puts the player in a world ({@code S→C}): the first packet of the PLAY state.
@@ -393,11 +392,8 @@ public record JoinGame(int entityId, boolean hardcore, JoinGame.Body body) imple
   // ---------------------------------------------------------------------------
 
   private static List<String> readIdentifiers(ByteBuf buf) {
-    int count = VarInt.read(buf);
     // Each identifier takes at least its one-byte length prefix.
-    if (count < 0 || count > buf.readableBytes()) {
-      throw new DecoderException("Invalid world name count: " + count);
-    }
+    int count = VarInt.readCount(buf, Integer.MAX_VALUE, 1, "world name");
     List<String> identifiers = new ArrayList<>(count);
     for (int i = 0; i < count; i++) {
       identifiers.add(McString.read(buf));

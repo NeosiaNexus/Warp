@@ -6,7 +6,8 @@ name: Fuzz
 #
 # Each run starts from the corpus earlier runs grew: the runs on main save theirs, every run reads
 # the newest. Failing inputs are uploaded as the `fuzz-findings` artifact, at their path in the
-# repository: unpacked at its root, each one is a failing test.
+# repository: unpacked at its root, each one is a failing test. Fuzzing that outlasts its budget is
+# stopped short of the job's timeout, so that the corpus and the failing inputs are still kept.
 on:
   workflow_call:
     inputs:
@@ -15,9 +16,15 @@ on:
         type: string
         required: true
       timeout-minutes:
-        description: Timeout of the job, in minutes.
+        description: >-
+          Timeout of the job, in minutes. Fuzzing may take all of it but the last ten minutes, which
+          report, minimize and save the corpus.
         type: number
         default: 20
+      minimize:
+        description: Whether to minimize the corpus before saving it.
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -45,12 +52,22 @@ jobs:
           key: fuzz-corpus-${{ github.run_id }}
           restore-keys: fuzz-corpus-
 
+      # Past its budget the fuzzing is stopped and this step fails, but the job goes on: the steps
+      # below report, upload what failed and save the corpus grown so far.
       - name: Fuzz for ${{ inputs.duration }} each
         env:
           DURATION: ${{ inputs.duration }}
+          TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
         run: |
           python3 .github/scripts/fuzz-report.py corpus > "$RUNNER_TEMP/corpus-before.json"
-          ./gradlew :protocol:fuzz -Pfuzz.duration="$DURATION"
+          budget=$((TIMEOUT_MINUTES - 10))
+          status=0
+          timeout --kill-after=1m "${budget}m" ./gradlew :protocol:fuzz -Pfuzz.duration="$DURATION" ||
+            status=$?
+          if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+            echo "::error title=Fuzzing stopped::Still fuzzing after its budget of $budget minutes. Raise timeout-minutes for $DURATION per fuzz test."
+          fi
+          exit "$status"
 
       # Jazzer writes each failing input into the inputs directory of its fuzz test.
       - name: Collect failing inputs
@@ -77,6 +94,20 @@ jobs:
           path: ${{ runner.temp }}/findings/
           if-no-files-found: ignore
           retention-days: 30
+
+      # libFuzzer keeps every input that reached new code when it ran, so the corpus only grows:
+      # keep the fewest inputs that cover as much (build-logic/.../warp.fuzz-conventions.gradle.kts).
+      - name: Minimize the corpus
+        if: ${{ !cancelled() && inputs.minimize && github.ref == 'refs/heads/main' }}
+        run: |
+          set -o pipefail
+          ./gradlew :protocol:fuzzMinimize --console=plain | tee "$RUNNER_TEMP/minimize.log"
+          {
+            echo '### Corpus minimized'
+            echo
+            grep -E '^dev\.warp\.[A-Za-z.]+: [0-9]+ inputs, [0-9]+ once minimized$' \
+              "$RUNNER_TEMP/minimize.log" | sed 's/^/- /'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save the corpus
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}

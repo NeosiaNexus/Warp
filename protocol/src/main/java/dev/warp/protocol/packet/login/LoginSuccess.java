@@ -66,6 +66,9 @@ public record LoginSuccess(
     @Nullable UUID sessionId)
     implements LoginPacket {
 
+  /** Most profile properties accepted: vanilla sends a handful (textures). */
+  private static final int MAX_PROPERTIES = 64;
+
   /** Length of a UUID string without dashes, as sent by 1.7.2–1.7.5. */
   private static final int UNDASHED_UUID_LENGTH = 32;
 
@@ -97,10 +100,8 @@ public record LoginSuccess(
 
           List<Property> properties;
           if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_19)) {
-            int count = VarInt.read(buf);
-            if (count < 0 || count > 64) {
-              throw new DecoderException("Invalid property count: " + count + " (max 64)");
-            }
+            // A property takes at least three bytes: two empty strings and its signature flag.
+            int count = VarInt.readCount(buf, MAX_PROPERTIES, 3, "property");
             properties = new ArrayList<>(count);
             for (int i = 0; i < count; i++) {
               String name = McString.read(buf);

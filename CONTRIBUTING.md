@@ -162,13 +162,14 @@ received rather than to the lengths it reads.
 | `VarIntFuzzTest` | VarInt and VarLong, against a reference decoder |
 | `FrameDecoderFuzzTest` | Framing, against a reference framing, however TCP fragments the stream |
 | `DeflatePeekFuzzTest` | The packet id read without inflating, against a full inflate by zlib |
-| `CompressionDecoderFuzzTest` | Compressed frames, against what a vanilla server accepts |
-| `MinecraftDecoderFuzzTest` | Every state, direction and version, compressed or not: decoded packets must encode back to the same bytes, and peeking at compressed frames must not change what comes out |
+| `CompressionDecoderFuzzTest` | Compressed frames, truthful, lying about their size or damaged, against Warp's rule: vanilla's limits, and a stream that ends at the declared size |
+| `MinecraftDecoderFuzzTest` | Every state, direction and version, compressed or not, truthful or not: each frame is decoded, watched or forwarded byte for byte, or rejected only if Warp's rule or the packet's codec rejects it; decoded packets must encode back to the same bytes, and peeking at compressed frames must not change what comes out of the frames Warp accepts |
 
 ```bash
 ./gradlew :protocol:test                         # runs each fuzz test on its checked-in inputs
 ./gradlew :protocol:fuzz                         # fuzzes each fuzz test for a minute
 ./gradlew :protocol:fuzz --tests '*FrameDecoderFuzzTest' -Pfuzz.duration=30m
+./gradlew :protocol:fuzzMinimize                 # keeps the fewest corpus inputs covering as much
 ```
 
 The inputs of a fuzz test live in `src/test/resources/<package>/<TestClass>Inputs/<method>/`. The
@@ -176,16 +177,23 @@ files named `seed-*` are written from their definition in the test: after changi
 with `./gradlew :protocol:test -Pfuzz.updateSeeds`. Fuzzing grows a corpus in `.cifuzz-corpus/`
 (ignored by Git; the `test` task replays it too when it is there). An input that fails, or runs for
 10 seconds, is written to the inputs directory, where it stays a failing test. Fix the bug, then
-commit the input with the fix, renamed after the bug (`finding-<what>`).
+commit the input with the fix, renamed after the bug (`finding-<what>`). An input names a protocol
+version by its number and a state by its place in a list the test spells out, so that it keeps its
+meaning when versions are added.
 
 | Where | What runs |
 |---|---|
-| Every pull request and push to `main` (**Fuzz**, part of **CI OK**) | Two minutes per fuzz test |
-| Nightly, on demand (`fuzz.yml`) | Ten minutes per fuzz test, or as long as asked |
+| Every build (`./gradlew build`: **Build & test**, part of **CI OK**) | Each fuzz test once on each of its seeds and past findings |
+| Every pull request and push to `main` (**Fuzz**, not required) | Two minutes per fuzz test |
+| Nightly, on demand (`fuzz.yml`) | Ten minutes per fuzz test, or up to two hours on demand, then the corpus minimized |
 
-Every run starts from the corpus the runs on `main` grew. One that finds a failing input uploads it as
-the `fuzz-findings` artifact, laid out to unpack at the root of the repository, where
-`./gradlew :protocol:test` reproduces it.
+Fuzzing does not gate pull requests: random inputs can find a bug the pull request did not add, and
+a required check must not pass or fail by chance. A finding fails the **Fuzz** job, which reviewers
+see, and becomes a required test once committed as `finding-*`. Every run starts from the corpus the
+runs on `main` grew. One that finds a failing input uploads it as the `fuzz-findings` artifact,
+laid out to unpack at the root of the repository, where `./gradlew :protocol:test` reproduces it.
+A run still fuzzing near its job's timeout is stopped first, so that its corpus and failing inputs
+are kept.
 
 ## Benchmarks
 

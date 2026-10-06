@@ -1,15 +1,17 @@
 name: Fuzz nightly
 
 # The protocol decoders, fuzzed for ten minutes each every night, and for as long as asked on
-# demand. Pull requests and pushes to main fuzz them for two minutes each, as part of CI.
+# demand, then their corpus minimized. Pull requests and pushes to main fuzz them for two minutes
+# each, in CI, without gating it.
 on:
   schedule:
     - cron: '17 2 * * *'
   workflow_dispatch:
     inputs:
       duration:
-        description: How long to fuzz each fuzz test (30s, 10m, 1h)
-        type: string
+        description: How long to fuzz each fuzz test
+        type: choice
+        options: [10m, 30m, 1h, 2h]
         default: 10m
 
 permissions: {}
@@ -27,4 +29,9 @@ jobs:
     uses: $/.github/workflows/_fuzz.yml
     with:
       duration: ${{ inputs.duration || '10m' }}
-      timeout-minutes: 180
+      # From the duration: the fuzz tests fuzz in two rounds on the runner's four cores, after
+      # about five minutes of setup and build, and the last ten minutes report, minimize and save.
+      timeout-minutes: >-
+        ${{ inputs.duration == '2h' && 270 || inputs.duration == '1h' && 145
+          || inputs.duration == '30m' && 85 || 40 }}
+      minimize: true

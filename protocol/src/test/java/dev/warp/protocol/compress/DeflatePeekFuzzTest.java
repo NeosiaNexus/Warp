@@ -34,7 +34,6 @@ import java.util.zip.Inflater;
 import com.code_intelligence.jazzer.api.FuzzedDataProvider;
 import com.code_intelligence.jazzer.junit.FuzzTest;
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -45,9 +44,6 @@ import org.junit.jupiter.api.Test;
  */
 @DisplayName("DeflatePeek fuzzing")
 class DeflatePeekFuzzTest {
-
-  /** Bytes on each side of the stream: a peek that strays into them reads them. */
-  private static final int GUARD = 16;
 
   /** Flushing at this choice means not flushing: the stream is a single block, as vanilla's. */
   private static final int NO_FLUSH = 255;
@@ -77,13 +73,13 @@ class DeflatePeekFuzzTest {
     byte[] input = data.consumeRemainingAsBytes();
     byte[] zlib = encoding == 0 ? input : ENCODINGS[encoding - 1].compress(input, flushAt);
 
-    ByteBuf buf = guarded(zlib, 0x00);
+    ByteBuf buf = Wire.guarded(zlib, 0x00);
     int peeked = PEEK.peekVarInt(buf);
-    assertEquals(GUARD, buf.readerIndex(), "reader index moved");
-    assertEquals(GUARD + zlib.length, buf.writerIndex(), "writer index moved");
+    assertEquals(Wire.GUARD, buf.readerIndex(), "reader index moved");
+    assertEquals(Wire.GUARD + zlib.length, buf.writerIndex(), "writer index moved");
     assertEquals(
         peeked,
-        new DeflatePeek().peekVarInt(guarded(zlib, 0xFF)),
+        new DeflatePeek().peekVarInt(Wire.guarded(zlib, 0xFF)),
         "depends on the bytes around the stream, or on the previous stream");
     assertTrue(peeked == DeflatePeek.UNKNOWN || (peeked >= 0 && peeked < 1 << 21), "range");
     HeapAllocations.assertAtMost(0, () -> PEEK.peekVarInt(buf));
@@ -108,7 +104,7 @@ class DeflatePeekFuzzTest {
   @Test
   @DisplayName("should keep its checked-in seeds up to date")
   void seeds() throws IOException {
-    byte[] packet = packet(new byte[] {0x28}, 200);
+    byte[] packet = Wire.packet(new byte[] {0x28}, 200);
     // Choices: encoding (0 for the input itself), then where to flush.
     FuzzSeeds seeds = new FuzzSeeds(DeflatePeekFuzzTest.class, "peek");
     String[] names = {
@@ -117,14 +113,18 @@ class DeflatePeekFuzzTest {
     for (int encoding = 1; encoding <= ENCODINGS.length; encoding++) {
       seeds.add(names[encoding - 1], packet, encoding, NO_FLUSH);
     }
-    byte[] twoByteId = packet(new byte[] {(byte) 0x80, 0x01}, 200);
+    byte[] twoByteId = Wire.packet(new byte[] {(byte) 0x80, 0x01}, 200);
     seeds
         .add("level-6-flushed-first", packet, 3, 0)
         .add("level-6-id-split-across-blocks", twoByteId, 3, 1)
-        .add("three-byte-id", packet(new byte[] {(byte) 0xff, (byte) 0xff, 0x7f}, 50), 3, NO_FLUSH)
+        .add(
+            "three-byte-id",
+            Wire.packet(new byte[] {(byte) 0xff, (byte) 0xff, 0x7f}, 50),
+            3,
+            NO_FLUSH)
         .add(
             "four-byte-id",
-            packet(new byte[] {(byte) 0x80, (byte) 0x80, (byte) 0x80, 1}, 50),
+            Wire.packet(new byte[] {(byte) 0x80, (byte) 0x80, (byte) 0x80, 1}, 50),
             3,
             NO_FLUSH)
         .add("raw-empty-stored-blocks", ZlibStreams.withEmptyStoredBlocks(packet, 7), 0, NO_FLUSH)
@@ -161,22 +161,6 @@ class DeflatePeekFuzzTest {
     } finally {
       inflater.end();
     }
-  }
-
-  private static ByteBuf guarded(byte[] bytes, int guard) {
-    byte[] array = new byte[GUARD + bytes.length + GUARD];
-    Arrays.fill(array, (byte) guard);
-    System.arraycopy(bytes, 0, array, GUARD, bytes.length);
-    return Unpooled.wrappedBuffer(array).setIndex(GUARD, GUARD + bytes.length);
-  }
-
-  /** A packet: its id bytes, then a compressible body of {@code size} bytes. */
-  private static byte[] packet(byte[] id, int size) {
-    byte[] packet = Arrays.copyOf(id, id.length + size);
-    for (int i = id.length; i < packet.length; i++) {
-      packet[i] = (byte) (i % 13 * 7);
-    }
-    return packet;
   }
 
   /** A way of compressing with the JDK's zlib, possibly flushing a block early. */

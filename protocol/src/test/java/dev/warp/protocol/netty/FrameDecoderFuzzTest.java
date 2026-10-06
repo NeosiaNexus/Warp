@@ -84,8 +84,8 @@ class FrameDecoderFuzzTest {
     alloc.assertAllReleased();
     // Buffers grow with the bytes received, never with the lengths they declare.
     assertTrue(
-        alloc.largestRequest() <= Math.max(64, 2 * stream.length),
-        () -> "allocated " + alloc.largestRequest() + " bytes for " + stream.length);
+        alloc.largestCapacity() <= Math.max(64, 2 * stream.length),
+        () -> "allocated " + alloc.largestCapacity() + " bytes for " + stream.length);
   }
 
   @Test

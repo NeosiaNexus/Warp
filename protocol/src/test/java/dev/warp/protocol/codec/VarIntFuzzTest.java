@@ -27,7 +27,6 @@ import dev.warp.protocol.fuzz.Wire;
 import dev.warp.protocol.fuzz.Wire.VarNum;
 
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.function.Consumer;
@@ -52,9 +51,6 @@ import org.junit.jupiter.api.Test;
  */
 @DisplayName("VarInt and VarLong fuzzing")
 class VarIntFuzzTest {
-
-  /** Bytes on each side of the readable ones: a reader that strays into them decodes them. */
-  private static final int GUARD = 16;
 
   @FuzzTest
   @DisplayName(
@@ -142,14 +138,8 @@ class VarIntFuzzTest {
 
   /** The bytes alone, then between guard bytes that read as ends and as continuations. */
   private static List<ByteBuf> buffers(byte[] bytes) {
-    return List.of(Unpooled.wrappedBuffer(bytes), guarded(bytes, 0x00), guarded(bytes, 0xFF));
-  }
-
-  private static ByteBuf guarded(byte[] bytes, int guard) {
-    byte[] array = new byte[GUARD + bytes.length + GUARD];
-    Arrays.fill(array, (byte) guard);
-    System.arraycopy(bytes, 0, array, GUARD, bytes.length);
-    return Unpooled.wrappedBuffer(array).setIndex(GUARD, GUARD + bytes.length);
+    return List.of(
+        Unpooled.wrappedBuffer(bytes), Wire.guarded(bytes, 0x00), Wire.guarded(bytes, 0xFF));
   }
 
   /** VarInt or VarLong, through longs. */

@@ -23,21 +23,23 @@ import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_19_3;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_20_1;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_20_2;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_20_5;
+import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_20_6;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_21_4;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_7_6;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_8;
+import static dev.warp.protocol.ProtocolVersion.MINECRAFT_26_2;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.compress.FrameDecompressor;
 import dev.warp.protocol.compress.JavaCompressor;
-import dev.warp.protocol.compress.ZlibStreams;
 import dev.warp.protocol.fuzz.FuzzSeeds;
 import dev.warp.protocol.fuzz.HeapAllocations;
 import dev.warp.protocol.fuzz.Rejections;
@@ -46,7 +48,9 @@ import dev.warp.protocol.fuzz.Wire;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketCodec;
 import dev.warp.protocol.packet.PacketDirection;
+import dev.warp.protocol.packet.PacketReader;
 import dev.warp.protocol.packet.PacketRegistry;
+import dev.warp.protocol.packet.PacketWatch;
 import dev.warp.protocol.packet.StateRegistry;
 import dev.warp.protocol.packet.config.AcknowledgeFinishConfiguration;
 import dev.warp.protocol.packet.config.ClientInformation;
@@ -69,6 +73,7 @@ import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
+import dev.warp.protocol.packet.play.LegacyPlayerInfo;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayerInfo;
@@ -89,10 +94,10 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.zip.DataFormatException;
-import java.util.zip.Deflater;
 
 import com.code_intelligence.jazzer.api.FuzzedDataProvider;
 import com.code_intelligence.jazzer.junit.FuzzTest;
@@ -112,19 +117,36 @@ import org.junit.jupiter.api.Test;
  * direction and protocol version, on uncompressed and compressed connections.
  *
  * <p>The input is the uncompressed stream of packets a peer sends; the test frames them for the
- * connection as the peer would. Every frame must come out decoded, or forwarded byte for byte,
- * until one is rejected with a {@link DecoderException}. A decoded packet must encode to bytes that
- * decode to a packet encoding to the same bytes. A compressed frame must come out the same whether
- * the decoder peeks at its packet id or inflates it.
+ * connection as the peer would, truthfully or, when compressing, declaring wrong sizes or sending
+ * damaged streams ({@link Wire#compressedBody}). Every frame must come out decoded, watched or
+ * forwarded byte for byte as {@link Wire#decompressed} says, until one Warp may reject is rejected
+ * with a {@link DecoderException}. A decoded packet must encode to bytes that decode to a packet
+ * encoding to the same bytes. Peeking at compressed frames must not change what comes out of them,
+ * except that it may forward a lying frame it does not read, as the proxy does for backends.
  */
 @DisplayName("MinecraftDecoder fuzzing")
 class MinecraftDecoderFuzzTest {
 
-  private static final List<ProtocolState> STATES = List.of(ProtocolState.values());
+  /**
+   * The states an input chooses from, by place. Spelled out rather than {@code values()}, so that a
+   * kept input means the same state whatever the order of the enum.
+   */
+  private static final List<ProtocolState> STATES =
+      List.of(
+          ProtocolState.HANDSHAKE,
+          ProtocolState.STATUS,
+          ProtocolState.LOGIN,
+          ProtocolState.CONFIGURATION,
+          ProtocolState.PLAY);
 
-  private static final List<PacketDirection> DIRECTIONS = List.of(PacketDirection.values());
+  /** The directions an input chooses from, by place, spelled out as {@link #STATES}. */
+  private static final List<PacketDirection> DIRECTIONS =
+      List.of(PacketDirection.SERVERBOUND, PacketDirection.CLIENTBOUND);
 
-  private static final List<ProtocolVersion> VERSIONS = ProtocolVersion.values();
+  /** The largest protocol number an input can name: two bytes. */
+  private static final int MAX_PROTOCOL = 0xFFFF;
+
+  private static final int MAX_SIZE = FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE;
 
   /**
    * Heap a decoded byte may cost: a one-byte string, for one, takes a String and its array. A
@@ -136,35 +158,52 @@ class MinecraftDecoderFuzzTest {
   private static final long HEAP_PER_CONNECTION = 1 << 20;
 
   @FuzzTest
-  @DisplayName("should decode or forward every frame until rejecting one, leaking nothing")
+  @DisplayName("should decode, watch or forward every frame until rejecting one, leaking nothing")
   void decode(FuzzedDataProvider data) {
+    ProtocolState state = data.pickValue(STATES);
+    PacketDirection direction = data.pickValue(DIRECTIONS);
+    ProtocolVersion version = versionOf(data.consumeInt(0, MAX_PROTOCOL));
+    int threshold = data.consumeInt(0, 255) - 1;
+    boolean compressed = threshold >= 0;
     Connection connection =
         new Connection(
-            data.pickValue(STATES),
-            data.pickValue(DIRECTIONS),
-            data.pickValue(VERSIONS),
-            data.consumeInt(0, 255) - 1,
-            data.consumeBoolean());
+            state,
+            direction,
+            version,
+            threshold,
+            compressed && data.consumeBoolean(),
+            compressed ? data.consumeInt(Wire.TRUTHFUL, Wire.TRUNCATED) : Wire.TRUTHFUL,
+            compressed ? data.consumeInt(0, 255) : 0);
     boolean takeInflated = data.consumeBoolean();
     List<byte[]> packets = Wire.frames(data.consumeRemainingAsBytes()).payloads();
 
-    List<byte[]> frames = packets.stream().map(connection::frame).toList();
+    List<Frame> frames = packets.stream().map(connection::frame).toList();
     ByteArrayOutputStream wire = new ByteArrayOutputStream();
-    frames.forEach(wire::writeBytes);
+    frames.forEach(frame -> wire.writeBytes(frame.bytes()));
     byte[] stream = wire.toByteArray();
+    // Allocations follow the bytes received, or a size the decoder checked first.
+    long maxCapacity =
+        Math.max(
+            64 + 2L * stream.length, frames.stream().mapToLong(Frame::allocatable).max().orElse(0));
 
     Outcome inflating = connection.decode(stream, false, takeInflated);
-    List<String> decoded = check(connection, packets, frames, inflating);
-    if (connection.compressed()) {
+    List<String> inflated = check(connection, frames, inflating, false, takeInflated);
+    assertTrue(
+        inflating.largestCapacity() <= maxCapacity,
+        () -> "allocated " + inflating.largestCapacity() + " bytes for " + stream.length);
+    if (compressed) {
       Outcome peeking = connection.decode(stream, true, takeInflated);
-      assertEquals(decoded, check(connection, packets, frames, peeking), "peeking changed frames");
+      List<String> peeked = check(connection, frames, peeking, true, takeInflated);
+      assertTrue(
+          peeking.largestCapacity() <= maxCapacity,
+          () -> "allocated " + peeking.largestCapacity() + " bytes for " + stream.length);
+      int agreed = (int) frames.stream().takeWhile(frame -> frame.packet() != null).count();
+      assertEquals(
+          inflated.subList(0, Math.min(agreed, inflated.size())),
+          peeked.subList(0, Math.min(agreed, peeked.size())),
+          "peeking changed frames Warp accepts");
     }
 
-    // Allocations follow the bytes received, never the lengths they declare.
-    int largestPacket = packets.stream().mapToInt(packet -> packet.length).max().orElse(0);
-    assertTrue(
-        inflating.largestRequest() <= Math.max(64 + 2L * stream.length, largestPacket),
-        () -> "allocated " + inflating.largestRequest() + " bytes for " + stream.length);
     long packetBytes = packets.stream().mapToLong(packet -> packet.length).sum();
     HeapAllocations.assertAtMost(
         HEAP_PER_PACKET_BYTE * packetBytes + HEAP_PER_CONNECTION,
@@ -176,9 +215,9 @@ class MinecraftDecoderFuzzTest {
   void seeds() throws IOException {
     FuzzSeeds seeds = new FuzzSeeds(MinecraftDecoderFuzzTest.class, "decode");
     ProtocolVersion latest = ProtocolVersion.latest();
-    addSeed(seeds, ProtocolState.HANDSHAKE, PacketDirection.SERVERBOUND, latest, -1, false);
-    addSeed(seeds, ProtocolState.STATUS, PacketDirection.SERVERBOUND, latest, -1, false);
-    addSeed(seeds, ProtocolState.STATUS, PacketDirection.CLIENTBOUND, latest, -1, false);
+    addSeed(seeds, uncompressed(ProtocolState.HANDSHAKE, PacketDirection.SERVERBOUND, latest));
+    addSeed(seeds, uncompressed(ProtocolState.STATUS, PacketDirection.SERVERBOUND, latest));
+    addSeed(seeds, uncompressed(ProtocolState.STATUS, PacketDirection.CLIENTBOUND, latest));
     for (ProtocolVersion version :
         List.of(
             MINECRAFT_1_7_6,
@@ -189,24 +228,33 @@ class MinecraftDecoderFuzzTest {
             MINECRAFT_1_19_3,
             MINECRAFT_1_20_1,
             MINECRAFT_1_20_2,
-            MINECRAFT_1_20_5,
+            MINECRAFT_1_20_6,
             MINECRAFT_1_21_4,
             latest)) {
-      for (ProtocolState state : ProtocolState.values()) {
+      for (ProtocolState state : STATES) {
         if (state == ProtocolState.LOGIN
             || state == ProtocolState.PLAY
             || (state == ProtocolState.CONFIGURATION && version.supportsConfigurationState())) {
-          addSeed(seeds, state, PacketDirection.SERVERBOUND, version, -1, false);
-          addSeed(seeds, state, PacketDirection.CLIENTBOUND, version, -1, false);
+          addSeed(seeds, uncompressed(state, PacketDirection.SERVERBOUND, version));
+          addSeed(seeds, uncompressed(state, PacketDirection.CLIENTBOUND, version));
         }
       }
     }
     // Compressed connections: everything compressed, the vanilla threshold, and compressed
     // packets below it, which a server rejects and a client accepts.
-    addSeed(seeds, ProtocolState.PLAY, PacketDirection.SERVERBOUND, MINECRAFT_1_21_4, 0, false);
-    addSeed(seeds, ProtocolState.PLAY, PacketDirection.CLIENTBOUND, MINECRAFT_1_20_1, 64, false);
-    addSeed(seeds, ProtocolState.LOGIN, PacketDirection.SERVERBOUND, MINECRAFT_1_8, 64, true);
-    addSeed(seeds, ProtocolState.LOGIN, PacketDirection.CLIENTBOUND, MINECRAFT_1_8, 64, true);
+    ProtocolState play = ProtocolState.PLAY;
+    ProtocolState login = ProtocolState.LOGIN;
+    PacketDirection serverbound = PacketDirection.SERVERBOUND;
+    PacketDirection clientbound = PacketDirection.CLIENTBOUND;
+    addSeed(seeds, compressed(play, serverbound, MINECRAFT_1_21_4, 0, false, Wire.TRUTHFUL, 0));
+    addSeed(seeds, compressed(play, clientbound, MINECRAFT_1_20_1, 64, false, Wire.TRUTHFUL, 0));
+    addSeed(seeds, compressed(login, serverbound, MINECRAFT_1_8, 64, true, Wire.TRUTHFUL, 0));
+    addSeed(seeds, compressed(login, clientbound, MINECRAFT_1_8, 64, true, Wire.TRUTHFUL, 0));
+    // A backend lying about sizes or sending damaged streams: forwarded when peeking skips them.
+    for (int framing = Wire.ONE_MORE; framing <= Wire.TRUNCATED; framing++) {
+      addSeed(seeds, compressed(play, clientbound, MINECRAFT_1_20_1, 0, false, framing, 9));
+    }
+    addSeed(seeds, compressed(play, serverbound, latest, 0, false, Wire.CORRUPT, 9));
     seeds.verify();
   }
 
@@ -215,45 +263,73 @@ class MinecraftDecoderFuzzTest {
   // ---------------------------------------------------------------------------
 
   /**
-   * Checks what came out of each frame, and returns it: the packet decoded, as its encoding, or the
-   * frame forwarded.
+   * Checks what came out of each frame, against what Warp makes of it, and returns it: the packet
+   * decoded, as its encoding, or the frame watched or forwarded, until the frame rejected.
    */
   private static List<String> check(
-      Connection connection, List<byte[]> packets, List<byte[]> frames, Outcome outcome) {
+      Connection connection,
+      List<Frame> frames,
+      Outcome outcome,
+      boolean peeking,
+      boolean takeInflated) {
     List<Object> outputs = outcome.outputs();
     List<String> summary = new ArrayList<>();
-    for (int i = 0; i < outputs.size(); i++) {
-      Wire.VarNum id = Wire.varNum(packets.get(i), 0, 5);
-      assertNotNull(id, "came out of a frame without a packet id");
-      PacketCodec<?> codec = connection.registry().lookup(connection.version(), (int) id.value());
-      switch (outputs.get(i)) {
-        case Forwarded forwarded -> {
-          assertNull(codec, "forwarded a packet it decodes");
-          assertArrayEquals(frames.get(i), forwarded.frame(), "forwarded another frame");
-          if (forwarded.inflated() != null) {
-            assertArrayEquals(packets.get(i), forwarded.inflated(), "inflated another packet");
+    int next = 0;
+    for (Frame frame : frames) {
+      if (next == outputs.size()) {
+        // Nothing came out of this frame or any after it: it was rejected.
+        assertEquals(1, outcome.failures().size(), "frames lost without a failure");
+        assertTrue(connection.mayReject(frame), "rejected a frame Warp forwards");
+        Rejections.assertRejection(
+            outcome.failures().getFirst(),
+            IndexOutOfBoundsException.class,
+            DataFormatException.class);
+        summary.add("rejected");
+        return summary;
+      }
+      Object output = outputs.get(next++);
+      byte[] packet = frame.packet();
+      if (packet == null) {
+        assertTrue(peeking && frame.peekable(), "came out of a frame Warp rejects");
+        summary.add("forwarded " + forwarded(frame, output, false));
+        continue;
+      }
+      int id = packetId(packet);
+      assertTrue(id >= 0, "came out of a frame without a packet id");
+      boolean mustKeep = takeInflated && frame.compressed() && !peeking;
+      switch (connection.registry().lookup(connection.version(), id)) {
+        case null -> summary.add("forwarded " + forwarded(frame, output, mustKeep));
+        case PacketCodec<?> codec -> {
+          Packet decoded = assertInstanceOf(Packet.class, output, "forwarded a packet it decodes");
+          summary.add("decoded " + HexFormat.of().formatHex(reencode(connection, id, decoded)));
+          assertSame(codec, connection.encoding(decoded).codec(), "decodes with another codec");
+        }
+        case PacketWatch<?> _ -> {
+          String report = "";
+          if (output instanceof Packet reported) {
+            report = reported.getClass().getSimpleName() + " ";
+            assertTrue(next < outputs.size(), "reported a watched packet, then lost its frame");
+            output = outputs.get(next++);
           }
-          summary.add("forwarded " + HexFormat.of().formatHex(forwarded.frame()));
+          summary.add("watched " + report + forwarded(frame, output, mustKeep));
         }
-        case Packet packet -> {
-          assertNotNull(codec, "decoded a packet it forwards");
-          byte[] encoded = reencode(connection, (int) id.value(), packet);
-          summary.add("decoded " + HexFormat.of().formatHex(encoded));
-        }
-        default -> throw new AssertionError("Unexpected output " + outputs.get(i));
       }
     }
-    List<Throwable> failures = outcome.failures();
-    if (failures.isEmpty()) {
-      assertEquals(frames.size(), outputs.size(), "frames lost without a failure");
-    } else {
-      assertEquals(1, failures.size(), "frames decoded after a failure");
-      assertTrue(outputs.size() < frames.size(), "a frame failed and came out");
-      Rejections.assertRejection(
-          failures.getFirst(), IndexOutOfBoundsException.class, DataFormatException.class);
-      summary.add("rejected");
-    }
+    assertEquals(outputs.size(), next, "came out of no frame");
+    assertTrue(outcome.failures().isEmpty(), "failed once every frame came out");
     return summary;
+  }
+
+  /** Checks that a frame came out as received, with its inflated packet if taken, and names it. */
+  private static String forwarded(Frame frame, Object output, boolean mustKeep) {
+    Forwarded forwarded = assertInstanceOf(Forwarded.class, output, "decoded a packet it forwards");
+    assertArrayEquals(frame.bytes(), forwarded.frame(), "forwarded another frame");
+    if (forwarded.inflated() != null) {
+      assertArrayEquals(frame.packet(), forwarded.inflated(), "inflated another packet");
+    } else {
+      assertFalse(mustKeep, "did not keep the packet it inflated for the relay");
+    }
+    return HexFormat.of().formatHex(forwarded.frame());
   }
 
   /**
@@ -262,8 +338,7 @@ class MinecraftDecoderFuzzTest {
    */
   private static byte[] reencode(Connection connection, int id, Packet packet) {
     String name = packet.getClass().getSimpleName();
-    PacketRegistry.Encoding encoding =
-        connection.registry().encoding(connection.version(), packet.getClass());
+    PacketRegistry.Encoding encoding = connection.encoding(packet);
     assertEquals(id, encoding.packetId(), () -> name + " encodes to another packet id");
     byte[] once = encode(encoding.codec(), packet, connection.version());
     ByteBuf buf = Unpooled.wrappedBuffer(once);
@@ -281,6 +356,27 @@ class MinecraftDecoderFuzzTest {
     return ByteBufUtil.getBytes(buf);
   }
 
+  /** The id a packet starts with, or {@code -1} if it starts with no valid, non-negative one. */
+  private static int packetId(byte[] packet) {
+    Wire.VarNum id = Wire.varNum(packet, 0, 5);
+    return id == null ? -1 : Math.max(-1, (int) id.value());
+  }
+
+  /**
+   * The version an input names by protocol number, so that a kept input keeps its meaning as
+   * versions are added: the newest version of that protocol or, if none has it, of the newest
+   * protocol below it, or the oldest version.
+   */
+  private static ProtocolVersion versionOf(int protocol) {
+    ProtocolVersion chosen = ProtocolVersion.oldest();
+    for (ProtocolVersion version : ProtocolVersion.values()) {
+      if (version.protocol() <= protocol) {
+        chosen = version;
+      }
+    }
+    return chosen;
+  }
+
   // ---------------------------------------------------------------------------
   // Connection
   // ---------------------------------------------------------------------------
@@ -294,36 +390,67 @@ class MinecraftDecoderFuzzTest {
    * @param version the protocol version
    * @param threshold the compression threshold, or {@code -1} if the connection is uncompressed
    * @param compressAll whether the peer compresses packets below the threshold too
+   * @param framing how the peer frames the packets it compresses ({@link Wire#compressedBody})
+   * @param at where that framing damages a stream
    */
   private record Connection(
       ProtocolState state,
       PacketDirection direction,
       ProtocolVersion version,
       int threshold,
-      boolean compressAll) {
+      boolean compressAll,
+      int framing,
+      int at) {
 
     boolean compressed() {
       return threshold >= 0;
+    }
+
+    /** Whether the peer is a player, whose compressed packets must not be below the threshold. */
+    boolean fromPlayer() {
+      return direction == PacketDirection.SERVERBOUND;
     }
 
     PacketRegistry registry() {
       return StateRegistry.get(state, direction);
     }
 
-    /** Returns the frame the peer sends for a packet. */
-    byte[] frame(byte[] packet) {
+    PacketRegistry.Encoding encoding(Packet packet) {
+      return registry().encoding(version, packet.getClass());
+    }
+
+    /** Returns the frame the peer sends for a packet, and what Warp must make of it. */
+    Frame frame(byte[] packet) {
       if (!compressed()) {
-        return Wire.frame(packet);
+        return new Frame(Wire.frame(packet), packet, false, false, 0);
       }
-      ByteArrayOutputStream body = new ByteArrayOutputStream();
-      if (packet.length < threshold && !compressAll) {
-        body.write(0);
-        body.writeBytes(packet);
-      } else {
-        body.writeBytes(Wire.varInt(packet.length));
-        body.writeBytes(ZlibStreams.zlib(packet, 6, Deflater.DEFAULT_STRATEGY));
-      }
-      return Wire.frame(body.toByteArray());
+      byte[] body = Wire.compressedBody(packet, threshold, compressAll, framing, at);
+      Wire.VarNum dataLength = Objects.requireNonNull(Wire.varNum(body, 0, 5));
+      int declared = (int) dataLength.value();
+      int compressedLength = body.length - dataLength.length();
+      // What the decoder checks before peeking: the size, against the threshold and against what
+      // DEFLATE can expand the stream to (1032:1, plus a maximal match).
+      boolean peekable =
+          declared > 0
+              && !(fromPlayer() && declared < threshold)
+              && declared <= 1032L * compressedLength + 258;
+      return new Frame(
+          Wire.frame(body),
+          Wire.decompressed(body, threshold, fromPlayer(), MAX_SIZE),
+          declared != 0,
+          peekable,
+          peekable && declared <= MAX_SIZE ? declared : 0);
+    }
+
+    /**
+     * Whether the decoder may reject a frame: Warp rejects it, or its packet has no valid id, or
+     * the decoder reads the packet, which may be malformed. A frame forwarded unread never is.
+     */
+    boolean mayReject(Frame frame) {
+      byte[] packet = frame.packet();
+      return packet == null
+          || packetId(packet) < 0
+          || registry().lookup(version, packetId(packet)) != null;
     }
 
     /**
@@ -338,14 +465,8 @@ class MinecraftDecoderFuzzTest {
       TrackingAllocator alloc = new TrackingAllocator();
       MinecraftDecoder decoder = new MinecraftDecoder(direction, version, state);
       if (compressed()) {
-        boolean fromPlayer = direction == PacketDirection.SERVERBOUND;
         decoder.enableCompression(
-            new FrameDecompressor(
-                threshold,
-                fromPlayer,
-                FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE,
-                new JavaCompressor(6)),
-            peek);
+            new FrameDecompressor(threshold, fromPlayer(), MAX_SIZE, new JavaCompressor(6)), peek);
       }
       Relay relay = new Relay(decoder, takeInflated);
       EmbeddedChannel channel = new EmbeddedChannel(new FrameDecoder(), decoder, relay);
@@ -353,18 +474,37 @@ class MinecraftDecoderFuzzTest {
       channel.writeInbound(alloc.buffer(stream.length).writeBytes(stream));
       channel.finishAndReleaseAll();
       alloc.assertAllReleased();
-      return new Outcome(relay.outputs, relay.failures, alloc.largestRequest());
+      return new Outcome(relay.outputs, relay.failures, alloc.largestCapacity());
     }
   }
 
   /**
+   * A frame the peer sends, and what Warp must make of it.
+   *
+   * @param bytes the frame, length prefix included
+   * @param packet the packet it carries ({@link Wire#decompressed}), or {@code null} if Warp
+   *     rejects it
+   * @param compressed whether it declares a Data Length other than 0
+   * @param peekable whether a decoder peeking at compressed frames may forward it without inflating
+   *     it: it is compressed, and its declared size passes the checks made before peeking
+   * @param allocatable the most bytes the decoder may allocate to inflate it
+   */
+  @SuppressWarnings("ArrayRecordComponent") // compared with assertArrayEquals, never with equals
+  private record Frame(
+      byte[] bytes,
+      byte @Nullable [] packet,
+      boolean compressed,
+      boolean peekable,
+      long allocatable) {}
+
+  /**
    * What came out of a stream.
    *
-   * @param outputs per frame in order, a {@link Packet} or a {@link Forwarded} frame
+   * @param outputs in order, each a {@link Packet} or a {@link Forwarded} frame
    * @param failures the exceptions caught; the channel closed on the first
-   * @param largestRequest the largest buffer requested
+   * @param largestCapacity the largest buffer allocated
    */
-  private record Outcome(List<Object> outputs, List<Throwable> failures, int largestRequest) {}
+  private record Outcome(List<Object> outputs, List<Throwable> failures, int largestCapacity) {}
 
   /**
    * A frame forwarded as received.
@@ -420,10 +560,22 @@ class MinecraftDecoderFuzzTest {
 
   private static final UUID ALICE = UUID.fromString("5c39a8cb-1a3a-4c86-9a47-0f0aaf0e3a01");
 
+  private static final UUID SESSION = UUID.fromString("0e1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b");
+
   private static final byte[] REASON = "{\"text\":\"Bye\"}".getBytes(StandardCharsets.UTF_8);
 
-  /** A valid body of each packet the decoder decodes, at a given version. */
-  private static final Map<PacketCodec<?>, Function<ProtocolVersion, byte[]>> SAMPLES =
+  /** The name of each framing of {@link Wire#compressedBody}, by its number, for seed names. */
+  private static final List<String> FRAMINGS =
+      List.of("truthful", "one-more", "one-less", "beyond-deflate", "corrupt", "truncated");
+
+  /**
+   * The signing fields of a command from 1.19.3 to 1.20.4: timestamp and salt, no argument
+   * signature, and a last-seen update acknowledging nothing.
+   */
+  private static final int UNSIGNED_COMMAND_FIELDS = 2 * Long.BYTES + 1 + 1 + 3;
+
+  /** A valid body of each packet the decoder reads, by its reader, at a given version. */
+  private static final Map<PacketReader, Function<ProtocolVersion, byte[]>> SAMPLES =
       Map.ofEntries(
           sample(Handshake.CODEC, v -> new Handshake(v.protocol(), "localhost", 25565, 2)),
           sample(StatusRequest.CODEC, v -> new StatusRequest()),
@@ -431,7 +583,11 @@ class MinecraftDecoderFuzzTest {
           sample(StatusResponse.CODEC, v -> new StatusResponse("{\"description\":\"Warp\"}")),
           sample(PongResponse.CODEC, v -> new PongResponse(42)),
           sample(LoginStart.CODEC, v -> new LoginStart("Alice", ALICE)),
-          sample(EncryptionResponse.CODEC, v -> new EncryptionResponse(new byte[16], new byte[4])),
+          sample(
+              EncryptionResponse.CODEC,
+              v ->
+                  new EncryptionResponse(
+                      new byte[16], new EncryptionResponse.EncryptedToken(new byte[4]))),
           sample(LoginPluginResponse.CODEC, v -> new LoginPluginResponse(1, true, new byte[] {1})),
           sample(LoginAcknowledged.CODEC, v -> new LoginAcknowledged()),
           sample(LoginDisconnect.CODEC, v -> new LoginDisconnect("{\"text\":\"Bye\"}")),
@@ -445,7 +601,8 @@ class MinecraftDecoderFuzzTest {
                       ALICE,
                       "Alice",
                       List.of(new LoginSuccess.Property("textures", "e30=", "c2ln")),
-                      false)),
+                      false,
+                      v.isAtLeast(MINECRAFT_26_2) ? SESSION : null)),
           sample(SetCompression.CODEC, v -> new SetCompression(256)),
           sample(
               LoginPluginRequest.CODEC,
@@ -460,7 +617,16 @@ class MinecraftDecoderFuzzTest {
           sample(ConfigDisconnect.CODEC, v -> new ConfigDisconnect(REASON)),
           sample(FinishConfiguration.CODEC, v -> new FinishConfiguration()),
           sample(LegacyChatMessage.CODEC, v -> new LegacyChatMessage("/server lobby")),
-          sample(ChatCommand.CODEC, v -> new ChatCommand("server lobby", new byte[0])),
+          sample(
+              ChatCommand.CODEC,
+              v ->
+                  new ChatCommand(
+                      "server lobby",
+                      new byte
+                          [v.isAtLeast(MINECRAFT_1_19_3) && v.isOlderThan(MINECRAFT_1_20_5)
+                              ? UNSIGNED_COMMAND_FIELDS
+                              : 0],
+                      0)),
           sample(AcknowledgeConfiguration.CODEC, v -> new AcknowledgeConfiguration()),
           sample(
               PlayClientSettings.CODEC,
@@ -470,10 +636,13 @@ class MinecraftDecoderFuzzTest {
           sample(BundleDelimiter.CODEC, v -> new BundleDelimiter()),
           sample(PlayDisconnect.CODEC, v -> new PlayDisconnect(REASON)),
           sample(StartConfiguration.CODEC, v -> new StartConfiguration()),
-          fixture(BossBar.CODEC, "boss_bar_add"),
-          fixture(PlayerInfo.CODEC, "player_info_add"),
-          fixture(PlayerInfoUpdate.CODEC, "player_info_update_all"),
-          sample(PlayerInfoRemove.CODEC, v -> new PlayerInfoRemove(List.of(ALICE))),
+          fixture(BossBar.WATCH, "boss_bar_add"),
+          fixture(LegacyPlayerInfo.WATCH, "legacy_player_info_add"),
+          fixture(PlayerInfo.WATCH, "player_info_add"),
+          fixture(PlayerInfoUpdate.WATCH, "player_info_update_all"),
+          Map.entry(
+              PlayerInfoRemove.WATCH,
+              v -> encode(PlayerInfoRemove.CODEC, new PlayerInfoRemove(List.of(ALICE)), v)),
           Map.entry(
               JoinGame.CODEC,
               v ->
@@ -484,62 +653,84 @@ class MinecraftDecoderFuzzTest {
                           v)
                       : SwitchPacketFixtures.bytes(v, "join_game")));
 
-  /**
-   * Adds a seed holding one valid packet of each kind the decoder decodes at that state, direction
-   * and version.
-   *
-   * @param threshold the compression threshold, or {@code -1} for an uncompressed connection
-   */
-  private static void addSeed(
-      FuzzSeeds seeds,
+  private static Connection uncompressed(
+      ProtocolState state, PacketDirection direction, ProtocolVersion version) {
+    return new Connection(state, direction, version, -1, false, Wire.TRUTHFUL, 0);
+  }
+
+  private static Connection compressed(
       ProtocolState state,
       PacketDirection direction,
       ProtocolVersion version,
       int threshold,
-      boolean compressAll) {
-    PacketRegistry registry = StateRegistry.get(state, direction);
+      boolean compressAll,
+      int framing,
+      int at) {
+    return new Connection(state, direction, version, threshold, compressAll, framing, at);
+  }
+
+  /**
+   * Adds a seed holding one valid packet of each kind the decoder reads in the state, direction and
+   * version of a connection, framed for it.
+   */
+  private static void addSeed(FuzzSeeds seeds, Connection connection) {
+    ProtocolVersion version = connection.version();
+    assertSame(version, versionOf(version.protocol()), "a seed names another version");
     ByteArrayOutputStream stream = new ByteArrayOutputStream();
     for (int id = 0; id < 0x100; id++) {
-      PacketCodec<?> codec = registry.lookup(version, id);
-      if (codec != null) {
-        Function<ProtocolVersion, byte[]> sample = SAMPLES.get(codec);
-        assertNotNull(sample, "no sample of a packet decoded at " + state + " " + version);
+      PacketReader reader = connection.registry().lookup(version, id);
+      if (reader != null) {
+        Function<ProtocolVersion, byte[]> sample = SAMPLES.get(reader);
+        assertNotNull(sample, () -> "no sample of a packet read in " + connection);
         ByteArrayOutputStream packet = new ByteArrayOutputStream();
         packet.writeBytes(Wire.varInt(id));
         packet.writeBytes(sample.apply(version));
         stream.writeBytes(Wire.frame(packet.toByteArray()));
       }
     }
-    String name =
-        String.join(
-            "-",
-            version.name(),
-            state.name().toLowerCase(Locale.ROOT),
-            direction.name().toLowerCase(Locale.ROOT));
-    if (threshold >= 0) {
-      name += "-threshold-" + threshold + (compressAll ? "-all-compressed" : "");
-    }
-    // Choices: state, direction, version, threshold + 1 (0 for none), compress all, take the
+    List<String> name =
+        new ArrayList<>(
+            List.of(
+                version.name(),
+                connection.state().name().toLowerCase(Locale.ROOT),
+                connection.direction().name().toLowerCase(Locale.ROOT)));
+    // Choices: state, direction, protocol (two bytes, high first), threshold + 1 (0 for none),
+    // then if compressed: compress all, framing and where it damages a stream; then take the
     // inflated packets.
+    List<Integer> choices =
+        new ArrayList<>(
+            List.of(
+                STATES.indexOf(connection.state()),
+                DIRECTIONS.indexOf(connection.direction()),
+                version.protocol() >> 8,
+                version.protocol() & 0xFF,
+                connection.threshold() + 1));
+    if (connection.compressed()) {
+      name.add("threshold-" + connection.threshold());
+      if (connection.compressAll()) {
+        name.add("all-compressed");
+      }
+      if (connection.framing() != Wire.TRUTHFUL) {
+        name.add(FRAMINGS.get(connection.framing()));
+      }
+      choices.addAll(
+          List.of(connection.compressAll() ? 1 : 0, connection.framing(), connection.at()));
+    }
+    choices.add(connection.compressed() ? 1 : 0);
     seeds.add(
-        name,
+        String.join("-", name),
         stream.toByteArray(),
-        STATES.indexOf(state),
-        DIRECTIONS.indexOf(direction),
-        VERSIONS.indexOf(version),
-        threshold + 1,
-        compressAll ? 1 : 0,
-        threshold >= 0 ? 1 : 0);
+        choices.stream().mapToInt(Integer::intValue).toArray());
   }
 
   private static <T extends Packet>
-      Map.Entry<PacketCodec<?>, Function<ProtocolVersion, byte[]>> sample(
+      Map.Entry<PacketReader, Function<ProtocolVersion, byte[]>> sample(
           PacketCodec<T> codec, Function<ProtocolVersion, T> packet) {
     return Map.entry(codec, version -> encode(codec, packet.apply(version), version));
   }
 
-  private static Map.Entry<PacketCodec<?>, Function<ProtocolVersion, byte[]>> fixture(
-      PacketCodec<?> codec, String name) {
-    return Map.entry(codec, version -> SwitchPacketFixtures.bytes(version, name));
+  private static Map.Entry<PacketReader, Function<ProtocolVersion, byte[]>> fixture(
+      PacketWatch<?> watch, String name) {
+    return Map.entry(watch, version -> SwitchPacketFixtures.bytes(version, name));
   }
 }

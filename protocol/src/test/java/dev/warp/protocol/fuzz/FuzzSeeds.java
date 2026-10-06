@@ -42,8 +42,9 @@ import com.code_intelligence.jazzer.api.FuzzedDataProvider;
  *
  * <p>Fuzz tests read their choices with {@link FuzzedDataProvider}, which takes integral values
  * from the end of the input and bytes from its start: a seed is its data followed by its choices,
- * last one first. Each choice takes one byte, which holds for {@code consumeBoolean()}, {@code
- * pickValue(...)} and {@code consumeInt(min, max)} with at most 256 options.
+ * last one first. A choice takes one byte for {@code consumeBoolean()}, {@code pickValue(...)} and
+ * {@code consumeInt(min, max)} with at most 256 options, and two for {@code consumeInt(min, max)}
+ * with up to 65536: pass those as two choices, the high byte first.
  */
 public final class FuzzSeeds {
 
