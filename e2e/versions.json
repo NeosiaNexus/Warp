@@ -35,7 +35,7 @@
   },
   "tiers": {
     "pr": {
-      "description": "Every pull request (required): one passing version per protocol era, all variants on the newest.",
+      "description": "Every pull request (required): one passing version per protocol era, every variant on the newest version the bots speak natively, and the newest version.",
       "versions": [
         "1.8.8",
         "1.12.2",
@@ -43,14 +43,22 @@
         "1.20.1",
         "1.20.2",
         "1.20.4",
-        "1.21.4"
+        "1.21.4",
+        "26.1.2",
+        "26.3"
       ],
       "variants": [
         "online"
       ],
       "extraVariants": {
-        "1.21.4": [
+        "26.1.2": [
           "offline",
+          "transcode",
+          "backend-lower",
+          "backend-higher",
+          "backend-uncompressed"
+        ],
+        "26.3": [
           "transcode",
           "backend-lower"
         ]
@@ -83,6 +91,19 @@
         ],
         "1.21.4": [
           "offline",
+          "transcode",
+          "backend-lower",
+          "backend-higher",
+          "backend-uncompressed"
+        ],
+        "26.1.2": [
+          "offline",
+          "transcode",
+          "backend-lower",
+          "backend-higher",
+          "backend-uncompressed"
+        ],
+        "26.3": [
           "transcode",
           "backend-lower",
           "backend-higher",

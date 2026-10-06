@@ -101,10 +101,12 @@ One entry per protocol number:
 Tiers pick what runs where:
 
 - `pr`, on every pull request (required): one version per protocol era among those that pass,
-  and the offline, transcode and backend-lower variants on the newest. A known-broken version never goes there, a version with
-  known-broken scenarios can.
+  every variant on the newest version the bots speak natively, and the newest version, through
+  ViaProxy if need be (so offline, with the transcode and backend-lower variants). A known-broken
+  version never goes there, a version with known-broken scenarios can. `npm test` fails when the
+  newest version that passes, or a variant on the newest the bots speak, is missing from it.
 - `full`, on every push to `main`, nightly, on demand, and on pull requests labelled
-  `e2e: full`: every version, and more variants at era boundaries.
+  `e2e: full`: every version, more variants at era boundaries, and everything `pr` runs.
 
 ## Adding a Minecraft version
 
@@ -122,7 +124,8 @@ Tiers pick what runs where:
 4. Run it: `e2e/run.sh --mc <version>`, and `npm test` in `e2e/` (checks the matrix).
 5. Until Warp supports it fully, add `"knownBroken"` (or `"knownBrokenScenarios"`) with the
    issue; CI then reports it without failing. Once it passes, give the top-level `README.md` its
-   new newest version (the supported range, and the versions the suite plays).
+   new newest version (the supported range, and the versions the suite plays), and move the `pr`
+   tier's newest version to it (`npm test` says what is missing).
 
 The harness itself is tested with `npm test` (matrix consistency, failure patterns, downloads, the
 report, protocol data corrections), which CI runs before every end-to-end matrix.
