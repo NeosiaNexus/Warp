@@ -113,15 +113,13 @@ final class BackendLoginSessionHandler implements SessionHandler {
     switch (loginPacket) {
       case SetCompression setCompression -> handleSetCompression(setCompression);
       case LoginPluginRequest pluginRequest -> handleLoginPluginRequest(pluginRequest);
-      case LoginSuccess loginSuccess -> handleLoginSuccess(loginSuccess);
+      case LoginSuccess _ -> handleLoginSuccess();
       case LoginDisconnect loginDisconnect -> handleLoginDisconnect(loginDisconnect);
       // We should never receive these from a backend.
-      case LoginStart ignored -> backendConnection.close();
-      case EncryptionResponse ignored -> backendConnection.close();
-      case LoginAcknowledged ignored -> backendConnection.close();
-      case LoginPluginResponse ignored -> backendConnection.close();
+      case LoginStart _, EncryptionResponse _, LoginAcknowledged _, LoginPluginResponse _ ->
+          backendConnection.close();
       // Backend should not send EncryptionRequest (we connect offline-mode).
-      case EncryptionRequest ignored -> {
+      case EncryptionRequest _ -> {
         logger.warn("Backend sent EncryptionRequest — is it running in online-mode?");
         player.disconnect();
       }
@@ -196,8 +194,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
     }
   }
 
-  @SuppressWarnings("UnusedVariable")
-  private void handleLoginSuccess(LoginSuccess loginSuccess) {
+  private void handleLoginSuccess() {
     ProtocolVersion version = player.protocolVersion();
     adviseIfBackendUncompressed();
 

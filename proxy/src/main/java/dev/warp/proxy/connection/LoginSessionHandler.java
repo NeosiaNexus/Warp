@@ -148,14 +148,16 @@ final class LoginSessionHandler implements SessionHandler {
     switch (loginPacket) {
       case LoginStart start -> handleLoginStart(start);
       case EncryptionResponse response -> handleEncryptionResponse(response);
-      case LoginAcknowledged ack -> handleLoginAcknowledged();
-      case LoginPluginResponse response -> handleLoginPluginResponse(response);
+      case LoginAcknowledged _ -> handleLoginAcknowledged();
+      // Warp sends the client no login plugin request (yet), so a response answers nothing.
+      case LoginPluginResponse _ -> {}
       // Clientbound packets must never arrive from a client.
-      case EncryptionRequest ignored -> connection.close();
-      case LoginSuccess ignored -> connection.close();
-      case SetCompression ignored -> connection.close();
-      case LoginDisconnect ignored -> connection.close();
-      case LoginPluginRequest ignored -> connection.close();
+      case EncryptionRequest _,
+          LoginSuccess _,
+          SetCompression _,
+          LoginDisconnect _,
+          LoginPluginRequest _ ->
+          connection.close();
     }
   }
 
@@ -261,12 +263,6 @@ final class LoginSessionHandler implements SessionHandler {
   @Override
   public void disconnected() {
     logger.info("Client disconnected during login: {} (state={})", username, state);
-  }
-
-  @SuppressWarnings("unused")
-  private void handleLoginPluginResponse(LoginPluginResponse response) {
-    // LoginPluginResponse from the client during proxy login — currently unused.
-    // Will be used in the future for Warp-specific login channels.
   }
 
   // ---------------------------------------------------------------------------
