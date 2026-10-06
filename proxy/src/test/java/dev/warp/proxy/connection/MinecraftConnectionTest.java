@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolState;
@@ -31,12 +32,16 @@ import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.status.StatusRequest;
 
+import java.io.IOException;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.NotYetConnectedException;
 import java.util.ArrayList;
 import java.util.List;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.handler.codec.DecoderException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -222,6 +227,47 @@ class MinecraftConnectionTest {
       assertEquals(ProtocolVersion.MINECRAFT_1_8, decoder.version());
       assertEquals(ProtocolVersion.MINECRAFT_1_8, encoder.version());
       ch.finishAndReleaseAll();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pipeline exceptions
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("pipeline exceptions")
+  class PipelineExceptions {
+
+    @Test
+    @DisplayName("should treat a write racing with a closing peer as routine")
+    void closedChannel() {
+      assertNotNull(MinecraftConnection.describeRoutine(new ClosedChannelException(), false));
+    }
+
+    @Test
+    @DisplayName("should treat a vanished peer as routine")
+    void connectionReset() {
+      assertNotNull(
+          MinecraftConnection.describeRoutine(new IOException("Connection reset by peer"), true));
+    }
+
+    @Test
+    @DisplayName("should treat a read before the connection completes as routine")
+    void readBeforeConnect() {
+      assertNotNull(MinecraftConnection.describeRoutine(new NotYetConnectedException(), false));
+    }
+
+    @Test
+    @DisplayName("should report a not-connected error on a connected channel")
+    void notConnectedWhileActive() {
+      assertNull(MinecraftConnection.describeRoutine(new NotYetConnectedException(), true));
+    }
+
+    @Test
+    @DisplayName("should report any other exception, whatever the channel state")
+    void otherExceptions() {
+      assertNull(MinecraftConnection.describeRoutine(new IllegalStateException("bug"), false));
+      assertNull(MinecraftConnection.describeRoutine(new DecoderException("bad packet"), true));
     }
   }
 
