@@ -2,7 +2,7 @@
 # Core
 netty = "4.2.18.Final"
 adventure = "4.26.1"
-log4j = "2.25.4"
+log4j = "2.26.1"
 slf4j = "2.0.17"
 guice = "7.0.0"
 
