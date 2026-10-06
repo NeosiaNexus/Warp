@@ -1,25 +1,40 @@
-name: Feature Request
-description: Suggest a new feature or enhancement.
+name: Feature request
+description: Suggest a new feature or an improvement.
 labels: ["type: enhancement", "status: needs triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        Before opening a feature request, please search existing issues to avoid duplicates.
+        Before opening a feature request, please search the existing issues and check the [roadmap](https://github.com/NeosiaNexus/Warp#roadmap): drain, health probes, metrics and the plugin system are already planned. Early ideas can start in [Discussions](https://github.com/NeosiaNexus/Warp/discussions/categories/ideas).
 
   - type: textarea
-    id: description
+    id: problem
     attributes:
-      label: Description
-      description: A clear and concise description of the feature you'd like.
+      label: Problem
+      description: What are you trying to do, and what gets in the way today? Concrete use cases help most.
     validations:
       required: true
 
   - type: textarea
-    id: motivation
+    id: proposal
     attributes:
-      label: Motivation
-      description: Why is this feature needed? What problem does it solve?
+      label: Proposed solution
+      description: What would you like Warp to do?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Proxy (connections, switching, configuration)
+        - Protocol (versions, packets, compression)
+        - Plugin API
+        - Performance
+        - Operations (deployment, monitoring)
+        - Build and tooling
+        - Other
     validations:
       required: true
 
@@ -27,9 +42,9 @@ body:
     id: alternatives
     attributes:
       label: Alternatives considered
-      description: Have you considered any alternative solutions or workarounds?
+      description: Workarounds you use today, or how other proxies (Velocity, BungeeCord, Gate) handle it.
     validations:
-      required: true
+      required: false
 
   - type: textarea
     id: additional
