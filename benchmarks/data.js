@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791315113718,
+  "lastUpdate": 1791316290969,
   "repoUrl": "https://github.com/NeosiaNexus/Warp",
   "entries": {
     "Hot path on AMD EPYC 9V45 96-Core Processor (4 CPUs)": [
@@ -562,6 +562,86 @@ window.BENCHMARK_DATA = {
             "name": "PacketIdPeekBenchmark.peek[workload=MIXED]",
             "value": 1087.5,
             "range": "± 3.2",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "63867369+NeosiaNexus@users.noreply.github.com",
+            "name": "NeosiaNexus",
+            "username": "NeosiaNexus"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8489ba5112e17846555cc98275b1b9de5b299cfd",
+          "message": "fix(protocol): write and read the length of 1.7 plugin message payloads (#93)\n\nBefore 1.8 the plugin message payload sits behind its length, a short in vanilla that Forge extends to three bytes from 32 KiB; the codec only knew the 1.8 layout and would have corrupted a 1.7 connection on the first plugin message sent. The codec now writes and reads that length before 1.8, as Velocity does, bounded by Forge's 0x1FFF9A, and refuses a payload too large to encode or a length past the end of the packet. Nothing changes from 1.8. Fixes #92.",
+          "timestamp": "2026-10-06T21:37:56+02:00",
+          "tree_id": "af9ffad3a3ad102794351d64fa3fab71c3952ff6",
+          "url": "https://github.com/NeosiaNexus/Warp/commit/8489ba5112e17846555cc98275b1b9de5b299cfd"
+        },
+        "date": 1791316290377,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 1898.3,
+            "range": "± 29",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 117.5,
+            "range": "± 1.3",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 321.3,
+            "range": "± 1.7",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 82129.8,
+            "range": "± 109.5",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 571.9,
+            "range": "± 20.3",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 5794.1,
+            "range": "± 12.3",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=CHUNK]",
+            "value": 1325.9,
+            "range": "± 3",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=MIXED]",
+            "value": 1088.2,
+            "range": "± 1.7",
             "unit": "ns/packet",
             "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
           }
