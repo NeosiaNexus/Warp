@@ -113,6 +113,10 @@ final class LoginSessionHandler implements SessionHandler {
   private final ServerLoginContext loginContext;
 
   private LoginState state = LoginState.AWAITING_LOGIN_START;
+
+  /** The player once logged in, until the client enters its first server. */
+  private @Nullable ConnectedPlayer player;
+
   private @Nullable String username;
   private byte @Nullable [] verifyToken;
   private @Nullable GameProfile authenticatedProfile;
@@ -147,14 +151,16 @@ final class LoginSessionHandler implements SessionHandler {
     switch (loginPacket) {
       case LoginStart start -> handleLoginStart(start);
       case EncryptionResponse response -> handleEncryptionResponse(response);
-      case LoginAcknowledged ack -> handleLoginAcknowledged();
-      case LoginPluginResponse response -> handleLoginPluginResponse(response);
+      case LoginAcknowledged _ -> handleLoginAcknowledged();
+      // Warp sends the client no login plugin request (yet), so a response answers nothing.
+      case LoginPluginResponse _ -> {}
       // Clientbound packets must never arrive from a client.
-      case EncryptionRequest ignored -> connection.close();
-      case LoginSuccess ignored -> connection.close();
-      case SetCompression ignored -> connection.close();
-      case LoginDisconnect ignored -> connection.close();
-      case LoginPluginRequest ignored -> connection.close();
+      case EncryptionRequest _,
+          LoginSuccess _,
+          SetCompression _,
+          LoginDisconnect _,
+          LoginPluginRequest _ ->
+          connection.close();
     }
   }
 
@@ -260,12 +266,11 @@ final class LoginSessionHandler implements SessionHandler {
   @Override
   public void disconnected() {
     logger.info("Client disconnected during login: {} (state={})", username, state);
-  }
-
-  @SuppressWarnings("unused")
-  private void handleLoginPluginResponse(LoginPluginResponse response) {
-    // LoginPluginResponse from the client during proxy login — currently unused.
-    // Will be used in the future for Warp-specific login channels.
+    ConnectedPlayer loggedIn = this.player;
+    if (loggedIn != null) {
+      // Logged in but not on a server yet: drop the backend it is joining.
+      loggedIn.disconnect();
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -418,57 +423,17 @@ final class LoginSessionHandler implements SessionHandler {
   // ---------------------------------------------------------------------------
 
   /**
-   * Creates a {@link ConnectedPlayer} and initiates a connection to the backend server.
+   * Creates the {@link ConnectedPlayer} and connects it to the default server.
    *
-   * <p>The backend connection runs asynchronously. On success, the player is linked to the backend
-   * and KeepAlive starts. On failure, the client is disconnected with an error message.
+   * <p>The backend connection runs asynchronously. A default server that cannot be reached or
+   * refuses the player sends it down the fallback order, whatever its version.
    */
   private void initiateBackendConnection(GameProfile profile) {
     InetSocketAddress remoteAddr = (InetSocketAddress) connection.channel().remoteAddress();
-    ConnectedPlayer player =
+    ConnectedPlayer joining =
         new ConnectedPlayer(connection, clientVersion(), profile, remoteAddr, loginContext);
-
-    var defaultServer = loginContext.serverRegistry().defaultServer();
-    logger.info("Connecting {} to server '{}'", profile.name(), defaultServer.name());
-
-    var _ =
-        BackendConnection.connect(
-                loginContext.channelClass(),
-                player,
-                defaultServer.address(),
-                loginContext.forwardingSecret())
-            .whenComplete(
-                (backend, ex) ->
-                    connection
-                        .channel()
-                        .eventLoop()
-                        .execute(
-                            () -> {
-                              if (!connection.channel().isActive()) {
-                                // Client disconnected while we were connecting to backend.
-                                if (backend != null) {
-                                  backend.disconnect();
-                                }
-                                return;
-                              }
-                              if (ex != null) {
-                                logger.warn(
-                                    "Failed to connect {} to server '{}': {}",
-                                    profile.name(),
-                                    defaultServer.name(),
-                                    ex.getMessage());
-                                if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
-                                  // The client waits in CONFIG: try the fallback order, as when
-                                  // a backend refuses the player.
-                                  player.handleBackendFailure(defaultServer.name());
-                                } else {
-                                  disconnect("Could not connect to backend server");
-                                }
-                                return;
-                              }
-                              player.setBackendConnection(backend);
-                              player.setCurrentServerName(defaultServer.name());
-                            }));
+    this.player = joining;
+    joining.join();
   }
 
   // ---------------------------------------------------------------------------
@@ -485,35 +450,15 @@ final class LoginSessionHandler implements SessionHandler {
         username != null ? username : "unknown",
         connection.channel().remoteAddress(),
         reason);
-    byte[] rawReason = encodeTextComponent(reason, clientVersion());
-    // Use the correct disconnect packet for the current protocol state.
-    // After handleLoginAcknowledged, the decoder is in CONFIGURATION.
-    // After completeLogin (pre-1.20.2), the decoder is in PLAY.
-    // LoginDisconnect only encodes in LOGIN state.
+    // The disconnect packet of the client's current state: LoginAcknowledged moves it to
+    // CONFIGURATION, completeLogin (before 1.20.2) to PLAY. The login reason is JSON in every
+    // version; the configuration and play reasons follow the client's version.
     Packet disconnectPacket =
         switch (connection.decoder().state()) {
-          case HANDSHAKE, STATUS, LOGIN -> new LoginDisconnect(rawReason);
-          case CONFIGURATION -> new ConfigDisconnect(rawReason);
-          case PLAY -> new PlayDisconnect(rawReason);
+          case HANDSHAKE, STATUS, LOGIN -> LoginDisconnect.ofPlainText(reason);
+          case CONFIGURATION -> ConfigDisconnect.ofPlainText(reason, clientVersion());
+          case PLAY -> PlayDisconnect.ofPlainText(reason, clientVersion());
         };
     connection.writeAndClose(disconnectPacket);
-  }
-
-  /**
-   * Encodes a plain text string as a Minecraft text component.
-   *
-   * <p>Pre-1.20.3: JSON {@code {"text":"reason"}}. Post-1.20.3: NBT string tag (TAG_String with the
-   * JSON text). The NBT encoding for a plain string is: {@code 0x08} (TAG_String) + 2-byte
-   * big-endian name length (0) + 2-byte big-endian value length + UTF-8 bytes.
-   *
-   * <p>Note: LoginDisconnect in the LOGIN state uses JSON for all versions. NBT is only used for
-   * PlayDisconnect in PLAY state post-1.20.3. During LOGIN, JSON is always correct.
-   */
-  @SuppressWarnings("UnusedVariable") // version reserved for PLAY-state NBT disconnect format
-  private static byte[] encodeTextComponent(String reason, ProtocolVersion version) {
-    // During the LOGIN state, the disconnect reason is always JSON-encoded across all versions.
-    // The NBT encoding applies only to PLAY-state disconnects (1.20.3+).
-    String escaped = reason.replace("\\", "\\\\").replace("\"", "\\\"");
-    return ("{\"text\":\"" + escaped + "\"}").getBytes(StandardCharsets.UTF_8);
   }
 }

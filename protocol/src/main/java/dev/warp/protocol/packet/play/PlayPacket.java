@@ -21,7 +21,7 @@ import dev.warp.protocol.packet.Packet;
 /**
  * Proxy-critical packets in the {@link dev.warp.protocol.ProtocolState#PLAY PLAY} state.
  *
- * <p>Only the ~15 packet types the proxy needs to inspect are defined here. The remaining 500+
+ * <p>Only the packet types the proxy inspects or sends are defined here. The remaining 500+
  * play-state packets are blind-forwarded as raw {@code ByteBuf} — never deserialized, never
  * touching the Java heap.
  */
@@ -39,5 +39,12 @@ public sealed interface PlayPacket extends Packet
         TabCompleteRequest,
         TabCompleteResponse,
         ChatCommand,
+        LegacyChatMessage,
         ResourcePackResponse,
-        PlayClientSettings {}
+        PlayClientSettings,
+        BossBar,
+        PlayerInfo,
+        PlayerInfoUpdate,
+        PlayerInfoRemove,
+        TabListHeaderFooter,
+        ClearTitles {}

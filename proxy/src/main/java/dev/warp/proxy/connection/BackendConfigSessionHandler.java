@@ -114,7 +114,7 @@ final class BackendConfigSessionHandler implements SessionHandler {
   @Override
   public void disconnected() {
     logger.info("Backend disconnected during configuration for player {}", player.username());
-    player.scheduleBackendFailure();
+    player.scheduleBackendFailure(backendConnection);
   }
 
   // ---------------------------------------------------------------------------
@@ -139,7 +139,7 @@ final class BackendConfigSessionHandler implements SessionHandler {
 
   private void handleDisconnect() {
     logger.info("Backend kicked player {} during configuration", player.username());
-    player.scheduleBackendFailure();
+    player.scheduleBackendFailure(backendConnection);
   }
 
   @Override

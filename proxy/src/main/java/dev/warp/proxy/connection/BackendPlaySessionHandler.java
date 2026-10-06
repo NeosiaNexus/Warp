@@ -19,20 +19,27 @@ package dev.warp.proxy.connection;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
+import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatCommand;
+import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPacket;
 import dev.warp.protocol.packet.play.PlayPluginMessage;
+import dev.warp.protocol.packet.play.PlayerInfo;
+import dev.warp.protocol.packet.play.PlayerInfoRemove;
+import dev.warp.protocol.packet.play.PlayerInfoUpdate;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.Respawn;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
+import dev.warp.protocol.packet.play.TabListHeaderFooter;
 import dev.warp.protocol.packet.play.Transfer;
 
 import io.netty.buffer.ByteBuf;
@@ -42,9 +49,14 @@ import org.slf4j.LoggerFactory;
 /**
  * Handles packets from the backend in PLAY state (CLIENTBOUND).
  *
- * <p>Most backend packets are blind-forwarded to the client as the frames they arrived in — no
+ * <p>Most backend packets are blind-forwarded to the client as the frames they arrived in: no
  * deserialization, no allocation and, when both connections use compression, no inflate or deflate
  * either. Only the handful of packet types the proxy acts on are decoded.
+ *
+ * <p>A backend's packets reach the client only while the client plays on it ({@link
+ * ConnectedPlayer#isPlayingOn}): this handler claims the client when it is installed, and a server
+ * switch hands the client to the next backend. Whatever a backend the player is leaving still sends
+ * is dropped.
  *
  * <h3>Hot path</h3>
  *
@@ -70,13 +82,22 @@ final class BackendPlaySessionHandler implements SessionHandler {
   // ---------------------------------------------------------------------------
 
   @Override
+  public void activated() {
+    // Installed once the client plays on this backend: its packets reach the client from now on,
+    // and the client is read at the pace of this backend. The backend the client leaves may have
+    // paused it (writabilityChanged), and no longer resumes it once the client is gone.
+    player.playOn(backendConnection);
+    player.clientConnection().setAutoRead(backendConnection.channel().isWritable());
+  }
+
+  @Override
   public void disconnected() {
-    if (player.isSwitching()) {
-      logger.debug("Old backend disconnected during server switch for {}", player.username());
-      return;
+    if (player.isPlayingOn(backendConnection)) {
+      logger.info("Backend disconnected for player {}", player.username());
+    } else {
+      logger.debug("Backend left by {} closed", player.username());
     }
-    logger.info("Backend disconnected for player {}", player.username());
-    player.scheduleBackendFailure();
+    player.scheduleBackendFailure(backendConnection);
   }
 
   // ---------------------------------------------------------------------------
@@ -95,29 +116,27 @@ final class BackendPlaySessionHandler implements SessionHandler {
       case KeepAlive keepAlive -> handleKeepAlive(keepAlive);
       case JoinGame joinGame -> handleJoinGame(joinGame);
       case Respawn respawn -> forwardToClient(respawn);
-      case PlayDisconnect disconnect -> handleDisconnect(disconnect);
+      case PlayDisconnect _ -> handleDisconnect();
       case SystemChatMessage chatMessage -> forwardToClient(chatMessage);
-      case StartConfiguration ignored -> handleStartConfiguration();
+      case StartConfiguration _ -> handleStartConfiguration();
       case Transfer transfer -> forwardToClient(transfer);
       case BundleDelimiter delimiter -> handleBundleDelimiter(delimiter);
       case PlayPluginMessage pluginMessage -> handlePluginMessage(pluginMessage);
       case TabCompleteResponse response -> forwardToClient(response);
-      // Serverbound packets should never arrive from a backend — silently ignore.
-      case ChatCommand ignored -> {
-        /* protocol violation */
-      }
-      case PlayClientSettings ignored -> {
-        /* protocol violation */
-      }
-      case ResourcePackResponse ignored -> {
-        /* protocol violation */
-      }
-      case AcknowledgeConfiguration ignored -> {
-        /* protocol violation */
-      }
-      case TabCompleteRequest ignored -> {
-        /* protocol violation */
-      }
+      // Decoded before 1.20.2 only, to clear them from the client on a server switch.
+      case PlayerInfo info -> forwardTracked(info);
+      case PlayerInfoUpdate update -> forwardTracked(update);
+      case PlayerInfoRemove remove -> forwardTracked(remove);
+      case BossBar bossBar -> forwardTracked(bossBar);
+      case TabListHeaderFooter headerFooter -> forwardToClient(headerFooter);
+      case ClearTitles clearTitles -> forwardToClient(clearTitles);
+      // Serverbound packets should never arrive from a backend: a protocol violation, ignored.
+      case ChatCommand _,
+          LegacyChatMessage _,
+          PlayClientSettings _,
+          ResourcePackResponse _,
+          AcknowledgeConfiguration _,
+          TabCompleteRequest _ -> {}
     }
   }
 
@@ -127,9 +146,9 @@ final class BackendPlaySessionHandler implements SessionHandler {
 
   @Override
   public void handleBlind(ByteBuf buf) {
-    // During a server switch, the old backend may still send PLAY packets after the
-    // client has entered CONFIG state. Drop them to avoid "unknown packet ID" on the client.
-    if (player.isSwitching()) {
+    // A backend the client no longer plays on (left in a server switch) may still send PLAY
+    // packets: drop them, the client is elsewhere or not in PLAY at all.
+    if (!player.isPlayingOn(backendConnection)) {
       buf.release();
       return;
     }
@@ -150,7 +169,9 @@ final class BackendPlaySessionHandler implements SessionHandler {
     // This handler sits on the backend channel. When the backend channel's writability
     // changes, toggle auto-read on the client channel: if the backend can't accept writes
     // (buffer full), stop reading from the client to apply back-pressure.
-    player.clientConnection().setAutoRead(backendConnection.channel().isWritable());
+    if (player.isPlayingOn(backendConnection)) {
+      player.clientConnection().setAutoRead(backendConnection.channel().isWritable());
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -164,15 +185,17 @@ final class BackendPlaySessionHandler implements SessionHandler {
   }
 
   private void handleJoinGame(JoinGame joinGame) {
-    // Store the entity ID for future server-switch dimension tricks.
-    player.setEntityId(joinGame.entityId());
+    // From 1.20.2 the Join Game ends the configuration phase of a join or a switch; before, the
+    // RespawnSwitch takes the first one, and a server sending another one moves its own player.
+    if (player.isPlayingOn(backendConnection)) {
+      player.setEntityId(joinGame.entityId());
+    }
     forwardToClient(joinGame);
   }
 
-  @SuppressWarnings("unused")
-  private void handleDisconnect(PlayDisconnect disconnect) {
+  private void handleDisconnect() {
     logger.info("Backend kicked player {} during play", player.username());
-    player.scheduleBackendFailure();
+    player.scheduleBackendFailure(backendConnection);
   }
 
   private void handleStartConfiguration() {
@@ -183,8 +206,10 @@ final class BackendPlaySessionHandler implements SessionHandler {
   }
 
   private void handleBundleDelimiter(BundleDelimiter delimiter) {
-    player.toggleBundle();
-    forwardToClient(delimiter);
+    if (player.isPlayingOn(backendConnection)) {
+      player.toggleBundle();
+      player.clientConnection().write(delimiter);
+    }
   }
 
   private void handlePluginMessage(PlayPluginMessage pluginMessage) {
@@ -192,11 +217,18 @@ final class BackendPlaySessionHandler implements SessionHandler {
     forwardToClient(pluginMessage);
   }
 
-  private void forwardToClient(Packet packet) {
-    if (player.isSwitching()) {
-      return;
+  /** Forwards a packet that changes what a Join Game does not clear, and follows the change. */
+  private void forwardTracked(PlayPacket packet) {
+    if (player.isPlayingOn(backendConnection)) {
+      player.leftovers().track(packet);
+      player.clientConnection().write(packet);
     }
-    // Use write() without flush — readComplete() will flush the batch.
-    player.clientConnection().write(packet);
+  }
+
+  private void forwardToClient(Packet packet) {
+    if (player.isPlayingOn(backendConnection)) {
+      // write() without flush: readComplete() flushes the batch.
+      player.clientConnection().write(packet);
+    }
   }
 }

@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import dev.warp.api.server.ServerInfo;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.netty.FrameDecoder;
@@ -211,7 +212,8 @@ class ClientSettingsCacheTest {
       clientConn.setSessionHandler(handler);
 
       PlayClientSettings playSettings =
-          new PlayClientSettings("de_DE", (byte) 16, 2, false, (byte) 31, 0, true, false, 1);
+          new PlayClientSettings(
+              "de_DE", (byte) 16, 2, false, (byte) 0, (byte) 31, 0, true, false, 1);
       handler.handle(playSettings);
 
       ClientInformation cached = player.cachedClientSettings();
@@ -312,14 +314,7 @@ class ClientSettingsCacheTest {
   }
 
   private static BackendConnection createTestBackendConnection(MinecraftConnection backendConn) {
-    try {
-      var ctor =
-          BackendConnection.class.getDeclaredConstructor(
-              MinecraftConnection.class, InetSocketAddress.class);
-      ctor.setAccessible(true);
-      return ctor.newInstance(backendConn, new InetSocketAddress("localhost", 25565));
-    } catch (ReflectiveOperationException e) {
-      throw new AssertionError("Failed to create test BackendConnection", e);
-    }
+    return new BackendConnection(
+        backendConn, new ServerInfo("lobby", new InetSocketAddress("localhost", 25565)));
   }
 }

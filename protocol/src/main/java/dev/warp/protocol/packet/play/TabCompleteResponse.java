@@ -26,7 +26,9 @@ import io.netty.buffer.ByteBuf;
  * Server responds with tab completion suggestions ({@code S→C}).
  *
  * <p>The proxy may merge suggestions from multiple backend servers or add its own. The raw matches
- * data is preserved for faithful forwarding.
+ * data is preserved for faithful forwarding. This is the 1.13+ layout, with a transaction ID;
+ * earlier versions send a bare list of matches, so the packet is not registered before 1.13 and
+ * encoding it for those versions fails.
  *
  * @param transactionId the matching request's transaction ID
  * @param rawMatches the raw bytes of (start, length, matches array)

@@ -33,7 +33,6 @@ import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.login.SetCompression;
 
 import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.Deflater;
@@ -113,15 +112,13 @@ final class BackendLoginSessionHandler implements SessionHandler {
     switch (loginPacket) {
       case SetCompression setCompression -> handleSetCompression(setCompression);
       case LoginPluginRequest pluginRequest -> handleLoginPluginRequest(pluginRequest);
-      case LoginSuccess loginSuccess -> handleLoginSuccess(loginSuccess);
+      case LoginSuccess _ -> handleLoginSuccess();
       case LoginDisconnect loginDisconnect -> handleLoginDisconnect(loginDisconnect);
       // We should never receive these from a backend.
-      case LoginStart ignored -> backendConnection.close();
-      case EncryptionResponse ignored -> backendConnection.close();
-      case LoginAcknowledged ignored -> backendConnection.close();
-      case LoginPluginResponse ignored -> backendConnection.close();
+      case LoginStart _, EncryptionResponse _, LoginAcknowledged _, LoginPluginResponse _ ->
+          backendConnection.close();
       // Backend should not send EncryptionRequest (we connect offline-mode).
-      case EncryptionRequest ignored -> {
+      case EncryptionRequest _ -> {
         logger.warn("Backend sent EncryptionRequest — is it running in online-mode?");
         player.disconnect();
       }
@@ -131,7 +128,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
   @Override
   public void disconnected() {
     logger.info("Backend disconnected during login for player {}", player.username());
-    player.scheduleBackendFailure();
+    player.scheduleBackendFailure(backendConnection);
   }
 
   // ---------------------------------------------------------------------------
@@ -196,22 +193,11 @@ final class BackendLoginSessionHandler implements SessionHandler {
     }
   }
 
-  @SuppressWarnings("UnusedVariable")
-  private void handleLoginSuccess(LoginSuccess loginSuccess) {
-    ProtocolVersion version = player.protocolVersion();
+  private void handleLoginSuccess() {
     adviseIfBackendUncompressed();
-
-    if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
-      // Send LoginAcknowledged and transition to CONFIGURATION.
-      backendConnection.writeAndFlush(new LoginAcknowledged());
-      backendConnection.setState(ProtocolState.CONFIGURATION);
-      backendConnection.setSessionHandler(
-          new BackendConfigSessionHandler(player, backendConnection));
-    } else {
-      // Pre-1.20.2: transition directly to PLAY.
-      backendConnection.setState(ProtocolState.PLAY);
-      transitionToPlay();
-    }
+    // The configuration phase from 1.20.2, straight to PLAY before: the server switch strategy
+    // knows which, and installs the next handler.
+    player.serverSwitch().loggedIn(backendConnection);
   }
 
   private void handleLoginDisconnect(LoginDisconnect packet) {
@@ -219,29 +205,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
         "Backend {} rejected login for player {}: {}",
         serverAddress,
         player.username(),
-        new String(packet.rawReason(), StandardCharsets.UTF_8));
-    player.scheduleBackendFailure();
-  }
-
-  // ---------------------------------------------------------------------------
-  // Transition
-  // ---------------------------------------------------------------------------
-
-  private void transitionToPlay() {
-    // Install backend play handler (we are on the backend event loop).
-    backendConnection.setSessionHandler(new BackendPlaySessionHandler(player, backendConnection));
-
-    // Install client play handler on the client's event loop.
-    MinecraftConnection clientConn = player.clientConnection();
-    clientConn
-        .channel()
-        .eventLoop()
-        .execute(
-            () -> {
-              if (!clientConn.channel().isActive()) {
-                return;
-              }
-              clientConn.setSessionHandler(new ClientPlaySessionHandler(player));
-            });
+        packet.reason());
+    player.scheduleBackendFailure(backendConnection);
   }
 }

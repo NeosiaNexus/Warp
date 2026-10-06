@@ -1,0 +1,113 @@
+/*
+ * Copyright (C) 2026 Warp Contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+package dev.warp.protocol.packet.play;
+
+import dev.warp.protocol.codec.McString;
+import dev.warp.protocol.codec.McUuid;
+import dev.warp.protocol.codec.VarInt;
+
+import java.util.Collection;
+import java.util.UUID;
+
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.handler.codec.DecoderException;
+
+/**
+ * Field readers shared by the tab list packets ({@link PlayerInfo}, {@link PlayerInfoUpdate},
+ * {@link PlayerInfoRemove}). They skip what the proxy carries verbatim, and read and write the UUID
+ * lists it keeps.
+ */
+final class TabListEntries {
+
+  /** Largest player public key vanilla accepts (1.19 to 1.20.1). */
+  private static final int MAX_PUBLIC_KEY_SIZE = 512;
+
+  /** Largest player public key signature vanilla accepts. */
+  private static final int MAX_KEY_SIGNATURE_SIZE = 4096;
+
+  private TabListEntries() {}
+
+  /** Reads an entry count, rejecting one the remaining bytes cannot hold. */
+  static int readCount(ByteBuf buf, int minEntrySize) {
+    int count = VarInt.read(buf);
+    if (count < 0 || (long) count * minEntrySize > buf.readableBytes()) {
+      throw new DecoderException("Invalid tab list entry count: " + count);
+    }
+    return count;
+  }
+
+  /** Skips a game profile's properties: a count, then name, value and optional signature. */
+  static void skipProperties(ByteBuf buf) {
+    int count = readCount(buf, 3);
+    for (int i = 0; i < count; i++) {
+      McString.skip(buf);
+      McString.skip(buf);
+      skipOptionalString(buf);
+    }
+  }
+
+  /** Skips a boolean-prefixed optional string (a display name, a signature). */
+  static void skipOptionalString(ByteBuf buf) {
+    if (buf.readBoolean()) {
+      McString.skip(buf);
+    }
+  }
+
+  /** Skips a player public key: expiry, key and signature (1.19 to 1.20.1). */
+  static void skipPublicKey(ByteBuf buf) {
+    buf.skipBytes(Long.BYTES);
+    skipByteArray(buf, MAX_PUBLIC_KEY_SIZE);
+    skipByteArray(buf, MAX_KEY_SIGNATURE_SIZE);
+  }
+
+  private static void skipByteArray(ByteBuf buf, int maxSize) {
+    int length = VarInt.read(buf);
+    if (length < 0 || length > maxSize) {
+      throw new DecoderException("Invalid byte array length: " + length);
+    }
+    buf.skipBytes(length);
+  }
+
+  /** Writes a UUID list: a VarInt count, then each UUID. */
+  static void writeUuids(ByteBuf buf, Collection<UUID> uuids) {
+    VarInt.write(buf, uuids.size());
+    for (UUID uuid : uuids) {
+      McUuid.write(buf, uuid);
+    }
+  }
+
+  /** Encodes a UUID list as {@link #writeUuids} writes it. */
+  static byte[] encodeUuids(Collection<UUID> uuids) {
+    ByteBuf buf = Unpooled.buffer(VarInt.MAX_BYTES + uuids.size() * McUuid.ENCODED_SIZE);
+    try {
+      writeUuids(buf, uuids);
+      byte[] bytes = new byte[buf.readableBytes()];
+      buf.readBytes(bytes);
+      return bytes;
+    } finally {
+      buf.release();
+    }
+  }
+
+  /** Copies the bytes from {@code start} to the reader index. */
+  static byte[] copyFrom(ByteBuf buf, int start) {
+    byte[] bytes = new byte[buf.readerIndex() - start];
+    buf.getBytes(start, bytes);
+    return bytes;
+  }
+}

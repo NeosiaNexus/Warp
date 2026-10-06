@@ -6,21 +6,17 @@ import { sleep } from './proc.js';
 export const LOBBY_MODE = 'creative';
 export const SURVIVAL_MODE = 'adventure';
 
-/** Proxy-side `/server` command: Warp intercepts it from 1.19.3 (signed chat commands). */
-const PROXY_COMMANDS_MIN_PROTOCOL = 761;
-/** Server switching goes through the configuration phase, introduced in 1.20.2. */
-const SWITCHING_MIN_PROTOCOL = 764;
-
 export function features(protocol) {
   return {
-    proxyCommands: protocol >= PROXY_COMMANDS_MIN_PROTOCOL,
-    switching: protocol >= SWITCHING_MIN_PROTOCOL,
+    // Every version switches: through the configuration phase from 1.20.2, with the new server's
+    // Join Game and a Respawn before.
+    switching: true,
   };
 }
 
-/** Asks Warp where the bot is ("Servers: [lobby], survival") when the version allows it. */
+/** Asks Warp where the bot is ("Servers: [lobby], survival"); every version, through Warp only. */
 async function proxyReportsServer(ctx, bot, expected) {
-  if (!ctx.features.proxyCommands) return;
+  if (!ctx.features.proxy) return;
   const reply = await bot.command('server', /^Servers:/);
   const current = /\[(\w+)\]/.exec(reply)?.[1];
   if (current !== expected) throw new Error(`/server says ${current}, expected ${expected}`);
@@ -34,11 +30,23 @@ async function joinWarp(ctx, username, target = ctx.warp) {
 // Scenarios
 // ---------------------------------------------------------------------------
 
+/**
+ * Checks a server list ping answer: Warp's name (any name in a --direct run), and the protocol the
+ * bot speaks, without which a vanilla client lists the server as incompatible.
+ */
+export function checkStatus(response, { direct, protocol }) {
+  const name = response?.version?.name ?? '';
+  const advertised = response?.version?.protocol;
+  if (!direct && !name.startsWith('Warp')) throw new Error(`unexpected status response: ${JSON.stringify(response)}`);
+  if (advertised !== protocol) {
+    throw new Error(`advertised protocol ${advertised} to a client of protocol ${protocol}, which lists the server as incompatible`);
+  }
+  return `answered as "${name}" (protocol ${advertised}) in ${response.latency} ms`;
+}
+
 async function status(ctx) {
   const response = await ctx.client.ping({ host: '127.0.0.1', port: ctx.warp.port });
-  const name = response?.version?.name ?? '';
-  if (!ctx.direct && !name.startsWith('Warp')) throw new Error(`unexpected status response: ${JSON.stringify(response)}`);
-  return `answered as "${name}" (protocol ${response.version.protocol}) in ${response.latency} ms`;
+  return checkStatus(response, { direct: ctx.direct, protocol: ctx.client.protocol });
 }
 
 async function login(ctx) {

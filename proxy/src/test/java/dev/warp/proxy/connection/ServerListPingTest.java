@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolState;
@@ -29,24 +30,21 @@ import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
-import dev.warp.proxy.auth.MojangSessionService;
-import dev.warp.proxy.config.ForwardingMode;
-import dev.warp.proxy.server.ServerRegistry;
 
-import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.security.KeyPairGenerator;
-import java.security.NoSuchAlgorithmException;
-import java.util.List;
-import java.util.Map;
-import java.util.zip.Deflater;
+import java.util.Objects;
+import java.util.stream.Stream;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Integration tests for the complete Server List Ping flow.
@@ -105,7 +103,7 @@ class ServerListPingTest {
       assertTrue(json.contains("\"version\""), "JSON should contain version");
       assertTrue(json.contains("\"players\""), "JSON should contain players");
       assertTrue(json.contains("\"description\""), "JSON should contain description");
-      assertTrue(json.contains("\"protocol\":" + ProtocolVersion.latest().protocol()));
+      assertTrue(json.contains("\"protocol\":" + ProtocolVersion.MINECRAFT_1_21_4.protocol()));
 
       // 4. Send PingRequest (packet ID 0x01, long payload)
       long pingPayload = 0xDEADBEEFCAFEBABEL;
@@ -125,6 +123,81 @@ class ServerListPingTest {
       // 6. Channel should be closed after pong.
       ch.runPendingTasks();
       assertFalse(ch.isActive(), "Channel should close after pong");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Advertised version
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("advertised version")
+  class AdvertisedVersion {
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("supportedVersions")
+    @DisplayName("should advertise the client's own protocol when Warp supports it")
+    void clientProtocol(ProtocolVersion version) {
+      EmbeddedChannel ch = createFullPipeline();
+
+      JsonObject advertised = requestStatusVersion(ch, version.protocol());
+
+      assertEquals(version.protocol(), advertised.get("protocol").getAsInt());
+      assertEquals(StatusSessionHandler.VERSION_NAME, advertised.get("name").getAsString());
+      ch.finishAndReleaseAll();
+    }
+
+    @Test
+    @DisplayName("should advertise the latest protocol and the supported range to another client")
+    void unsupportedClient() {
+      EmbeddedChannel ch = createFullPipeline();
+
+      JsonObject advertised = requestStatusVersion(ch, 99999);
+
+      assertEquals(ProtocolVersion.latest().protocol(), advertised.get("protocol").getAsInt());
+      assertEquals(StatusSessionHandler.VERSION_NAME, advertised.get("name").getAsString());
+      ch.finishAndReleaseAll();
+    }
+
+    @Test
+    @DisplayName("should name the range of supported versions, from 1.7.2 to the latest")
+    void versionName() {
+      String name = StatusSessionHandler.VERSION_NAME;
+
+      assertEquals("Warp 1.7.2-" + ProtocolVersion.latest().name(), name);
+    }
+
+    @Test
+    @DisplayName("should build one JSON per protocol once, not one per ping")
+    void cachedJson() {
+      String first = StatusSessionHandler.statusJson(ProtocolVersion.MINECRAFT_1_20_5);
+
+      String again = StatusSessionHandler.statusJson(ProtocolVersion.MINECRAFT_1_20_6); // also 766
+
+      assertSame(first, again);
+    }
+
+    /** One version per protocol Warp supports. */
+    static Stream<ProtocolVersion> supportedVersions() {
+      return ProtocolVersion.values().stream()
+          .filter(v -> Objects.equals(ProtocolVersion.byProtocolId(v.protocol()), v));
+    }
+
+    /** Sends a handshake and a status request, and returns the "version" of the answer. */
+    private JsonObject requestStatusVersion(EmbeddedChannel ch, int protocol) {
+      writeFramedHandshake(ch, protocol, "localhost", 25577, 1);
+      writeFramedPacket(ch, 0x00, Unpooled.EMPTY_BUFFER);
+      ByteBuf responseFrame = ch.readOutbound();
+      assertNotNull(responseFrame, "Expected StatusResponse frame");
+      try {
+        VarInt.read(responseFrame); // frame length
+        assertEquals(0x00, VarInt.read(responseFrame), "StatusResponse packet ID should be 0x00");
+        String json = McString.read(responseFrame);
+        assertFalse(responseFrame.isReadable(), "StatusResponse should consume all bytes");
+        return JsonParser.parseString(json).getAsJsonObject().getAsJsonObject("version");
+      } finally {
+        responseFrame.release();
+      }
     }
   }
 
@@ -318,7 +391,7 @@ class ServerListPingTest {
 
   /** Creates a full Netty pipeline using {@link ServerChannelInitializer}. */
   private static EmbeddedChannel createFullPipeline() {
-    ServerChannelInitializer init = new ServerChannelInitializer(createTestLoginContext());
+    ServerChannelInitializer init = new ServerChannelInitializer(TestLoginContexts.offline());
     EmbeddedChannel ch = new EmbeddedChannel();
     // Manually trigger initChannel since EmbeddedChannel doesn't invoke ChannelInitializer
     // the same way as a real ServerBootstrap.
@@ -360,33 +433,5 @@ class ServerListPingTest {
     packetData.release();
 
     ch.writeInbound(frame);
-  }
-
-  /** Creates a test {@link ServerLoginContext} for pipeline initialisation. */
-  @SuppressWarnings("NullAway") // Backend fields unused in status ping tests
-  private static ServerLoginContext createTestLoginContext() {
-    try {
-      KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
-      gen.initialize(1024);
-      // Server registry and channel class are unused for status ping tests.
-      ServerRegistry registry =
-          new ServerRegistry(
-              Map.of("lobby", new InetSocketAddress("localhost", 25565)),
-              "lobby",
-              List.of("lobby"));
-      return new ServerLoginContext(
-          gen.generateKeyPair(),
-          false, // offline mode for tests
-          -1, // compression disabled
-          Deflater.DEFAULT_COMPRESSION,
-          true,
-          new MojangSessionService(),
-          registry,
-          ForwardingMode.NONE,
-          new byte[0],
-          null); // no channel class needed for status tests
-    } catch (NoSuchAlgorithmException e) {
-      throw new AssertionError("RSA not available", e);
-    }
   }
 }
