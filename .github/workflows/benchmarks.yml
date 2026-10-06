@@ -1,0 +1,96 @@
+name: Benchmarks
+
+# Timing trend of the hot path. Every push to main times the benchmarks that the allocation guard
+# covers, with their own forks, warm-up and iterations (bin/bench-guard.sh --timings), and appends
+# the result to the history kept on the gh-pages branch, charted at
+# https://neosianexus.github.io/Warp/benchmarks/. Shared runners are too noisy for timings to
+# block anything: a benchmark much slower than on the previous run only raises an alert, a comment
+# on the commit and a warning in the run. Run on demand from another branch, it measures without
+# publishing.
+on:
+  push:
+    branches: [main]
+    # Documentation cannot move a timing, as in CI.
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/PULL_REQUEST_TEMPLATE.md'
+  workflow_dispatch:
+
+permissions: {}
+
+# One run per commit; runs for different commits go in parallel, each on its own runner.
+concurrency:
+  group: benchmarks-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    name: Measure timings
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read # check out the code
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up build
+        uses: $/.github/actions/setup-build
+
+      - name: Time the hot path
+        run: bin/bench-guard.sh --timings
+
+      - name: Upload JMH results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmark-timings
+          path: |
+            protocol/build/results/jmh/timings.json
+            protocol/build/results/jmh/timings-chart.json
+          if-no-files-found: error
+          retention-days: 30
+
+  # Only this job can write to the repository, and it runs no code from it: it appends the measured
+  # timings to the gh-pages branch and compares them with the previous run.
+  publish:
+    name: Publish trend
+    needs: measure
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # push to the gh-pages branch, comment on a commit that raises an alert
+    steps:
+      # The action commits on a local gh-pages branch: it needs a clone to work in.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download timings
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: benchmark-timings
+          path: ${{ runner.temp }}/timings
+
+      # Compares each benchmark with the previous run: 50% slower raises an alert, without failing.
+      - name: Append to the trend
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
+        with:
+          name: Hot path
+          tool: customSmallerIsBetter
+          output-file-path: ${{ runner.temp }}/timings/timings-chart.json
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: benchmarks
+          github-token: ${{ github.token }}
+          auto-push: true
+          summary-always: true
+          alert-threshold: '150%'
+          comment-on-alert: true
+          alert-comment-cc-users: '@${{ github.repository_owner }}'
+          fail-on-alert: false
