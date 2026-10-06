@@ -245,7 +245,9 @@ class ConfigPacketsTest {
     /**
      * A 26.1 client's packet as node-minecraft-protocol 1.68 serialises it, packet id excluded: the
      * layout of 1.21.2, which every protocol up to 26.1 keeps (vanilla 26.1 writes the same
-     * fields). Every field is away from its default, so a field read at the wrong place shows.
+     * fields). The settings are those of the play state's captures: locale {@code en_GB}, view
+     * distance 12, chat commands only, chat colors on, all skin parts, left hand, text filtering
+     * on, server listing refused, minimal particles.
      */
     @Test
     @DisplayName("should decode a 26.1 client's packet and encode it back to the same bytes")

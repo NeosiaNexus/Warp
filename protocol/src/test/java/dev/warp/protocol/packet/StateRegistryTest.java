@@ -221,7 +221,7 @@ class StateRegistryTest {
     // No invocation at all once KNOWN_WRONG is empty.
     @ParameterizedTest(name = "{0}", allowZeroInvocations = true)
     @MethodSource("knownWrongProtocols")
-    @DisplayName("should still differ from Mojang's report where ids are known to be wrong (#48)")
+    @DisplayName("should still differ from Mojang's report where ids are known to be wrong")
     void stillKnownWrong(ProtocolVersion version, PacketReport report) {
       List<String> mismatches = mismatches(version, report);
 
