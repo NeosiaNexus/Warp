@@ -451,7 +451,10 @@ class LoginSessionHandlerTest {
         byte[] body = nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version);
         ByteBuf buf = Unpooled.wrappedBuffer(body);
         try {
-          assertEquals("Steve", LoginSuccess.CODEC.decode(buf, version).username());
+          assertEquals(
+              "Steve",
+              LoginSuccess.CODEC.decode(buf, version).username(),
+              "logged in with a " + what + " key");
         } finally {
           buf.release();
         }
