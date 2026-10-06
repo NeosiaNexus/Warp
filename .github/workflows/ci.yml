@@ -100,6 +100,38 @@ jobs:
             */build/test-results/
           retention-days: 7
 
+  # Bytes allocated per packet on the hot path, against protocol/src/jmh/alloc-baseline.json, then
+  # one short run of every benchmark (bin/bench-guard.sh). Counted with escape analysis off, the
+  # allocation is the same on every run, so unlike timings it can gate pull requests.
+  allocation-guard:
+    name: Allocation guard
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # check out the code
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up build
+        uses: $/.github/actions/setup-build
+
+      - name: Guard allocation per packet
+        run: bin/bench-guard.sh
+
+      - name: Upload JMH results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: allocation-guard
+          path: protocol/build/results/jmh/*.json
+          if-no-files-found: warn
+          retention-days: ${{ github.event_name == 'push' && 30 || 7 }}
+
   # actionlint (syntax, expressions, shellcheck on `run:` scripts) and zizmor (workflow security,
   # strictest persona). Findings show up as annotations on the PR.
   lint-workflows:
@@ -150,7 +182,7 @@ jobs:
   ci-ok:
     name: CI OK
     if: ${{ always() }}
-    needs: [changes, build, lint-workflows, e2e]
+    needs: [changes, build, allocation-guard, lint-workflows, e2e]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
