@@ -363,9 +363,8 @@ public final class StateRegistry {
                     map(0x02, MINECRAFT_1_12_1),
                     map(0x03, MINECRAFT_1_14, MINECRAFT_1_18_2))
                 // Commands from 1.19; from 1.20.5, only the unsigned ones. The signed command,
-                // split
-                // off in 1.20.5 at the next id, only carries commands whose declared syntax has a
-                // message argument (/msg, /say), and is forwarded untouched.
+                // split off in 1.20.5 at the next id, only carries commands whose declared syntax
+                // has a message argument (/msg, /say), and is forwarded untouched.
                 .register(
                     ChatCommand.class,
                     ChatCommand.CODEC,
