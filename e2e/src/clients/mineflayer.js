@@ -154,11 +154,18 @@ class Bot {
     this.stats = { packets: 0, chunks: 0, signedChat: 0, errors: [], kicked: null, ended: null };
     this.messages = [];
     this.quitting = false;
+    this.chatSession = false;
     bot._client.on('packet', (data, meta) => {
       this.stats.packets++;
       if (meta.name === 'map_chunk') this.stats.chunks++;
       else if (meta.name === 'map_chunk_bulk') this.stats.chunks += data.meta?.length ?? 1; // 1.8
       else if (meta.name === 'player_chat' && data.signature) this.stats.signedChat++;
+    });
+    // From 1.19.3 a server announces a player's chat session to everyone, the player included,
+    // once it has taken it (Player Info Update, initialize chat).
+    bot._client.on('player_info', (packet) => {
+      const own = sameUuid(bot._client.uuid);
+      if (Array.isArray(packet.data) && packet.data.some((p) => p.chatSession && own(p.uuid))) this.chatSession = true;
     });
     bot.on('error', (e) => this.stats.errors.push(String(e?.stack ?? e)));
     bot.on('kicked', (reason) => { this.stats.kicked = text(reason); });
@@ -211,6 +218,15 @@ class Bot {
     this.bot.chat(message);
   }
 
+  /**
+   * Waits until the server has taken the bot's chat session. A server applies it on its main
+   * thread but reads chat as it arrives: a line said before is not signed for it, and the server's
+   * signature chain then falls one step behind the bot's.
+   */
+  waitForChatSession(timeoutMs) {
+    return this.waitFor(() => this.chatSession, 'chat session taken by the server', timeoutMs);
+  }
+
   /** Says `message` in chat and resolves once the server has sent it back to the bot. */
   async say(message, timeoutMs = 10_000) {
     const from = this.messages.length;
@@ -230,6 +246,12 @@ class Bot {
     this.quitting = true;
     this.bot.quit();
   }
+}
+
+/** A predicate matching `uuid`, with or without dashes. */
+function sameUuid(uuid) {
+  const bare = String(uuid ?? '').replace(/-/g, '');
+  return (other) => bare !== '' && String(other ?? '').replace(/-/g, '') === bare;
 }
 
 function text(reason) {

@@ -96,6 +96,7 @@ async function chat(ctx) {
   const bot = await joinWarp(ctx, 'e2e_chat', ctx.warp, signed ? ctx.mojang.profileKeys('e2e_chat') : null);
   try {
     await bot.waitForGameMode(LOBBY_MODE, 10_000);
+    if (signed) await bot.waitForChatSession(10_000);
     let lines = 0;
     // Every step must leave the bot on the lobby: a kicked player lands on Warp's fallback.
     const step = async (action) => {
