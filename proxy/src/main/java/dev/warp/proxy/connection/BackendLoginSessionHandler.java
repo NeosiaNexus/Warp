@@ -163,9 +163,9 @@ final class BackendLoginSessionHandler implements SessionHandler {
 
   /**
    * Warns once per backend when it sends uncompressed packets to players who receive compressed
-   * ones: the proxy then has to compress every large packet itself — the single most expensive
-   * thing a proxy can do — instead of forwarding the backend's compressed bytes. Not for a 1.7
-   * player: neither side of its connection can compress.
+   * ones: the proxy then has to compress every large packet itself (the single most expensive thing
+   * a proxy can do) instead of forwarding the backend's compressed bytes. Not for a 1.7 player:
+   * neither side of its connection can compress.
    */
   private void adviseIfBackendUncompressed() {
     ServerLoginContext context = player.loginContext();
