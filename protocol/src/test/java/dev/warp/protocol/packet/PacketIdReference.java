@@ -34,6 +34,8 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.regex.Pattern;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * The reference packet ids of {@code packet-ids.txt}: every packet of every state, at each protocol
  * Warp registers, generated from minecraft-data by {@code e2e/tools/packet-ids.js}.
@@ -71,7 +73,10 @@ record PacketIdReference(
         switch (fields[0]) {
           case "checked" -> checked = protocols(fields, line);
           case "unchecked" -> unchecked = protocols(fields, line);
-          default -> changes.put(fields[0] + ' ' + fields[1] + ' ' + fields[2], ids(fields, line));
+          default -> {
+            NavigableMap<Integer, Integer> ids = ids(fields, line);
+            changes.put(fields[0] + ' ' + fields[1] + ' ' + fields[2], ids);
+          }
         }
       }
       return new PacketIdReference(checked, unchecked, Map.copyOf(changes));
@@ -112,10 +117,16 @@ record PacketIdReference(
 
   /** Parses {@code 0x04@759 -@770}: the id from each protocol on. */
   private static NavigableMap<Integer, Integer> ids(String[] fields, String line) {
+    if (fields.length < 4) {
+      throw malformed(line, null);
+    }
     NavigableMap<Integer, Integer> ids = new TreeMap<>();
     for (int i = 3; i < fields.length; i++) {
       String change = fields[i];
       int at = change.indexOf('@');
+      if (at < 0) {
+        throw malformed(line, null);
+      }
       String id = change.substring(0, at);
       ids.put(number(change.substring(at + 1), line), id.equals("-") ? ABSENT : number(id, line));
     }
@@ -127,7 +138,11 @@ record PacketIdReference(
     try {
       return Integer.decode(text);
     } catch (NumberFormatException e) {
-      throw new IllegalStateException(RESOURCE + ": malformed line: " + line, e);
+      throw malformed(line, e);
     }
+  }
+
+  private static IllegalStateException malformed(String line, @Nullable Throwable cause) {
+    return new IllegalStateException(RESOURCE + ": malformed line: " + line, cause);
   }
 }

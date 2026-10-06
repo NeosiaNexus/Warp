@@ -271,11 +271,10 @@ class StateRegistryTest {
       assertNull(serverbound.lookup(version, 0x05));
     }
 
-    @Test
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("bothCommandsMoved")
     @DisplayName("should decode the unsigned command at 0x05 and forward the signed one at 0x06")
-    void unsignedCommandAt0x05() {
-      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_21_2;
-
+    void unsignedCommandAt0x05(ProtocolVersion version) {
       assertSame(ChatCommand.CODEC, serverbound.lookup(version, 0x05));
       assertNull(serverbound.lookup(version, 0x06));
     }
@@ -285,6 +284,13 @@ class StateRegistryTest {
       return ProtocolVersion.values().stream()
           .filter(
               v -> v.isBetween(ProtocolVersion.MINECRAFT_1_20_5, ProtocolVersion.MINECRAFT_1_21_1));
+    }
+
+    /** 1.21.2 to 1.21.4: both moved up by one (1.21.5+ is audited in #48). */
+    static Stream<ProtocolVersion> bothCommandsMoved() {
+      return ProtocolVersion.values().stream()
+          .filter(
+              v -> v.isBetween(ProtocolVersion.MINECRAFT_1_21_2, ProtocolVersion.MINECRAFT_1_21_4));
     }
   }
 
