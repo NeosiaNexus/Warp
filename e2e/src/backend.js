@@ -19,6 +19,9 @@ export const BACKEND_PROTOCOL_ERRORS = [
   /Failed to (decode|encode) packet/i,
   /Packet .* was larger than I expected/,
   /Badly compressed packet/i,
+  // 1.19.3+: a player's chat acknowledgements and the server's window over them disagree.
+  /Failed to validate message acknowledgements/,
+  /lost connection: Chat message validation failure/,
 ];
 
 /**
