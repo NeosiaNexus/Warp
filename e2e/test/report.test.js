@@ -1,25 +1,30 @@
 // The merged Markdown report (src/report.js), from result.json files like the CI jobs upload.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
 
 const REPORT = join(import.meta.dirname, '..', 'src', 'report.js');
 const dirs = [];
 
-/** Runs the report on one result.json per version, each in its own artifact directory. */
-function report(...results) {
+/**
+ * Runs the report script at `script` on one result.json per version, each in its own artifact
+ * directory; on a failure, `markdown` also has what the script printed on stderr.
+ */
+function runReport(script, results) {
   const dir = mkdtempSync(join(tmpdir(), 'warp-e2e-report-'));
   dirs.push(dir);
   for (const result of results) {
     mkdirSync(join(dir, `e2e-result-${result.version}`, result.version), { recursive: true });
     writeFileSync(join(dir, `e2e-result-${result.version}`, result.version, 'result.json'), JSON.stringify(result));
   }
-  const { status, stdout } = spawnSync(process.execPath, [REPORT, dir, 'E2E'], { encoding: 'utf8' });
-  return { status, markdown: stdout };
+  const { status, stdout, stderr } = spawnSync(process.execPath, [script, dir, 'E2E'], { encoding: 'utf8' });
+  return { status, markdown: status === 0 ? stdout : `${stdout}${stderr}` };
 }
+
+const report = (...results) => runReport(REPORT, results);
 
 /** A result.json with one variant, whose status is the version's. */
 const result = (version, protocol, scenarios, status = 'pass') => ({
@@ -37,6 +42,19 @@ after(() => {
 });
 
 describe('report', () => {
+  it('runs without the npm dependencies, which the Report job of CI does not install', () => {
+    // The harness's sources alone, where no node_modules can be found.
+    const bare = mkdtempSync(join(tmpdir(), 'warp-e2e-bare-'));
+    dirs.push(bare);
+    cpSync(dirname(REPORT), join(bare, 'src'), { recursive: true });
+    writeFileSync(join(bare, 'package.json'), JSON.stringify({ type: 'module' }));
+
+    const { status, markdown } = runReport(join(bare, 'src', 'report.js'), [result('1.21.4', 769, [{ name: 'login', status: 'pass', detail: 'spawned' }])]);
+
+    assert.equal(status, 0, markdown);
+    assert.match(markdown, /✅ \*\*1\*\* passed/);
+  });
+
   it('passes when only known-broken scenarios fail, and says why they do', () => {
     const { status, markdown } = report(
       result('1.20.1', 763, [
