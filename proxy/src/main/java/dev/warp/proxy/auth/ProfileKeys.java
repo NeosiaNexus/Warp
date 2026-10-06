@@ -256,7 +256,8 @@ public final class ProfileKeys {
   /** 1.19.1 and 1.19.2: UUID, expiry and DER key, big-endian. */
   static byte[] signedPayloadV2(UUID holder, long expiresAt, PublicKey playerKey) {
     byte[] der = playerKey.getEncoded();
-    return ByteBuffer.allocate(2 * Long.BYTES + Long.BYTES + der.length)
+    // UUID (two longs) and expiry, then the key.
+    return ByteBuffer.allocate(3 * Long.BYTES + der.length)
         .putLong(holder.getMostSignificantBits())
         .putLong(holder.getLeastSignificantBits())
         .putLong(expiresAt)
