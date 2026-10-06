@@ -62,10 +62,10 @@ export class ManagedProcess {
         if (partial) this.onLine(partial);
         this.exit = { code, signal };
         running.delete(this);
-        log.end();
         for (const w of this.waiters) w.reject(new Error(`${this.name} exited (${code ?? signal}) while waiting for ${w.pattern}`));
         this.waiters = [];
-        resolve(this.exit);
+        // Settles once the log holds every line written, so that whoever awaits the exit reads it whole.
+        log.end(() => resolve(this.exit));
       });
       child.on('error', (e) => {
         this.exit = { code: -1, signal: null, error: e };
