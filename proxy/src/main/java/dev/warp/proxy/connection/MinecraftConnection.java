@@ -36,6 +36,8 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelOutboundBuffer;
+import io.netty.handler.timeout.ReadTimeoutException;
 import io.netty.util.ReferenceCountUtil;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -71,6 +73,13 @@ import org.slf4j.LoggerFactory;
 public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   private static final Logger logger = LoggerFactory.getLogger(MinecraftConnection.class);
+
+  /**
+   * Seconds without receiving anything after which a connection, to a player or to a backend, is
+   * closed. A live peer never stays that quiet: a client sends a movement packet every tick and
+   * answers keep-alives, a server sends keep-alives.
+   */
+  static final int READ_TIMEOUT_SECONDS = 30;
 
   private final Channel channel;
   private final FrameForwarder forwarder;
@@ -141,16 +150,45 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   @Override
   public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-    String routine = describeRoutine(cause, ctx.channel().isActive());
-    if (routine != null) {
-      logger.debug("{} ({}): {}", routine, channel.remoteAddress(), cause.toString());
+    if (cause instanceof ReadTimeoutException) {
+      // A peer that went quiet: it is gone or stuck, and closing is all the proxy can do. Worth a
+      // line, unlike a reset connection: how the connection stood says which side stopped.
+      logger.info(
+          "Connection {} timed out: {}", channel.remoteAddress(), describeTimeout(ctx.channel()));
     } else {
-      // Everything else is logged in full.
-      logger.error("Exception in pipeline for {}", channel.remoteAddress(), cause);
+      String routine = describeRoutine(cause, ctx.channel().isActive());
+      if (routine != null) {
+        logger.debug("{} ({}): {}", routine, channel.remoteAddress(), cause.toString());
+      } else {
+        // Everything else is logged in full.
+        logger.error("Exception in pipeline for {}", channel.remoteAddress(), cause);
+      }
     }
     if (ctx.channel().isActive()) {
       var _ = ctx.close();
     }
+  }
+
+  /**
+   * Describes a connection that received nothing for {@value #READ_TIMEOUT_SECONDS} s, as it
+   * stands: whether the proxy was reading it, and how much it still had to send it. Reads paused
+   * means the proxy's own back-pressure kept the peer's packets unread; bytes piling up mean the
+   * peer stopped reading too; neither means the peer went silent while taking what it was sent. The
+   * queued bytes are Netty's count: the packets plus a small overhead per message.
+   *
+   * @param channel the connection that timed out
+   * @return e.g. {@code "nothing received in 30 s (reads on, 0 bytes queued to send)"}
+   */
+  static String describeTimeout(Channel channel) {
+    ChannelOutboundBuffer outbound = channel.unsafe().outboundBuffer();
+    long queued = outbound == null ? 0 : outbound.totalPendingWriteBytes();
+    return "nothing received in "
+        + READ_TIMEOUT_SECONDS
+        + " s (reads "
+        + (channel.config().isAutoRead() ? "on" : "paused")
+        + ", "
+        + queued
+        + " bytes queued to send)";
   }
 
   /**

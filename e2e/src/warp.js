@@ -6,8 +6,10 @@ import { ManagedProcess, run } from './proc.js';
 
 /**
  * Warp output lines that fail a run: anything logged at ERROR or FATAL, Netty buffer leaks,
- * uncaught exceptions printed by the JVM itself, JVM crashes, and keep-alive trouble (bots always
- * echo the keep-alive id they received, at once, so a mismatch or a time-out is a proxy bug).
+ * uncaught exceptions printed by the JVM itself, JVM crashes, keep-alive trouble (bots always echo
+ * the keep-alive id they received, at once, so a mismatch or a time-out is a proxy bug) and read
+ * time-outs (Warp logs them at INFO, as a player who goes quiet is routine; bots and backends here
+ * never do, so one is a hang somewhere between them).
  */
 export const WARP_FAILURES = [
   /^\S+ \S+ \[[^\]]*\] (ERROR|FATAL) /,
@@ -16,6 +18,7 @@ export const WARP_FAILURES = [
   /^# A fatal error has been detected by the Java Runtime Environment/,
   /Invalid KeepAlive ID from player /,
   /timed out \(no KeepAlive response/,
+  /Connection \S+ timed out: nothing received in/,
 ];
 
 export class Warp {
