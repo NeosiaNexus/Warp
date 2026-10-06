@@ -1,48 +1,132 @@
 name: CI
 
 on:
-  push:
-    branches: [ main ]
   pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
+# One run per PR (a new push cancels the previous one); every push to main runs to completion.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
-    name: Build & Test
-    runs-on: ubuntu-latest
+    name: Build & test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read # check out the code
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # JDK 25 is the toolchain Warp compiles, tests and ships with. Gradle 8.12 itself runs on
-      # JDK 21 (the last version listed becomes JAVA_HOME) and finds JDK 25 via JAVA_HOME_25_X64.
-      - name: Set up JDK 25 (toolchain) and JDK 21 (Gradle)
-        uses: actions/setup-java@v4
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          distribution: temurin
-          java-version: |
-            25
-            21
+          persist-credentials: false
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - name: Set up build
+        uses: $/.github/actions/setup-build
 
-      - name: Check formatting (Spotless)
-        run: ./gradlew -Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64 spotlessCheck
+      - name: Check formatting
+        run: ./gradlew spotlessCheck
 
-      - name: Build & Test
-        run: ./gradlew -Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64 build
+      # Compiles with ErrorProne + NullAway, runs unit and integration tests, Checkstyle and
+      # JaCoCo, and assembles the shadow jar.
+      - name: Build & test
+        run: ./gradlew build
 
-      - name: Upload shadow JAR
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        uses: actions/upload-artifact@v4
+      - name: Report tests
+        if: ${{ !cancelled() }}
+        uses: mikepenz/action-junit-report@b7b80d7ac5b1da46d6aaff9fb57ad50d8453bcb3 # v6.6.0
         with:
-          name: warp-${{ github.sha }}
+          report_paths: '**/build/test-results/*/TEST-*.xml'
+          annotate_only: true
+          require_tests: true
+          detailed_summary: true
+          failed_summary_logs: true
+          include_time_in_summary: true
+          simplified_summary: true
+          job_summary_text: '### Tests'
+
+      - name: Report coverage
+        if: ${{ !cancelled() }}
+        run: python3 .github/scripts/coverage-summary.py >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Warp jar
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: warp-jar
           path: proxy/build/libs/warp-*.jar
-          retention-days: 30
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'push' && 30 || 7 }}
+
+      - name: Upload test reports
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-reports
+          path: |
+            */build/reports/tests/
+            */build/reports/checkstyle/
+            */build/test-results/
+          retention-days: 7
+
+  # actionlint (syntax, expressions, shellcheck on `run:` scripts) and zizmor (workflow security,
+  # strictest persona). Findings show up as annotations on the PR.
+  lint-workflows:
+    name: Lint workflows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read # check out the workflows
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/$archive" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$archive"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --quiet
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
+          # shellcheck disable=SC2016 # a Go template for actionlint, not shell expansions
+          "$RUNNER_TEMP/actionlint" -format '{{range $e := .}}::error file={{$e.Filepath}},line={{$e.Line}},col={{$e.Column}},title=actionlint [{{$e.Kind}}]::{{$e.Message}}\n{{end}}'
+
+      - name: zizmor
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          version: 1.30.1
+          persona: auditor
+          advanced-security: false
+          annotations: true
+
+  # The only check to mark as required: it fails if any job above failed or was cancelled, and
+  # passes when they succeeded or were skipped on purpose.
+  ci-ok:
+    name: CI OK
+    if: ${{ always() }}
+    needs: [build, lint-workflows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check required jobs
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          {
+            echo '### Required jobs'
+            echo
+            echo '| Job | Result |'
+            echo '|---|---|'
+            # shellcheck disable=SC2016 # backticks are Markdown code spans, not command substitution
+            jq -r 'to_entries[] | "| `\(.key)` | \({success: "✅ success", skipped: "⏭️ skipped", failure: "❌ failure", cancelled: "🚫 cancelled"}[.value.result] // .value.result) |"' <<< "$NEEDS"
+          } >> "$GITHUB_STEP_SUMMARY"
+          jq -e 'all(.[]; .result == "success" or .result == "skipped")' <<< "$NEEDS" > /dev/null
