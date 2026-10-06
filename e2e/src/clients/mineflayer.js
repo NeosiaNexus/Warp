@@ -145,11 +145,11 @@ class Bot {
     bot.on('message', (message) => this.messages.push(message.toString()));
     // The tab list as the game keeps it, by UUID, fed by the player info packets alone: mineflayer
     // empties bot.players on every Join Game, but the game keeps its list across one before
-    // 1.20.2, and starts a new one after each configuration phase from 1.20.2.
+    // 1.20.2, and starts a new one with each configuration phase from 1.20.2.
     this.tabList = new Map();
     bot._client.on('player_info', (packet) => this.playerInfo(packet));
     bot._client.on('player_remove', (packet) => packet.players.forEach((uuid) => this.tabList.delete(uuid)));
-    bot._client.on('login', () => { if (bot._client.protocolVersion >= 764) this.tabList.clear(); });
+    bot._client.on('state', (state) => { if (state === 'configuration') this.tabList.clear(); });
   }
 
   /** Follows a player info packet: one action by name before 1.19.3, action flags from 1.19.3. */
