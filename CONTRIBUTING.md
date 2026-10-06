@@ -82,6 +82,27 @@ Workflow conventions, enforced in review and by the linters:
 - Every job has a `timeout-minutes`; runners are pinned (`ubuntu-24.04`), never `-latest`.
 - Pull-request runs are cancelled by a newer push; runs on `main` always complete.
 
+## Security and Dependencies
+
+Pull requests also run these checks, each in its own workflow and outside **CI OK**:
+
+| Check | What it verifies |
+|---|---|
+| **CodeQL** | Static analysis with the `security-and-quality` queries: the Java code as the build compiles it (every source set), the workflows and actions, and any JavaScript or Python. Alerts land in the Security tab; on a pull request, code scanning reports the ones it introduces |
+| **Dependency review** | Fails on a known vulnerability (moderate or above) in any dependency the pull request adds or changes, and on a runtime dependency whose license [`.github/dependency-review-config.yml`](.github/dependency-review-config.yml) does not allow |
+| **Dependency graph** | Resolves every Gradle dependency, transitive ones included, for the dependency review (and, on `main`, for Dependabot alerts) |
+
+[OpenSSF Scorecard](https://scorecard.dev) grades the repository's supply-chain practices on every
+push to `main` and weekly; its findings land in the Security tab too.
+
+[Dependabot](.github/dependabot.yml) proposes updates every Monday for Gradle (version catalog,
+settings plugins and wrapper), GitHub Actions and the e2e harness's npm packages, once a release is
+a week old; security updates open right away. Minor and patch updates come grouped for related
+libraries (Netty, Log4j, Adventure, testing, code quality), for all actions and for all npm
+packages; any other update, majors included, gets a pull request of its own (action majors share
+one). Titles are Conventional Commits that land in the matching changelog section: `fix(deps)` for
+Gradle (build tools included), `ci(deps)` for actions, `test(deps)` for npm.
+
 ## Release Automation
 
 [release-please](https://github.com/googleapis/release-please) maintains a release PR from the

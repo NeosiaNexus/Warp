@@ -1,0 +1,47 @@
+# License policy of the dependency review (.github/workflows/dependency-review.yml).
+#
+# It applies to the dependencies a pull request adds or changes in the runtime scope: the libraries
+# shaded into Warp's jar or exposed to plugins through the API (npm also reports the e2e harness's
+# packages as runtime). Warp is AGPL-3.0-or-later, so they must be under a license it can be combined
+# with. Any other license fails the review: if the dependency is acceptable anyway, list its package
+# URL under allow-dependencies-licenses with a comment saying why. A license GitHub cannot detect is
+# reported without failing.
+
+allow-licenses:
+  # Permissive
+  - 0BSD
+  - Apache-2.0
+  - BlueOak-1.0.0
+  - BSD-2-Clause
+  - BSD-2-Clause-Views
+  - BSD-3-Clause
+  - BSL-1.0
+  - CC-BY-4.0
+  - CC0-1.0
+  - ISC
+  - LicenseRef-scancode-public-domain # public domain, as ClearlyDefined reports it (aopalliance)
+  - MIT
+  - MIT-0
+  - Python-2.0
+  - Unicode-3.0
+  - Unicode-DFS-2016
+  - Unlicense
+  - UPL-1.0
+  - W3C
+  - X11
+  - Zlib
+  # Copyleft compatible with the AGPLv3. An entry accepts its version and every later one, and a
+  # dependency under "version N or later" passes through any accepted version: GPL-2.0-or-later
+  # passes as GPL-3.0, GPL-2.0-only does not.
+  - LGPL-2.1-or-later
+  - MPL-2.0
+  - GPL-3.0-or-later
+  - AGPL-3.0-or-later
+  # The OpenJDK class library license: copyleft with a linking exception
+  - GPL-2.0-only WITH Classpath-exception-2.0
+
+# Reviewed exceptions, by package URL (any version unless one is given).
+allow-dependencies-licenses:
+  # e2e harness only, never distributed: declares "BSD" with no version, which ClearlyDefined
+  # reports as LicenseRef-bad-bsd.
+  - pkg:npm/vec3

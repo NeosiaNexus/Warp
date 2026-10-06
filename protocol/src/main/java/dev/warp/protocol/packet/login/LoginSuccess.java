@@ -23,6 +23,7 @@ import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.packet.PacketCodec;
 
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
 
@@ -36,20 +37,32 @@ import org.jspecify.annotations.Nullable;
  * <p>Version history:
  *
  * <ul>
- *   <li><b>1.7.x</b>: UUID as string + username
- *   <li><b>1.8–1.18.2</b>: UUID as 128-bit value + username
+ *   <li><b>1.7.2–1.7.5</b>: UUID as a 32-character hex string without dashes + username
+ *   <li><b>1.7.6–1.15.2</b>: UUID as a 36-character string with dashes + username
+ *   <li><b>1.16+</b>: UUID as a 128-bit binary value + username (1.16–1.18.2 describe it as four
+ *       ints, which puts the same bytes on the wire as two big-endian longs)
  *   <li><b>1.19+</b>: Added properties array (skin/cape)
- *   <li><b>1.20.5+</b>: Added {@code strictErrorHandling} boolean
+ *   <li><b>1.20.5–1.21.1</b>: Added {@code strictErrorHandling} boolean, removed again in 1.21.2
  * </ul>
+ *
+ * <p>Encoding always uses the exact form of the target version. Decoding a string UUID accepts both
+ * the dashed and the undashed form, whatever the version, and rejects anything else with a {@link
+ * DecoderException}.
  *
  * @param uuid the player's UUID
  * @param username the player's username
  * @param properties game profile properties (skin, cape), empty before 1.19
- * @param strictErrorHandling if {@code true}, client disconnects on decode errors (1.20.5+)
+ * @param strictErrorHandling if {@code true}, client disconnects on decode errors (1.20.5–1.21.1)
  */
 public record LoginSuccess(
     UUID uuid, String username, List<Property> properties, boolean strictErrorHandling)
     implements LoginPacket {
+
+  /** Length of a UUID string without dashes, as sent by 1.7.2–1.7.5. */
+  private static final int UNDASHED_UUID_LENGTH = 32;
+
+  /** Length of a UUID string with dashes, as sent by 1.7.6–1.15.2. */
+  private static final int DASHED_UUID_LENGTH = 36;
 
   /**
    * A game profile property (typically skin/cape textures).
@@ -66,25 +79,10 @@ public record LoginSuccess(
         @Override
         public LoginSuccess decode(ByteBuf buf, ProtocolVersion version) {
           UUID uuid;
-          if (version.isOlderThan(ProtocolVersion.MINECRAFT_1_8)) {
-            // 1.7.x: UUID as string (with or without dashes)
-            String uuidStr = McString.read(buf, 36);
-            if (!uuidStr.contains("-")) {
-              // Insert dashes: 8-4-4-4-12
-              uuidStr =
-                  uuidStr.substring(0, 8)
-                      + "-"
-                      + uuidStr.substring(8, 12)
-                      + "-"
-                      + uuidStr.substring(12, 16)
-                      + "-"
-                      + uuidStr.substring(16, 20)
-                      + "-"
-                      + uuidStr.substring(20);
-            }
-            uuid = UUID.fromString(uuidStr);
-          } else {
+          if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_16)) {
             uuid = McUuid.read(buf);
+          } else {
+            uuid = parseUuidString(McString.read(buf, DASHED_UUID_LENGTH));
           }
 
           String username = McString.read(buf, 16);
@@ -117,10 +115,12 @@ public record LoginSuccess(
 
         @Override
         public void encode(LoginSuccess packet, ByteBuf buf, ProtocolVersion version) {
-          if (version.isOlderThan(ProtocolVersion.MINECRAFT_1_8)) {
-            McString.write(buf, packet.uuid().toString(), 36);
-          } else {
+          if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_16)) {
             McUuid.write(buf, packet.uuid());
+          } else if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_7_6)) {
+            McString.write(buf, packet.uuid().toString(), DASHED_UUID_LENGTH);
+          } else {
+            McString.write(buf, toUndashedString(packet.uuid()), UNDASHED_UUID_LENGTH);
           }
 
           McString.write(buf, packet.username(), 16);
@@ -143,4 +143,47 @@ public record LoginSuccess(
           }
         }
       };
+
+  // ---------------------------------------------------------------------------
+  // String UUID helpers (1.7.2–1.15.2)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Parses a UUID sent as a string, in either the undashed ({@code 32} hex digits) or the dashed
+   * ({@code 8-4-4-4-12}) form.
+   *
+   * @throws DecoderException if the string is neither form
+   */
+  private static UUID parseUuidString(String str) {
+    try {
+      if (str.length() == UNDASHED_UUID_LENGTH) {
+        return new UUID(
+            HexFormat.fromHexDigitsToLong(str, 0, 16), HexFormat.fromHexDigitsToLong(str, 16, 32));
+      }
+      if (str.length() == DASHED_UUID_LENGTH
+          && str.charAt(8) == '-'
+          && str.charAt(13) == '-'
+          && str.charAt(18) == '-'
+          && str.charAt(23) == '-') {
+        long msb =
+            (HexFormat.fromHexDigitsToLong(str, 0, 8) << 32)
+                | (HexFormat.fromHexDigitsToLong(str, 9, 13) << 16)
+                | HexFormat.fromHexDigitsToLong(str, 14, 18);
+        long lsb =
+            (HexFormat.fromHexDigitsToLong(str, 19, 23) << 48)
+                | HexFormat.fromHexDigitsToLong(str, 24, 36);
+        return new UUID(msb, lsb);
+      }
+    } catch (IllegalArgumentException e) {
+      throw new DecoderException("Malformed UUID string: " + str, e);
+    }
+    throw new DecoderException("Malformed UUID string: " + str);
+  }
+
+  /** Formats a UUID as 32 lowercase hex digits without dashes. */
+  private static String toUndashedString(UUID uuid) {
+    HexFormat hex = HexFormat.of();
+    return hex.toHexDigits(uuid.getMostSignificantBits())
+        + hex.toHexDigits(uuid.getLeastSignificantBits());
+  }
 }
