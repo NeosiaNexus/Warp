@@ -85,9 +85,10 @@ buffers leaked so far rather than only at the end. This Warp runs with a fixed, 
 which native memory tracking breaks down; direct memory is its "Other" category, Netty's buffers.
 It also keeps a flight recording, `logs/warp-<variant>.jfr`.
 
-The soak has three phases: warm-up (a fifth of it, 1 to 5 minutes, while the JIT, pools and caches
-fill up), steady state, and drain (every bot leaves). Besides what fails any run (an ERROR, a buffer
-leak, a hung shutdown), a soak fails when:
+The soak runs in four steps: the warm-up (a fifth of it, 1 to 5 minutes, while the JIT, pools and
+caches fill up); an intermission, where every bot leaves and then comes back; the steady phase; and
+the drain, where every bot leaves for good. Besides what fails any run (an ERROR, a buffer leak, a
+hung shutdown), a soak fails when:
 
 | Check | Fails when |
 |---|---|
@@ -96,8 +97,8 @@ leak, a hung shutdown), a soak fails when:
 | Direct memory | it grows over the steady phase by more than 16 MiB or 25 % |
 | File descriptors | they grow over the steady phase by more than 8 or 10 % |
 | Threads | they grow over the steady phase by more than 8 or 10 % |
-| Connections | Warp still holds a client or backend connection 30 s after every bot left |
-| Objects | once every bot left, a class of Warp's own or a Netty socket channel has more instances than before the first joined, by more than the number of bots |
+| Connections | Warp still holds a client or backend connection 30 s after every bot left, at the intermission or at the end |
+| Objects | a class of Warp's own, or a Netty socket channel, has more instances at the end than at the intermission, by more than the number of bots |
 | Bots | any bot fails, in any phase |
 
 Growth is measured between the medians of the first and last thirds of the steady phase, and is
@@ -109,11 +110,14 @@ else grows at all, varying by about 1 MiB of live heap, 2 file descriptors and 3
 the HTTP client of online mode). The limits leave several times that.
 
 A trend only shows a leak big enough to stand out of the noise. The objects check does not depend
-on one: a class histogram of Warp (`jcmd GC.class_histogram`, after a full GC) is taken while it is
-idle before the first bot joins, and again once every bot has left. A cache with an entry per
-player may keep one object per bot; an object kept per connection or per switch outnumbers them
-within minutes. A Warp patched to keep a reference to every player that ever joined passes every
-trend check (the 65 players of a 5-minute soak add 0.3 MiB of live heap), and fails this one.
+on one: a class histogram of Warp (`jcmd GC.class_histogram`, after a full GC) is taken at the
+intermission and at the end, both times with every bot gone. A cache with an entry per player may
+keep one object per bot; an object kept per connection or per switch outnumbers them within
+minutes. Both histograms come after the same code paths: Warp builds its protocol tables and some
+per-thread state on its first players (about 1,700 objects of its own), which a histogram taken
+before the first player would mistake for a leak. A Warp patched to keep a reference to every
+player that ever joined passes every trend check (the 65 players of a 5-minute soak add 0.3 MiB of
+live heap), and fails this one.
 
 Results go to `e2e/build/<version>/`: `soak-<variant>.csv` and `soak-<variant>.json` (the time
 series, a row every 5 s), and the summary in `summary.md` and the GitHub run summary: each check,

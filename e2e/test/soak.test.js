@@ -97,33 +97,53 @@ describe('objects left once every player has left', () => {
 describe('soak verdict', () => {
   const ctx = { entry: { version: '1.21.4' }, variant: { name: 'online' }, bots: 20, soak: { minutes: 10 } };
   const crowd = { ops: [], failures: [] };
-  const samples = series('heapLive', 600, () => 16);
+  const samples = series('heapLive', 600, () => 16).map((s) => ({ ...s, phase: s.t < 120 ? 'warm-up' : 'steady' }));
   const idle = new Map([['dev.warp.proxy.WarpServer', 1]]);
+  const released = { clients: 0, backends: 0, seconds: 0.1 };
   const verdict = (overrides) =>
-    summarize({ ctx, samples, crowd, warmUp: 120_000, durationMs: 600_000, drain: { clients: 0, backends: 0, seconds: 0.1 }, objects: { before: idle, after: idle }, network: null, error: null, ...overrides });
+    summarize({
+      ctx,
+      samples,
+      crowd,
+      timeline: { steadyFrom: 120, drainFrom: 600 },
+      drains: [released, released],
+      objects: { before: idle, after: idle },
+      network: null,
+      error: null,
+      ...overrides,
+    });
 
   it('passes a Warp that released everything', () => {
     const report = verdict({});
 
     assert.equal(report.status, 'pass');
     assert.deepEqual(report.problems, []);
-    assert.deepEqual(report.phases.map((p) => p.name), ['warm-up', 'steady']);
+    assert.deepEqual(report.phases.map((p) => `${p.name} ${p.from}-${p.to}`), ['warm-up 0-115', 'steady 120-600']);
+    assert.equal(report.resources.find((r) => r.key === 'heapLive').status, 'pass');
   });
 
   it('names the classes Warp kept, the connections it held and the bots that failed', () => {
     const after = new Map([...idle, ['dev.warp.proxy.connection.MinecraftConnection', 220], ['io.netty.channel.epoll.EpollSocketChannel', 220]]);
     const report = verdict({
       objects: { before: idle, after },
-      drain: { clients: 0, backends: 3, seconds: null },
+      drains: [released, { clients: 0, backends: 3, seconds: null }],
       crowd: { ops: [], failures: [{ t: 42, phase: 'steady', op: 'switch', bot: 'soak_03', error: 'no packet for 31 s' }] },
     });
 
     assert.equal(report.status, 'fail');
     assert.deepEqual(report.problems, [
-      'Warp kept objects of 2 class(es) once every player had left, more than one per player: dev.warp.proxy.connection.MinecraftConnection +220, io.netty.channel.epoll.EpollSocketChannel +220',
-      'Warp still holds 0 client and 3 backend connection(s) 30 s after every player left',
+      'Warp kept objects of 2 class(es) through the steady phase, more than one per player: dev.warp.proxy.connection.MinecraftConnection +220, io.netty.channel.epoll.EpollSocketChannel +220',
+      'Warp still held 0 client and 3 backend connection(s) 30 s after every player left, at the end',
       '1 bot failure(s), first: switch soak_03: no packet for 31 s',
     ]);
+  });
+
+  it('skips the trends of a soak that never reached its steady phase', () => {
+    const report = verdict({ timeline: { steadyFrom: null, drainFrom: 60 }, drains: [], objects: { before: null, after: null }, error: new Error('Warp exited during the soak') });
+
+    assert.deepEqual(report.problems, ['Warp exited during the soak']);
+    assert.ok(report.resources.every((r) => r.status === 'skip'));
+    assert.equal(report.objects, null);
   });
 });
 
@@ -139,7 +159,11 @@ describe('soak report', () => {
       { key: 'threads', label: 'Threads', unit: '', start: 30, end: 50, peak: 60, status: 'pass', first: 52, middle: 52, last: 52, growth: 0, limit: 5.2 },
     ],
     heap: { peak: 210, max: 512 },
-    drain: { clients: 0, backends: 0, seconds: 0.4 },
+    drains: [
+      { clients: 0, backends: 0, seconds: 0.02 },
+      { clients: 0, backends: 0, seconds: 0.4 },
+    ],
+    objects: { status: 'pass', limit: 20, before: 1669, after: 1672, leaked: 0, classes: [{ name: 'dev.warp.protocol.compress.FrameDecompressor$1', before: 6, after: 8, growth: 2 }] },
     phases: [
       { name: 'warm-up', from: 0, to: 300, bots: 20, joins: 40, switches: 120, pings: 30, failures: 0, joinMs: { p50: 900, p95: 1500 }, switchMs: { p50: 180, p95: 420 }, rss: { avg: 600, max: 640 }, heapLive: 41, heapUsed: 210, direct: 34, fds: 120, threads: 60, cpu: 35, sendQueue: 96, receiveQueue: 0 },
     ],
@@ -153,8 +177,15 @@ describe('soak report', () => {
 
     assert.match(markdown, /^## Soak: Minecraft 1\.21\.4, online, 30 min, degraded network$/m);
     assert.match(markdown, /✅ \*\*Passed\.\*\* 20 bots for 30:32: 120 server switches, 40 joins, 30 pings, none failed\./);
-    assert.match(markdown, /closed every connection 0\.4 s after the last player left/);
-    assert.match(markdown, /shut down in 1\.1 s/);
+    assert.match(markdown, /Warp closed every connection as soon as every player left, logged no error or buffer leak and shut down in 1\.1 s\./);
+  });
+
+  it('shows what Warp held each time every player had left', () => {
+    const markdown = soakMarkdown({ version: '1.21.4' }, variant);
+
+    assert.match(markdown, /^\| Connections Warp still held \| 0 \| 0 after 0\.4 s \| none \| ✅ \|$/m);
+    assert.match(markdown, /^\| Objects of Warp and Netty channels \| 1,669 \| 1,672 \| \+20 per class \| ✅ \|$/m);
+    assert.match(markdown, /^\| `dev\.warp\.protocol\.compress\.FrameDecompressor\$1` \| 6 \| 8 \| ✅ \|$/m);
   });
 
   it('tabulates each resource, each phase and the network', () => {

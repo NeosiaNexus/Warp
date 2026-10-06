@@ -72,6 +72,11 @@ export function warmUpMs(durationMs) {
 export const SOAK = { name: 'soak', run: soak, requires: 'proxy' };
 
 /**
+ * Warm-up, intermission, steady phase, drain. At the intermission and at the end, every bot leaves:
+ * Warp must close every connection, and the objects it holds then are compared. Both moments come
+ * after the same code paths (protocol tables and per-thread state are built lazily, on the first
+ * players), so only what Warp kept per connection in between shows.
+ *
  * @param {object} ctx scenario context, with `soak: {minutes, dir}`, `warp.instance` (the Warp
  *   under test) and, on a degraded network, `netem`
  */
@@ -81,8 +86,8 @@ export async function soak(ctx) {
   const warp = ctx.warp.instance;
   const started = Date.now();
   const elapsed = () => Date.now() - started;
-  const phaseAt = (ms) => (ms < warmUp ? 'warm-up' : ms < durationMs ? 'steady' : 'drain');
-  const crowd = new Crowd(ctx, { origin: started, phaseAt });
+  const timeline = { phase: 'warm-up', steadyFrom: null, drainFrom: null };
+  const crowd = new Crowd(ctx, { origin: started, phase: () => timeline.phase });
   const sampler = new ProcessSampler({
     pid: warp.process.pid,
     jcmd: (commands) => warp.jcmd(commands),
@@ -91,22 +96,33 @@ export async function soak(ctx) {
     origin: started,
     intervalMs: SAMPLE_EVERY_MS,
     gcEveryMs: GC_EVERY_MS,
-    annotate: () => ({ phase: crowd.leaving ? 'drain' : phaseAt(elapsed()), bots: crowd.online }),
+    annotate: () => ({ phase: timeline.phase, bots: crowd.online }),
   });
   const network = ctx.netem ? { spec: ctx.netem.spec, before: await ctx.netem.stats() } : null;
   log(`soak: ${ctx.bots} bots for ${ctx.soak.minutes} min (warm-up ${clock(warmUp / 1000)})${network ? `, netem ${network.spec}` : ''}`);
 
+  // Every bot leaves; Warp must close their connections, and what it holds then is measured.
   const histogram = async () => parseHistogram(await warp.jcmd(['GC.class_histogram']));
+  const drains = [];
   const objects = { before: null, after: null };
+  const release = async () => {
+    await crowd.leave();
+    drains.push(await waitForDrain(sampler));
+    return histogram();
+  };
+
   let error = null;
-  let drain = null;
   await sampler.sample({ gc: true }); // Warp idle, before the first player
-  objects.before = await histogram();
   sampler.start();
   try {
     await crowd.join();
     let reported = 0;
     while (elapsed() < durationMs) {
+      if (timeline.phase === 'warm-up' && elapsed() >= warmUp) {
+        objects.before = await release();
+        await crowd.join();
+        Object.assign(timeline, { phase: 'steady', steadyFrom: elapsed() / 1000 });
+      }
       const cycle = Date.now();
       await crowd.cycle();
       if (!warp.process.alive) throw new Error('Warp exited during the soak');
@@ -117,22 +133,20 @@ export async function soak(ctx) {
       }
       await sleep(Math.min(cycle + CYCLE_MS, started + durationMs) - Date.now());
     }
-    await crowd.leave();
-    drain = await waitForDrain(sampler);
+    Object.assign(timeline, { phase: 'drain', drainFrom: elapsed() / 1000 });
+    objects.after = await release();
   } catch (e) {
     error = e;
   } finally {
+    timeline.phase = 'drain';
+    timeline.drainFrom ??= elapsed() / 1000;
     await crowd.leave();
     await sampler.stop();
-    if (warp.process.alive) {
-      // Every player gone: Warp is idle again, and should hold what it held before the first.
-      await sampler.sample({ gc: true });
-      objects.after = await histogram().catch(() => null);
-    }
+    if (warp.process.alive) await sampler.sample({ gc: true }); // idle again, as at the start
   }
   if (network) network.after = await ctx.netem.stats().catch(() => null);
 
-  const report = summarize({ ctx, samples: sampler.samples, crowd, warmUp, durationMs, drain, objects, network, error });
+  const report = summarize({ ctx, samples: sampler.samples, crowd, timeline, drains, objects, network, error });
   const base = join(ctx.soak.dir, `soak-${ctx.variant.name}`);
   writeFileSync(`${base}.json`, `${JSON.stringify({ ...report, samples: sampler.samples }, null, 2)}\n`);
   writeFileSync(`${base}.csv`, csv(sampler.samples));
@@ -165,10 +179,14 @@ async function waitForDrain(sampler) {
 // ---------------------------------------------------------------------------
 
 class Crowd {
-  constructor(ctx, { origin, phaseAt }) {
+  /**
+   * @param {object} ctx scenario context
+   * @param {{origin: number, phase: () => string}} timeline time 0 of the soak, and its current phase
+   */
+  constructor(ctx, { origin, phase }) {
     this.ctx = ctx;
     this.origin = origin;
-    this.phaseAt = phaseAt;
+    this.phase = phase;
     this.names = Array.from({ length: ctx.bots }, (_, i) => `soak_${String(i).padStart(2, '0')}`);
     /** Connected bots by name. A name missing here (failed, or reconnecting) joins next cycle. */
     this.bots = new Map();
@@ -177,7 +195,6 @@ class Crowd {
     this.ops = [];
     this.failures = [];
     this.cycles = 0;
-    this.leaving = false;
   }
 
   get online() {
@@ -227,9 +244,7 @@ class Crowd {
     await (previous?.quit() ?? this.closing.get(name));
     this.closing.delete(name);
     await this.op('join', name, async () => {
-      const bot = await this.ctx.client.connect({ host: '127.0.0.1', port: this.ctx.warp.port, username: name });
-      if (this.leaving) await bot.quit();
-      else this.bots.set(name, bot);
+      this.bots.set(name, await this.ctx.client.connect({ host: '127.0.0.1', port: this.ctx.warp.port, username: name }));
     });
   }
 
@@ -255,7 +270,7 @@ class Crowd {
 
   async op(kind, name, body) {
     const started = Date.now();
-    const record = { t: (started - this.origin) / 1000, phase: this.phaseAt(started - this.origin), kind };
+    const record = { t: (started - this.origin) / 1000, phase: this.phase(), kind };
     try {
       await body();
       this.ops.push({ ...record, ms: Date.now() - started, ok: true });
@@ -269,7 +284,7 @@ class Crowd {
   fail(kind, name, error) {
     const now = Date.now() - this.origin;
     const message = String(error?.message ?? error).split('\n')[0];
-    this.failures.push({ t: Math.round(now / 100) / 10, phase: this.phaseAt(now), op: kind, bot: name, error: message });
+    this.failures.push({ t: Math.round(now / 100) / 10, phase: this.phase(), op: kind, bot: name, error: message });
     log(`  ✗ ${clock(now / 1000)} ${kind}${name ? ` ${name}` : ''}: ${message}`);
     const bot = this.bots.get(name);
     if (!bot) return;
@@ -277,12 +292,12 @@ class Crowd {
     this.closing.set(name, bot.quit());
   }
 
-  /** Every bot quits; the ones joining at that moment quit as soon as they are in. */
+  /** Every bot quits; resolves once their connections, and those of failed bots, are closed. */
   async leave() {
-    this.leaving = true;
-    const bots = [...this.bots.values()];
+    const closing = [...[...this.bots.values()].map((bot) => bot.quit()), ...this.closing.values()];
     this.bots.clear();
-    await Promise.all(bots.map((bot) => bot.quit()));
+    this.closing.clear();
+    await Promise.all(closing);
   }
 }
 
@@ -327,21 +342,25 @@ export function retainedObjects(before, after, players) {
   return { status: leaked.length ? 'fail' : 'pass', limit: players, before: total(before), after: total(after), leaked: leaked.length, classes: grown.slice(0, 10) };
 }
 
-/** The soak's verdict and statistics, as stored in result.json and rendered in the summaries. */
-export function summarize({ ctx, samples, crowd, warmUp, durationMs, drain, objects, network, error }) {
+/**
+ * The soak's verdict and statistics, as stored in result.json and rendered in the summaries.
+ * @param {object} run what the soak recorded: `timeline` (when the steady phase and the drain
+ *   started, in seconds), `drains` (at the intermission and at the end, see {@link waitForDrain}),
+ *   `objects` (class histograms at the same two moments)
+ */
+export function summarize({ ctx, samples, crowd, timeline, drains, objects, network, error }) {
   const end = samples.at(-1)?.t ?? 0;
-  const steady = [warmUp / 1000, durationMs / 1000];
+  const steady = timeline.steadyFrom === null ? null : [timeline.steadyFrom, timeline.drainFrom];
   const resources = RESOURCES.map((resource) => {
     const values = samples.map((s) => s[resource.key]).filter((v) => v !== null && v !== undefined);
-    const check = checkGrowth(samples, resource, ...steady);
+    const check = steady ? checkGrowth(samples, resource, ...steady) : { status: 'skip' };
     return { key: resource.key, label: resource.label, unit: resource.unit, start: values[0] ?? null, end: values.at(-1) ?? null, peak: values.length ? Math.max(...values) : null, ...check };
   });
   const heapPeak = Math.max(0, ...samples.map((s) => s.heapUsed ?? 0));
   const heapMax = Math.max(0, ...samples.map((s) => s.heapCommitted ?? 0));
-  const bounds = { 'warm-up': [0, warmUp / 1000], steady, drain: [durationMs / 1000, end] };
-  const phases = Object.entries(bounds)
-    .filter(([, [from, to]]) => to > from)
-    .map(([name, [from, to]]) => phaseStats(name, from, to, samples, crowd));
+  const phases = ['warm-up', 'steady', 'drain']
+    .map((name) => phaseStats(name, samples.filter((s) => s.phase === name), crowd))
+    .filter((p) => p.samples > 0);
 
   const problems = [];
   for (const r of resources.filter((x) => x.status === 'fail')) {
@@ -351,9 +370,13 @@ export function summarize({ ctx, samples, crowd, warmUp, durationMs, drain, obje
   if (retained?.status === 'fail') {
     const listed = retained.classes.filter((c) => c.growth > retained.limit).slice(0, 3).map((c) => `${c.name} +${c.growth}`);
     const more = retained.leaked > listed.length ? `, and ${retained.leaked - listed.length} more` : '';
-    problems.push(`Warp kept objects of ${retained.leaked} class(es) once every player had left, more than one per player: ${listed.join(', ')}${more}`);
+    problems.push(`Warp kept objects of ${retained.leaked} class(es) through the steady phase, more than one per player: ${listed.join(', ')}${more}`);
   }
-  if (drain && drain.seconds === null) problems.push(`Warp still holds ${drain.clients} client and ${drain.backends} backend connection(s) ${DRAIN_TIMEOUT_MS / 1000} s after every player left`);
+  drains.forEach((drain, i) => {
+    if (drain.seconds !== null) return;
+    const when = i === 0 && drains.length > 1 ? 'after the warm-up' : 'at the end';
+    problems.push(`Warp still held ${drain.clients} client and ${drain.backends} backend connection(s) ${DRAIN_TIMEOUT_MS / 1000} s after every player left, ${when}`);
+  });
   if (crowd.failures.length) problems.push(`${crowd.failures.length} bot failure(s), first: ${describeFailure(crowd.failures[0])}`);
   if (error) problems.unshift(String(error.message ?? error).split('\n')[0]);
 
@@ -367,7 +390,7 @@ export function summarize({ ctx, samples, crowd, warmUp, durationMs, drain, obje
     problems,
     resources,
     heap: { peak: heapPeak, max: heapMax },
-    drain,
+    drains,
     objects: retained,
     phases,
     network: network && { spec: network.spec, ...difference(network.before, network.after) },
@@ -375,21 +398,21 @@ export function summarize({ ctx, samples, crowd, warmUp, durationMs, drain, obje
   };
 }
 
-function phaseStats(name, from, to, samples, crowd) {
-  const inPhase = samples.filter((s) => s.t >= from && s.t <= to);
+function phaseStats(name, samples, crowd) {
   const ops = crowd.ops.filter((op) => op.phase === name);
   const done = (kind) => ops.filter((op) => op.kind === kind && op.ok);
   const latency = (kind) => {
     const ms = done(kind).map((op) => op.ms).sort((a, b) => a - b);
     return ms.length ? { p50: percentile(ms, 0.5), p95: percentile(ms, 0.95) } : null;
   };
-  const values = (key) => inPhase.map((s) => s[key]).filter((v) => v !== null && v !== undefined);
+  const values = (key) => samples.map((s) => s[key]).filter((v) => v !== null && v !== undefined);
   const max = (key) => (values(key).length ? Math.max(...values(key)) : null);
   const avg = (key) => (values(key).length ? values(key).reduce((a, b) => a + b, 0) / values(key).length : null);
   return {
     name,
-    from,
-    to,
+    samples: samples.length,
+    from: samples[0]?.t ?? null,
+    to: samples.at(-1)?.t ?? null,
     bots: max('bots'),
     joins: done('join').length,
     switches: done('switch').length,
@@ -469,10 +492,12 @@ export function consoleSummary(report) {
     const steady = r.status === 'skip' ? 'not enough samples' : `${amount(r.first, r.unit)} → ${amount(r.last, r.unit)} (limit +${amount(r.limit, r.unit)})`;
     lines.push(`  ${r.status === 'fail' ? '✗' : '✓'} ${r.label.padEnd(26)} start ${amount(r.start, r.unit).padStart(8)}  peak ${amount(r.peak, r.unit).padStart(8)}  end ${amount(r.end, r.unit).padStart(8)}  steady ${steady}`);
   }
+  const drains = report.drains.map((d) => (d.seconds === null ? `${d.clients + d.backends} still open` : `closed in ${d.seconds.toFixed(1)} s`));
+  lines.push(`  ${report.drains.some((d) => d.seconds === null) ? '✗' : '✓'} ${'Connections, all left'.padEnd(26)} ${drains.join(', then ') || 'not measured'}`);
   if (report.objects) {
     const [top] = report.objects.classes;
     const largest = top ? `, largest growth ${top.name} +${top.growth}` : '';
-    lines.push(`  ${report.objects.status === 'fail' ? '✗' : '✓'} ${'Objects once all left'.padEnd(26)} ${report.objects.before} → ${report.objects.after} tracked objects${largest} (limit +${report.objects.limit} per class)`);
+    lines.push(`  ${report.objects.status === 'fail' ? '✗' : '✓'} ${'Objects, all left'.padEnd(26)} ${report.objects.before} after the warm-up, ${report.objects.after} at the end${largest} (limit +${report.objects.limit} per class)`);
   }
   for (const p of report.phases) {
     lines.push(`  ${p.name.padEnd(8)} ${clock(p.from)}-${clock(p.to)}  ${p.joins} joins, ${p.switches} switches, ${p.pings} pings, ${p.failures} failures`);
@@ -497,10 +522,11 @@ export function soakMarkdown(result, variant) {
   const crowd = `${soak.bots} bots for ${clock(soak.seconds)}: ${count(ops.switches)} server switches, ${count(ops.joins)} joins, ${count(ops.pings)} pings, ${failed}.`;
   const logFailures = (variant.failures ?? []).filter((f) => !/did not shut down/.test(f));
   const shutdown = variant.shutdown?.[0];
+  const kept = soak.drains.find((d) => d.seconds === null);
   const warp = [
-    soak.drain && (soak.drain.seconds === null
-      ? `**still held ${soak.drain.clients + soak.drain.backends} connection(s) ${DRAIN_TIMEOUT_MS / 1000} s after the last player left**`
-      : `closed every connection ${soak.drain.seconds < 0.1 ? 'as soon as the last player left' : `${soak.drain.seconds.toFixed(1)} s after the last player left`}`),
+    kept
+      ? `**still held ${kept.clients + kept.backends} connection(s) ${DRAIN_TIMEOUT_MS / 1000} s after every player left**`
+      : soak.drains.length && 'closed every connection as soon as every player left',
     logFailures.length ? `**logged ${logFailures.length} error(s) or buffer leak(s)**` : 'logged no error or buffer leak',
     shutdown && (shutdown.forced ? '**did not shut down within 20 s** (thread dump in the logs)' : `shut down in ${shutdown.seconds} s`),
   ].filter(Boolean);
@@ -514,18 +540,21 @@ export function soakMarkdown(result, variant) {
     const icon = { pass: '✅', fail: '❌', skip: '⏭️' }[r.status];
     lines.push(`| ${r.label} | ${amount(r.start, r.unit)} | ${steady} | ${amount(r.peak, r.unit)} | ${amount(r.end, r.unit)} | ${r.status === 'skip' ? '' : `+${amount(r.limit, r.unit)}`} | ${icon} |`);
   }
-  lines.push(`| Heap used | | | ${amount(soak.heap.peak, 'MiB')} of ${amount(soak.heap.max, 'MiB')} | | | |`);
-  const held = soak.drain ? soak.drain.clients + soak.drain.backends : null;
-  lines.push(`| Connections once every player left | | | | ${held ?? '?'} | none | ${held === 0 ? '✅' : '❌'} |`);
+  lines.push(`| Heap used | | | ${amount(soak.heap.peak, 'MiB')} of ${amount(soak.heap.max, 'MiB')} | | | |`, '');
+
+  // The two moments every player has left: after the warm-up, and at the end.
+  const [intermission, last] = soak.drains;
+  const held = (d) => (d ? (d.seconds === null ? `❌ ${d.clients + d.backends}` : d.seconds < 0.1 ? '0' : `0 after ${d.seconds.toFixed(1)} s`) : '');
   const objects = soak.objects;
+  lines.push('| Once every player had left | After the warm-up | At the end | Allowed | |', '|---|--:|--:|--:|:-:|');
+  lines.push(`| Connections Warp still held | ${held(intermission)} | ${held(last)} | none | ${kept || !soak.drains.length ? '❌' : '✅'} |`);
   if (objects) {
-    const icon = objects.status === 'pass' ? '✅' : '❌';
-    lines.push(`| Objects of Warp and Netty channels | ${count(objects.before)} | | | ${count(objects.after)} | +${objects.limit} per class | ${icon} |`);
+    lines.push(`| Objects of Warp and Netty channels | ${count(objects.before)} | ${count(objects.after)} | +${objects.limit} per class | ${objects.status === 'pass' ? '✅' : '❌'} |`);
   }
   lines.push('');
   if (objects?.classes.length) {
-    lines.push(`<details${objects.status === 'fail' ? ' open' : ''}><summary>Classes with more objects once every player had left than before the first joined</summary>`, '');
-    lines.push('| Class | Before | After | |', '|---|--:|--:|:-:|');
+    lines.push(`<details${objects.status === 'fail' ? ' open' : ''}><summary>Classes with more objects at the end than after the warm-up</summary>`, '');
+    lines.push('| Class | After the warm-up | At the end | |', '|---|--:|--:|:-:|');
     for (const c of objects.classes) lines.push(`| \`${c.name}\` | ${count(c.before)} | ${count(c.after)} | ${c.growth > objects.limit ? '❌' : '✅'} |`);
     lines.push('', '</details>', '');
   }
