@@ -21,6 +21,9 @@ export const WARP_FAILURES = [
   /Connection \S+ timed out: nothing received in/,
 ];
 
+/** Where the harness's stand-in for Mojang's key goes, in Warp's working directory. */
+const SIGNER_FILE = 'profile-key-signer.pem';
+
 export class Warp {
   /**
    * @param {object} options
@@ -31,6 +34,8 @@ export class Warp {
    * @param {number} options.port
    * @param {boolean} options.online online mode against the mock session server
    * @param {string|null} options.sessionServer `hasJoined` URL of the mock session server
+   * @param {string|null} options.profileKeySigner PEM public key Warp trusts to sign 1.19 to 1.19.2
+   *   profile keys instead of Mojang's (the harness signs its bots' keys)
    * @param {boolean} options.passthrough `compression.passthrough`
    * @param {number} options.threshold `compression.threshold`
    * @param {Record<string, number>} options.servers name → port of each backend
@@ -47,6 +52,7 @@ export class Warp {
     mkdirSync(this.dir, { recursive: true });
     copyFileSync(this.jar, join(this.dir, 'warp.jar'));
     writeFileSync(join(this.dir, 'warp.conf'), this.config());
+    if (this.profileKeySigner) writeFileSync(join(this.dir, SIGNER_FILE), this.profileKeySigner);
   }
 
   config() {
@@ -80,6 +86,7 @@ compression {
       // Every ByteBuf is tracked: a buffer the proxy forgets to release is reported as an ERROR.
       '-Dio.netty.leakDetection.level=paranoid',
       ...(this.online ? [`-Dmojang.sessionserver=${this.sessionServer}`] : []),
+      ...(this.profileKeySigner ? [`-Dwarp.profilekeys.signer=${SIGNER_FILE}`] : []),
       '-jar',
       'warp.jar',
     ];

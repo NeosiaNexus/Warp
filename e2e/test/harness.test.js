@@ -61,6 +61,31 @@ describe('versions.json', () => {
     assert.ok(protocols.some((p) => p >= CONFIGURATION_PHASE), 'no version from 1.20.2');
   });
 
+  it('tests the profile key login of 1.19 to 1.19.2 on pull requests', () => {
+    const protocols = jobsForTier(matrix, 'pr').map((job) => job.protocol);
+    assert.ok(protocols.some((p) => features(p).profileKeys), 'no version from 1.19 to 1.19.2');
+  });
+
+  it('requires the newest version, and every variant on the newest the bots speak natively, on pull requests', () => {
+    const passing = matrix.versions.filter((v) => !v.knownBroken);
+    const newest = passing.at(-1);
+    const newestNative = passing.findLast((v) => !v.via);
+    const jobs = new Map(jobsForTier(matrix, 'pr').map((job) => [job.mc, job]));
+    assert.ok(jobs.has(newest.version), `${newest.version}, the newest version that passes, is not in the pr tier`);
+    const every = Object.keys(matrix.variants).filter((name) => name !== 'defaults').sort();
+    const variants = jobs.get(newestNative.version)?.variants.split(',').sort();
+    assert.deepEqual(variants, every, `${newestNative.version}, the newest version the bots speak natively, must run every variant on pull requests`);
+  });
+
+  it('runs on main every version and variant a pull request runs', () => {
+    const full = new Map(jobsForTier(matrix, 'full').map((job) => [job.mc, new Set(job.variants.split(','))]));
+    for (const job of jobsForTier(matrix, 'pr')) {
+      for (const variant of job.variants.split(',')) {
+        assert.ok(full.get(job.mc)?.has(variant), `${job.mc} ${variant} runs on pull requests but not in the full tier`);
+      }
+    }
+  });
+
   it('says why each known-broken version or scenario fails, with an issue', () => {
     const scenarios = new Map(SCENARIOS.map((s) => [s.name, s]));
     for (const v of matrix.versions) {
@@ -91,9 +116,21 @@ describe('variants', () => {
 
 describe('scenario features', () => {
   it('switches servers on every version', () => {
-    assert.deepEqual(features(47), { switching: true });
-    assert.deepEqual(features(763), { switching: true });
-    assert.deepEqual(features(764), { switching: true });
+    for (const protocol of [47, 762, 763, 764, 769]) assert.equal(features(protocol).switching, true, String(protocol));
+  });
+
+  it('logs in with a profile key on 1.19 to 1.19.2 only, the versions whose Login Start carries one', () => {
+    assert.deepEqual(
+      [758, 759, 760, 761].map((protocol) => features(protocol).profileKeys),
+      [false, true, true, false],
+    );
+  });
+
+  it('signs chat from 1.20, whose servers take the keys that verify chat sessions from the mock', () => {
+    assert.equal(features(47).signedChat, false);
+    assert.equal(features(762).signedChat, false); // 1.19.4: Mojang's key is bundled in authlib
+    assert.equal(features(763).signedChat, true);
+    assert.equal(features(769).signedChat, true);
   });
 });
 
@@ -147,9 +184,12 @@ describe('failure patterns', () => {
     }
   });
 
-  it('flag backend disconnects caused by malformed packets, not ordinary ones', () => {
+  it('flag backend disconnects caused by malformed packets or chat acknowledgements, not ordinary ones', () => {
     assert.ok(matches(BACKEND_PROTOCOL_ERRORS, '[12:00:00 INFO]: e2e_login lost connection: Internal Exception: io.netty.handler.codec.DecoderException: Badly compressed packet - size of 2 is below server threshold of 256'));
     assert.ok(matches(BACKEND_PROTOCOL_ERRORS, '[12:00:00 ERROR]: Error receiving packet 42'));
+    // Paper 1.20.4, when a /server Warp kept from it took the client's acknowledgements along (#81).
+    assert.ok(matches(BACKEND_PROTOCOL_ERRORS, '[13:42:37 WARN]: Failed to validate message acknowledgements from e2e_chat'));
+    assert.ok(matches(BACKEND_PROTOCOL_ERRORS, '[13:42:37 INFO]: e2e_chat lost connection: Chat message validation failure'));
     assert.ok(!matches(BACKEND_PROTOCOL_ERRORS, '[12:00:00 INFO]: e2e_login lost connection: Disconnected'));
     assert.ok(!matches(BACKEND_PROTOCOL_ERRORS, '[12:00:00 INFO]: e2e_login lost connection: Timed out'));
   });
