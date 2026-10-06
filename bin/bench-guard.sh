@@ -1,54 +1,102 @@
 #!/usr/bin/env bash
-# JMH smoke test and allocation guard: the same command locally and in CI.
+# Benchmarks of Warp's hot path, run the same way locally and in CI.
 #
-#   bin/bench-guard.sh            # build the benchmarks, run them, compare with the baseline
-#   bin/bench-guard.sh --update   # same, then rewrite protocol/src/jmh/alloc-baseline.json
+#   bin/bench-guard.sh            # allocation guard, then a smoke test of every benchmark (CI)
+#   bin/bench-guard.sh --update   # measure allocation and rewrite the baseline
+#   bin/bench-guard.sh --timings  # time the guarded benchmarks (the trend tracked on main)
 #
-# 1. Allocation guard: the hot-path benchmarks (relaying with compression passthrough, packet-id
-#    peek) run with the GC profiler; bytes allocated per packet must stay within the baseline's
-#    tolerance. Unlike timings, this is deterministic enough to gate pull requests on CI runners.
-# 2. Smoke: every benchmark runs one short iteration, so a broken benchmark fails here and not on
-#    the day someone needs it.
+# The guarded benchmarks are the hot path: relaying clientbound traffic with compression
+# passthrough, Warp's default, and peeking at the packet id of a compressed frame.
+#
+# Allocation guard: JMH's GC profiler counts the bytes allocated per packet, with escape analysis
+# off so that the count covers every allocation the code makes, not those the JIT happened to keep
+# in this run. Counted this way it is the same on every run, so it can gate pull requests on shared
+# runners where timings cannot. It must stay within the tolerance of
+# protocol/src/jmh/alloc-baseline.json; bench-guard.py reports the comparison.
+#
+# Smoke test: every benchmark runs one short iteration in process, so that a broken benchmark fails
+# here and not on the day someone needs it.
+#
+# Timings: each benchmark's own forks, warm-up and iterations, as for published results.
 set -euo pipefail
 
-root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-results="$root/protocol/build/results/jmh"
-baseline="$root/protocol/src/jmh/alloc-baseline.json"
-guarded='ForwardingPathBenchmark\.relayClientbound$|PacketIdPeekBenchmark\.peek$'
+case "${1:-}" in
+  '') mode=check ;;
+  --update) mode=update ;;
+  --timings) mode=timings ;;
+  *)
+    echo "usage: bin/bench-guard.sh [--update | --timings]" >&2
+    exit 2
+    ;;
+esac
 
-# The benchmarks are compiled for Java 25: CI's JAVA_HOME_25_X64, else `java` if recent enough,
-# else the JDK Gradle provisioned for the toolchain.
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+results=protocol/build/results/jmh
+baseline=protocol/src/jmh/alloc-baseline.json
+guarded=('ForwardingPathBenchmark\.relayClientbound$|PacketIdPeekBenchmark\.peek$' -p mode=PASSTHROUGH)
+
+# The benchmarks are compiled for Java 25, the toolchain: CI's JAVA_HOME_25_X64, else the first
+# Java 25 among JAVA_HOME, the PATH and the JDKs that Gradle provisioned.
 find_java() {
-  if [ -n "${JAVA_HOME_25_X64:-}" ]; then echo "$JAVA_HOME_25_X64/bin/java"; return; fi
-  if command -v java > /dev/null && [ "$(java -XshowSettings:properties -version 2>&1 | sed -n 's/.*java.specification.version = //p')" -ge 25 ]; then
-    echo java; return
-  fi
-  for home in "$HOME"/.gradle/jdks/*25*/; do
-    if [ -x "$home/bin/java" ]; then echo "$home/bin/java"; return; fi
+  local candidate
+  for candidate in "${JAVA_HOME_25_X64:+$JAVA_HOME_25_X64/bin/java}" "${JAVA_HOME:+$JAVA_HOME/bin/java}" \
+    "$(command -v java || true)" "$HOME"/.gradle/jdks/*/bin/java; do
+    if [ -x "$candidate" ] &&
+      [ "$("$candidate" -XshowSettings:properties -version 2>&1 | sed -n 's/^ *java\.specification\.version = //p')" = 25 ]; then
+      echo "$candidate"
+      return
+    fi
   done
-  echo "error: no Java 25 found (set JAVA_HOME_25_X64)" >&2
-  exit 2
+  echo "error: no Java 25 found; set JAVA_HOME_25_X64 to a JDK 25" >&2
+  return 1
 }
-java=$(find_java)
 
-"$root/gradlew" --quiet -p "$root" :protocol:jmhJar
-jar="$root/protocol/build/libs/protocol-$(cat "$root/version.txt")-jmh.jar"
-mkdir -p "$results"
-
-# Collapsible sections in the Actions log; plain headings elsewhere.
+# Collapsible sections in the Actions log, headings elsewhere.
 group() { if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::group::$1"; else echo "== $1"; fi; }
 endgroup() { if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::endgroup::"; fi; }
 
-group "Allocation guard (JMH, GC profiler)"
-"$java" -jar "$jar" "$guarded" -p mode=PASSTHROUGH -f 1 -wi 3 -w 1s -i 3 -r 1s -prof gc \
-  -rf json -rff "$results/alloc-guard.json"
+# Runs a report command, prints its Markdown and, in Actions, adds it to the job summary.
+report() {
+  local markdown status=0
+  markdown=$("$@") || status=$?
+  echo "$markdown"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then echo "$markdown" >> "$GITHUB_STEP_SUMMARY"; fi
+  return "$status"
+}
+
+group "Build the benchmarks"
+./gradlew --quiet :protocol:jmhJar
+endgroup
+java=$(find_java)
+jar=protocol/build/libs/protocol-$(< version.txt)-jmh.jar
+mkdir -p "$results"
+# -foe: a benchmark that throws fails the run instead of being skipped.
+jmh() { "$java" -jar "$jar" -foe true "$@"; }
+
+if [ "$mode" = timings ]; then
+  group "Timings: each benchmark's own forks, warm-up and iterations"
+  jmh "${guarded[@]}" -rf json -rff "$results/timings.json"
+  endgroup
+  report python3 bin/bench-guard.py timings "$results/timings.json" "$results/timings-chart.json"
+  exit
+fi
+
+group "Allocation per packet: GC profiler, escape analysis off"
+# Without escape analysis the count does not depend on what the JIT compiled, so one fork and one
+# warm-up iteration measure it exactly; the guard keeps the lowest of three iterations.
+jmh "${guarded[@]}" -f 1 -wi 1 -w 1s -i 3 -r 1s -prof gc -jvmArgsPrepend -XX:-DoEscapeAnalysis \
+  -rf json -rff "$results/allocation.json"
 endgroup
 
-group "Smoke (every benchmark, one short iteration)"
-"$java" -jar "$jar" -f 0 -wi 0 -i 1 -r 100ms -rf json -rff "$results/smoke.json"
-endgroup
+if [ "$mode" = update ]; then
+  python3 bin/bench-guard.py update "$results/allocation.json" "$baseline"
+  exit
+fi
 
-report=$(python3 "$root/bin/jmh-alloc-guard.py" "$results/alloc-guard.json" "$baseline" "$@") && status=0 || status=$?
-echo "$report"
-if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then echo "$report" >> "$GITHUB_STEP_SUMMARY"; fi
+status=0
+report python3 bin/bench-guard.py check "$results/allocation.json" "$baseline" || status=$?
+
+group "Smoke test: every benchmark, one short iteration"
+jmh -f 0 -wi 0 -i 1 -r 100ms -rf json -rff "$results/smoke.json"
+endgroup
 exit "$status"
