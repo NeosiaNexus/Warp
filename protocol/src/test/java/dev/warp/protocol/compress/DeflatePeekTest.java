@@ -35,6 +35,7 @@ import java.util.zip.Inflater;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Named;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -305,47 +306,47 @@ class DeflatePeekTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("rejectedByZlib")
     @DisplayName("should decline what zlib rejects, even when an id could be decoded")
-    void declinesWhatZlibRejects(String rule, byte[] stream) {
+    void declinesWhatZlibRejects(byte[] stream) {
       assertEquals(OptionalInt.empty(), inflatedVarInt(stream), "zlib must reject it");
       assertEquals(DeflatePeek.UNKNOWN, peek(stream));
     }
 
-    static Stream<Arguments> rejectedByZlib() {
+    static Stream<Named<byte[]>> rejectedByZlib() {
       int[] noDistance = new int[1];
       int[] complete = literals(ID, END_OF_BLOCK);
       int[] tooManyLiterals = Arrays.copyOf(complete, 287);
       int[] endOfBlockOnly = new int[257];
       endOfBlockOnly[END_OF_BLOCK] = 1;
       return Stream.of(
-          Arguments.of(
+          Named.of(
               "compression method 7",
               new DeflateWriter(0x77, 0x09).fixed(true, ID, END_OF_BLOCK).toByteArray()),
-          Arguments.of(
+          Named.of(
               "preset dictionary whose id bytes form a block",
               new DeflateWriter(0x78, 0x20).fixed(true, ID, END_OF_BLOCK).toByteArray()),
-          Arguments.of(
+          Named.of(
               "window above 32 KiB",
               new DeflateWriter(0x88, 0x1C).fixed(true, ID, END_OF_BLOCK).toByteArray()),
-          Arguments.of(
+          Named.of(
               "over-subscribed literal/length code",
               dynamic(literals(ID, END_OF_BLOCK, 0x01), noDistance)),
-          Arguments.of(
+          Named.of(
               "incomplete literal/length code",
               dynamic(lengths(257, 2, ID, END_OF_BLOCK), noDistance)),
-          Arguments.of("over-subscribed distance code", dynamic(complete, new int[] {1, 1, 1})),
-          Arguments.of("incomplete distance code", dynamic(complete, new int[] {2, 2})),
-          Arguments.of(
+          Named.of("over-subscribed distance code", dynamic(complete, new int[] {1, 1, 1})),
+          Named.of("incomplete distance code", dynamic(complete, new int[] {2, 2})),
+          Named.of(
               "no end-of-block code",
               new DeflateWriter().dynamic(true, literals(ID, 0x01), noDistance, ID).toByteArray()),
-          Arguments.of("287 literal/length codes", dynamic(tooManyLiterals, noDistance)),
-          Arguments.of("31 distance codes", dynamic(complete, new int[31])),
-          Arguments.of(
+          Named.of("287 literal/length codes", dynamic(tooManyLiterals, noDistance)),
+          Named.of("31 distance codes", dynamic(complete, new int[31])),
+          Named.of(
               "unused code of a lone one-bit code",
               new DeflateWriter()
                   .dynamic(true, endOfBlockOnly, noDistance)
                   .bits(1, 1)
                   .toByteArray()),
-          Arguments.of(
+          Named.of(
               "data after the final block",
               new DeflateWriter()
                   .fixed(true, 0x80, END_OF_BLOCK)
