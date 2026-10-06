@@ -1,11 +1,28 @@
 #!/usr/bin/env bash
-# Warp Proxy — optimized launch script for Java 25+
+# Warp Proxy: optimized launch script for Java 25+
 
 set -euo pipefail
 
-# Resolve script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WARP_JAR="${SCRIPT_DIR}/../proxy/build/libs/warp.jar"
+
+# The shadow jar is versioned (proxy/build/libs/warp-<version>.jar): take the most recently built
+# one, unless WARP_JAR points to another jar (a downloaded release, for example).
+if [[ -z "${WARP_JAR:-}" ]]; then
+    shopt -s nullglob
+    for candidate in "${SCRIPT_DIR}"/../proxy/build/libs/warp-*.jar; do
+        if [[ -z "${WARP_JAR:-}" || "${candidate}" -nt "${WARP_JAR}" ]]; then
+            WARP_JAR="${candidate}"
+        fi
+    done
+    shopt -u nullglob
+fi
+if [[ -z "${WARP_JAR:-}" ]]; then
+    echo "error: no proxy/build/libs/warp-*.jar. Build it with ./gradlew build, or set WARP_JAR." >&2
+    exit 1
+elif [[ ! -f "${WARP_JAR}" ]]; then
+    echo "error: WARP_JAR is not a file: ${WARP_JAR}" >&2
+    exit 1
+fi
 
 # JVM Performance Flags
 JVM_FLAGS=(
