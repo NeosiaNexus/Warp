@@ -25,9 +25,9 @@ import io.netty.buffer.ByteBuf;
 /**
  * Client sends a chat command ({@code C→S}).
  *
- * <p>Split from the chat message packet in 1.19, registered here from 1.19.3: the proxy does not
- * intercept the commands of older clients. The proxy intercepts this for command routing between
- * backend servers.
+ * <p>The proxy intercepts this for command routing between backend servers. The packet split from
+ * the chat message in 1.19, but is registered from 1.19.3 only: the proxy does not intercept the
+ * commands of older clients.
  *
  * <p>Version history:
  *
