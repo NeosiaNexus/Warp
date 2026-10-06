@@ -10,9 +10,9 @@
 #
 # Allocation guard: JMH's GC profiler counts the bytes allocated per packet, with escape analysis
 # off so that the count covers every allocation the code makes, not those the JIT happened to keep
-# in this run. Counted this way it is the same on every run, so it can gate pull requests on shared
-# runners where timings cannot. It must stay within the tolerance of
-# protocol/src/jmh/alloc-baseline.json; bench-guard.py reports the comparison.
+# in this run. Counted this way it moves by less than 0.3% from one run or machine to the next, so
+# it can gate pull requests on shared runners where timings cannot. It must stay within the
+# tolerance of protocol/src/jmh/alloc-baseline.json; bench-guard.py reports the comparison.
 #
 # Smoke test: every benchmark runs one short iteration in a fork of its own, with its JVM settings,
 # so that a broken benchmark fails here and not on the day someone needs it.
@@ -68,7 +68,7 @@ fi
 
 group "Allocation per packet: GC profiler, escape analysis off"
 # Without escape analysis the count does not depend on what the JIT compiled, so one fork and one
-# warm-up iteration measure it exactly; the guard keeps the lowest of three iterations.
+# warm-up iteration are enough; the guard keeps the lowest of three iterations.
 jmh "${guarded[@]}" -f 1 -wi 1 -w 1s -i 3 -r 1s -prof gc -jvmArgsPrepend -XX:-DoEscapeAnalysis \
   -rf json -rff "$results/allocation.json"
 endgroup
