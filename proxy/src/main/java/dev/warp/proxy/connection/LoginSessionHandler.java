@@ -407,9 +407,9 @@ final class LoginSessionHandler implements SessionHandler {
   }
 
   private void enableCompression() {
-    int threshold = loginContext.compressionThreshold();
+    int threshold = loginContext.compressionThreshold(clientVersion());
     if (threshold < 0) {
-      return; // Compression disabled.
+      return; // Compression disabled, or a 1.7 client, which predates it.
     }
 
     // Send SetCompression BEFORE switching the pipeline — this packet is uncompressed.

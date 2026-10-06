@@ -144,7 +144,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
     backendConnection.enableCompression(
         threshold, Deflater.DEFAULT_COMPRESSION, true, context.compressionPassthrough());
 
-    int playerThreshold = context.compressionThreshold();
+    int playerThreshold = context.compressionThreshold(player.protocolVersion());
     if (context.compressionPassthrough()
         && playerThreshold >= 0
         && threshold != playerThreshold
@@ -164,12 +164,14 @@ final class BackendLoginSessionHandler implements SessionHandler {
   /**
    * Warns once per backend when it sends uncompressed packets to players who receive compressed
    * ones: the proxy then has to compress every large packet itself — the single most expensive
-   * thing a proxy can do — instead of forwarding the backend's compressed bytes.
+   * thing a proxy can do — instead of forwarding the backend's compressed bytes. Not for a 1.7
+   * player: neither side of its connection can compress.
    */
   private void adviseIfBackendUncompressed() {
     ServerLoginContext context = player.loginContext();
+    int playerThreshold = context.compressionThreshold(player.protocolVersion());
     if (context.compressionPassthrough()
-        && context.compressionThreshold() >= 0
+        && playerThreshold >= 0
         && backendConnection.decoder().decompressor() == null
         && COMPRESSION_ADVICE_GIVEN.add(serverAddress)) {
       logger.warn(
@@ -177,7 +179,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
               + " Set network-compression-threshold={} on the backend: Warp then forwards its"
               + " compressed packets without recompressing them.",
           serverAddress,
-          context.compressionThreshold());
+          playerThreshold);
     }
   }
 

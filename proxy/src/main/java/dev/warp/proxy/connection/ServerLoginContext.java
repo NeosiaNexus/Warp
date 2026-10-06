@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.protocol.ProtocolVersion;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.config.ForwardingMode;
 import dev.warp.proxy.server.ServerRegistry;
@@ -33,7 +34,8 @@ import io.netty.channel.Channel;
  *
  * @param rsaKeyPair the RSA keypair for encryption handshake (generated once at server start)
  * @param onlineMode whether to authenticate players with Mojang
- * @param compressionThreshold the compression threshold in bytes, or {@code -1} to disable
+ * @param compressionThreshold the compression threshold in bytes, or {@code -1} to disable; see
+ *     {@link #compressionThreshold(ProtocolVersion)} for the one a given client plays with
  * @param compressionLevel the zlib compression level (0–9 or {@code -1} for default)
  * @param compressionPassthrough whether uninspected packets keep their original compressed form
  * @param sessionService the Mojang session service for online-mode authentication
@@ -65,5 +67,18 @@ public record ServerLoginContext(
       throw new IllegalArgumentException(
           "compressionLevel must be -1 to 9, got " + compressionLevel);
     }
+  }
+
+  /**
+   * Returns the compression threshold a client of {@code version} plays with: the configured one
+   * from 1.8, {@code -1} before. Compression and its Set Compression packet appeared in 1.8; a 1.7
+   * client has no such packet and reads every frame as uncompressed, as Velocity's {@code
+   * AuthSessionHandler} assumes when it skips compression below 1.8.
+   *
+   * @param version the client's protocol version
+   * @return the threshold in bytes, or {@code -1} when the client's packets are never compressed
+   */
+  public int compressionThreshold(ProtocolVersion version) {
+    return version.isAtLeast(ProtocolVersion.MINECRAFT_1_8) ? compressionThreshold : -1;
   }
 }
