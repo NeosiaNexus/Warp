@@ -225,7 +225,8 @@ class LoginPacketsTest {
       try {
         assertThrows(
             DecoderException.class,
-            () -> LoginStart.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_19_2));
+            () -> LoginStart.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_19_2),
+            what);
       } finally {
         buf.release();
       }
