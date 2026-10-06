@@ -110,6 +110,10 @@ export class Backend {
       '-Djline.terminal=jline.UnsupportedTerminal',
       '-Dlog4j2.formatMsgNoLookups=true',
       '-DPaper.IgnoreJavaVersion=true',
+      // Paper 1.7.10 sleeps 10 s in a new directory for its EULA notice (eula.txt above already
+      // agrees), and 10 s more for its UUID conversion warning. Other builds ignore both.
+      '-Dcom.mojang.eula.agree=true',
+      '-DIReallyKnowWhatIAmDoingThisUpdate=true',
       '-Dpaper.disablePluginRemapping=true',
       '-jar',
       this.jar,
