@@ -167,9 +167,9 @@ received rather than to the lengths it reads.
 The inputs of a fuzz test live in `src/test/resources/<package>/<TestClass>Inputs/<method>/`. The
 files named `seed-*` are written from their definition in the test: after changing it, rewrite them
 with `./gradlew :protocol:test -Pfuzz.updateSeeds`. Fuzzing grows a corpus in `.cifuzz-corpus/`
-(ignored by Git; the `test` task replays it too when it is there) and writes each failing input to
-the inputs directory, where it stays a failing test. Fix the bug, then commit the input with the fix,
-renamed after the bug (`finding-<what>`).
+(ignored by Git; the `test` task replays it too when it is there). An input that fails, or runs for
+10 seconds, is written to the inputs directory, where it stays a failing test. Fix the bug, then
+commit the input with the fix, renamed after the bug (`finding-<what>`).
 
 | Where | What runs |
 |---|---|
