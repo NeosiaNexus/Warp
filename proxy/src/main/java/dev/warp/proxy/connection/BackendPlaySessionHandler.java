@@ -22,10 +22,10 @@ import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatCommand;
-import dev.warp.protocol.packet.play.ChatMessage;
 import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPacket;
@@ -131,7 +131,7 @@ final class BackendPlaySessionHandler implements SessionHandler {
       case ChatCommand ignored -> {
         /* protocol violation */
       }
-      case ChatMessage ignored -> {
+      case LegacyChatMessage ignored -> {
         /* protocol violation */
       }
       case PlayClientSettings ignored -> {

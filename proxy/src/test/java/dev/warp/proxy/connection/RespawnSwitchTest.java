@@ -40,9 +40,9 @@ import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.PacketRegistry;
 import dev.warp.protocol.packet.StateRegistry;
 import dev.warp.protocol.packet.play.BossBar;
-import dev.warp.protocol.packet.play.ChatMessage;
 import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
+import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
@@ -445,7 +445,7 @@ class RespawnSwitchTest {
       MinecraftConnection lobby = setup.spawnOn(LOBBY);
       setup.sentToBackend(lobby);
 
-      handlerOf(setup.client).handle(new ChatMessage("/server survival"));
+      handlerOf(setup.client).handle(new LegacyChatMessage("/server survival"));
 
       // survival cannot be reached from an embedded channel: the switch was attempted and given up.
       assertFalse(setup.player.isSwitching());
@@ -459,8 +459,8 @@ class RespawnSwitchTest {
       MinecraftConnection lobby = setup.spawnOn(LOBBY);
       setup.sentToBackend(lobby);
 
-      handlerOf(setup.client).handle(new ChatMessage("hello"));
-      handlerOf(setup.client).handle(new ChatMessage("/servers"));
+      handlerOf(setup.client).handle(new LegacyChatMessage("hello"));
+      handlerOf(setup.client).handle(new LegacyChatMessage("/servers"));
       handlerOf(setup.client).readComplete();
 
       assertEquals(2, setup.sentToBackend(lobby));

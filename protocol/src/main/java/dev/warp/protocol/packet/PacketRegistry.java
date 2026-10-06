@@ -145,9 +145,9 @@ public final class PacketRegistry {
    * Collects packet registrations and builds an immutable {@link PacketRegistry}.
    *
    * <p>Registrations use version-range mappings: each {@link VersionMapping} declares a packet ID
-   * that applies from its {@code minVersion} until the next mapping overrides it, or until its
-   * {@code maxVersion} when it has one. This range-based approach (proven by Velocity and Gate)
-   * compactly handles ID changes across Minecraft versions.
+   * that applies from its {@code minVersion} until the next mapping overrides it, or until the
+   * {@code maxVersion} of the last mapping for a packet removed from the protocol. This range-based
+   * approach (proven by Velocity and Gate) compactly handles ID changes across Minecraft versions.
    */
   public static final class Builder {
     private final List<Registration<?>> registrations = new ArrayList<>();
@@ -194,6 +194,9 @@ public final class PacketRegistry {
       for (int i = 1; i < mappings.length; i++) {
         if (mappings[i].minVersion().protocol() <= mappings[i - 1].minVersion().protocol()) {
           throw new IllegalArgumentException("VersionMappings must be in ascending version order");
+        }
+        if (mappings[i - 1].maxVersion() != null) {
+          throw new IllegalArgumentException("Only the last VersionMapping may have a maxVersion");
         }
       }
       registrations.add(new Registration<>(type, codec, mappings, decoded));
@@ -267,15 +270,17 @@ public final class PacketRegistry {
 
     /**
      * Finds the active packet ID for a given version from a sorted array of mappings. Returns -1 if
-     * no mapping applies (the packet does not exist at this version): the version is before the
-     * first mapping, or past the {@link VersionMapping#maxVersion()} of the last one that starts at
-     * or before it.
+     * no mapping applies (the packet does not exist at this version).
      */
     private static int resolvePacketId(ProtocolVersion version, VersionMapping[] mappings) {
+      ProtocolVersion lastVersion = mappings[mappings.length - 1].maxVersion();
+      if (lastVersion != null && version.isNewerThan(lastVersion)) {
+        return -1; // removed from the protocol after its last version
+      }
       int packetId = -1;
       for (VersionMapping mapping : mappings) {
         if (version.isAtLeast(mapping.minVersion())) {
-          packetId = mapping.packetIdFor(version);
+          packetId = mapping.packetId();
         } else {
           break; // mappings are ascending — no further match possible
         }

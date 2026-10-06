@@ -62,10 +62,10 @@ import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatCommand;
-import dev.warp.protocol.packet.play.ChatMessage;
 import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPluginMessage;
@@ -279,10 +279,10 @@ public final class StateRegistry {
   // ---------------------------------------------------------------------------
   // Play — proxy-critical subset with version-range ID mappings
   //
-  // Decoded on receipt: only what the proxy acts on (keep-alives, its own commands, client
-  // settings, state transitions, bundles, disconnects, the entity id). Encode-only: packets the
-  // proxy may send but forwards untouched when received, so they keep their original compressed
-  // form end to end.
+  // Decoded on receipt: only what the proxy acts on (keep-alives, its own commands, which arrive as
+  // chat lines before 1.19, client settings, state transitions, bundles, disconnects, the entity
+  // id). Encode-only: packets the proxy may send but forwards untouched when received, so they
+  // keep their original compressed form end to end.
   //
   // Before 1.20.2 a server switch keeps the client's tab list, boss bars and titles: the proxy
   // also decodes the packets that fill them, and sends the ones that clear them, up to 1.20.1
@@ -344,8 +344,8 @@ public final class StateRegistry {
                     map(0x0B, MINECRAFT_1_20_5),
                     map(0x0D, MINECRAFT_1_21_2))
                 .register(
-                    ChatMessage.class,
-                    ChatMessage.CODEC,
+                    LegacyChatMessage.class,
+                    LegacyChatMessage.CODEC,
                     map(0x01, MINECRAFT_1_7_2),
                     map(0x02, MINECRAFT_1_9),
                     map(0x03, MINECRAFT_1_12),

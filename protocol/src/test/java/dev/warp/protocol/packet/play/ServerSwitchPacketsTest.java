@@ -403,8 +403,8 @@ class ServerSwitchPacketsTest {
   // ---------------------------------------------------------------------------
 
   @Nested
-  @DisplayName("ChatMessage")
-  class ChatMessageCodec {
+  @DisplayName("LegacyChatMessage")
+  class LegacyChatMessageCodec {
 
     static Stream<ProtocolVersion> chatVersions() {
       return SwitchPacketFixtures.versionsWith("chat_server");
@@ -414,10 +414,11 @@ class ServerSwitchPacketsTest {
     @MethodSource("chatVersions")
     @DisplayName("should read a command typed in chat and write it back")
     void command(ProtocolVersion version) {
-      ChatMessage message = decode(ChatMessage.CODEC, version, "chat_server");
+      LegacyChatMessage message = decode(LegacyChatMessage.CODEC, version, "chat_server");
 
       assertEquals("/server survival", message.message());
-      assertArrayEquals(bytes(version, "chat_server"), encode(ChatMessage.CODEC, message, version));
+      assertArrayEquals(
+          bytes(version, "chat_server"), encode(LegacyChatMessage.CODEC, message, version));
     }
   }
 }

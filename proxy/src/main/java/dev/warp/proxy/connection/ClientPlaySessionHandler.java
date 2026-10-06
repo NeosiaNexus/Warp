@@ -25,10 +25,10 @@ import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatCommand;
-import dev.warp.protocol.packet.play.ChatMessage;
 import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPacket;
@@ -69,6 +69,9 @@ import org.slf4j.LoggerFactory;
 final class ClientPlaySessionHandler implements SessionHandler {
 
   private static final Logger logger = LoggerFactory.getLogger(ClientPlaySessionHandler.class);
+
+  /** The proxy's own command, which lists the servers or moves the player to another one. */
+  private static final String SERVER_COMMAND = "server";
 
   private final ConnectedPlayer player;
 
@@ -111,7 +114,7 @@ final class ClientPlaySessionHandler implements SessionHandler {
     switch (playPacket) {
       case KeepAlive keepAlive -> handleKeepAlive(keepAlive);
       case ChatCommand chatCommand -> handleChatCommand(chatCommand);
-      case ChatMessage chatMessage -> handleChatMessage(chatMessage);
+      case LegacyChatMessage chatMessage -> handleLegacyChatMessage(chatMessage);
       case PlayClientSettings settings -> handleClientSettings(settings);
       case ResourcePackResponse response -> forwardToBackend(response);
       case AcknowledgeConfiguration ignored -> handleAcknowledgeConfiguration();
@@ -217,22 +220,24 @@ final class ClientPlaySessionHandler implements SessionHandler {
     }
   }
 
-  private void handleChatMessage(ChatMessage chatMessage) {
-    // Before 1.19, commands are chat lines that start with a slash.
+  private void handleLegacyChatMessage(LegacyChatMessage chatMessage) {
+    // Before 1.19, a command is a chat line starting with '/'.
     String message = chatMessage.message();
-    if (!message.startsWith("/") || !handleProxyCommand(message.substring(1))) {
-      forwardToBackend(chatMessage);
+    if (message.startsWith("/") && handleProxyCommand(message.substring(1))) {
+      return;
     }
+    forwardToBackend(chatMessage);
   }
 
   /**
-   * Runs {@code command} (without its slash) if it is a proxy command.
+   * Runs a command the proxy owns.
    *
+   * @param command the command line, without its leading {@code /}
    * @return {@code true} if the proxy handled it, {@code false} if it belongs to the backend
    */
   private boolean handleProxyCommand(String command) {
-    if (command.equals("server") || command.startsWith("server ")) {
-      handleServerCommand(command.length() > 7 ? command.substring(7).trim() : "");
+    if (command.equals(SERVER_COMMAND) || command.startsWith(SERVER_COMMAND + " ")) {
+      handleServerCommand(command.substring(SERVER_COMMAND.length()).trim());
       return true;
     }
     return false;

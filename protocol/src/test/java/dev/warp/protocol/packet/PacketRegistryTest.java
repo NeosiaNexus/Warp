@@ -29,8 +29,8 @@ import dev.warp.protocol.packet.login.LoginAcknowledged;
 import dev.warp.protocol.packet.login.LoginStart;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.ChatCommand;
-import dev.warp.protocol.packet.play.ChatMessage;
 import dev.warp.protocol.packet.play.ClearTitles;
+import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
@@ -77,6 +77,31 @@ class PacketRegistryTest {
                       StatusRequest.CODEC,
                       VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_9),
                       VersionMapping.map(0x01, ProtocolVersion.MINECRAFT_1_7_2)));
+    }
+
+    @Test
+    @DisplayName("should reject a bounded mapping that is not the last one")
+    void boundedMappingNotLast() {
+      assertThrows(
+          IllegalArgumentException.class,
+          () ->
+              PacketRegistry.builder()
+                  .register(
+                      StatusRequest.class,
+                      StatusRequest.CODEC,
+                      VersionMapping.map(
+                          0x00, ProtocolVersion.MINECRAFT_1_7_2, ProtocolVersion.MINECRAFT_1_8),
+                      VersionMapping.map(0x01, ProtocolVersion.MINECRAFT_1_9)));
+    }
+
+    @Test
+    @DisplayName("should reject a mapping whose last version precedes its first")
+    void emptyRange() {
+      assertThrows(
+          IllegalArgumentException.class,
+          () ->
+              VersionMapping.map(
+                  0x00, ProtocolVersion.MINECRAFT_1_12, ProtocolVersion.MINECRAFT_1_9));
     }
 
     @Test
@@ -207,6 +232,27 @@ class PacketRegistryTest {
     }
 
     @Test
+    @DisplayName("should not register a removed packet after the last version of its mapping")
+    void afterBoundedMapping() {
+      PacketRegistry registry =
+          PacketRegistry.builder()
+              .register(
+                  StatusRequest.class,
+                  StatusRequest.CODEC,
+                  VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_7_2),
+                  VersionMapping.map(
+                      0x05, ProtocolVersion.MINECRAFT_1_9, ProtocolVersion.MINECRAFT_1_12_2))
+              .build();
+
+      assertEquals(0x05, registry.packetId(ProtocolVersion.MINECRAFT_1_12_2, StatusRequest.class));
+      assertNotNull(registry.lookup(ProtocolVersion.MINECRAFT_1_12_2, 0x05));
+      assertNull(registry.lookup(ProtocolVersion.MINECRAFT_1_13, 0x05));
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> registry.packetId(ProtocolVersion.MINECRAFT_1_13, StatusRequest.class));
+    }
+
+    @Test
     @DisplayName("should not register packets for versions before the first mapping")
     void beforeFirstMapping() {
       PacketRegistry registry =
@@ -221,53 +267,6 @@ class PacketRegistryTest {
       assertNull(registry.lookup(ProtocolVersion.MINECRAFT_1_19_4, 0x03));
       // 1.20.2 should have it
       assertNotNull(registry.lookup(ProtocolVersion.MINECRAFT_1_20_2, 0x03));
-    }
-
-    @Test
-    @DisplayName("should not register packets past the maxVersion of their last mapping")
-    void afterMaxVersion() {
-      PacketRegistry registry =
-          PacketRegistry.builder()
-              .register(
-                  StatusRequest.class,
-                  StatusRequest.CODEC,
-                  VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_8),
-                  VersionMapping.map(
-                      0x05, ProtocolVersion.MINECRAFT_1_9, ProtocolVersion.MINECRAFT_1_12_2))
-              .build();
-
-      assertEquals(0x05, registry.packetId(ProtocolVersion.MINECRAFT_1_12_2, StatusRequest.class));
-      assertNull(registry.lookup(ProtocolVersion.MINECRAFT_1_13, 0x05));
-      assertThrows(
-          IllegalArgumentException.class,
-          () -> registry.packetId(ProtocolVersion.MINECRAFT_1_13, StatusRequest.class));
-    }
-
-    @Test
-    @DisplayName("should register packets again from a mapping that follows a bounded one")
-    void afterGap() {
-      PacketRegistry registry =
-          PacketRegistry.builder()
-              .register(
-                  StatusRequest.class,
-                  StatusRequest.CODEC,
-                  VersionMapping.map(
-                      0x01, ProtocolVersion.MINECRAFT_1_8, ProtocolVersion.MINECRAFT_1_12_2),
-                  VersionMapping.map(0x02, ProtocolVersion.MINECRAFT_1_14))
-              .build();
-
-      assertNull(registry.lookup(ProtocolVersion.MINECRAFT_1_13_2, 0x01));
-      assertEquals(0x02, registry.packetId(ProtocolVersion.MINECRAFT_1_14, StatusRequest.class));
-    }
-
-    @Test
-    @DisplayName("should reject a mapping that ends before it starts")
-    void emptyRange() {
-      assertThrows(
-          IllegalArgumentException.class,
-          () ->
-              VersionMapping.map(
-                  0x01, ProtocolVersion.MINECRAFT_1_9, ProtocolVersion.MINECRAFT_1_8));
     }
   }
 
@@ -367,12 +366,15 @@ class PacketRegistryTest {
       PacketRegistry serverbound =
           StateRegistry.get(ProtocolState.PLAY, PacketDirection.SERVERBOUND);
 
-      assertEquals(0x01, serverbound.packetId(ProtocolVersion.MINECRAFT_1_8, ChatMessage.class));
-      assertEquals(0x02, serverbound.packetId(ProtocolVersion.MINECRAFT_1_12_2, ChatMessage.class));
-      assertEquals(0x03, serverbound.packetId(ProtocolVersion.MINECRAFT_1_18_2, ChatMessage.class));
+      assertEquals(
+          0x01, serverbound.packetId(ProtocolVersion.MINECRAFT_1_8, LegacyChatMessage.class));
+      assertEquals(
+          0x02, serverbound.packetId(ProtocolVersion.MINECRAFT_1_12_2, LegacyChatMessage.class));
+      assertEquals(
+          0x03, serverbound.packetId(ProtocolVersion.MINECRAFT_1_18_2, LegacyChatMessage.class));
       assertThrows(
           IllegalArgumentException.class,
-          () -> serverbound.packetId(ProtocolVersion.MINECRAFT_1_19, ChatMessage.class));
+          () -> serverbound.packetId(ProtocolVersion.MINECRAFT_1_19, LegacyChatMessage.class));
       assertEquals(0x03, serverbound.packetId(ProtocolVersion.MINECRAFT_1_19, ChatCommand.class));
       assertEquals(0x04, serverbound.packetId(ProtocolVersion.MINECRAFT_1_19_2, ChatCommand.class));
       assertEquals(0x04, serverbound.packetId(ProtocolVersion.MINECRAFT_1_19_3, ChatCommand.class));
