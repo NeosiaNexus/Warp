@@ -115,6 +115,16 @@ class SystemChatMessageTest {
         Arguments.of(ProtocolVersion.MINECRAFT_1_21_4, 0x73, Trailer.OVERLAY));
   }
 
+  /** The rows of {@link #versions()} without the packet id: each version and its trailer. */
+  static Stream<Arguments> trailers() {
+    return versions().map(row -> Arguments.of(row.get()[0], row.get()[2]));
+  }
+
+  /** The rows of {@link #versions()} without the trailer: each version and its packet id. */
+  static Stream<Arguments> packetIds() {
+    return versions().map(row -> Arguments.of(row.get()[0], row.get()[1]));
+  }
+
   // ---------------------------------------------------------------------------
   // Wire format
   // ---------------------------------------------------------------------------
@@ -197,9 +207,9 @@ class SystemChatMessageTest {
   class Decoding {
 
     @ParameterizedTest(name = "{0}")
-    @MethodSource("dev.warp.protocol.packet.play.SystemChatMessageTest#versions")
+    @MethodSource("dev.warp.protocol.packet.play.SystemChatMessageTest#trailers")
     @DisplayName("should read back what it writes, consuming every byte")
-    void roundtrip(ProtocolVersion version, int packetId, Trailer trailer) {
+    void roundtrip(ProtocolVersion version, Trailer trailer) {
       byte[] content = TextComponent.plainText(TEXT, version);
 
       for (boolean overlay : new boolean[] {false, true}) {
@@ -279,9 +289,9 @@ class SystemChatMessageTest {
   class Registration {
 
     @ParameterizedTest(name = "{0}: id {1}")
-    @MethodSource("dev.warp.protocol.packet.play.SystemChatMessageTest#versions")
+    @MethodSource("dev.warp.protocol.packet.play.SystemChatMessageTest#packetIds")
     @DisplayName("should be encode-only, so player chat and backend messages stay blind-forwarded")
-    void neverDecoded(ProtocolVersion version, int packetId, Trailer trailer) {
+    void neverDecoded(ProtocolVersion version, int packetId) {
       PacketRegistry clientbound =
           StateRegistry.get(ProtocolState.PLAY, PacketDirection.CLIENTBOUND);
 
