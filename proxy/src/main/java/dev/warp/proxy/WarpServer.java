@@ -313,8 +313,8 @@ public final class WarpServer implements Warp {
     }
     if (signer != null) {
       logger.warn(
-          "Profile keys of 1.19 to 1.19.2 players are checked against {} instead of Mojang's key"
-              + " ({} system property)",
+          "In online mode, the profile keys of 1.19 to 1.19.2 players are checked against {}"
+              + " instead of Mojang's key ({} system property)",
           signer,
           ProfileKeys.SIGNER_PROPERTY);
     }

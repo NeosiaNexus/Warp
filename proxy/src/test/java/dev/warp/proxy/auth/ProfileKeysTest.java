@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.packet.login.LoginStart.ProfilePublicKey;
+import dev.warp.proxy.auth.ProfileKeys.Problem;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -198,8 +199,8 @@ class ProfileKeysTest {
       ProfilePublicKey key =
           key(ProfileKeys.signedPayloadV2(HOLDER, EXPIRES_AT, PLAYER.getPublic()));
 
-      assertRefused(ProfileKeys.INVALID, KEYS.check(key, UUID.randomUUID(), version));
-      assertRefused(ProfileKeys.INVALID, KEYS.check(key, null, version));
+      assertRefused(Problem.NOT_SIGNED, KEYS.check(key, UUID.randomUUID(), version));
+      assertRefused(Problem.NO_HOLDER, KEYS.check(key, null, version));
     }
 
     @Test
@@ -209,8 +210,8 @@ class ProfileKeysTest {
       ProfilePublicKey v2 =
           key(ProfileKeys.signedPayloadV2(HOLDER, EXPIRES_AT, PLAYER.getPublic()));
 
-      assertRefused(ProfileKeys.INVALID, KEYS.check(v1, HOLDER, ProtocolVersion.MINECRAFT_1_19_2));
-      assertRefused(ProfileKeys.INVALID, KEYS.check(v2, null, ProtocolVersion.MINECRAFT_1_19));
+      assertRefused(Problem.NOT_SIGNED, KEYS.check(v1, HOLDER, ProtocolVersion.MINECRAFT_1_19_2));
+      assertRefused(Problem.NOT_SIGNED, KEYS.check(v2, null, ProtocolVersion.MINECRAFT_1_19));
     }
 
     @Test
@@ -222,7 +223,7 @@ class ProfileKeysTest {
           new ProfilePublicKey(
               EXPIRES_AT, PLAYER.getPublic().getEncoded(), sign(forger.getPrivate(), payload));
 
-      assertRefused(ProfileKeys.INVALID, KEYS.check(key, null, ProtocolVersion.MINECRAFT_1_19));
+      assertRefused(Problem.NOT_SIGNED, KEYS.check(key, null, ProtocolVersion.MINECRAFT_1_19));
     }
 
     @Test
@@ -233,11 +234,11 @@ class ProfileKeysTest {
           new ProfilePublicKey(
               EXPIRES_AT + 1, PLAYER.getPublic().getEncoded(), sign(SIGNER.getPrivate(), payload));
 
-      assertRefused(ProfileKeys.INVALID, KEYS.check(key, null, ProtocolVersion.MINECRAFT_1_19));
+      assertRefused(Problem.NOT_SIGNED, KEYS.check(key, null, ProtocolVersion.MINECRAFT_1_19));
     }
 
     @Test
-    @DisplayName("should refuse a key that expired, as Velocity, with the signature reason")
+    @DisplayName("should refuse a key that expired, from the millisecond after its expiry")
     void refusesExpired() {
       long expiry = NOW.toEpochMilli();
       ProfilePublicKey key =
@@ -253,7 +254,7 @@ class ProfileKeysTest {
           KEYS.check(key, null, ProtocolVersion.MINECRAFT_1_19),
           "valid until its expiry");
       assertRefused(
-          ProfileKeys.EXPIRED, oneMilliLater.check(key, null, ProtocolVersion.MINECRAFT_1_19));
+          Problem.EXPIRED, oneMilliLater.check(key, null, ProtocolVersion.MINECRAFT_1_19));
     }
 
     @Test
@@ -265,9 +266,9 @@ class ProfileKeysTest {
       ProfilePublicKey shortSignature =
           new ProfilePublicKey(EXPIRES_AT, PLAYER.getPublic().getEncoded(), new byte[] {1});
 
-      assertRefused(ProfileKeys.INVALID, KEYS.check(notAKey, null, ProtocolVersion.MINECRAFT_1_19));
+      assertRefused(Problem.MALFORMED, KEYS.check(notAKey, null, ProtocolVersion.MINECRAFT_1_19));
       assertRefused(
-          ProfileKeys.INVALID, KEYS.check(shortSignature, null, ProtocolVersion.MINECRAFT_1_19));
+          Problem.NOT_SIGNED, KEYS.check(shortSignature, null, ProtocolVersion.MINECRAFT_1_19));
     }
 
     private ProfilePublicKey key(byte[] payload) {
@@ -275,8 +276,8 @@ class ProfileKeysTest {
           EXPIRES_AT, PLAYER.getPublic().getEncoded(), sign(SIGNER.getPrivate(), payload));
     }
 
-    private void assertRefused(String reason, ProfileKeys.Verdict verdict) {
-      assertEquals(new ProfileKeys.Verdict.Refused(reason), verdict);
+    private void assertRefused(Problem problem, ProfileKeys.Verdict verdict) {
+      assertEquals(new ProfileKeys.Verdict.Refused(problem), verdict);
     }
   }
 

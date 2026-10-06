@@ -58,8 +58,11 @@ import org.jspecify.annotations.Nullable;
  *       must also be the one it authenticates as
  * </ul>
  *
- * <p>The refusals carry the translation keys Velocity disconnects with: {@value #EXPIRED} for an
- * expired key, {@value #INVALID} for any other.
+ * <p>A client is refused with {@value #REFUSAL_REASON} whatever the {@link Problem}: it is the only
+ * profile key reason that every 1.19 to 1.19.2 client translates. {@code
+ * multiplayer.disconnect.invalid_public_key}, which Velocity sends for a bad signature, is not in
+ * the 1.19.2 language files, and {@code multiplayer.disconnect.expired_public_key} is in neither
+ * 1.19 nor 1.19.1; a client shows a missing key as raw text. The {@link Problem} goes to the log.
  *
  * <p>The trusted signer can be replaced with the {@value #SIGNER_PROPERTY} system property, the
  * path to an RSA public key (DER, or PEM {@code -----BEGIN PUBLIC KEY-----}): for an alternative
@@ -76,11 +79,12 @@ public final class ProfileKeys {
   /** System property naming the file of the key trusted to sign profile keys. */
   public static final String SIGNER_PROPERTY = "warp.profilekeys.signer";
 
-  /** Refusal of an expired key, as Velocity words it. */
-  public static final String EXPIRED = "multiplayer.disconnect.invalid_public_key_signature";
-
-  /** Refusal of a key that is malformed, not signed by the trusted signer, or not the player's. */
-  public static final String INVALID = "multiplayer.disconnect.invalid_public_key";
+  /**
+   * Translation key of the reason a refused client is shown: "Invalid signature for profile public
+   * key. Try restarting your game." Vanilla 1.19 to 1.19.2 servers send it for a key Mojang did not
+   * sign, and 1.19 for an expired one too.
+   */
+  public static final String REFUSAL_REASON = "multiplayer.disconnect.invalid_public_key_signature";
 
   /**
    * Mojang's Yggdrasil session key, DER-encoded: {@code yggdrasil_session_pubkey.der} of authlib
@@ -182,12 +186,40 @@ public final class ProfileKeys {
     record Accepted(PublicKey playerKey) implements Verdict {}
 
     /**
-     * The key is refused.
+     * The key is refused; the client is shown {@link #REFUSAL_REASON}.
      *
-     * @param reason the translation key of the disconnect reason, {@link #EXPIRED} or {@link
-     *     #INVALID}
+     * @param problem what is wrong with the key, for the log
      */
-    record Refused(String reason) implements Verdict {}
+    record Refused(Problem problem) implements Verdict {}
+  }
+
+  /** What is wrong with a refused key. */
+  public enum Problem {
+    /** The expiry has passed. */
+    EXPIRED("the key has expired"),
+    /** The key bytes are not a DER-encoded RSA public key. */
+    MALFORMED("the key is not an RSA public key"),
+    /** A 1.19.1+ key came without the UUID it is signed for. */
+    NO_HOLDER("the key came without the UUID it is signed for"),
+    /** The trusted signer did not sign this key with this expiry and, from 1.19.1, this UUID. */
+    NOT_SIGNED("the trusted signer did not sign the key with this expiry (and UUID, from 1.19.1)"),
+    /** The key is signed for another player than the one who authenticated (1.19.1+). */
+    OTHER_HOLDER("the key is signed for another player than the one who authenticated");
+
+    private final String description;
+
+    Problem(String description) {
+      this.description = description;
+    }
+
+    /**
+     * Returns the problem in words, for the log.
+     *
+     * @return the description
+     */
+    public String description() {
+      return description;
+    }
   }
 
   /**
@@ -199,17 +231,17 @@ public final class ProfileKeys {
    *     cannot be checked without one, and is refused
    * @param version the client's protocol version, 1.19 to 1.19.2
    * @return {@link Verdict.Accepted} with the parsed key, or {@link Verdict.Refused} with the
-   *     reason
+   *     problem
    */
   public Verdict check(ProfilePublicKey key, @Nullable UUID holder, ProtocolVersion version) {
     if (clock.instant().isAfter(Instant.ofEpochMilli(key.expiresAt()))) {
-      return new Verdict.Refused(EXPIRED);
+      return new Verdict.Refused(Problem.EXPIRED);
     }
     PublicKey playerKey;
     try {
       playerKey = parseRsaPublicKey(key.publicKey());
     } catch (InvalidKeySpecException e) {
-      return new Verdict.Refused(INVALID);
+      return new Verdict.Refused(Problem.MALFORMED);
     }
     byte[] signed;
     if (version.isOlderThan(ProtocolVersion.MINECRAFT_1_19_1)) {
@@ -217,11 +249,11 @@ public final class ProfileKeys {
     } else if (holder != null) {
       signed = signedPayloadV2(holder, key.expiresAt(), playerKey);
     } else {
-      return new Verdict.Refused(INVALID);
+      return new Verdict.Refused(Problem.NO_HOLDER);
     }
     return verify("SHA1withRSA", signer, key.keySignature(), signed)
         ? new Verdict.Accepted(playerKey)
-        : new Verdict.Refused(INVALID);
+        : new Verdict.Refused(Problem.NOT_SIGNED);
   }
 
   /**

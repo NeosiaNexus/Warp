@@ -155,15 +155,19 @@ async function fallbackRejected(ctx) {
 }
 
 const DAY_MS = 86_400_000;
-const INVALID_KEY = 'multiplayer.disconnect.invalid_public_key';
-const EXPIRED_KEY = 'multiplayer.disconnect.invalid_public_key_signature';
+/**
+ * Warp's reason for every refused key: the only profile key reason that 1.19, 1.19.1 and 1.19.2
+ * clients all translate (Velocity's `invalid_public_key` is not in 1.19.2's language files).
+ */
+const REFUSED_KEY = 'multiplayer.disconnect.invalid_public_key_signature';
 
 /**
  * 1.19 to 1.19.2: bots log in with a profile key, as every client of a Microsoft account does. The
  * harness signs the keys in Mojang's place (`ctx.profileKeySigner`, which Warp trusts). A valid key
  * logs in (online, the bot signs the verify token instead of encrypting it) and plays: chat,
- * `/server`, a switch. Warp refuses, with Velocity's reasons, a key the signer did not sign, an
- * expired one, and online from 1.19.1, a key issued to another player than the one authenticated.
+ * `/server`, a switch. Online, Warp refuses a key the signer did not sign, an expired one and, from
+ * 1.19.1, a key issued to another player than the one authenticated. Offline, it ignores the key,
+ * as vanilla 1.19.1+ does, and lets the first two in.
  */
 async function profileKey(ctx) {
   const name = 'e2e_signed';
@@ -184,36 +188,50 @@ async function profileKey(ctx) {
     bot.quit();
   }
 
-  const refusals = [
-    { what: 'a key the signer did not sign', reason: INVALID_KEY, signer: createSigner(2048), uuid },
-    { what: 'an expired key', reason: EXPIRED_KEY, expiresAt: Date.now() - 60_000, uuid },
+  const badKeys = [
+    { what: 'a key the signer did not sign', signer: createSigner(2048), uuid },
+    { what: 'an expired key', expiresAt: Date.now() - 60_000, uuid },
   ];
   // The key is signed for the UUID the bot announces; the session server vouches for another one.
   if (ctx.variant.online && ctx.entry.protocol > FIRST_PROTOCOL) {
-    refusals.push({ what: 'a key issued to another player', reason: INVALID_KEY, uuid: randomUUID() });
+    badKeys.push({ what: 'a key issued to another player', uuid: randomUUID() });
   }
-  for (const [i, refusal] of refusals.entries()) {
+  for (const [i, bad] of badKeys.entries()) {
     const keys = createProfileKeys({
-      signer: refusal.signer ?? ctx.profileKeySigner,
-      uuid: refusal.uuid,
-      expiresAt: refusal.expiresAt ?? Date.now() + DAY_MS,
+      signer: bad.signer ?? ctx.profileKeySigner,
+      uuid: bad.uuid,
+      expiresAt: bad.expiresAt ?? Date.now() + DAY_MS,
     });
-    await expectRefused(ctx, `e2e_signed_no${i}`, { profileKeys: keys, uuid: refusal.uuid }, refusal);
+    const options = { profileKeys: keys, uuid: bad.uuid };
+    if (ctx.variant.online) await expectRefused(ctx, `e2e_signed_no${i}`, options, bad.what);
+    else await expectLoggedIn(ctx, `e2e_signed_no${i}`, options, bad.what);
   }
-  return `logged in with a signed key, chatted and switched; refused ${refusals.map((r) => r.what).join(', ')}`;
+  const outcome = ctx.variant.online ? 'refused' : 'ignored, offline,';
+  return `logged in with a signed key, chatted and switched; ${outcome} ${badKeys.map((k) => k.what).join(', ')}`;
 }
 
-/** Joins with `options` and expects Warp to refuse the login with `reason` (a translation key). */
-async function expectRefused(ctx, username, options, { what, reason }) {
+/** Joins with `options` and expects Warp to refuse the login over the key, with `REFUSED_KEY`. */
+async function expectRefused(ctx, username, options, what) {
   let bot;
   try {
     bot = await joinWarp(ctx, username, ctx.warp, options);
   } catch (e) {
-    if (String(e.message).includes(`"translate":"${reason}"`)) return;
-    throw new Error(`${what}: expected a refusal with ${reason}, got: ${e.message}`);
+    if (String(e.message).includes(`"translate":"${REFUSED_KEY}"`)) return;
+    throw new Error(`${what}: expected a refusal with ${REFUSED_KEY}, got: ${e.message}`);
   }
   bot.quit();
-  throw new Error(`${what}: logged in, expected a refusal with ${reason}`);
+  throw new Error(`${what}: logged in, expected a refusal with ${REFUSED_KEY}`);
+}
+
+/** Joins with `options` and expects the login to succeed: offline, Warp ignores the key. */
+async function expectLoggedIn(ctx, username, options, what) {
+  let bot;
+  try {
+    bot = await joinWarp(ctx, username, ctx.warp, options);
+  } catch (e) {
+    throw new Error(`${what}: refused offline, where Warp ignores the key: ${e.message}`);
+  }
+  bot.quit();
 }
 
 /**

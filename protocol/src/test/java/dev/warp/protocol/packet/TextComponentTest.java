@@ -187,8 +187,8 @@ class TextComponentTest {
     @DisplayName("should wrap the key in a translatable component")
     void wraps() {
       assertEquals(
-          "{\"translate\":\"multiplayer.disconnect.invalid_public_key\"}",
-          TextComponent.translatableJson("multiplayer.disconnect.invalid_public_key"));
+          "{\"translate\":\"multiplayer.disconnect.invalid_public_key_signature\"}",
+          TextComponent.translatableJson("multiplayer.disconnect.invalid_public_key_signature"));
     }
 
     @Test

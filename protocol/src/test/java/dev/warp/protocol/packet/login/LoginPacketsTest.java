@@ -536,16 +536,16 @@ class LoginPacketsTest {
     @Test
     @DisplayName("should write a translated reason as a VarInt-prefixed translatable component")
     void writesTranslatable() {
-      String json = "{\"translate\":\"multiplayer.disconnect.invalid_public_key\"}";
+      String json = "{\"translate\":\"multiplayer.disconnect.invalid_public_key_signature\"}";
       ByteBuf buf = Unpooled.buffer();
       try {
         LoginDisconnect.CODEC.encode(
-            LoginDisconnect.ofTranslation("multiplayer.disconnect.invalid_public_key"),
+            LoginDisconnect.ofTranslation("multiplayer.disconnect.invalid_public_key_signature"),
             buf,
             ProtocolVersion.MINECRAFT_1_19_2);
 
-        // 57 bytes of JSON: a one-byte VarInt length.
-        assertArrayEquals(concat(new byte[] {57}, ascii(json)), ByteBufUtil.getBytes(buf));
+        // 67 bytes of JSON: a one-byte VarInt length.
+        assertArrayEquals(concat(new byte[] {67}, ascii(json)), ByteBufUtil.getBytes(buf));
       } finally {
         buf.release();
       }

@@ -66,7 +66,11 @@ public record LoginDisconnect(String reason) implements LoginPacket {
   /**
    * Creates a login disconnect whose reason the client translates, as vanilla servers word theirs.
    *
-   * @param key the translation key, such as {@code multiplayer.disconnect.invalid_public_key}
+   * <p>A client whose language files lack the key shows the key itself, so it must exist in every
+   * version the packet goes to: translation fallbacks only arrived in 1.19.4.
+   *
+   * @param key the translation key, such as {@code
+   *     multiplayer.disconnect.invalid_public_key_signature}
    * @return the packet, valid for every protocol version
    */
   public static LoginDisconnect ofTranslation(String key) {

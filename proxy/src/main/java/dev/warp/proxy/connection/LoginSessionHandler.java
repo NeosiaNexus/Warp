@@ -125,7 +125,10 @@ final class LoginSessionHandler implements SessionHandler {
   private byte @Nullable [] verifyToken;
   private @Nullable GameProfile authenticatedProfile;
 
-  /** The profile key a 1.19 to 1.19.2 client sent, once accepted; {@code null} if it sent none. */
+  /**
+   * The profile key a 1.19 to 1.19.2 client sent, once accepted; {@code null} if it sent none, and
+   * in offline mode.
+   */
   private @Nullable PublicKey profileKey;
 
   /**
@@ -194,14 +197,17 @@ final class LoginSessionHandler implements SessionHandler {
 
     this.username = name;
 
-    // 1.19 to 1.19.2: a profile key is checked on arrival, in online and offline mode alike, and
-    // its absence is accepted (Velocity's InitialLoginSessionHandler with force-key-authentication
-    // off: Warp forwards no key, so a backend has nothing to require one for).
+    // 1.19 to 1.19.2, online mode: the client will sign the verify token with its profile key, so
+    // the key is checked on arrival, as Velocity's InitialLoginSessionHandler does. A client
+    // without a key is accepted (Velocity's force-key-authentication off): Warp forwards no key, so
+    // a backend has nothing to require one for. Offline, the key is ignored, as vanilla 1.19.1+
+    // ignores it: Warp authenticates nobody and uses the key for nothing, so a check would only
+    // refuse players whose key another authority signed (authlib-injector accounts).
     LoginStart.ProfilePublicKey key = packet.profileKey();
-    if (key != null) {
+    if (key != null && loginContext.onlineMode()) {
       switch (loginContext.profileKeys().check(key, packet.playerUuid(), clientVersion())) {
-        case ProfileKeys.Verdict.Refused(String reason) -> {
-          disconnectTranslated(reason);
+        case ProfileKeys.Verdict.Refused(ProfileKeys.Problem problem) -> {
+          refuseProfileKey(problem);
           return;
         }
         case ProfileKeys.Verdict.Accepted(PublicKey accepted) -> {
@@ -377,7 +383,7 @@ final class LoginSessionHandler implements SessionHandler {
                           UUID holder = this.profileKeyHolder;
                           if (holder != null && !holder.equals(profile.uuid())) {
                             // The key belongs to another player (Velocity: internalAddHolder).
-                            disconnectTranslated(ProfileKeys.INVALID);
+                            refuseProfileKey(ProfileKeys.Problem.OTHER_HOLDER);
                             return;
                           }
                           completeLogin(profile);
@@ -491,16 +497,16 @@ final class LoginSessionHandler implements SessionHandler {
   }
 
   /**
-   * Refuses the login with a reason the client translates, as vanilla servers and Velocity word
-   * profile key refusals. Only called in the login state.
+   * Refuses the login over its profile key: the client is shown {@link ProfileKeys#REFUSAL_REASON},
+   * translated, and the log says what is wrong. Only called in the login state.
    */
-  private void disconnectTranslated(String key) {
+  private void refuseProfileKey(ProfileKeys.Problem problem) {
     logger.warn(
-        "Disconnecting {} from {}: {}",
+        "Disconnecting {} from {}: invalid profile public key, {}",
         username != null ? username : "unknown",
         connection.channel().remoteAddress(),
-        key);
-    connection.writeAndClose(LoginDisconnect.ofTranslation(key));
+        problem.description());
+    connection.writeAndClose(LoginDisconnect.ofTranslation(ProfileKeys.REFUSAL_REASON));
   }
 
   private void disconnect(String reason) {

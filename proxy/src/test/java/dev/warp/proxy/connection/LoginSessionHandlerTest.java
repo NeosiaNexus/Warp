@@ -85,6 +85,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /**
@@ -217,10 +218,11 @@ class LoginSessionHandlerTest {
 
     private static final UUID STEVE = UUID.fromString("f81d4fae-7dec-11d0-a765-00a0c91e6bf6");
 
-    private static final String INVALID_KEY =
-        "{\"translate\":\"multiplayer.disconnect.invalid_public_key\"}";
-
-    private static final String EXPIRED_KEY =
+    /**
+     * The reason of every refusal over the key: the only one that 1.19, 1.19.1 and 1.19.2 clients
+     * all translate.
+     */
+    private static final String REFUSED_KEY =
         "{\"translate\":\"multiplayer.disconnect.invalid_public_key_signature\"}";
 
     private final ProfileKeys profileKeys =
@@ -294,7 +296,7 @@ class LoginSessionHandlerTest {
         try {
           byte[] reason = frameBody(out, ProtocolState.LOGIN, LoginDisconnect.class, version);
 
-          assertArrayEquals(jsonString(INVALID_KEY), reason);
+          assertArrayEquals(jsonString(REFUSED_KEY), reason);
           assertClosed(channel);
         } finally {
           out.release();
@@ -311,7 +313,7 @@ class LoginSessionHandlerTest {
       long expired = System.currentTimeMillis() - 60_000;
       byte[] key = keyOnWire(version, STEVE, expired, SIGNER.getPrivate());
 
-      assertRefusedAtLoginStart(version, key, uuidFor(version), EXPIRED_KEY);
+      assertRefusedAtLoginStart(version, key, uuidFor(version), REFUSED_KEY);
     }
 
     @ParameterizedTest(name = "{0}")
@@ -320,14 +322,14 @@ class LoginSessionHandlerTest {
     void refusesForgedKey(ProtocolVersion version) {
       byte[] key = keyOnWire(version, STEVE, tomorrow(), PLAYER.getPrivate());
 
-      assertRefusedAtLoginStart(version, key, uuidFor(version), INVALID_KEY);
+      assertRefusedAtLoginStart(version, key, uuidFor(version), REFUSED_KEY);
     }
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("linkedKeyVersions")
     @DisplayName("should refuse a 1.19.1+ key sent without the UUID it is signed for")
     void refusesLinkedKeyWithoutUuid(ProtocolVersion version) {
-      assertRefusedAtLoginStart(version, validKey(version, STEVE), null, INVALID_KEY);
+      assertRefusedAtLoginStart(version, validKey(version, STEVE), null, REFUSED_KEY);
     }
 
     @ParameterizedTest(name = "{0}")
@@ -423,27 +425,35 @@ class LoginSessionHandlerTest {
       }
     }
 
-    @ParameterizedTest(name = "{0}")
-    @MethodSource("profileKeyVersions")
-    @DisplayName("should check the key in offline mode too, as Velocity does")
-    void checksKeyOffline(ProtocolVersion version) {
-      EmbeddedChannel valid = loginChannel(version, TestLoginContexts.offline(profileKeys));
-      try {
-        sendLoginStart(valid, "Steve", version, validKey(version, STEVE), uuidFor(version));
+    static Stream<Arguments> keysIgnoredOffline() {
+      return profileKeyVersions()
+          .flatMap(
+              version ->
+                  Stream.of(
+                      Arguments.of(version, "valid", SIGNER.getPrivate(), tomorrow()),
+                      Arguments.of(version, "forged", PLAYER.getPrivate(), tomorrow()),
+                      Arguments.of(version, "expired", SIGNER.getPrivate(), yesterday())));
+    }
 
-        nextPacket(valid, ProtocolState.LOGIN, LoginSuccess.class, version);
-      } finally {
-        valid.finishAndReleaseAll();
-      }
-      EmbeddedChannel forged = loginChannel(version, TestLoginContexts.offline(profileKeys));
+    @ParameterizedTest(name = "{0}, {1} key")
+    @MethodSource("keysIgnoredOffline")
+    @DisplayName("should ignore the key in offline mode, as vanilla 1.19.1+ does")
+    void ignoresKeyOffline(
+        ProtocolVersion version, String what, PrivateKey signer, long expiresAt) {
+      EmbeddedChannel channel = loginChannel(version, TestLoginContexts.offline(profileKeys));
       try {
-        byte[] key = keyOnWire(version, STEVE, tomorrow(), PLAYER.getPrivate());
-        sendLoginStart(forged, "Steve", version, key, uuidFor(version));
+        byte[] key = keyOnWire(version, STEVE, expiresAt, signer);
+        sendLoginStart(channel, "Steve", version, key, uuidFor(version));
 
-        byte[] reason = nextPacket(forged, ProtocolState.LOGIN, LoginDisconnect.class, version);
-        assertArrayEquals(jsonString(INVALID_KEY), reason);
+        byte[] body = nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version);
+        ByteBuf buf = Unpooled.wrappedBuffer(body);
+        try {
+          assertEquals("Steve", LoginSuccess.CODEC.decode(buf, version).username());
+        } finally {
+          buf.release();
+        }
       } finally {
-        forged.finishAndReleaseAll();
+        channel.finishAndReleaseAll();
       }
     }
 
@@ -484,8 +494,12 @@ class LoginSessionHandlerTest {
       return version.isAtLeast(ProtocolVersion.MINECRAFT_1_19_1) ? STEVE : null;
     }
 
-    private long tomorrow() {
+    private static long tomorrow() {
       return System.currentTimeMillis() + 86_400_000L;
+    }
+
+    private static long yesterday() {
+      return System.currentTimeMillis() - 86_400_000L;
     }
 
     /** A key that the signer signed for {@code holder}, valid until tomorrow. */
