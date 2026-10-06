@@ -10,8 +10,17 @@ import { run } from './proc.js';
 
 const ADOPTIUM = 'https://api.adoptium.net/v3';
 
+/** Lookups by major version: the server and Warp may both need Java 25, and must share one install. */
+const lookups = new Map();
+
 /** Returns the `java` executable of the requested major version. */
-export async function findJava(major, cacheDir) {
+export function findJava(major, cacheDir) {
+  const key = `${major}:${cacheDir}`;
+  if (!lookups.has(key)) lookups.set(key, locateJava(major, cacheDir).catch((e) => { lookups.delete(key); throw e; }));
+  return lookups.get(key);
+}
+
+async function locateJava(major, cacheDir) {
   const fromEnv = [process.env[`WARP_E2E_JAVA_${major}`], process.env[`JAVA_HOME_${major}_X64`], process.env[`JAVA_HOME_${major}_ARM64`]]
     .filter(Boolean)
     .map((home) => (home.endsWith('/java') ? home : join(home, 'bin', 'java')));
