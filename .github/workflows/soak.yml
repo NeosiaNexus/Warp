@@ -6,6 +6,9 @@ name: Soak
 # on connections Warp keeps once every player has left, on any Warp ERROR or Netty leak report, and
 # on a hung shutdown. Nightly on a clean and on a degraded network, and on demand.
 on:
+  # Temporary: validates the soak on its own pull request (dispatch needs it on main). Reverted
+  # before merging.
+  pull_request:
   schedule:
     - cron: '7 2 * * *'
   workflow_dispatch:
