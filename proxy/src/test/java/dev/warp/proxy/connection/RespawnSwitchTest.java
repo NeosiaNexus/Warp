@@ -197,6 +197,9 @@ class RespawnSwitchTest {
       }
       if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_8)) {
         expected.add(TabListHeaderFooter.class);
+        if (version.isOlderThan(ProtocolVersion.MINECRAFT_1_17)) {
+          expected.add(ClearTitles.class); // the Title packet's hide action, then its reset
+        }
         expected.add(ClearTitles.class);
       }
       expected.add(JoinGame.class);
@@ -246,7 +249,8 @@ class RespawnSwitchTest {
       assertEquals(List.of(ALICE), removal.profileIds());
       assertEquals(BOSS, sent.get(1).as(BossBar.class).uuid());
       assertEquals(BossBar.REMOVE, sent.get(1).as(BossBar.class).action());
-      assertTrue(sent.get(3).as(ClearTitles.class).reset());
+      assertFalse(sent.get(3).as(ClearTitles.class).reset(), "the title hidden");
+      assertTrue(sent.get(4).as(ClearTitles.class).reset(), "then its times reset");
     }
 
     @Test
@@ -263,6 +267,21 @@ class RespawnSwitchTest {
       assertEquals("survival", setup.player.currentServerName());
       assertFalse(setup.player.isSwitching());
       assertEquals(7, setup.player.entityId());
+    }
+
+    @Test
+    @DisplayName("should read the client again when the server it leaves had paused it")
+    void clientResumed() {
+      SwitchHarness setup = harness(ProtocolVersion.MINECRAFT_1_12_2);
+      MinecraftConnection lobby = setup.spawnOn(LOBBY);
+      // The lobby stops reading: its back-pressure pauses the client.
+      lobby.channel().unsafe().outboundBuffer().setUserDefinedWritability(1, false);
+      setup.runPendingTasks();
+      assertFalse(setup.client.channel().config().isAutoRead());
+
+      setup.switchTo(SURVIVAL);
+
+      assertTrue(setup.client.channel().config().isAutoRead());
     }
 
     @Test

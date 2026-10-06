@@ -83,8 +83,11 @@ final class BackendPlaySessionHandler implements SessionHandler {
 
   @Override
   public void activated() {
-    // Installed once the client plays on this backend: its packets reach the client from now on.
+    // Installed once the client plays on this backend: its packets reach the client from now on,
+    // and the client is read at the pace of this backend. The backend the client leaves may have
+    // paused it (writabilityChanged), and no longer resumes it once the client is gone.
     player.playOn(backendConnection);
+    player.clientConnection().setAutoRead(backendConnection.channel().isWritable());
   }
 
   @Override
