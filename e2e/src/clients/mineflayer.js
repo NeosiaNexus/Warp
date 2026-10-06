@@ -32,6 +32,48 @@ FullPacketParser.prototype._transform = function strictTransform(chunk, encoding
   return callback();
 };
 
+// ---------------------------------------------------------------------------
+// Corrections to minecraft-data
+// ---------------------------------------------------------------------------
+
+const REMOVED_RECIPE_SERIALIZER = 'minecraft:crafting_special_banneraddpattern';
+
+/**
+ * Fixes known errors in minecraft-data's protocol definitions, in memory, before minecraft-protocol
+ * compiles them. Each one was found because a `--direct` run (bots straight to the server, no
+ * Warp) failed the same way, and each is a no-op once fixed upstream.
+ *
+ * Recipe serializers, 1.20.5 to 1.21.1 (the versions that send them as registry ids): the list
+ * still has `crafting_special_banneraddpattern`, which the game no longer registers, so every id
+ * from 11 on is read one too high. Simple recipes share one layout and survive it, but the
+ * decorated pot recipe is read as `smithing_trim` and derails the rest of `declare_recipes`.
+ */
+export function correctProtocolData(version) {
+  const declareRecipes = minecraftData(version)?.protocol?.play?.toClient?.types?.packet_declare_recipes;
+  const serializers = declareRecipes && findMapper(declareRecipes, (names) => names.includes(REMOVED_RECIPE_SERIALIZER));
+  if (!serializers) return;
+  const names = Object.entries(serializers.mappings)
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([, name]) => name)
+    .filter((name) => name !== REMOVED_RECIPE_SERIALIZER);
+  serializers.mappings = Object.fromEntries(names.map((name, id) => [String(id), name]));
+}
+
+/** First `["mapper", {type: "varint", mappings}]` in a ProtoDef type whose names satisfy `test`. */
+function findMapper(type, test) {
+  if (!type || typeof type !== 'object') return null;
+  if (type.type === 'varint' && type.mappings && test(Object.values(type.mappings))) return type;
+  for (const child of Object.values(type)) {
+    const found = findMapper(child, test);
+    if (found) return found;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Bots
+// ---------------------------------------------------------------------------
+
 export const name = 'mineflayer';
 
 /**
@@ -45,11 +87,13 @@ export function announcedProtocol(version) {
 
 /** Server list ping through the proxy. */
 export async function ping({ host, port, version }) {
+  correctProtocolData(version);
   return protocol.ping({ host, port, version, closeTimeout: 10_000 });
 }
 
 /** Connects a bot and resolves once it has spawned in the world. */
 export function connect({ host, port, version, username, spawnTimeoutMs = 45_000 }) {
+  correctProtocolData(version);
   return new Promise((resolve, reject) => {
     const bot = mineflayer.createBot({
       host,
@@ -61,7 +105,7 @@ export function connect({ host, port, version, username, spawnTimeoutMs = 45_000
       hideErrors: true,
       logErrors: false,
     });
-    const handle = new Bot(bot);
+    const handle = new Bot(bot, username);
     const fail = (why) => {
       clearTimeout(timer);
       bot.quit();
@@ -79,9 +123,14 @@ export function connect({ host, port, version, username, spawnTimeoutMs = 45_000
 }
 
 class Bot {
-  constructor(bot) {
+  /**
+   * @param {object} bot mineflayer bot
+   * @param {string} username the name it logs in with (mineflayer only sets `bot.username` once
+   *   the server has accepted the login)
+   */
+  constructor(bot, username) {
     this.bot = bot;
-    this.username = bot.username;
+    this.username = username;
     this.stats = { packets: 0, chunks: 0, errors: [], kicked: null, ended: null };
     this.messages = [];
     this.quitting = false;
