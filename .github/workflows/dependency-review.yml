@@ -1,0 +1,53 @@
+name: Dependency review
+
+# Compares the dependencies of a pull request with those of its base: GitHub Actions and npm from
+# the manifests, Gradle from the snapshots of dependency-graph.yml. Fails on a known vulnerability
+# of moderate severity or above in any dependency the pull request adds or changes, and on a
+# runtime dependency whose licence is not in .github/dependency-review-config.yml. The report is the
+# job summary; nothing is posted on the pull request.
+on:
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: dependency-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Vulnerabilities & licences
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read # check out the licence policy, read the dependency graph
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Waits for the Gradle snapshot of the pull request (submitted a few minutes after it is
+      # pushed) for up to 10 minutes. Build tools and test libraries count too: they run in CI.
+      - name: Review vulnerabilities
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          fail-on-scopes: runtime, development, unknown
+          license-check: false
+          show-patched-versions: true
+          retry-on-snapshot-warnings: true
+          retry-on-snapshot-warnings-timeout: 600
+          comment-summary-in-pr: never
+
+      # Licences matter for what Warp distributes: the runtime scope only. Runs even when the step
+      # above failed, so that one run reports both.
+      - name: Review licences
+        if: ${{ !cancelled() }}
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          config-file: ./.github/dependency-review-config.yml
+          fail-on-scopes: runtime
+          vulnerability-check: false
+          show-openssf-scorecard: false
+          comment-summary-in-pr: never
