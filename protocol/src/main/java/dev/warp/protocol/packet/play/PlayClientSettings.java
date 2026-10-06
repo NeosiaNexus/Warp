@@ -26,25 +26,43 @@ import io.netty.buffer.ByteBuf;
 /**
  * Client sends its settings during gameplay ({@code C->S}).
  *
- * <p>Sent when the player changes settings (language, render distance, etc.) during gameplay. The
- * proxy caches this for replay to backend servers on server switch. Wire format matches {@link
+ * <p>Sent as soon as the client enters PLAY, then whenever the player changes a setting (language,
+ * render distance, etc.). The proxy forwards it to the backend and caches it for replay on server
+ * switches. From 1.20.2 the wire format matches {@link
  * dev.warp.protocol.packet.config.ClientInformation} in the configuration state.
  *
- * @param locale the client locale
+ * <p>Version history (fields in wire order):
+ *
+ * <ul>
+ *   <li><b>1.7.2–1.7.10</b>: locale, view distance, chat mode (byte), chat colors, difficulty
+ *       (byte), show cape (boolean, read as the skin parts byte)
+ *   <li><b>1.8</b>: difficulty removed, show cape widened to the skin parts bitmask
+ *   <li><b>1.9</b>: chat mode becomes a VarInt, main hand (VarInt) appended
+ *   <li><b>1.17</b>: text filtering (boolean) appended
+ *   <li><b>1.18</b>: allow server listings (boolean) appended
+ *   <li><b>1.21.2</b>: particle status (VarInt) appended
+ * </ul>
+ *
+ * <p>A field the version does not send decodes to a neutral default, documented on each component,
+ * and is not written back when encoding for that version.
+ *
+ * @param locale the client locale (e.g. {@code en_GB})
  * @param viewDistance the render distance in chunks
- * @param chatMode chat visibility (0=enabled, 1=commands only, 2=hidden)
+ * @param chatMode chat visibility (0 = enabled, 1 = commands only, 2 = hidden)
  * @param chatColors whether the client supports chat colors
- * @param displayedSkinParts bitmask of visible skin parts
- * @param mainHand dominant hand (0=left, 1=right)
- * @param enableTextFiltering whether to filter chat text
- * @param allowServerListings whether the player appears in server listings
- * @param particleStatus particle level (0=all, 1=decreased, 2=minimal; 1.21.2+)
+ * @param difficulty the client-side difficulty from {@code options.txt}; 1.7.x only, 0 otherwise
+ * @param displayedSkinParts bitmask of visible skin parts (1.7.x: 1 if the cape is shown, else 0)
+ * @param mainHand dominant hand (0 = left, 1 = right); right before 1.9
+ * @param enableTextFiltering whether to filter chat text; off before 1.17
+ * @param allowServerListings whether the player appears in server listings; allowed before 1.18
+ * @param particleStatus particle level (0 = all, 1 = decreased, 2 = minimal); all before 1.21.2
  */
 public record PlayClientSettings(
     String locale,
     byte viewDistance,
     int chatMode,
     boolean chatColors,
+    byte difficulty,
     byte displayedSkinParts,
     int mainHand,
     boolean enableTextFiltering,
@@ -52,26 +70,59 @@ public record PlayClientSettings(
     int particleStatus)
     implements PlayPacket {
 
+  /** Longest locale accepted, in characters. */
+  private static final int MAX_LOCALE_LENGTH = 16;
+
+  /** Difficulty of a client that does not send one (1.8+). */
+  private static final byte NO_DIFFICULTY = 0;
+
+  /** Main hand of a client that cannot choose one (before 1.9): the right hand. */
+  private static final int RIGHT_HAND = 1;
+
+  /** Text filtering of a client that does not send it (before 1.17): off. */
+  private static final boolean TEXT_FILTERING_OFF = false;
+
+  /** Server listing of a client that does not send it (before 1.18): allowed, as in vanilla. */
+  private static final boolean SERVER_LISTING_ALLOWED = true;
+
+  /** Particle status of a client that does not send it (before 1.21.2): all particles. */
+  private static final int ALL_PARTICLES = 0;
+
   /** Codec for reading and writing play client settings packets. */
   public static final PacketCodec<PlayClientSettings> CODEC =
       new PacketCodec<>() {
         @Override
         public PlayClientSettings decode(ByteBuf buf, ProtocolVersion version) {
-          String locale = McString.read(buf, 16);
+          String locale = McString.read(buf, MAX_LOCALE_LENGTH);
           byte viewDistance = buf.readByte();
-          int chatMode = VarInt.read(buf);
+          int chatMode =
+              version.isAtLeast(ProtocolVersion.MINECRAFT_1_9)
+                  ? VarInt.read(buf)
+                  : buf.readUnsignedByte();
           boolean chatColors = buf.readBoolean();
+          byte difficulty =
+              version.isOlderThan(ProtocolVersion.MINECRAFT_1_8) ? buf.readByte() : NO_DIFFICULTY;
           byte displayedSkinParts = buf.readByte();
-          int mainHand = VarInt.read(buf);
-          boolean enableTextFiltering = buf.readBoolean();
-          boolean allowServerListings = buf.readBoolean();
+          int mainHand =
+              version.isAtLeast(ProtocolVersion.MINECRAFT_1_9) ? VarInt.read(buf) : RIGHT_HAND;
+          boolean enableTextFiltering =
+              version.isAtLeast(ProtocolVersion.MINECRAFT_1_17)
+                  ? buf.readBoolean()
+                  : TEXT_FILTERING_OFF;
+          boolean allowServerListings =
+              version.isAtLeast(ProtocolVersion.MINECRAFT_1_18)
+                  ? buf.readBoolean()
+                  : SERVER_LISTING_ALLOWED;
           int particleStatus =
-              version.isAtLeast(ProtocolVersion.MINECRAFT_1_21_2) ? VarInt.read(buf) : 0;
+              version.isAtLeast(ProtocolVersion.MINECRAFT_1_21_2)
+                  ? VarInt.read(buf)
+                  : ALL_PARTICLES;
           return new PlayClientSettings(
               locale,
               viewDistance,
               chatMode,
               chatColors,
+              difficulty,
               displayedSkinParts,
               mainHand,
               enableTextFiltering,
@@ -81,14 +132,27 @@ public record PlayClientSettings(
 
         @Override
         public void encode(PlayClientSettings packet, ByteBuf buf, ProtocolVersion version) {
-          McString.write(buf, packet.locale(), 16);
+          McString.write(buf, packet.locale(), MAX_LOCALE_LENGTH);
           buf.writeByte(packet.viewDistance());
-          VarInt.write(buf, packet.chatMode());
+          if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_9)) {
+            VarInt.write(buf, packet.chatMode());
+          } else {
+            buf.writeByte(packet.chatMode());
+          }
           buf.writeBoolean(packet.chatColors());
+          if (version.isOlderThan(ProtocolVersion.MINECRAFT_1_8)) {
+            buf.writeByte(packet.difficulty());
+          }
           buf.writeByte(packet.displayedSkinParts());
-          VarInt.write(buf, packet.mainHand());
-          buf.writeBoolean(packet.enableTextFiltering());
-          buf.writeBoolean(packet.allowServerListings());
+          if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_9)) {
+            VarInt.write(buf, packet.mainHand());
+          }
+          if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_17)) {
+            buf.writeBoolean(packet.enableTextFiltering());
+          }
+          if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_18)) {
+            buf.writeBoolean(packet.allowServerListings());
+          }
           if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_21_2)) {
             VarInt.write(buf, packet.particleStatus());
           }
