@@ -93,6 +93,7 @@ final class TestLoginContexts {
         true,
         sessionService,
         profileKeys,
+        new PlaySession(),
         registry,
         ForwardingMode.NONE,
         new byte[0],

@@ -190,7 +190,10 @@ final class BackendPlaySessionHandler implements SessionHandler {
     if (player.isPlayingOn(backendConnection)) {
       player.setEntityId(joinGame.entityId());
     }
-    forwardToClient(joinGame);
+    // From 26.2 the client takes the server's online mode from the Join Game. The backend runs
+    // offline behind the proxy: the client must see the proxy's mode instead, as before 26.2.
+    forwardToClient(
+        joinGame.withOnlineMode(player.loginContext().onlineMode(), player.protocolVersion()));
   }
 
   private void handleDisconnect() {

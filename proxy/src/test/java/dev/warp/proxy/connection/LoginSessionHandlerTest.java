@@ -19,6 +19,7 @@ package dev.warp.proxy.connection;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -63,6 +64,8 @@ import java.security.PublicKey;
 import java.security.Signature;
 import java.security.spec.X509EncodedKeySpec;
 import java.time.InstantSource;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
@@ -697,6 +700,80 @@ class LoginSessionHandlerTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Play session (26.2+)
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("play session")
+  class PlaySessionIds {
+
+    private final ServerLoginContext context = TestLoginContexts.offline();
+
+    /** The play session IDs {@link #loggedIn} received, in order. */
+    private final List<UUID> sessionIds = new ArrayList<>();
+
+    /** The length of the play session ID after the profile: a UUID from 26.2, nothing before. */
+    static Stream<Arguments> sessionIdLengths() {
+      return Stream.of(
+          Arguments.of(ProtocolVersion.MINECRAFT_26_1, 0),
+          Arguments.of(ProtocolVersion.MINECRAFT_26_2, 16),
+          Arguments.of(ProtocolVersion.MINECRAFT_26_3, 16));
+    }
+
+    @ParameterizedTest(name = "{0}: {1} bytes")
+    @MethodSource("sessionIdLengths")
+    @DisplayName("should send the play session ID after the profile from 26.2")
+    void sessionIdAfterProfile(ProtocolVersion version, int sessionIdLength) {
+      EmbeddedChannel channel = loginChannel(version, context);
+      try {
+        sendLoginStart(channel, "Steve", version);
+
+        byte[] body = nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version);
+
+        byte[] profile = offlineProfile("Steve");
+        assertEquals(profile.length + sessionIdLength, body.length);
+        assertArrayEquals(profile, Arrays.copyOf(body, profile.length));
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should share one ID among the players online together, and draw a new one after")
+    void sharedUntilEmpty() {
+      EmbeddedChannel first = loggedIn(ProtocolVersion.MINECRAFT_26_2);
+      EmbeddedChannel second = loggedIn(ProtocolVersion.MINECRAFT_26_3);
+      first.finishAndReleaseAll();
+      EmbeddedChannel third = loggedIn(ProtocolVersion.MINECRAFT_26_2);
+      second.finishAndReleaseAll();
+      third.finishAndReleaseAll();
+      EmbeddedChannel later = loggedIn(ProtocolVersion.MINECRAFT_26_3);
+      later.finishAndReleaseAll();
+
+      UUID sessionId = sessionIds.getFirst();
+      assertEquals(sessionId, sessionIds.get(1), "a player joining another");
+      assertEquals(sessionId, sessionIds.get(2), "a player joining after the first left");
+      assertNotEquals(sessionId, sessionIds.get(3), "the first player once the proxy emptied");
+    }
+
+    /** Logs {@code Steve} in, records the play session ID of its Login Success, and returns it. */
+    private EmbeddedChannel loggedIn(ProtocolVersion version) {
+      EmbeddedChannel channel = loginChannel(version, context);
+      sendLoginStart(channel, "Steve", version);
+      ByteBuf body =
+          Unpooled.wrappedBuffer(
+              nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version));
+      try {
+        body.skipBytes(body.readableBytes() - 16);
+        sessionIds.add(McUuid.read(body));
+        return channel;
+      } finally {
+        body.release();
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Pipeline
   // ---------------------------------------------------------------------------
 
@@ -833,6 +910,23 @@ class LoginSessionHandlerTest {
     try {
       VarInt.write(buf, utf8.length);
       buf.writeBytes(utf8);
+      return ByteBufUtil.getBytes(buf);
+    } finally {
+      buf.release();
+    }
+  }
+
+  /**
+   * The profile in an offline-mode Login Success from 1.20.5: the name-based UUID, the name, no
+   * property.
+   */
+  private byte[] offlineProfile(String name) {
+    ByteBuf buf = Unpooled.buffer();
+    try {
+      McUuid.write(
+          buf, UUID.nameUUIDFromBytes(("OfflinePlayer:" + name).getBytes(StandardCharsets.UTF_8)));
+      McString.write(buf, name);
+      VarInt.write(buf, 0);
       return ByteBufUtil.getBytes(buf);
     } finally {
       buf.release();

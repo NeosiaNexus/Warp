@@ -21,6 +21,7 @@ import dev.warp.api.WarpProvider;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.config.WarpConfig;
+import dev.warp.proxy.connection.PlaySession;
 import dev.warp.proxy.connection.ServerChannelInitializer;
 import dev.warp.proxy.connection.ServerLoginContext;
 import dev.warp.proxy.server.ServerRegistry;
@@ -289,6 +290,7 @@ public final class WarpServer implements Warp {
         config.compressionPassthrough(),
         service,
         profileKeys,
+        new PlaySession(),
         serverRegistry,
         config.forwardingMode(),
         config.forwardingSecret(),

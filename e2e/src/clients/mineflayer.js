@@ -71,6 +71,31 @@ function findMapper(type, test) {
 }
 
 // ---------------------------------------------------------------------------
+// Corrections to mineflayer
+// ---------------------------------------------------------------------------
+
+/** The movement packets mineflayer sends, at most one per physics tick. */
+const MOVEMENT_PACKETS = new Set(['flying', 'look', 'position', 'position_look']);
+
+/**
+ * Ends the bot's ticks with a Client Tick End, as the game does from 1.21.2 and mineflayer never
+ * does. From 26.3 the server counts the positions it receives between two of them, and kicks a
+ * player that sends a second one ("Invalid move player packet received"). A tick end right after
+ * each movement packet keeps every two of them in different ticks, as the game sends them.
+ *
+ * @param {object} client the bot's minecraft-protocol client
+ * @param {string} version the version the bot speaks
+ */
+export function endTicks(client, version) {
+  if (!minecraftData(version)?.protocol?.play?.toServer?.types?.packet_tick_end) return;
+  const write = client.write.bind(client);
+  client.write = (name, params) => {
+    write(name, params);
+    if (MOVEMENT_PACKETS.has(name) && client.state === 'play') write('tick_end', {});
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Bots
 // ---------------------------------------------------------------------------
 
@@ -111,6 +136,7 @@ export function connect({ host, port, version, username, profileKeys = null, uui
       hideErrors: true,
       logErrors: false,
     });
+    endTicks(bot._client, version);
     const handle = new Bot(bot, username);
     const fail = (why) => {
       clearTimeout(timer);

@@ -417,7 +417,12 @@ final class LoginSessionHandler implements SessionHandler {
 
     boolean strictErrorHandling = clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_5);
     LoginSuccess loginSuccess =
-        new LoginSuccess(profile.uuid(), profile.name(), profile.properties(), strictErrorHandling);
+        new LoginSuccess(
+            profile.uuid(),
+            profile.name(),
+            profile.properties(),
+            strictErrorHandling,
+            joinPlaySession());
     connection.writeAndFlush(loginSuccess);
 
     logger.info(
@@ -435,6 +440,17 @@ final class LoginSessionHandler implements SessionHandler {
       connection.setState(ProtocolState.PLAY);
       initiateBackendConnection(profile);
     }
+  }
+
+  /**
+   * Counts the player in the proxy's play session until its connection closes, and returns the
+   * session's ID (sent to 26.2+ clients).
+   */
+  private UUID joinPlaySession() {
+    PlaySession session = loginContext.playSession();
+    UUID sessionId = session.join();
+    connection.channel().closeFuture().addListener(_ -> session.leave());
+    return sessionId;
   }
 
   // ---------------------------------------------------------------------------

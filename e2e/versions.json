@@ -35,7 +35,7 @@
   },
   "tiers": {
     "pr": {
-      "description": "Every pull request (required): one passing version per protocol era, all variants on the newest.",
+      "description": "Every pull request (required): one passing version per protocol era, every variant on the newest version the bots speak natively, and the newest version.",
       "versions": [
         "1.8.8",
         "1.12.2",
@@ -44,14 +44,22 @@
         "1.20.1",
         "1.20.2",
         "1.20.4",
-        "1.21.4"
+        "1.21.4",
+        "26.1.2",
+        "26.3"
       ],
       "variants": [
         "online"
       ],
       "extraVariants": {
-        "1.21.4": [
+        "26.1.2": [
           "offline",
+          "transcode",
+          "backend-lower",
+          "backend-higher",
+          "backend-uncompressed"
+        ],
+        "26.3": [
           "transcode",
           "backend-lower"
         ]
@@ -84,6 +92,19 @@
         ],
         "1.21.4": [
           "offline",
+          "transcode",
+          "backend-lower",
+          "backend-higher",
+          "backend-uncompressed"
+        ],
+        "26.1.2": [
+          "offline",
+          "transcode",
+          "backend-lower",
+          "backend-higher",
+          "backend-uncompressed"
+        ],
+        "26.3": [
           "transcode",
           "backend-lower",
           "backend-higher",
@@ -617,8 +638,7 @@
         "channel": "ALPHA",
         "url": "https://fill-data.papermc.io/v1/objects/2ae6ae22adf417699746e0f89fc2ef6cb6ee050a5f6608cee58f0535d60b509e/paper-1.21.5-114.jar",
         "sha256": "2ae6ae22adf417699746e0f89fc2ef6cb6ee050a5f6608cee58f0535d60b509e"
-      },
-      "knownBroken": "packet ids for 1.21.5+ not audited yet (#48)"
+      }
     },
     {
       "version": "1.21.6",
@@ -630,8 +650,7 @@
         "build": 48,
         "url": "https://fill-data.papermc.io/v1/objects/35e2dfa66b3491b9d2f0bb033679fa5aca1e1fdf097e7a06a80ce8afeda5c214/paper-1.21.6-48.jar",
         "sha256": "35e2dfa66b3491b9d2f0bb033679fa5aca1e1fdf097e7a06a80ce8afeda5c214"
-      },
-      "knownBroken": "packet ids for 1.21.5+ not audited yet (#48)"
+      }
     },
     {
       "version": "1.21.8",
@@ -643,8 +662,7 @@
         "build": 60,
         "url": "https://fill-data.papermc.io/v1/objects/8de7c52c3b02403503d16fac58003f1efef7dd7a0256786843927fa92ee57f1e/paper-1.21.8-60.jar",
         "sha256": "8de7c52c3b02403503d16fac58003f1efef7dd7a0256786843927fa92ee57f1e"
-      },
-      "knownBroken": "packet ids for 1.21.5+ not audited yet (#48)"
+      }
     },
     {
       "version": "1.21.10",
@@ -656,8 +674,7 @@
         "build": 130,
         "url": "https://fill-data.papermc.io/v1/objects/158703f75a26f842ea656b3dc6d75bf3d1ec176b97a2c36384d0b80b3871af53/paper-1.21.10-130.jar",
         "sha256": "158703f75a26f842ea656b3dc6d75bf3d1ec176b97a2c36384d0b80b3871af53"
-      },
-      "knownBroken": "packet ids for 1.21.5+ not audited yet (#48)"
+      }
     },
     {
       "version": "1.21.11",
@@ -669,8 +686,7 @@
         "build": 132,
         "url": "https://fill-data.papermc.io/v1/objects/5ffef465eeeb5f2a3c23a24419d97c51afd7dbb4923ff42df9a3f58bba1ccfba/paper-1.21.11-132.jar",
         "sha256": "5ffef465eeeb5f2a3c23a24419d97c51afd7dbb4923ff42df9a3f58bba1ccfba"
-      },
-      "knownBroken": "packet ids for 1.21.5+ not audited yet (#48)"
+      }
     },
     {
       "version": "26.1.2",
@@ -682,8 +698,7 @@
         "build": 74,
         "url": "https://fill-data.papermc.io/v1/objects/1d70b1dab9cf4a6de615209a536f3a45a2186240253c428213ce2188ab95e5f7/paper-26.1.2-74.jar",
         "sha256": "1d70b1dab9cf4a6de615209a536f3a45a2186240253c428213ce2188ab95e5f7"
-      },
-      "knownBroken": "packet ids for 1.21.5+ not audited yet (#48)"
+      }
     },
     {
       "version": "26.2",
@@ -696,8 +711,7 @@
         "build": 130,
         "url": "https://fill-data.papermc.io/v1/objects/715cd6633db27b2c05ce6efd2d477330ebae8a4f668cf0459fcaf434c4720fba/paper-26.2-130.jar",
         "sha256": "715cd6633db27b2c05ce6efd2d477330ebae8a4f668cf0459fcaf434c4720fba"
-      },
-      "knownBroken": "protocol 776 not registered in Warp yet (#48)"
+      }
     },
     {
       "version": "26.3",
@@ -711,8 +725,7 @@
         "channel": "BETA",
         "url": "https://fill-data.papermc.io/v1/objects/77cdcd758777734b0b64db74974f68e56cb08637f3c36b26734842cb8521cc2e/paper-26.3-157.jar",
         "sha256": "77cdcd758777734b0b64db74974f68e56cb08637f3c36b26734842cb8521cc2e"
-      },
-      "knownBroken": "protocol 777 not registered in Warp yet (#48)"
+      }
     }
   ]
 }

@@ -66,6 +66,26 @@ describe('versions.json', () => {
     assert.ok(protocols.some((p) => features(p).profileKeys), 'no version from 1.19 to 1.19.2');
   });
 
+  it('requires the newest version, and every variant on the newest the bots speak natively, on pull requests', () => {
+    const passing = matrix.versions.filter((v) => !v.knownBroken);
+    const newest = passing.at(-1);
+    const newestNative = passing.findLast((v) => !v.via);
+    const jobs = new Map(jobsForTier(matrix, 'pr').map((job) => [job.mc, job]));
+    assert.ok(jobs.has(newest.version), `${newest.version}, the newest version that passes, is not in the pr tier`);
+    const every = Object.keys(matrix.variants).filter((name) => name !== 'defaults').sort();
+    const variants = jobs.get(newestNative.version)?.variants.split(',').sort();
+    assert.deepEqual(variants, every, `${newestNative.version}, the newest version the bots speak natively, must run every variant on pull requests`);
+  });
+
+  it('runs on main every version and variant a pull request runs', () => {
+    const full = new Map(jobsForTier(matrix, 'full').map((job) => [job.mc, new Set(job.variants.split(','))]));
+    for (const job of jobsForTier(matrix, 'pr')) {
+      for (const variant of job.variants.split(',')) {
+        assert.ok(full.get(job.mc)?.has(variant), `${job.mc} ${variant} runs on pull requests but not in the full tier`);
+      }
+    }
+  });
+
   it('says why each known-broken version or scenario fails, with an issue', () => {
     const scenarios = new Map(SCENARIOS.map((s) => [s.name, s]));
     for (const v of matrix.versions) {
