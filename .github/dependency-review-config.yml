@@ -13,11 +13,13 @@ allow-licenses:
   - Apache-2.0
   - BlueOak-1.0.0
   - BSD-2-Clause
+  - BSD-2-Clause-Views
   - BSD-3-Clause
   - BSL-1.0
   - CC-BY-4.0
   - CC0-1.0
   - ISC
+  - LicenseRef-scancode-public-domain # public domain, as ClearlyDefined reports it (aopalliance)
   - MIT
   - MIT-0
   - Python-2.0
@@ -28,17 +30,18 @@ allow-licenses:
   - W3C
   - X11
   - Zlib
-  # Weak copyleft, compatible with the GPLv3 and the AGPLv3
-  - LGPL-2.1-only
+  # Copyleft compatible with the AGPLv3. An entry accepts its version and every later one, and a
+  # dependency under "version N or later" passes through any accepted version: GPL-2.0-or-later
+  # passes as GPL-3.0, GPL-2.0-only does not.
   - LGPL-2.1-or-later
-  - LGPL-3.0-only
-  - LGPL-3.0-or-later
   - MPL-2.0
-  # Strong copyleft, compatible with the AGPLv3
-  - GPL-2.0-or-later
-  - GPL-3.0-only
   - GPL-3.0-or-later
-  - AGPL-3.0-only
   - AGPL-3.0-or-later
-  # Copyleft with a linking exception (the OpenJDK class library licence)
+  # The OpenJDK class library licence: copyleft with a linking exception
   - GPL-2.0-only WITH Classpath-exception-2.0
+
+# Reviewed exceptions, by package URL (any version unless one is given).
+allow-dependencies-licenses:
+  # e2e harness only, never distributed: declares "BSD" with no version, which ClearlyDefined
+  # reports as LicenseRef-bad-bsd.
+  - pkg:npm/vec3

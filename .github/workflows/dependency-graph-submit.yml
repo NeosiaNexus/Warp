@@ -65,8 +65,14 @@ jobs:
               ;;
           esac
 
-          shopt -s nullglob
-          snapshots=("$RUNNER_TEMP"/dependency-graph/*.json)
+          # The Gradle action uploads dependency-graph-reports/<job>.json: look in subdirectories.
+          shopt -s nullglob globstar
+          snapshots=()
+          for file in "$RUNNER_TEMP"/dependency-graph/**/*.json; do
+            if [[ -f "$file" && ! -L "$file" ]]; then
+              snapshots+=("$file")
+            fi
+          done
           if (( ${#snapshots[@]} == 0 )); then
             echo "::error::The triggering run saved no dependency graph."
             exit 1
