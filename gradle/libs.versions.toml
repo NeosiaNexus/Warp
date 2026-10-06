@@ -10,7 +10,7 @@ guava = "33.7.2-jre"
 # Utilities
 caffeine = "3.2.3"
 disruptor = "4.0.0"
-gson = "2.13.2"
+gson = "2.14.0"
 configurate = "4.2.0"
 jspecify = "1.0.0"
 
