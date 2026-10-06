@@ -16,6 +16,8 @@ on:
       - e2e/src/download.js
       - e2e/src/java.js
       - e2e/src/packet-reports.js
+      - e2e/src/proc.js
+      - e2e/src/versions.js
       - e2e/tools/packet-reports.js
       - protocol/src/test/resources/dev/warp/protocol/packet/reports/**
   schedule:
