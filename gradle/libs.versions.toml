@@ -1,8 +1,8 @@
 [versions]
 # Core
-netty = "4.2.12.Final"
+netty = "4.2.18.Final"
 adventure = "4.26.1"
-log4j = "2.25.4"
+log4j = "2.26.1"
 slf4j = "2.0.17"
 guice = "7.0.0"
 
@@ -14,7 +14,7 @@ configurate = "4.2.0"
 jspecify = "1.0.0"
 
 # Native
-netty-tcnative = "2.0.75.Final"
+netty-tcnative = "2.0.84.Final"
 
 # Code quality
 errorprone-core = "2.48.0"
