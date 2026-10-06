@@ -6,21 +6,18 @@ import { sleep } from './proc.js';
 export const LOBBY_MODE = 'creative';
 export const SURVIVAL_MODE = 'adventure';
 
-/** Proxy-side `/server` command: Warp intercepts it from 1.19.3 (signed chat commands). */
-const PROXY_COMMANDS_MIN_PROTOCOL = 761;
 /** Server switching goes through the configuration phase, introduced in 1.20.2. */
 const SWITCHING_MIN_PROTOCOL = 764;
 
 export function features(protocol) {
   return {
-    proxyCommands: protocol >= PROXY_COMMANDS_MIN_PROTOCOL,
     switching: protocol >= SWITCHING_MIN_PROTOCOL,
   };
 }
 
-/** Asks Warp where the bot is ("Servers: [lobby], survival") when the version allows it. */
+/** Asks Warp where the bot is ("Servers: [lobby], survival"); every version, through Warp only. */
 async function proxyReportsServer(ctx, bot, expected) {
-  if (!ctx.features.proxyCommands) return;
+  if (!ctx.features.proxy) return;
   const reply = await bot.command('server', /^Servers:/);
   const current = /\[(\w+)\]/.exec(reply)?.[1];
   if (current !== expected) throw new Error(`/server says ${current}, expected ${expected}`);

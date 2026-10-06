@@ -69,6 +69,31 @@ class PacketRegistryTest {
     }
 
     @Test
+    @DisplayName("should reject a bounded mapping that is not the last one")
+    void boundedMappingNotLast() {
+      assertThrows(
+          IllegalArgumentException.class,
+          () ->
+              PacketRegistry.builder()
+                  .register(
+                      StatusRequest.class,
+                      StatusRequest.CODEC,
+                      VersionMapping.map(
+                          0x00, ProtocolVersion.MINECRAFT_1_7_2, ProtocolVersion.MINECRAFT_1_8),
+                      VersionMapping.map(0x01, ProtocolVersion.MINECRAFT_1_9)));
+    }
+
+    @Test
+    @DisplayName("should reject a mapping whose last version precedes its first")
+    void emptyRange() {
+      assertThrows(
+          IllegalArgumentException.class,
+          () ->
+              VersionMapping.map(
+                  0x00, ProtocolVersion.MINECRAFT_1_12, ProtocolVersion.MINECRAFT_1_9));
+    }
+
+    @Test
     @DisplayName("should reject conflicting packet ID registrations")
     void conflictingIds() {
       assertThrows(
@@ -193,6 +218,27 @@ class PacketRegistryTest {
       // 1.9+ should use ID 0x05
       assertEquals(0x05, registry.packetId(ProtocolVersion.MINECRAFT_1_9, StatusRequest.class));
       assertEquals(0x05, registry.packetId(ProtocolVersion.MINECRAFT_1_21_4, StatusRequest.class));
+    }
+
+    @Test
+    @DisplayName("should not register a removed packet after the last version of its mapping")
+    void afterBoundedMapping() {
+      PacketRegistry registry =
+          PacketRegistry.builder()
+              .register(
+                  StatusRequest.class,
+                  StatusRequest.CODEC,
+                  VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_7_2),
+                  VersionMapping.map(
+                      0x05, ProtocolVersion.MINECRAFT_1_9, ProtocolVersion.MINECRAFT_1_12_2))
+              .build();
+
+      assertEquals(0x05, registry.packetId(ProtocolVersion.MINECRAFT_1_12_2, StatusRequest.class));
+      assertNotNull(registry.lookup(ProtocolVersion.MINECRAFT_1_12_2, 0x05));
+      assertNull(registry.lookup(ProtocolVersion.MINECRAFT_1_13, 0x05));
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> registry.packetId(ProtocolVersion.MINECRAFT_1_13, StatusRequest.class));
     }
 
     @Test
