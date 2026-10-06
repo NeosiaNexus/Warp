@@ -1,0 +1,92 @@
+name: CodeQL
+
+# Static analysis with the security-and-quality suite: the default security queries, the extended
+# ones, and the maintainability and reliability queries. Alerts land in the Security tab; on a pull
+# request, code scanning reports the alerts it introduces.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Weekly, so that new queries also run against code nobody touched.
+  schedule:
+    - cron: '17 4 * * 1'
+
+permissions: {}
+
+# One run per PR (a new push cancels the previous one); runs on main always complete.
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # CodeQL fails a language it finds no source for, so the matrix only lists the languages present
+  # in the tree: the workflows and the Java build always, JavaScript (the e2e harness) and Python
+  # (CI scripts) when there are such files.
+  languages:
+    name: Detect languages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read # list the tracked files
+    outputs:
+      matrix: ${{ steps.detect.outputs.matrix }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Detect languages
+        id: detect
+        run: |
+          languages='[{"language":"actions","build-mode":"none"},{"language":"java-kotlin","build-mode":"manual"}]'
+          add() {
+            languages=$(jq -c --arg language "$1" '. + [{language: $language, "build-mode": "none"}]' <<< "$languages")
+          }
+          if git ls-files -- '*.js' '*.cjs' '*.mjs' '*.jsx' '*.ts' '*.cts' '*.mts' '*.tsx' | grep -q .; then
+            add javascript-typescript
+          fi
+          if git ls-files -- '*.py' | grep -q .; then
+            add python
+          fi
+          echo "matrix={\"include\":$languages}" >> "$GITHUB_OUTPUT"
+          jq -r '"Languages: " + (map(.language) | join(", "))' <<< "$languages"
+
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    needs: languages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read # check out the code
+      security-events: write # upload the results to code scanning
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.languages.outputs.matrix) }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up build
+        if: ${{ matrix.build-mode == 'manual' }}
+        uses: $/.github/actions/setup-build
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-and-quality
+
+      # CodeQL extracts what the compiler sees, so every source set is compiled from scratch: no
+      # build cache, no configuration cache and a fresh daemon that CodeQL can trace.
+      - name: Compile every source set
+        if: ${{ matrix.build-mode == 'manual' }}
+        run: ./gradlew --no-daemon --no-build-cache --no-configuration-cache classes testClasses integrationTestClasses jmhClasses
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          category: /language:${{ matrix.language }}

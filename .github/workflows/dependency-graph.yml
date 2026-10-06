@@ -1,0 +1,51 @@
+name: Dependency graph
+
+# Resolves every Gradle dependency, transitive ones included (GitHub only sees the declared ones),
+# into a dependency graph snapshot. Runs of main feed Dependabot alerts; runs of a pull request feed
+# the dependency review.
+#
+# The build runs with a read-only token, so that it also works for pull requests from forks: the
+# snapshot is saved as an artifact, and dependency-graph-submit.yml submits it once this run
+# completes (the pattern documented by gradle/actions for public repositories).
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+# One run per PR (a new push cancels the previous one); runs on main always complete.
+concurrency:
+  group: dependency-graph-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  resolve:
+    name: Resolve Gradle dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # check out the code
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up build
+        uses: $/.github/actions/setup-build
+
+      # Scopes: what ships in the jar or reaches plugins through the API (the runtime classpath of
+      # the four modules) is `runtime`; tests, benchmarks and build tools are `development`. The
+      # dependency review checks licenses on the runtime scope only.
+      - name: Generate the dependency graph
+        uses: gradle/actions/dependency-submission@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        env:
+          DEPENDENCY_GRAPH_RUNTIME_INCLUDE_PROJECTS: '^:(api|protocol|proxy|jni)$'
+          DEPENDENCY_GRAPH_RUNTIME_INCLUDE_CONFIGURATIONS: '^runtimeClasspath$'
+        with:
+          dependency-graph: generate-and-upload
+          artifact-retention-days: 7
+          # setup-build already set Gradle up with this provider (only a job's first gradle/actions
+          # step does); stated anyway so that the proprietary default provider can never apply.
+          cache-provider: basic

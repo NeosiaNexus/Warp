@@ -1,0 +1,108 @@
+name: Dependency graph submission
+
+# Submits the snapshot that a "Dependency graph" run saved as an artifact. Submitting needs
+# `contents: write`, which a pull request from a fork never gets, hence this second workflow: it
+# runs from main, never checks out or runs the pull request's code, and only reads the artifact.
+#
+# The artifact of a pull request run comes from code the pull request controls, so it is checked
+# before it is submitted: a snapshot must describe the commit that triggered the run, and the ref of
+# a pull request (refs/pull/<n>/merge), never a branch. At worst a pull request can misreport its
+# own dependencies to its own dependency review; main's graph comes from main's runs only.
+on:
+  workflow_run: # zizmor: ignore[dangerous-triggers] reads a JSON artifact, never runs the pull request's code
+    workflows: [Dependency graph]
+    types: [completed]
+
+permissions: {}
+
+# Submissions for the same branch go in order; a newer one waiting replaces an older one waiting.
+concurrency:
+  group: dependency-graph-submit-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  submit:
+    name: Submit dependency graph
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read # download the artifact of the triggering run
+      contents: write # submit the snapshot to the dependency graph
+    steps:
+      - name: Download the dependency graph
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          pattern: dependency-graph_*
+          path: ${{ runner.temp }}/dependency-graph
+          merge-multiple: true
+
+      - name: Check and submit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event.workflow_run.event }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          case "$EVENT" in
+            push)
+              if [[ "$HEAD_REPOSITORY" != "$GITHUB_REPOSITORY" || "$HEAD_BRANCH" != "$DEFAULT_BRANCH" ]]; then
+                echo "::error::A push run must come from $DEFAULT_BRANCH of $GITHUB_REPOSITORY."
+                exit 1
+              fi
+              ref_pattern="^refs/heads/${DEFAULT_BRANCH}\$"
+              ;;
+            pull_request)
+              ref_pattern='^refs/pull/[0-9]+/merge$'
+              ;;
+            *)
+              echo "::error::Unexpected triggering event: $EVENT."
+              exit 1
+              ;;
+          esac
+
+          # The Gradle action uploads dependency-graph-reports/<job>.json: look in subdirectories.
+          shopt -s nullglob globstar
+          snapshots=()
+          for file in "$RUNNER_TEMP"/dependency-graph/**/*.json; do
+            if [[ -f "$file" && ! -L "$file" ]]; then
+              snapshots+=("$file")
+            fi
+          done
+          if (( ${#snapshots[@]} == 0 )); then
+            echo "::error::The triggering run saved no dependency graph."
+            exit 1
+          fi
+
+          # Every snapshot is checked before any is submitted.
+          for snapshot in "${snapshots[@]}"; do
+            name=$(basename "$snapshot")
+            # The name is printed: refuse anything but the plain names the Gradle action writes.
+            if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+              echo "::error::A snapshot has an unexpected file name; nothing submitted."
+              exit 1
+            fi
+            if ! jq -e --arg sha "$HEAD_SHA" --arg ref "$ref_pattern" \
+                '.sha == $sha and (.ref | type == "string" and test($ref))' "$snapshot" > /dev/null; then
+              echo "::error::$name does not describe $HEAD_SHA on a ref matching $ref_pattern; nothing submitted."
+              exit 1
+            fi
+          done
+
+          {
+            echo '### Dependency graph'
+            echo
+            echo '| Snapshot | Ref | Dependencies |'
+            echo '|---|---|---|'
+          } >> "$GITHUB_STEP_SUMMARY"
+          for snapshot in "${snapshots[@]}"; do
+            gh api --method POST "repos/$GITHUB_REPOSITORY/dependency-graph/snapshots" --input "$snapshot" \
+              --jq '"Submitted snapshot \(.id): \(.result) (\(.message))"'
+            # shellcheck disable=SC2016 # backticks are Markdown code spans, not command substitution
+            jq -r --arg name "$(basename "$snapshot")" \
+              '"| `\($name)` | `\(.ref)` | \([.manifests[].resolved | length] | add // 0) |"' "$snapshot" >> "$GITHUB_STEP_SUMMARY"
+          done
