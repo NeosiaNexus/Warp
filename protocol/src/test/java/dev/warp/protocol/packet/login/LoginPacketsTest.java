@@ -19,6 +19,7 @@ package dev.warp.protocol.packet.login;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -731,20 +732,20 @@ class LoginPacketsTest {
   @DisplayName("LoginSuccess error handling")
   class LoginSuccessErrors {
 
-    @Test
-    @DisplayName("should reject more than 64 properties")
-    void rejectTooManyProperties() {
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(ints = {65, -1, Integer.MIN_VALUE})
+    @DisplayName("should reject a property count above 64 or below 0")
+    void rejectPropertyCountOutOfRange(int count) {
       ByteBuf buf = Unpooled.buffer();
       try {
-        // Write UUID (128-bit)
         McUuid.write(buf, UUID.randomUUID());
-        // Write username
         McString.write(buf, "TestPlayer", 16);
-        // Write property count > 64
-        VarInt.write(buf, 65);
-        assertThrows(
-            DecoderException.class,
-            () -> LoginSuccess.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_5));
+        VarInt.write(buf, count);
+        DecoderException rejection =
+            assertThrows(
+                DecoderException.class,
+                () -> LoginSuccess.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_5));
+        assertNull(rejection.getCause(), "rejected by the codec, not by a failure");
       } finally {
         buf.release();
       }

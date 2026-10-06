@@ -52,8 +52,8 @@ public record KnownPacks(List<Pack> packs) implements ConfigPacket {
         @Override
         public KnownPacks decode(ByteBuf buf, ProtocolVersion version) {
           int count = VarInt.read(buf);
-          if (count > 128) {
-            throw new DecoderException("Too many packs: " + count + " (max 128)");
+          if (count < 0 || count > 128) {
+            throw new DecoderException("Invalid pack count: " + count + " (max 128)");
           }
           List<Pack> packs = new ArrayList<>(count);
           for (int i = 0; i < count; i++) {

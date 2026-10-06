@@ -39,6 +39,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("Config packet codecs")
 class ConfigPacketsTest {
@@ -274,15 +275,18 @@ class ConfigPacketsTest {
       }
     }
 
-    @Test
-    @DisplayName("should reject count greater than 128")
-    void rejectTooManyPacks() {
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(ints = {129, -1, Integer.MIN_VALUE})
+    @DisplayName("should reject a pack count above 128 or below 0")
+    void rejectPackCountOutOfRange(int count) {
       ByteBuf buf = Unpooled.buffer();
       try {
-        VarInt.write(buf, 129);
-        assertThrows(
-            DecoderException.class,
-            () -> KnownPacks.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_21_4));
+        VarInt.write(buf, count);
+        DecoderException rejection =
+            assertThrows(
+                DecoderException.class,
+                () -> KnownPacks.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_21_4));
+        assertNull(rejection.getCause(), "rejected by the codec, not by a failure");
       } finally {
         buf.release();
       }

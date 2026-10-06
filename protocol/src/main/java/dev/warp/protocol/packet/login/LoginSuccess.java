@@ -90,8 +90,8 @@ public record LoginSuccess(
           List<Property> properties;
           if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_19)) {
             int count = VarInt.read(buf);
-            if (count > 64) {
-              throw new DecoderException("Too many properties: " + count + " (max 64)");
+            if (count < 0 || count > 64) {
+              throw new DecoderException("Invalid property count: " + count + " (max 64)");
             }
             properties = new ArrayList<>(count);
             for (int i = 0; i < count; i++) {
