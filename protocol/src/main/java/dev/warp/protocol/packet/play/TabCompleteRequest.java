@@ -27,8 +27,8 @@ import io.netty.buffer.ByteBuf;
  * Client requests tab completion for a command or chat input ({@code C→S}).
  *
  * <p>The proxy may intercept this for custom command routing. This is the 1.13+ layout, with a
- * transaction ID; earlier versions send the text with other fields and no ID, so the packet is not
- * registered before 1.13 and encoding it for those versions fails.
+ * transaction ID; earlier versions send no ID (and, from 1.8, more fields after the text), so the
+ * packet is not registered before 1.13 and encoding it for those versions fails.
  *
  * @param transactionId a unique identifier for this completion request (1.13+)
  * @param text the partial text to complete
