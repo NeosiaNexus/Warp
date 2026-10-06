@@ -34,6 +34,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.DecoderException;
+import io.netty.handler.codec.EncoderException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -190,6 +191,104 @@ class PlayPacketsTest {
       } finally {
         buf.release();
       }
+    }
+
+    /** "MC|Brand" then "warp", as node-minecraft-protocol 1.68.0 writes the body for 1.7.10. */
+    private static final String BRAND_1_7 = "084d437c4272616e64" + "0004" + "77617270";
+
+    /** The same message for 1.8.8: the payload runs to the end, without a length. */
+    private static final String BRAND_1_8 = "084d437c4272616e64" + "77617270";
+
+    static Stream<ProtocolVersion> legacyVersions() {
+      return ProtocolVersion.values().stream()
+          .filter(version -> version.isOlderThan(ProtocolVersion.MINECRAFT_1_8));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("legacyVersions")
+    @DisplayName("should put the payload behind a short length on 1.7")
+    void shortLengthOn17(ProtocolVersion version) {
+      PlayPluginMessage brand = new PlayPluginMessage("MC|Brand", ascii("warp"));
+
+      assertEquals(BRAND_1_7, HexFormat.of().formatHex(encode(brand, version)));
+      PlayPluginMessage decoded = decode(HexFormat.of().parseHex(BRAND_1_7), version);
+      assertEquals("MC|Brand", decoded.channel());
+      assertArrayEquals(ascii("warp"), decoded.data());
+    }
+
+    @Test
+    @DisplayName("should run the payload to the end of the packet from 1.8")
+    void restOfPacketFrom18() {
+      PlayPluginMessage brand = new PlayPluginMessage("MC|Brand", ascii("warp"));
+
+      assertEquals(
+          BRAND_1_8, HexFormat.of().formatHex(encode(brand, ProtocolVersion.MINECRAFT_1_8)));
+      assertArrayEquals(
+          ascii("warp"),
+          decode(HexFormat.of().parseHex(BRAND_1_8), ProtocolVersion.MINECRAFT_1_8).data());
+    }
+
+    @Test
+    @DisplayName("should extend the 1.7 length to three bytes from 32 KiB, as Forge does")
+    void forgeExtendedLength() {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_7_6;
+
+      // 32767: the largest two-byte length. 32768 and 40000: low 15 bits with the top bit set,
+      // then the bits above (40000 = 0x9C40: 0x1C40 | 0x8000, then 1).
+      assertEquals("7fff", lengthPrefix(32_767, version));
+      assertEquals("800001", lengthPrefix(32_768, version));
+      assertEquals("9c4001", lengthPrefix(40_000, version));
+      byte[] payload = new byte[40_000];
+      payload[39_999] = 7;
+      PlayPluginMessage decoded =
+          decode(encode(new PlayPluginMessage("FML|HS", payload), version), version);
+      assertArrayEquals(payload, decoded.data());
+    }
+
+    @Test
+    @DisplayName("should refuse a 1.7 payload larger than Forge allows, or longer than the packet")
+    void legacyBounds() {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_7_2;
+      byte[] tooLarge = new byte[PlayPluginMessage.MAX_LEGACY_DATA_LENGTH + 1];
+
+      assertThrows(
+          EncoderException.class, () -> encode(new PlayPluginMessage("x", tooLarge), version));
+      // "x", a length of 5, then 4 bytes.
+      assertThrows(
+          DecoderException.class,
+          () -> decode(HexFormat.of().parseHex("0178" + "0005" + "77617270"), version));
+    }
+
+    /** The bytes the codec writes between the channel and the payload, in hex. */
+    private String lengthPrefix(int length, ProtocolVersion version) {
+      String hex =
+          HexFormat.of().formatHex(encode(new PlayPluginMessage("", new byte[length]), version));
+      return hex.substring(2, hex.length() - 2 * length); // after the empty channel's 00
+    }
+
+    private byte[] encode(PlayPluginMessage message, ProtocolVersion version) {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        PlayPluginMessage.CODEC.encode(message, buf, version);
+        return ByteBufUtil.getBytes(buf);
+      } finally {
+        buf.release();
+      }
+    }
+
+    private PlayPluginMessage decode(byte[] body, ProtocolVersion version) {
+      ByteBuf buf = Unpooled.wrappedBuffer(body);
+      try {
+        PlayPluginMessage decoded = PlayPluginMessage.CODEC.decode(buf, version);
+        assertFalse(buf.isReadable(), "the whole body is read");
+        return decoded;
+      } finally {
+        buf.release();
+      }
+    }
+
+    private static byte[] ascii(String text) {
+      return text.getBytes(StandardCharsets.US_ASCII);
     }
   }
 
