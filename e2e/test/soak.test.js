@@ -195,7 +195,7 @@ describe('soak report', () => {
     assert.match(markdown, /^\| \| \*\*warm-up\*\* \(5:00\) \|$/m);
     assert.match(markdown, /^\| Joins \(p50 \/ p95\) \| 40 \(900 \/ 1500 ms\) \|$/m);
     assert.match(markdown, /^\| Server switches \(p50 \/ p95\) \| 120 \(180 \/ 420 ms\) \|$/m);
-    assert.match(markdown, /tc netem `delay 50ms 20ms loss 1%` on Warp's port, both ways: 990,000 packets \(1907 MiB\), 10,000 dropped \(1\.00 %\)/);
+    assert.match(markdown, /tc netem `delay 50ms 20ms loss 1%` on Warp's ports, both ways: 990,000 packets \(1907 MiB\), 10,000 dropped \(1\.00 %\)/);
   });
 
   it('lists what failed', () => {

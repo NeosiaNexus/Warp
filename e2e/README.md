@@ -135,11 +135,11 @@ hung shutdown), a soak fails when:
 
 Growth is measured between the medians of the first and last thirds of the steady phase, and is
 only sustained if the resource was still growing in the last third: a pool that fills up early and
-stays full is not a leak. A soak shorter than about 5 minutes is too short for the live heap check,
-which it then skips. The limits come from the nightly soak of a clean Warp on a GitHub runner: over
-its 25 minutes of steady state, resident memory grows by about 7 MiB (the JIT at work) and nothing
+stays full is not a leak. A soak of only a few minutes can leave a third without a live heap sample
+(one every 30 s): that check is then skipped. The limits come from the nightly soak of a clean Warp on a GitHub runner: over
+its 25 minutes of steady state, resident memory grows by 7 to 13 MiB (the JIT at work) and nothing
 else grows at all, varying by about 1 MiB of live heap, 2 file descriptors and 3 threads (those of
-the HTTP client of online mode). The limits leave several times that.
+the HTTP client of online mode). The limits leave more than twice that.
 
 A trend only shows a leak big enough to stand out of the noise. The objects check does not depend
 on one: a class histogram of Warp (`jcmd GC.class_histogram`, after a full GC) is taken at the

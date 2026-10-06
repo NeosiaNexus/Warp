@@ -502,8 +502,9 @@ const endGroup = () => GITHUB && console.log('::endgroup::');
 
 // ---------------------------------------------------------------------------
 
+// Handled, so that the run still cleans up (servers, netem) as it exits; SIGHUP: its terminal closed.
 let interrupted = false;
-for (const signal of ['SIGINT', 'SIGTERM']) {
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(signal, () => {
     if (interrupted) process.exit(130);
     interrupted = true;

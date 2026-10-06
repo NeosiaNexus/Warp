@@ -582,7 +582,7 @@ export function soakMarkdown(result, variant) {
   if (soak.network) {
     const n = soak.network;
     const loss = n.packets ? ` (${((100 * n.drops) / (n.packets + n.drops)).toFixed(2)} %)` : '';
-    lines.push(`**Network:** tc netem \`${n.spec}\` on Warp's port, both ways: ${count(n.packets)} packets (${amount(n.bytes / 1024 / 1024, 'MiB')}), ${count(n.drops)} dropped${loss}.`, '');
+    lines.push(`**Network:** tc netem \`${n.spec}\` on Warp's ports, both ways: ${count(n.packets)} packets (${amount(n.bytes / 1024 / 1024, 'MiB')}), ${count(n.drops)} dropped${loss}.`, '');
   }
   if (soak.problems.length || logFailures.length) {
     lines.push('<details open><summary><b>Problems</b></summary>', '');
