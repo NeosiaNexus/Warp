@@ -62,7 +62,7 @@ class ClientKeepAliveTest {
   /** Interval of Warp's keep-alive task. */
   private static final long INTERVAL_SECONDS = 15;
 
-  /** Round trips per test: two minutes of play, far past the 30 s keep-alive time-out. */
+  /** Round trips per test, each one a full keep-alive interval on the channel's clock. */
   private static final int ROUND_TRIPS = 8;
 
   private final EmbeddedChannel warpSide = new EmbeddedChannel();
