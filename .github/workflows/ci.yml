@@ -103,7 +103,8 @@ jobs:
   # Bytes allocated per packet on the hot path, against protocol/src/jmh/alloc-baseline.json, then
   # one short run of every benchmark (bin/bench-guard.sh). Counted with escape analysis off, the
   # allocation repeats within 0.3% from one run to the next, so unlike timings it can gate pull
-  # requests.
+  # requests. A job of its own: as steps of Build & test it would delay E2E, so CI OK, by 1.5
+  # minutes; apart, it costs 2 runner minutes more (it compiles again) and no wait (measured on #76).
   allocation-guard:
     name: Allocation guard
     needs: changes
