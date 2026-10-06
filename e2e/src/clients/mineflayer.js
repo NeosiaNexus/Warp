@@ -110,8 +110,8 @@ const CONFIGURATION_PHASE = 764;
  * UUID from 1.8, by name on 1.7. mineflayer's `bot.players` cannot show what a server switch left
  * behind, as it starts over at every Join Game. The client keeps its tab list for the whole
  * connection before 1.20.2 (the player info map of its play packet listener, which a Join Game does
- * not replace), and gets a new one with each configuration phase from 1.20.2, which a Join Game
- * ends.
+ * not replace). From 1.20.2 it gets a new one with each configuration phase: the model starts over
+ * at the Join Game that follows it, before any player info of the new server.
  */
 export class TabList {
   /** @param {number} protocol the protocol the client speaks */
