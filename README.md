@@ -226,8 +226,8 @@ The API is designed around:
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for build setup, code style, commit conventions, CI and the
-end-to-end tests. Everyone taking part is expected to follow the
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build setup, code style, commit conventions, CI, the
+security checks and the end-to-end tests. Everyone taking part is expected to follow the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
 - [Report a bug](https://github.com/NeosiaNexus/Warp/issues/new?template=bug_report.yml)

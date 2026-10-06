@@ -70,15 +70,16 @@ type(scope): description
 
 ## Continuous Integration
 
-Every pull request runs the checks below. **CI OK** aggregates them: it is the one check that must
-be green before merging.
+Every pull request runs the checks below. **CI OK** aggregates the build, the end-to-end tests and
+the workflow lint into one check. It must be green before merging, as must **Conventional Commits**
+and the security checks of the [next section](#security-and-dependencies).
 
 | Check | What it verifies |
 |---|---|
 | **Build & test** | Spotless formatting, compilation with ErrorProne and NullAway, unit and integration tests, Checkstyle, JaCoCo coverage, shadow jar. Failed tests are annotated on the diff; the run summary shows test and coverage tables |
 | **E2E** | Real clients through Warp to real servers, one Minecraft version per era (see [End-to-end tests](#end-to-end-tests)) |
 | **Lint workflows** | [actionlint](https://github.com/rhysd/actionlint) (with ShellCheck on `run:` scripts) and [zizmor](https://docs.zizmor.sh) at its strictest persona |
-| **PR title** | Conventional Commits format (the title becomes the squash commit) |
+| **Conventional Commits** | The PR title's format (the title becomes the squash commit) |
 
 Pull requests that only touch documentation skip the build and the end-to-end tests.
 
@@ -100,6 +101,10 @@ Pull requests also run these checks, each in its own workflow and outside **CI O
 | **CodeQL** | Static analysis with the `security-and-quality` queries: the Java code as the build compiles it (every source set), the workflows and actions, and any JavaScript or Python. Alerts land in the Security tab; on a pull request, code scanning reports the ones it introduces |
 | **Dependency review** | Fails on a known vulnerability (moderate or above) in any dependency the pull request adds or changes, and on a runtime dependency whose license [`.github/dependency-review-config.yml`](.github/dependency-review-config.yml) does not allow |
 | **Dependency graph** | Resolves every Gradle dependency, transitive ones included, for the dependency review (and, on `main`, for Dependabot alerts) |
+
+**CodeQL** (its `actions` and `java-kotlin` analyses, which run on every pull request) and
+**Dependency review** must pass before merging. Code scanning also blocks a pull request that
+introduces a CodeQL alert of error severity or a security alert of high or critical severity.
 
 [OpenSSF Scorecard](https://scorecard.dev) grades the repository's supply-chain practices on every
 push to `main` and weekly; its findings land in the Security tab too.
