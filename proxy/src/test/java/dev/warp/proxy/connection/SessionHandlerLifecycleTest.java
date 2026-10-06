@@ -27,6 +27,7 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import dev.warp.api.server.ServerInfo;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.netty.FrameDecoder;
@@ -590,20 +591,11 @@ class SessionHandlerLifecycleTest {
   }
 
   /**
-   * Creates a test {@link BackendConnection} wrapping the given MinecraftConnection.
-   *
-   * <p>Uses reflection to invoke the private constructor since {@link BackendConnection} only
-   * exposes a {@code connect()} factory that requires a real TCP connection.
+   * Creates a test {@link BackendConnection} wrapping the given MinecraftConnection, without the
+   * TCP connection {@link BackendConnection#connect} would open.
    */
   private static BackendConnection createTestBackendConnection(MinecraftConnection backendConn) {
-    try {
-      var ctor =
-          BackendConnection.class.getDeclaredConstructor(
-              MinecraftConnection.class, InetSocketAddress.class);
-      ctor.setAccessible(true);
-      return ctor.newInstance(backendConn, new InetSocketAddress("localhost", 25565));
-    } catch (ReflectiveOperationException e) {
-      throw new AssertionError("Failed to create test BackendConnection", e);
-    }
+    return new BackendConnection(
+        backendConn, new ServerInfo("lobby", new InetSocketAddress("localhost", 25565)));
   }
 }

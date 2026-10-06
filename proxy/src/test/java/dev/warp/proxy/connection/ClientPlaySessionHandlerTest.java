@@ -22,9 +22,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import dev.warp.api.server.ServerInfo;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McString;
@@ -55,6 +57,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -162,19 +165,21 @@ class ClientPlaySessionHandlerTest {
 
     @ParameterizedTest(name = "protocol {0}")
     @ValueSource(ints = {47, 340, 754, 758, 759, 760, 763})
-    @DisplayName("should answer instead of switching a client that has no configuration phase")
-    void noSwitchBefore1202(int protocol) {
+    @DisplayName("should try a respawn switch on a client that has no configuration phase")
+    void respawnSwitchBefore1202(int protocol) {
       ProtocolVersion version = versionOf(protocol);
       Session session = join(version, Map.of("lobby", LOBBY, "survival", SURVIVAL));
+      // The survival server is unreachable (see unreachableBackends): the switch is cancelled at
+      // once, so this checks the attempt; RespawnSwitchTest follows a switch that succeeds.
+      unreachableBackends(session);
 
       session.handler().handle(command(version, "server survival"));
 
-      byte[] content =
-          TextComponent.plainText("Switching servers needs Minecraft 1.20.2 or newer.", version);
+      byte[] content = TextComponent.plainText("Could not connect to survival.", version);
       byte[] answer = session.toPlayer();
       assertArrayEquals(content, Arrays.copyOfRange(answer, 1, 1 + content.length));
       assertNull(session.nextToPlayer(), "no StartConfiguration");
-      assertFalse(session.player().isSwitching());
+      assertFalse(session.player().isSwitching(), "the player stays on the lobby");
       assertNull(session.toBackend(), "the proxy's own command never reaches the backend");
     }
 
@@ -337,21 +342,21 @@ class ClientPlaySessionHandlerTest {
     return channel;
   }
 
+  /**
+   * Makes every backend the player connects to unreachable: an NIO channel cannot register with the
+   * embedded event loop the client connection runs on, so connecting fails at once.
+   */
+  private static void unreachableBackends(Session session) {
+    doReturn(NioSocketChannel.class).when(session.player().loginContext()).channelClass();
+  }
+
   private static MinecraftConnection connection(EmbeddedChannel channel) {
     return (MinecraftConnection)
         channel.pipeline().get(ServerChannelInitializer.CONNECTION_HANDLER);
   }
 
   private static BackendConnection backendConnection(MinecraftConnection connection) {
-    try {
-      var constructor =
-          BackendConnection.class.getDeclaredConstructor(
-              MinecraftConnection.class, InetSocketAddress.class);
-      constructor.setAccessible(true);
-      return constructor.newInstance(connection, LOBBY);
-    } catch (ReflectiveOperationException e) {
-      throw new LinkageError("Failed to create test BackendConnection", e);
-    }
+    return new BackendConnection(connection, new ServerInfo("lobby", LOBBY));
   }
 
   private static ProtocolVersion versionOf(int protocol) {

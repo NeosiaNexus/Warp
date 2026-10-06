@@ -34,7 +34,7 @@ and one whose default server is a closed port) and run the scenarios:
 | `status` | Server list ping through Warp, advertising the protocol the bot speaks (else a client lists Warp as incompatible) |
 | `login` | Join, receive chunks, land on the lobby; `/server` answers |
 | `keepalive` | One bot stays connected through the whole run (at least 65 s, past Warp's first keep-alive time-out check) |
-| `switching` | Six `/server` switches back and forth (1.20.2+, configuration phase) |
+| `switching` | Six `/server` switches back and forth (configuration phase from 1.20.2, Join Game and Respawn before) |
 | `crowd` | Ten bots at once, then half of them switch server at the same moment |
 | `fallback-unreachable` | Default server down: the player lands on the next one |
 | `fallback-rejected` | Lobby refuses the login (whitelist): the player lands on survival |

@@ -38,9 +38,10 @@ import org.jspecify.annotations.Nullable;
  * VersionMapping.map(0x0C, MINECRAFT_1_12)    // ID 12 from 1.12 (overrides 11)
  * }</pre>
  *
- * <p>A packet that was later removed from the protocol ends with a bounded mapping, {@link
- * #map(int, ProtocolVersion, ProtocolVersion)}, and is not registered after its {@code maxVersion}.
- * Only the last mapping of a packet may be bounded.
+ * <p>A packet that is not registered past some version, because it was removed from the protocol or
+ * because the proxy no longer handles it, ends with a bounded mapping, {@link #map(int,
+ * ProtocolVersion, ProtocolVersion)}, and is not registered after its {@code maxVersion}. Only the
+ * last mapping of a packet may be bounded.
  *
  * @param packetId the numeric packet ID on the wire
  * @param minVersion the first protocol version this ID applies to (inclusive)
@@ -75,12 +76,12 @@ public record VersionMapping(
   }
 
   /**
-   * Creates the last mapping of a packet that was removed from the protocol after {@code
-   * maxVersion}.
+   * Creates the last mapping of a packet that is not registered after {@code maxVersion}: removed
+   * from the protocol, or no longer handled by the proxy.
    *
    * @param packetId the numeric packet ID on the wire
    * @param minVersion the first protocol version this ID applies to
-   * @param maxVersion the last protocol version the packet exists in
+   * @param maxVersion the last protocol version the packet is registered for
    * @return a new mapping
    */
   public static VersionMapping map(

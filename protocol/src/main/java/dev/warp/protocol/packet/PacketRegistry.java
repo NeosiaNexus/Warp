@@ -146,8 +146,8 @@ public final class PacketRegistry {
    *
    * <p>Registrations use version-range mappings: each {@link VersionMapping} declares a packet ID
    * that applies from its {@code minVersion} until the next mapping overrides it, or until the
-   * {@code maxVersion} of the last mapping for a packet removed from the protocol. This range-based
-   * approach (proven by Velocity and Gate) compactly handles ID changes across Minecraft versions.
+   * {@code maxVersion} of a packet's last mapping when it has one. This range-based approach
+   * (proven by Velocity and Gate) compactly handles ID changes across Minecraft versions.
    */
   public static final class Builder {
     private final List<Registration<?>> registrations = new ArrayList<>();
@@ -275,7 +275,7 @@ public final class PacketRegistry {
     private static int resolvePacketId(ProtocolVersion version, VersionMapping[] mappings) {
       ProtocolVersion lastVersion = mappings[mappings.length - 1].maxVersion();
       if (lastVersion != null && version.isNewerThan(lastVersion)) {
-        return -1; // removed from the protocol after its last version
+        return -1; // not registered after its last version
       }
       int packetId = -1;
       for (VersionMapping mapping : mappings) {

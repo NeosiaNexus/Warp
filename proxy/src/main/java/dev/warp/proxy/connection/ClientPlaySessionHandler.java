@@ -22,8 +22,10 @@ import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
+import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatCommand;
+import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
@@ -31,12 +33,16 @@ import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPacket;
 import dev.warp.protocol.packet.play.PlayPluginMessage;
+import dev.warp.protocol.packet.play.PlayerInfo;
+import dev.warp.protocol.packet.play.PlayerInfoRemove;
+import dev.warp.protocol.packet.play.PlayerInfoUpdate;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.Respawn;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
+import dev.warp.protocol.packet.play.TabListHeaderFooter;
 import dev.warp.protocol.packet.play.Transfer;
 import dev.warp.proxy.server.ServerRegistry;
 
@@ -122,7 +128,13 @@ final class ClientPlaySessionHandler implements SessionHandler {
           StartConfiguration _,
           Transfer _,
           BundleDelimiter _,
-          TabCompleteResponse _ -> {}
+          TabCompleteResponse _,
+          PlayerInfo _,
+          PlayerInfoUpdate _,
+          PlayerInfoRemove _,
+          BossBar _,
+          TabListHeaderFooter _,
+          ClearTitles _ -> {}
     }
   }
 
@@ -223,12 +235,6 @@ final class ClientPlaySessionHandler implements SessionHandler {
       return;
     }
 
-    if (!player.protocolVersion().supportsConfigurationState()) {
-      // Switching goes through the configuration phase, which clients only have from 1.20.2 (#44).
-      player.sendSystemMessage("Switching servers needs Minecraft 1.20.2 or newer.");
-      return;
-    }
-
     player.switchServer(target);
   }
 
@@ -256,9 +262,11 @@ final class ClientPlaySessionHandler implements SessionHandler {
   private void handleAcknowledgeConfiguration() {
     // Client acknowledges re-entering configuration state.
     ServerInfo target = player.pendingSwitchTarget();
-    if (target != null && player.isSwitching()) {
+    if (target != null
+        && player.isSwitching()
+        && player.serverSwitch() instanceof ReconfigurationSwitch reconfiguration) {
       // Proxy-initiated server switch.
-      player.onSwitchAcknowledged(target);
+      reconfiguration.acknowledged(target);
     } else {
       // Backend-initiated reconfiguration (e.g. data pack reload).
       // Transition both sides to CONFIG state and relay config packets.
