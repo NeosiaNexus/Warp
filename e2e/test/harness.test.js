@@ -61,6 +61,11 @@ describe('versions.json', () => {
     assert.ok(protocols.some((p) => p >= CONFIGURATION_PHASE), 'no version from 1.20.2');
   });
 
+  it('tests the profile key login of 1.19 to 1.19.2 on pull requests', () => {
+    const protocols = jobsForTier(matrix, 'pr').map((job) => job.protocol);
+    assert.ok(protocols.some((p) => features(p).profileKeys), 'no version from 1.19 to 1.19.2');
+  });
+
   it('requires the newest version, and every variant on the newest the bots speak natively, on pull requests', () => {
     const passing = matrix.versions.filter((v) => !v.knownBroken);
     const newest = passing.at(-1);
@@ -111,9 +116,14 @@ describe('variants', () => {
 
 describe('scenario features', () => {
   it('switches servers on every version', () => {
-    assert.deepEqual(features(47), { switching: true });
-    assert.deepEqual(features(763), { switching: true });
-    assert.deepEqual(features(764), { switching: true });
+    for (const protocol of [47, 763, 764]) assert.equal(features(protocol).switching, true, String(protocol));
+  });
+
+  it('logs in with a profile key on 1.19 to 1.19.2 only, the versions whose Login Start carries one', () => {
+    assert.deepEqual(
+      [758, 759, 760, 761].map((protocol) => features(protocol).profileKeys),
+      [false, true, true, false],
+    );
   });
 });
 

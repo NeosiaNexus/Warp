@@ -21,6 +21,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
@@ -33,25 +39,51 @@ import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.StateRegistry;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.handshake.Handshake;
+import dev.warp.protocol.packet.login.EncryptionRequest;
 import dev.warp.protocol.packet.login.LoginAcknowledged;
 import dev.warp.protocol.packet.login.LoginDisconnect;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.play.PlayDisconnect;
+import dev.warp.proxy.auth.AuthenticationException;
+import dev.warp.proxy.auth.MojangSessionService;
+import dev.warp.proxy.auth.ProfileKeys;
 
+import java.math.BigInteger;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.KeyFactory;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.MessageDigest;
+import java.security.PrivateKey;
+import java.security.PublicKey;
+import java.security.Signature;
+import java.security.spec.X509EncodedKeySpec;
+import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
+
+import javax.crypto.Cipher;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
+import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -169,6 +201,508 @@ class LoginSessionHandlerTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Profile keys (1.19 to 1.19.2)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * A 1.19 to 1.19.2 client logged in to a Microsoft account sends its chat signing key in Login
+   * Start, then signs the verify token with it instead of encrypting it. Everything the client
+   * sends is written out here, independently of the codecs under test.
+   */
+  @Nested
+  @DisplayName("profile keys (1.19 to 1.19.2)")
+  class ProfileKeyLogin {
+
+    /** Plays Mojang: signs the players' profile keys. */
+    private static final KeyPair SIGNER = generateRsaKeyPair();
+
+    /** The player's chat signing key. */
+    private static final KeyPair PLAYER = generateRsaKeyPair();
+
+    private static final UUID STEVE = UUID.fromString("f81d4fae-7dec-11d0-a765-00a0c91e6bf6");
+
+    /**
+     * The reason of every refusal over the key: the only one that 1.19, 1.19.1 and 1.19.2 clients
+     * all translate.
+     */
+    private static final String REFUSED_KEY =
+        "{\"translate\":\"multiplayer.disconnect.invalid_public_key_signature\"}";
+
+    private final ProfileKeys profileKeys =
+        new ProfileKeys(SIGNER.getPublic(), InstantSource.system());
+
+    private final MojangSessionService sessionService = mock(MojangSessionService.class);
+
+    /** The thread that authenticated the player, once it has. */
+    private final AtomicReference<Thread> authThread = new AtomicReference<>();
+
+    @BeforeEach
+    void authenticateSteve() throws AuthenticationException {
+      when(sessionService.hasJoined(eq("Steve"), anyString()))
+          .thenAnswer(
+              invocation -> {
+                authThread.set(Thread.currentThread());
+                return new GameProfile(STEVE, "Steve", List.of());
+              });
+    }
+
+    static Stream<ProtocolVersion> profileKeyVersions() {
+      return Stream.of(
+          ProtocolVersion.MINECRAFT_1_19,
+          ProtocolVersion.MINECRAFT_1_19_1,
+          ProtocolVersion.MINECRAFT_1_19_2);
+    }
+
+    static Stream<ProtocolVersion> linkedKeyVersions() {
+      return Stream.of(ProtocolVersion.MINECRAFT_1_19_1, ProtocolVersion.MINECRAFT_1_19_2);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("profileKeyVersions")
+    @DisplayName("should log in a client that signs the verify token with its profile key")
+    void logsInWithSignedVerifyToken(ProtocolVersion version) throws Exception {
+      EmbeddedChannel channel = onlineChannel(version);
+      try {
+        sendLoginStart(channel, "Steve", version, validKey(version, STEVE), uuidFor(version));
+        EncryptionRequest request = encryptionRequest(channel, version);
+        byte[] secret = sharedSecret();
+
+        sendSignedResponse(channel, request, secret, 0x0123_4567_89AB_CDEFL, PLAYER.getPrivate());
+        ByteBuf out = awaitLogin(channel, secret);
+        try {
+          LoginSuccess success = decode(LoginSuccess.CODEC, out, LoginSuccess.class, version);
+
+          assertEquals(STEVE, success.uuid());
+          assertEquals("Steve", success.username());
+          verify(sessionService).hasJoined("Steve", serverHash(secret, request.publicKey()));
+        } finally {
+          out.release();
+        }
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("linkedKeyVersions")
+    @DisplayName("should refuse a key signed for another player than the one who authenticates")
+    void refusesKeyOfAnotherPlayer(ProtocolVersion version) throws Exception {
+      UUID other = UUID.fromString("069a79f4-44e9-4726-a5be-fca90e38aaf5");
+      EmbeddedChannel channel = onlineChannel(version);
+      try {
+        sendLoginStart(channel, "Steve", version, validKey(version, other), other);
+        EncryptionRequest request = encryptionRequest(channel, version);
+        byte[] secret = sharedSecret();
+
+        sendSignedResponse(channel, request, secret, 42L, PLAYER.getPrivate());
+        ByteBuf out = awaitLogin(channel, secret);
+        try {
+          byte[] reason = frameBody(out, ProtocolState.LOGIN, LoginDisconnect.class, version);
+
+          assertArrayEquals(jsonString(REFUSED_KEY), reason);
+          assertClosed(channel);
+        } finally {
+          out.release();
+        }
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("profileKeyVersions")
+    @DisplayName("should refuse an expired key before asking for encryption")
+    void refusesExpiredKey(ProtocolVersion version) {
+      long expired = System.currentTimeMillis() - 60_000;
+      byte[] key = keyOnWire(version, STEVE, expired, SIGNER.getPrivate());
+
+      assertRefusedAtLoginStart(version, key, uuidFor(version), REFUSED_KEY);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("profileKeyVersions")
+    @DisplayName("should refuse a key that Mojang did not sign")
+    void refusesForgedKey(ProtocolVersion version) {
+      byte[] key = keyOnWire(version, STEVE, tomorrow(), PLAYER.getPrivate());
+
+      assertRefusedAtLoginStart(version, key, uuidFor(version), REFUSED_KEY);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("linkedKeyVersions")
+    @DisplayName("should refuse a 1.19.1+ key sent without the UUID it is signed for")
+    void refusesLinkedKeyWithoutUuid(ProtocolVersion version) {
+      assertRefusedAtLoginStart(version, validKey(version, STEVE), null, REFUSED_KEY);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("profileKeyVersions")
+    @DisplayName("should refuse a verify token signed with another salt")
+    void refusesBadTokenSignature(ProtocolVersion version) throws Exception {
+      EmbeddedChannel channel = onlineChannel(version);
+      try {
+        sendLoginStart(channel, "Steve", version, validKey(version, STEVE), uuidFor(version));
+        EncryptionRequest request = encryptionRequest(channel, version);
+
+        byte[] signature = signToken(PLAYER.getPrivate(), request.verifyToken(), 1L);
+        sendEncryptionResponse(
+            channel, rsaEncrypt(request, sharedSecret()), signedToken(2L, signature));
+
+        assertRefusedPlainText(channel, version, "Invalid verify token signature");
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("profileKeyVersions")
+    @DisplayName("should refuse an encrypted verify token from a client that sent a key")
+    void refusesEncryptedTokenWithKey(ProtocolVersion version) throws Exception {
+      EmbeddedChannel channel = onlineChannel(version);
+      try {
+        sendLoginStart(channel, "Steve", version, validKey(version, STEVE), uuidFor(version));
+        EncryptionRequest request = encryptionRequest(channel, version);
+
+        sendEncryptionResponse(
+            channel,
+            rsaEncrypt(request, sharedSecret()),
+            encryptedToken(version, rsaEncrypt(request, request.verifyToken())));
+
+        assertRefusedPlainText(channel, version, "Verify token mismatch");
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("profileKeyVersions")
+    @DisplayName("should refuse a signed verify token from a client that sent no key")
+    void refusesSignedTokenWithoutKey(ProtocolVersion version) throws Exception {
+      EmbeddedChannel channel = onlineChannel(version);
+      try {
+        sendLoginStart(channel, "Steve", version, null, uuidFor(version));
+        EncryptionRequest request = encryptionRequest(channel, version);
+
+        sendSignedResponse(channel, request, sharedSecret(), 42L, PLAYER.getPrivate());
+
+        assertRefusedPlainText(channel, version, "Invalid verify token signature");
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    static Stream<ProtocolVersion> versionsAroundProfileKeys() {
+      return Stream.of(
+          ProtocolVersion.MINECRAFT_1_8,
+          ProtocolVersion.MINECRAFT_1_18_2,
+          ProtocolVersion.MINECRAFT_1_19,
+          ProtocolVersion.MINECRAFT_1_19_2,
+          ProtocolVersion.MINECRAFT_1_19_3,
+          ProtocolVersion.latest());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versionsAroundProfileKeys")
+    @DisplayName("should log in a client without a key that encrypts the verify token")
+    void logsInWithEncryptedVerifyToken(ProtocolVersion version) throws Exception {
+      EmbeddedChannel channel = onlineChannel(version);
+      try {
+        sendLoginStart(channel, "Steve", version, null, uuidFor(version));
+        EncryptionRequest request = encryptionRequest(channel, version);
+        byte[] secret = sharedSecret();
+
+        sendEncryptionResponse(
+            channel,
+            rsaEncrypt(request, secret),
+            encryptedToken(version, rsaEncrypt(request, request.verifyToken())));
+        ByteBuf out = awaitLogin(channel, secret);
+        try {
+          LoginSuccess success = decode(LoginSuccess.CODEC, out, LoginSuccess.class, version);
+
+          assertEquals(STEVE, success.uuid());
+        } finally {
+          out.release();
+        }
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    static Stream<Arguments> keysIgnoredOffline() {
+      return profileKeyVersions()
+          .flatMap(
+              version ->
+                  Stream.of(
+                      Arguments.of(version, "valid", SIGNER.getPrivate(), tomorrow()),
+                      Arguments.of(version, "forged", PLAYER.getPrivate(), tomorrow()),
+                      Arguments.of(version, "expired", SIGNER.getPrivate(), yesterday())));
+    }
+
+    @ParameterizedTest(name = "{0}, {1} key")
+    @MethodSource("keysIgnoredOffline")
+    @DisplayName("should ignore the key in offline mode, as vanilla 1.19.1+ does")
+    void ignoresKeyOffline(
+        ProtocolVersion version, String what, PrivateKey signer, long expiresAt) {
+      EmbeddedChannel channel = loginChannel(version, TestLoginContexts.offline(profileKeys));
+      try {
+        byte[] key = keyOnWire(version, STEVE, expiresAt, signer);
+        sendLoginStart(channel, "Steve", version, key, uuidFor(version));
+
+        byte[] body = nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version);
+        ByteBuf buf = Unpooled.wrappedBuffer(body);
+        try {
+          assertEquals(
+              "Steve",
+              LoginSuccess.CODEC.decode(buf, version).username(),
+              "logged in with a " + what + " key");
+        } finally {
+          buf.release();
+        }
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // Client side, written out by hand
+    // -------------------------------------------------------------------------
+
+    private EmbeddedChannel onlineChannel(ProtocolVersion version) {
+      return loginChannel(version, TestLoginContexts.online(sessionService, profileKeys));
+    }
+
+    private void assertRefusedAtLoginStart(
+        ProtocolVersion version, byte[] key, @Nullable UUID uuid, String reasonJson) {
+      EmbeddedChannel channel = onlineChannel(version);
+      try {
+        sendLoginStart(channel, "Steve", version, key, uuid);
+
+        byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, version);
+        assertArrayEquals(jsonString(reasonJson), reason);
+        assertClosed(channel);
+        verifyNoInteractions(sessionService);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    /** The proxy refused the encryption response in clear text, without authenticating. */
+    private void assertRefusedPlainText(
+        EmbeddedChannel channel, ProtocolVersion version, String reason) {
+      byte[] body = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, version);
+      assertArrayEquals(jsonString("{\"text\":\"" + reason + "\"}"), body);
+      assertClosed(channel);
+      verifyNoInteractions(sessionService);
+    }
+
+    /** The UUID a client of {@code version} sends: none before 1.19.1. */
+    private @Nullable UUID uuidFor(ProtocolVersion version) {
+      return version.isAtLeast(ProtocolVersion.MINECRAFT_1_19_1) ? STEVE : null;
+    }
+
+    private static long tomorrow() {
+      return System.currentTimeMillis() + 86_400_000L;
+    }
+
+    private static long yesterday() {
+      return System.currentTimeMillis() - 86_400_000L;
+    }
+
+    /** A key that the signer signed for {@code holder}, valid until tomorrow. */
+    private byte[] validKey(ProtocolVersion version, UUID holder) {
+      return keyOnWire(version, holder, tomorrow(), SIGNER.getPrivate());
+    }
+
+    /**
+     * The profile key as the client writes it after its presence flag: expiry, DER key and
+     * signature, signed by {@code signer} over what Mojang signs in {@code version}.
+     */
+    private byte[] keyOnWire(
+        ProtocolVersion version, UUID holder, long expiresAt, PrivateKey signer) {
+      byte[] der = PLAYER.getPublic().getEncoded();
+      byte[] signed;
+      if (version.isOlderThan(ProtocolVersion.MINECRAFT_1_19_1)) {
+        // Crypt.rsaPublicKeyToString: RSA PEM armour, MIME Base64 in 76-character lines.
+        String pem =
+            "-----BEGIN RSA PUBLIC KEY-----\n"
+                + Base64.getMimeEncoder(76, new byte[] {'\n'}).encodeToString(der)
+                + "\n-----END RSA PUBLIC KEY-----\n";
+        signed = (expiresAt + pem).getBytes(StandardCharsets.US_ASCII);
+      } else {
+        signed =
+            ByteBuffer.allocate(24 + der.length)
+                .putLong(holder.getMostSignificantBits())
+                .putLong(holder.getLeastSignificantBits())
+                .putLong(expiresAt)
+                .put(der)
+                .array();
+      }
+      byte[] signature = sign("SHA1withRSA", signer, signed);
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        buf.writeLong(expiresAt);
+        VarInt.write(buf, der.length);
+        buf.writeBytes(der);
+        VarInt.write(buf, signature.length);
+        buf.writeBytes(signature);
+        return ByteBufUtil.getBytes(buf);
+      } finally {
+        buf.release();
+      }
+    }
+
+    private EncryptionRequest encryptionRequest(EmbeddedChannel channel, ProtocolVersion version) {
+      byte[] body = nextPacket(channel, ProtocolState.LOGIN, EncryptionRequest.class, version);
+      ByteBuf buf = Unpooled.wrappedBuffer(body);
+      try {
+        return EncryptionRequest.CODEC.decode(buf, version);
+      } finally {
+        buf.release();
+      }
+    }
+
+    private void sendSignedResponse(
+        EmbeddedChannel channel,
+        EncryptionRequest request,
+        byte[] secret,
+        long salt,
+        PrivateKey playerKey)
+        throws GeneralSecurityException {
+      byte[] signature = signToken(playerKey, request.verifyToken(), salt);
+      sendEncryptionResponse(channel, rsaEncrypt(request, secret), signedToken(salt, signature));
+    }
+
+    /** The salt and signature form of the token proof: {@code false}, salt, signature. */
+    private byte[] signedToken(long salt, byte[] signature) {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        buf.writeBoolean(false);
+        buf.writeLong(salt);
+        VarInt.write(buf, signature.length);
+        buf.writeBytes(signature);
+        return ByteBufUtil.getBytes(buf);
+      } finally {
+        buf.release();
+      }
+    }
+
+    /** The encrypted form of the token proof, behind a {@code true} flag in 1.19 to 1.19.2. */
+    private byte[] encryptedToken(ProtocolVersion version, byte[] encrypted) {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        if (version.isBetween(ProtocolVersion.MINECRAFT_1_19, ProtocolVersion.MINECRAFT_1_19_2)) {
+          buf.writeBoolean(true);
+        }
+        VarInt.write(buf, encrypted.length);
+        buf.writeBytes(encrypted);
+        return ByteBufUtil.getBytes(buf);
+      } finally {
+        buf.release();
+      }
+    }
+
+    /** Encryption Response: packet id 0x01, the encrypted shared secret, then the token proof. */
+    private void sendEncryptionResponse(
+        EmbeddedChannel channel, byte[] encryptedSecret, byte[] proof) {
+      ByteBuf body = Unpooled.buffer();
+      VarInt.write(body, 0x01);
+      VarInt.write(body, encryptedSecret.length);
+      body.writeBytes(encryptedSecret);
+      body.writeBytes(proof);
+      writeFrame(channel, body);
+    }
+
+    private byte[] signToken(PrivateKey playerKey, byte[] token, long salt)
+        throws GeneralSecurityException {
+      byte[] signed =
+          ByteBuffer.allocate(token.length + Long.BYTES).put(token).putLong(salt).array();
+      return sign("SHA256withRSA", playerKey, signed);
+    }
+
+    private byte[] rsaEncrypt(EncryptionRequest request, byte[] data)
+        throws GeneralSecurityException {
+      PublicKey proxyKey =
+          KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(request.publicKey()));
+      Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+      cipher.init(Cipher.ENCRYPT_MODE, proxyKey);
+      return cipher.doFinal(data);
+    }
+
+    private byte[] sharedSecret() {
+      byte[] secret = new byte[16];
+      ThreadLocalRandom.current().nextBytes(secret);
+      return secret;
+    }
+
+    /** The {@code hasJoined} server hash: Minecraft's signed hex SHA-1 of secret and key. */
+    private String serverHash(byte[] secret, byte[] proxyKey) throws GeneralSecurityException {
+      MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+      sha1.update(new byte[0]); // the empty server id
+      sha1.update(secret);
+      sha1.update(proxyKey);
+      return new BigInteger(sha1.digest()).toString(16);
+    }
+
+    // -------------------------------------------------------------------------
+    // Proxy side
+    // -------------------------------------------------------------------------
+
+    /**
+     * Waits for the player's authentication, runs what it handed to the event loop, and returns
+     * what the proxy sent since it enabled encryption, decrypted.
+     */
+    private ByteBuf awaitLogin(EmbeddedChannel channel, byte[] secret) throws Exception {
+      long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+      while (authThread.get() == null) {
+        if (System.nanoTime() > deadline) {
+          throw new AssertionError("the proxy never authenticated the player");
+        }
+        Thread.sleep(5);
+      }
+      // Joining the thread orders its hand-off to the (single-threaded) embedded event loop before
+      // the tasks run here.
+      authThread.get().join(10_000);
+      channel.runPendingTasks();
+
+      Cipher cipher = Cipher.getInstance("AES/CFB8/NoPadding");
+      cipher.init(
+          Cipher.DECRYPT_MODE, new SecretKeySpec(secret, "AES"), new IvParameterSpec(secret));
+      ByteBuf clear = Unpooled.buffer();
+      for (ByteBuf encrypted; (encrypted = channel.readOutbound()) != null; ) {
+        try {
+          clear.writeBytes(cipher.update(ByteBufUtil.getBytes(encrypted)));
+        } finally {
+          encrypted.release();
+        }
+      }
+      return clear;
+    }
+
+    private <T extends Packet> T decode(
+        PacketCodec<T> codec, ByteBuf frames, Class<T> type, ProtocolVersion version) {
+      ByteBuf body = Unpooled.wrappedBuffer(frameBody(frames, ProtocolState.LOGIN, type, version));
+      try {
+        T packet = codec.decode(body, version);
+        assertEquals(0, body.readableBytes(), "bytes left after " + type.getSimpleName());
+        return packet;
+      } finally {
+        body.release();
+      }
+    }
+
+    private byte[] sign(String algorithm, PrivateKey key, byte[] data) {
+      try {
+        Signature signer = Signature.getInstance(algorithm);
+        signer.initSign(key);
+        signer.update(data);
+        return signer.sign();
+      } catch (GeneralSecurityException e) {
+        throw new AssertionError(e);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Play session (26.2+)
   // ---------------------------------------------------------------------------
 
@@ -254,9 +788,7 @@ class LoginSessionHandlerTest {
     return loginChannel(version, TestLoginContexts.offline());
   }
 
-  /**
-   * A client connection that has completed the handshake into the LOGIN state of {@code context}.
-   */
+  /** A client connection in the LOGIN state, on a proxy configured by {@code context}. */
   private EmbeddedChannel loginChannel(ProtocolVersion version, ServerLoginContext context) {
     EmbeddedChannel channel = new ClientChannel();
     channel.pipeline().addLast(new ServerChannelInitializer(context));
@@ -296,18 +828,37 @@ class LoginSessionHandlerTest {
    * player's UUID (from 1.19.1, behind a presence flag until 1.20.1).
    */
   private void sendLoginStart(EmbeddedChannel channel, String name, ProtocolVersion version) {
+    UUID uuid = UUID.nameUUIDFromBytes(name.getBytes(StandardCharsets.UTF_8));
+    sendLoginStart(channel, name, version, null, uuid);
+  }
+
+  /**
+   * Writes a Login Start as above, with the profile key {@code keyOnWire} (expiry, key and
+   * signature as the client writes them, or {@code null} for none) and the optional {@code uuid}.
+   */
+  private void sendLoginStart(
+      EmbeddedChannel channel,
+      String name,
+      ProtocolVersion version,
+      byte @Nullable [] keyOnWire,
+      @Nullable UUID uuid) {
     ByteBuf body = Unpooled.buffer();
     VarInt.write(body, 0x00);
     McString.write(body, name);
     if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_19)
         && version.isOlderThan(ProtocolVersion.MINECRAFT_1_19_3)) {
-      body.writeBoolean(false);
+      body.writeBoolean(keyOnWire != null);
+      if (keyOnWire != null) {
+        body.writeBytes(keyOnWire);
+      }
     }
     if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_19_1)) {
       if (version.isOlderThan(ProtocolVersion.MINECRAFT_1_20_2)) {
-        body.writeBoolean(true);
+        body.writeBoolean(uuid != null);
       }
-      McUuid.write(body, UUID.nameUUIDFromBytes(name.getBytes(StandardCharsets.UTF_8)));
+      if (uuid != null) {
+        McUuid.write(body, uuid);
+      }
     }
     writeFrame(channel, body);
   }
@@ -332,6 +883,18 @@ class LoginSessionHandlerTest {
     } finally {
       frame.release();
     }
+  }
+
+  /**
+   * Reads the next frame from a stream of {@code frames}, checks that it holds exactly one {@code
+   * type} packet, and returns the packet's body.
+   */
+  private byte[] frameBody(
+      ByteBuf frames, ProtocolState state, Class<? extends Packet> type, ProtocolVersion version) {
+    ByteBuf frame = frames.readSlice(VarInt.read(frames));
+    int expectedId = StateRegistry.get(state, PacketDirection.CLIENTBOUND).packetId(version, type);
+    assertEquals(expectedId, VarInt.read(frame), type.getSimpleName() + " packet id");
+    return ByteBufUtil.getBytes(frame);
   }
 
   private void assertClosed(EmbeddedChannel channel) {
@@ -384,6 +947,16 @@ class LoginSessionHandlerTest {
       return ByteBufUtil.getBytes(buf);
     } finally {
       buf.release();
+    }
+  }
+
+  private static KeyPair generateRsaKeyPair() {
+    try {
+      KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+      generator.initialize(2048);
+      return generator.generateKeyPair();
+    } catch (GeneralSecurityException e) {
+      throw new AssertionError("RSA is a mandatory JCA algorithm", e);
     }
   }
 

@@ -116,8 +116,14 @@ export async function ping({ host, port, version }) {
   return protocol.ping({ host, port, version, closeTimeout: 10_000 });
 }
 
-/** Connects a bot and resolves once it has spawned in the world. */
-export function connect({ host, port, version, username, spawnTimeoutMs = 45_000 }) {
+/**
+ * Connects a bot and resolves once it has spawned in the world.
+ *
+ * With `profileKeys` (1.19 to 1.19.2, from `createProfileKeys`), the bot logs in as a client of a
+ * Microsoft account does: it sends the key and its certificate in Login Start with `uuid`, and signs
+ * the verify token with the key instead of encrypting it. It still makes no session server call.
+ */
+export function connect({ host, port, version, username, profileKeys = null, uuid = null, spawnTimeoutMs = 45_000 }) {
   correctProtocolData(version);
   return new Promise((resolve, reject) => {
     const bot = mineflayer.createBot({
@@ -125,7 +131,7 @@ export function connect({ host, port, version, username, spawnTimeoutMs = 45_000
       port,
       username,
       version,
-      auth: 'offline',
+      auth: profileKeys ? signedAuth(profileKeys, uuid) : 'offline',
       checkTimeoutInterval: 120_000,
       hideErrors: true,
       logErrors: false,
@@ -146,6 +152,19 @@ export function connect({ host, port, version, username, spawnTimeoutMs = 45_000
     bot.once('end', (reason) => fail(`connection ended before spawn: ${reason}`));
     bot.once('error', (e) => fail(`error before spawn: ${e?.stack ?? e}`));
   });
+}
+
+/**
+ * minecraft-protocol's custom authentication hook, set up like its offline mode plus the keys that
+ * its Login Start, encryption and chat code send when `client.profileKeys` is set.
+ */
+function signedAuth(profileKeys, uuid) {
+  return (client, options) => {
+    client.username = options.username;
+    client.uuid = uuid;
+    client.profileKeys = profileKeys;
+    options.connect(client);
+  };
 }
 
 class Bot {

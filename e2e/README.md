@@ -35,6 +35,7 @@ and one whose default server is a closed port) and run the scenarios:
 | `login` | Join, receive chunks, land on the lobby; `/server` answers |
 | `keepalive` | One bot stays connected through the whole run (at least 65 s, past Warp's first keep-alive time-out check) |
 | `switching` | Six `/server` switches back and forth (configuration phase from 1.20.2, Join Game and Respawn before) |
+| `profile-key` | 1.19 to 1.19.2 only: a bot with a chat signing key, as every client of a Microsoft account, joins (online, it signs the verify token instead of encrypting it), chats and switches. Online, Warp refuses a key Mojang did not sign, an expired one and, from 1.19.1, a key issued to another player; offline, it ignores the key and lets the first two in |
 | `crowd` | Ten bots at once, then half of them switch server at the same moment |
 | `fallback-unreachable` | Default server down: the player lands on the next one |
 | `fallback-rejected` | Lobby refuses the login (whitelist): the player lands on survival |
@@ -65,6 +66,10 @@ Defined in `versions.json`: `online` (mock Mojang session server, encryption on)
 higher (`backend-higher`) or no (`backend-uncompressed`) threshold than Warp. Variants that share a
 backend threshold share the backends; only Warp restarts between them. Ad-hoc flags (`--online`,
 `--passthrough`, `--threshold`, `--backend-threshold`) build a one-off variant.
+
+In every variant the harness also stands in for Mojang's key: it signs the bots' chat signing keys
+(`profile-key` scenario) with a key pair of its own, which Warp trusts through
+`-Dwarp.profilekeys.signer`.
 
 ## The matrix (`versions.json`)
 
