@@ -131,7 +131,8 @@ cd Warp
 
 The shadow JAR is produced at `proxy/build/libs/warp-<version>.jar`. Pre-built jars are attached
 to the [releases](https://github.com/NeosiaNexus/Warp/releases); releases after 0.1.0-beta.5 also
-come with a `SHA256SUMS` file and a signed provenance attestation. During the beta, `main` moves
+come with a `SHA256SUMS` file and signed provenance
+([how to verify](CONTRIBUTING.md#release-automation)). During the beta, `main` moves
 well ahead of the releases: build from source to try the latest changes.
 
 ### Run

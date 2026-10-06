@@ -18,16 +18,16 @@ jspecify = "1.0.0"
 netty-tcnative = "2.0.84.Final"
 
 # Code quality
-errorprone-core = "2.48.0"
+errorprone-core = "2.50.0"
 errorprone-plugin = "4.2.0"
-nullaway = "0.13.1"
+nullaway = "0.14.2"
 spotless = "7.0.4"
 checkstyle = "13.11.0"
 jacoco = "0.8.15"
 
 # Testing
 junit = "5.12.2"
-mockito = "5.23.0"
+mockito = "5.24.0"
 
 # Benchmarking
 jmh = "1.37"

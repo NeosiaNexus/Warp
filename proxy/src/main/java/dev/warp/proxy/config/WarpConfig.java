@@ -166,8 +166,8 @@ public final class WarpConfig {
     String modeStr = root.node("forwarding", "mode").getString(DEFAULT_FORWARDING_MODE);
     ForwardingMode forwardingMode = parseForwardingMode(modeStr);
 
-    String secretFile = root.node("forwarding", "secret-file").getString(DEFAULT_SECRET_FILE);
-    byte[] forwardingSecret = loadForwardingSecret(directory, secretFile, forwardingMode);
+    String secretPath = root.node("forwarding", "secret-file").getString(DEFAULT_SECRET_FILE);
+    byte[] forwardingSecret = loadForwardingSecret(directory, secretPath, forwardingMode);
 
     int compressionThreshold =
         root.node("compression", "threshold").getInt(DEFAULT_COMPRESSION_THRESHOLD);
@@ -403,8 +403,8 @@ public final class WarpConfig {
     }
   }
 
-  private static byte[] loadForwardingSecret(
-      Path directory, String secretFileName, ForwardingMode mode) throws ConfigurationException {
+  private static byte[] loadForwardingSecret(Path directory, String secretPath, ForwardingMode mode)
+      throws ConfigurationException {
     // Environment variable takes precedence.
     @Nullable String envSecret = System.getenv(ENV_FORWARDING_SECRET);
     if (envSecret != null && !envSecret.isBlank()) {
@@ -416,28 +416,28 @@ public final class WarpConfig {
       return new byte[0];
     }
 
-    Path secretPath = directory.resolve(secretFileName);
-    if (!Files.exists(secretPath)) {
+    Path file = directory.resolve(secretPath);
+    if (!Files.exists(file)) {
       String generated = generateSecret();
       try {
-        Files.writeString(secretPath, generated, StandardCharsets.UTF_8);
+        Files.writeString(file, generated, StandardCharsets.UTF_8);
       } catch (IOException e) {
-        throw new ConfigurationException("Failed to write forwarding secret to " + secretPath, e);
+        throw new ConfigurationException("Failed to write forwarding secret to " + file, e);
       }
-      logger.info("Generated random forwarding secret: {}", secretPath);
+      logger.info("Generated a random forwarding secret in {}", file);
     }
 
     String secret;
     try {
-      secret = Files.readString(secretPath, StandardCharsets.UTF_8).trim();
+      secret = Files.readString(file, StandardCharsets.UTF_8).trim();
     } catch (IOException e) {
-      throw new ConfigurationException("Failed to read forwarding secret from " + secretPath, e);
+      throw new ConfigurationException("Failed to read forwarding secret from " + file, e);
     }
 
     if (secret.isEmpty()) {
       throw new ConfigurationException(
           "Forwarding secret file is empty: "
-              + secretPath
+              + file
               + " — generate a secret or set "
               + ENV_FORWARDING_SECRET);
     }

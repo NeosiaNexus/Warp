@@ -36,18 +36,11 @@ import dev.warp.protocol.packet.login.LoginAcknowledged;
 import dev.warp.protocol.packet.login.LoginDisconnect;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.play.PlayDisconnect;
-import dev.warp.proxy.auth.MojangSessionService;
-import dev.warp.proxy.config.ForwardingMode;
-import dev.warp.proxy.server.ServerRegistry;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.security.GeneralSecurityException;
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
-import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Stream;
 
@@ -55,7 +48,6 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
-import io.netty.channel.socket.nio.NioSocketChannel;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -70,8 +62,6 @@ import org.junit.jupiter.params.provider.MethodSource;
 class LoginSessionHandlerTest {
 
   private static final int LOGIN_NEXT_STATE = 2;
-
-  private static final KeyPair RSA_KEY_PAIR = rsaKeyPair();
 
   // ---------------------------------------------------------------------------
   // Disconnect reasons
@@ -178,11 +168,11 @@ class LoginSessionHandlerTest {
 
   /**
    * A client connection that has completed the handshake into the LOGIN state, on an offline-mode
-   * proxy whose only server is unreachable.
+   * proxy whose only server is unreachable ({@link TestLoginContexts#offline()}).
    */
   private EmbeddedChannel loginChannel(ProtocolVersion version) {
     EmbeddedChannel channel = new ClientChannel();
-    channel.pipeline().addLast(new ServerChannelInitializer(loginContext()));
+    channel.pipeline().addLast(new ServerChannelInitializer(TestLoginContexts.offline()));
     channel.runPendingTasks();
     send(
         channel,
@@ -190,30 +180,6 @@ class LoginSessionHandlerTest {
         new Handshake(version.protocol(), "localhost", 25577, LOGIN_NEXT_STATE),
         version);
     return channel;
-  }
-
-  /**
-   * An offline-mode context with one server and no compression.
-   *
-   * <p>Connecting to the server fails at once: an NIO channel cannot register with the embedded
-   * event loop the client connection runs on, which the login handler sees as an unreachable
-   * server.
-   */
-  private ServerLoginContext loginContext() {
-    ServerRegistry registry =
-        new ServerRegistry(
-            Map.of("lobby", new InetSocketAddress("127.0.0.1", 1)), "lobby", List.of("lobby"));
-    return new ServerLoginContext(
-        RSA_KEY_PAIR,
-        false,
-        -1,
-        -1,
-        true,
-        new MojangSessionService(),
-        registry,
-        ForwardingMode.NONE,
-        new byte[0],
-        NioSocketChannel.class);
   }
 
   /** Writes {@code packet} to the proxy as a client would, in one frame. */
@@ -317,21 +283,11 @@ class LoginSessionHandlerTest {
     }
   }
 
-  private static KeyPair rsaKeyPair() {
-    try {
-      KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-      generator.initialize(2048);
-      return generator.generateKeyPair();
-    } catch (GeneralSecurityException e) {
-      throw new AssertionError("RSA not available", e);
-    }
-  }
-
   /** An embedded channel with the socket address of a real client connection. */
   private static final class ClientChannel extends EmbeddedChannel {
 
     private static final InetSocketAddress CLIENT_ADDRESS =
-        new InetSocketAddress("127.0.0.1", 50_000);
+        new InetSocketAddress(InetAddress.getLoopbackAddress(), 50_000);
 
     @Override
     protected SocketAddress remoteAddress0() {
