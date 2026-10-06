@@ -18,6 +18,7 @@ package dev.warp.protocol.netty;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.bench.BenchmarkConfig;
+import dev.warp.protocol.bench.EventLoopLikeExecutor;
 import dev.warp.protocol.bench.PacketCorpus;
 import dev.warp.protocol.bench.PacketCorpus.Workload;
 import dev.warp.protocol.bench.WireStreams;
@@ -68,7 +69,8 @@ import org.openjdk.jmh.annotations.Warmup;
  * it pay. The backend stream is pre-encoded with vanilla settings (threshold 256, zlib level 6) and
  * delivered in 16 KiB reads, so frame reassembly across read boundaries is part of the measurement.
  * Socket I/O and cross-thread hand-off are not: this isolates the per-packet codec work that
- * dominates proxy CPU.
+ * dominates proxy CPU. Both legs run on a Netty {@code FastThreadLocalThread} ({@link
+ * EventLoopLikeExecutor}), as they do on an event loop in the proxy.
  *
  * <p>Every trial first checks that the client-side bytes decode back to the original packets, so a
  * broken pipeline can never produce a flattering number.
@@ -85,7 +87,9 @@ import org.openjdk.jmh.annotations.Warmup;
       "-Xms2g",
       "-Xmx2g",
       "-XX:+AlwaysPreTouch",
-      "-Dio.netty.leakDetection.level=disabled"
+      "-Dio.netty.leakDetection.level=disabled",
+      EventLoopLikeExecutor.JMH_EXECUTOR,
+      EventLoopLikeExecutor.JMH_EXECUTOR_CLASS
     })
 @OperationsPerInvocation(BenchmarkConfig.PACKETS)
 public class ForwardingPathBenchmark {

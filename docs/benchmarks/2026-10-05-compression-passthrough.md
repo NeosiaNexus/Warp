@@ -10,7 +10,8 @@ compression passthrough. Raw JMH output is in [`results/2026-10-05/`](results/20
   must come from bare metal; see [`../research/benchmark-methodology.md`](../research/benchmark-methodology.md).
 - **JVM:** Temurin 25.0.2. Each fork runs with `-Xms2g -Xmx2g -XX:+AlwaysPreTouch
   --sun-misc-unsafe-memory-access=allow -Dio.netty.leakDetection.level=disabled` on Netty-like
-  `FastThreadLocalThread` workers. Netty is 4.2.12.
+  `FastThreadLocalThread` workers, except `ForwardingPathBenchmark`, which ran on JMH's plain
+  threads (see the allocation table in section 1). Netty is 4.2.12.
 - **Statistics:** 3 forks × (5 warm-up + 10 measured) × 2 s per configuration ("before": 3 × 10
   measured). Errors are 99.9 % confidence intervals.
 - **Synthetic corpus.** Deterministic packets shaped like vanilla traffic (`PacketCorpus`):
@@ -41,7 +42,10 @@ connections (Paper's and Minestom's default); the backend compresses at zlib lev
 | Mixed | yes | 37.4 ± 0.9 µs | **7.0 ± 0.2 µs** | 43.8 ± 1.2 µs | **×5.3** |
 | Entity movement | yes | 828 ± 32 ns | **745 ± 69 ns** | 1003 ± 30 ns | ×1.1 |
 
-Allocation per packet (`gc.alloc.rate.norm`, most of it `EmbeddedChannel` bookkeeping):
+Allocation per packet (`gc.alloc.rate.norm`). These runs used JMH's plain threads, on which Netty's
+`Recycler` does not reuse objects such as `ChannelOutboundBuffer` entries: about 60 of the 104 B per
+entity movement packet. The benchmark now runs on `FastThreadLocalThread`s, and the
+[allocation guard](../../CONTRIBUTING.md#benchmarks) tracks its allocation on every pull request.
 
 | Workload | Before | Passthrough |
 |---|---|---|
