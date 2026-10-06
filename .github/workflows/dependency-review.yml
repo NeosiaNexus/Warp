@@ -1,0 +1,85 @@
+name: Dependency review
+
+# Compares the dependencies of a pull request with those of its base: GitHub Actions and npm from
+# the manifests, Gradle from the snapshots of dependency-graph.yml. Fails on a known vulnerability
+# of moderate severity or above in any dependency the pull request adds or changes, and on a
+# runtime dependency whose license is not in .github/dependency-review-config.yml. The report is the
+# job summary; nothing is posted on the pull request.
+on:
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: dependency-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Vulnerabilities & licenses
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read # check out the license policy, read the dependency graph
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The Gradle snapshot of the pull request is submitted a few minutes after the push. The
+      # action's own retry cannot wait for it: the compare API caches each answer for several
+      # minutes, so every retry gets the answer from before the submission
+      # (actions/dependency-review-action#632). This step polls with a different page size each
+      # time, so each answer is fresh, and leaves the action's page size (5) unqueried until the
+      # snapshot is there. Up to 10 minutes; a missing snapshot is then reported by the action.
+      - name: Wait for the Gradle snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          response="$RUNNER_TEMP/comparison.txt"
+          deadline=$((SECONDS + 600))
+          per_page=100
+          while true; do
+            if gh api --include "repos/$GITHUB_REPOSITORY/dependency-graph/compare/$BASE_SHA...$HEAD_SHA?per_page=$per_page" > "$response"; then
+              warnings=$(awk 'tolower($1) == "x-github-dependency-graph-snapshot-warnings:" { print $2 } /^\r?$/ { exit }' "$response" \
+                | tr -d '\r' | base64 --decode)
+              if [[ -z "$warnings" ]]; then
+                echo "Snapshots in place for $BASE_SHA and $HEAD_SHA."
+                break
+              fi
+            else
+              warnings='The comparison failed.'
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "::warning title=Dependency review::No matching snapshots after 10 minutes, reviewing anyway: $warnings"
+              break
+            fi
+            echo "$warnings Checking again in 15 seconds."
+            sleep 15
+            per_page=$((per_page - 1))
+          done
+
+      # Build tools and test libraries count too: they run in CI.
+      - name: Review vulnerabilities
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          fail-on-scopes: runtime, development, unknown
+          license-check: false
+          show-patched-versions: true
+          comment-summary-in-pr: never
+
+      # Licenses matter for what Warp distributes: the runtime scope only. Runs even when the step
+      # above failed, so that one run reports both.
+      - name: Review licenses
+        if: ${{ !cancelled() }}
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          config-file: ./.github/dependency-review-config.yml
+          fail-on-scopes: runtime
+          vulnerability-check: false
+          show-openssf-scorecard: false
+          comment-summary-in-pr: never

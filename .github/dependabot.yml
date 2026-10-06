@@ -1,0 +1,100 @@
+# Dependabot version updates. Security updates (enabled in the repository settings) reuse these
+# entries for their commit messages and labels, but open as soon as an advisory is published:
+# neither the schedule nor the cooldown delays them.
+#
+# PR titles become the squash commit on main, read by release-please, so each ecosystem gets a
+# Conventional Commits type for its changelog section:
+#   gradle          fix(deps)   Warp's runtime libraries, shaded into the jar (Bug Fixes). The
+#                               build tools share the version catalog and the same type: Dependabot
+#                               allows one entry, so one prefix, per ecosystem and directory.
+#   github-actions  ci(deps)    workflows and the composite actions (CI)
+#   npm             test(deps)  the end-to-end harness in e2e/ (Tests)
+#
+# Groups take minor and patch updates: a major update of a library or tool gets its own pull
+# request, to be reviewed on its own.
+
+version: 2
+
+updates:
+  - package-ecosystem: gradle
+    # gradle/libs.versions.toml, settings.gradle.kts and the Gradle wrapper.
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Paris
+    # A release must be a week old before it is proposed: most compromised packages are caught
+    # and pulled within days.
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: fix
+      include: scope
+    labels: [dependencies]
+    groups:
+      netty:
+        patterns: ['io.netty:*']
+        update-types: [minor, patch]
+      log4j:
+        patterns: ['org.apache.logging.log4j:*']
+        update-types: [minor, patch]
+      adventure:
+        patterns: ['net.kyori:*']
+        update-types: [minor, patch]
+      testing:
+        patterns: ['org.junit:*', 'org.mockito:*']
+        update-types: [minor, patch]
+      code-quality:
+        patterns:
+          - 'com.diffplug.spotless'
+          - 'com.google.errorprone:*'
+          - 'com.puppycrawl.tools:*'
+          - 'com.uber.nullaway:*'
+          - 'net.ltgt.errorprone'
+          - 'org.jacoco:*'
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    # / covers .github/workflows; each composite action lives in its own directory.
+    directories: [/, /.github/actions/*]
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Paris
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
+      include: scope
+    labels: [dependencies, 'area: build']
+    # Actions are grouped across every directory, majors included (in a pull request of their
+    # own), so actions that must share a commit (github/codeql-action/init and /analyze) always
+    # move together.
+    groups:
+      github-actions:
+        patterns: ['*']
+        update-types: [minor, patch]
+      github-actions-major:
+        patterns: ['*']
+        update-types: [major]
+
+  - package-ecosystem: npm
+    directory: /e2e
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Paris
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: test
+      include: scope
+    labels: [dependencies]
+    groups:
+      e2e:
+        patterns: ['*']
+        update-types: [minor, patch]

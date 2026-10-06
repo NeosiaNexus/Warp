@@ -82,6 +82,9 @@ netty-tcnative-boringssl = { group = "io.netty", name = "netty-tcnative-boringss
 # Code quality
 errorprone-core = { group = "com.google.errorprone", name = "error_prone_core", version.ref = "errorprone-core" }
 nullaway = { group = "com.uber.nullaway", name = "nullaway", version.ref = "nullaway" }
+# Gradle resolves these two from `toolVersion`; declared here so that Dependabot updates them too.
+checkstyle = { group = "com.puppycrawl.tools", name = "checkstyle", version.ref = "checkstyle" }
+jacoco-agent = { group = "org.jacoco", name = "org.jacoco.agent", version.ref = "jacoco" }
 
 # Testing
 junit-bom = { group = "org.junit", name = "junit-bom", version.ref = "junit" }
