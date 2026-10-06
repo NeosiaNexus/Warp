@@ -12,6 +12,7 @@ import { parseArgs } from 'node:util';
 
 import { Backend, fetchPreseeded, fetchServerJar, serverCacheDir } from './backend.js';
 import { connectClient } from './clients/index.js';
+import { library } from './clients/mineflayer.js';
 import { findJava } from './java.js';
 import { killAll, run, sleep } from './proc.js';
 import { SCENARIOS, features, startKeepAlive } from './scenarios.js';
@@ -431,7 +432,8 @@ function markdown(results) {
 
 function printMatrix(matrix) {
   for (const v of matrix.versions) {
-    const client = v.via ? `mineflayer ${v.via} → ViaProxy` : 'mineflayer';
+    const speaks = v.via ?? v.client ?? v.version;
+    const client = v.via ? `${library(speaks)} ${v.via} → ViaProxy` : library(speaks);
     const broken = v.knownBroken ?? (v.knownBrokenScenarios ? Object.keys(v.knownBrokenScenarios).join(', ') : null);
     console.log(`${String(v.protocol).padStart(4)}  ${v.version.padEnd(8)} ${describeServer(v.server).padEnd(24)} Java ${String(v.java).padEnd(3)} ${client}${broken ? `  [known broken: ${broken}]` : ''}`);
   }

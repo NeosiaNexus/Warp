@@ -27,7 +27,7 @@ export function connectClient(entry, env) {
 
   if (!entry.via) {
     return {
-      description: `mineflayer ${speaks}`,
+      description: `${mineflayer.library(speaks)} ${speaks}`,
       protocol: announced,
       connect: (options) => mineflayer.connect({ ...options, version: speaks }),
       ping: (options) => mineflayer.ping({ ...options, version: speaks }),
@@ -44,7 +44,7 @@ export function connectClient(entry, env) {
   );
   const bridged = (options) => ({ ...options, port: bridges.get(options.port).port, version: speaks });
   return {
-    description: `mineflayer ${speaks} → ViaProxy → ${entry.version}`,
+    description: `${mineflayer.library(speaks)} ${speaks} → ViaProxy → ${entry.version}`,
     protocol: announced,
     start: () => Promise.all([...bridges.values()].map((b) => b.start())),
     stop: () => Promise.all([...bridges.values()].map((b) => b.stop())),

@@ -93,6 +93,30 @@
   },
   "versions": [
     {
+      "version": "1.7.2",
+      "protocol": 4,
+      "java": 8,
+      "via": "1.7.10",
+      "server": {
+        "type": "vanilla",
+        "version": "1.7.2",
+        "url": "https://piston-data.mojang.com/v1/objects/3716cac82982e7c2eb09f83028b555e9ea606002/server.jar",
+        "sha1": "3716cac82982e7c2eb09f83028b555e9ea606002"
+      }
+    },
+    {
+      "version": "1.7.10",
+      "protocol": 5,
+      "java": 8,
+      "server": {
+        "type": "paper",
+        "version": "1.7.10",
+        "build": 2025,
+        "url": "https://fill-data.papermc.io/v1/objects/33772078d92e9dbb027602da016524ef29af5b4c12eaddac1fe2465b01108185/paper-1.7.10-2025.jar",
+        "sha256": "33772078d92e9dbb027602da016524ef29af5b4c12eaddac1fe2465b01108185"
+      }
+    },
+    {
       "version": "1.8.8",
       "protocol": 47,
       "java": 8,

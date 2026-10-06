@@ -3,6 +3,8 @@
 // 'error' or a disconnect, which fails the scenario.
 import { createRequire } from 'node:module';
 
+import * as legacy from './legacy.js';
+
 const require = createRequire(import.meta.url);
 const mineflayer = require('mineflayer');
 const protocol = require('minecraft-protocol');
@@ -91,11 +93,17 @@ export async function ping({ host, port, version }) {
   return protocol.ping({ host, port, version, closeTimeout: 10_000 });
 }
 
+/** The bot library for `version`: mineflayer, or minecraft-protocol alone below 1.8.8. */
+export function library(version) {
+  return legacy.isLegacy(version) ? 'minecraft-protocol' : 'mineflayer';
+}
+
 /** Connects a bot and resolves once it has spawned in the world. */
 export function connect({ host, port, version, username, spawnTimeoutMs = 45_000 }) {
   correctProtocolData(version);
+  const createBot = legacy.isLegacy(version) ? legacy.createBot : mineflayer.createBot;
   return new Promise((resolve, reject) => {
-    const bot = mineflayer.createBot({
+    const bot = createBot({
       host,
       port,
       username,
@@ -124,7 +132,7 @@ export function connect({ host, port, version, username, spawnTimeoutMs = 45_000
 
 class Bot {
   /**
-   * @param {object} bot mineflayer bot
+   * @param {object} bot mineflayer bot, or its 1.7 stand-in ({@link legacy.createBot})
    * @param {string} username the name it logs in with (mineflayer only sets `bot.username` once
    *   the server has accepted the login)
    */
