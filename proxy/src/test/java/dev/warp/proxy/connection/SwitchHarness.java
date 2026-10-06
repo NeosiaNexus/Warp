@@ -39,6 +39,7 @@ import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
+import dev.warp.protocol.packet.play.LegacyPlayerInfo;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
@@ -247,6 +248,7 @@ final class SwitchHarness implements AutoCloseable {
         List.of(
             JoinGame.class,
             Respawn.class,
+            LegacyPlayerInfo.class,
             PlayerInfo.class,
             PlayerInfoUpdate.class,
             PlayerInfoRemove.class,
