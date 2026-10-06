@@ -137,6 +137,7 @@ e2e/run.sh --list                                        # the whole matrix
 | Every pull request (**E2E**, part of **CI OK**) | One version per era and the newest version, plus the online, offline and compression variants on the newest version the bots speak natively |
 | Every push to `main`, nightly, on demand (`e2e.yml`) | Every protocol of the matrix |
 | Pull requests labelled `e2e: full` | The whole matrix as well. Use it for changes to the protocol, compression, login, forwarding or server switching; ask a maintainer if you cannot set labels |
+| Nightly, and on demand (`soak.yml`) | A 30-minute [soak](e2e/README.md#soak) on the reference version, on a clean and on a degraded network: fails on a memory, descriptor, thread or connection leak |
 
 Versions marked `knownBroken` in `e2e/versions.json` run and are reported without failing CI. To
 add a Minecraft version, follow

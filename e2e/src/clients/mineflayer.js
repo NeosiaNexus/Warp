@@ -242,13 +242,15 @@ class Bot {
     this.bot = bot;
     this.username = username;
     this.keyed = keyed;
-    this.stats = { packets: 0, chunks: 0, signedChat: 0, errors: [], kicked: null, ended: null };
+    this.stats = { packets: 0, chunks: 0, signedChat: 0, lastPacket: Date.now(), errors: [], kicked: null, ended: null };
     this.messages = [];
     this.tabList = new TabList(protocol);
     this.quitting = false;
     this.chatSession = false;
+    this.closed = new Promise((resolve) => bot.once('end', resolve));
     bot._client.on('packet', (data, meta) => {
       this.stats.packets++;
+      this.stats.lastPacket = Date.now();
       if (meta.name === 'map_chunk') this.stats.chunks++;
       else if (meta.name === 'map_chunk_bulk') this.stats.chunks += data.meta?.length ?? 1; // 1.7, 1.8
       else if (meta.name === 'player_chat' && data.signature) this.stats.signedChat++;
@@ -340,9 +342,13 @@ class Bot {
     if (ended) throw new Error(`${this.username} disconnected: ${ended}`);
   }
 
+  /** Disconnects; resolves once the connection is closed (after 5 s at most). */
   quit() {
     this.quitting = true;
     this.bot.quit();
+    let timer;
+    const timeout = new Promise((resolve) => { timer = setTimeout(resolve, 5_000); });
+    return Promise.race([this.closed, timeout]).finally(() => clearTimeout(timer));
   }
 }
 

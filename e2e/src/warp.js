@@ -1,4 +1,5 @@
 // A Warp instance under test: its own directory, generated warp.conf, private copy of the jar.
+import { randomUUID } from 'node:crypto';
 import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
@@ -41,6 +42,7 @@ export class Warp {
    * @param {Record<string, number>} options.servers name → port of each backend
    * @param {string[]} options.fallbackOrder first entry is the default server
    * @param {string} options.logDir
+   * @param {string[]} [options.jvmArgs] JVM options after the defaults (the last -Xmx wins)
    */
   constructor(options) {
     Object.assign(this, options);
@@ -85,6 +87,7 @@ compression {
       '--sun-misc-unsafe-memory-access=allow',
       // Every ByteBuf is tracked: a buffer the proxy forgets to release is reported as an ERROR.
       '-Dio.netty.leakDetection.level=paranoid',
+      ...(this.jvmArgs ?? []),
       ...(this.online ? [`-Dmojang.sessionserver=${this.sessionServer}`] : []),
       ...(this.profileKeySigner ? [`-Dwarp.profilekeys.signer=${SIGNER_FILE}`] : []),
       '-jar',
@@ -104,7 +107,18 @@ compression {
    */
   async collectGarbage() {
     if (!this.process?.alive) return;
-    await run(jcmd(this.java), [String(this.process.pid), 'GC.run']).catch(() => {});
+    await this.jcmd(['GC.run']).catch(() => {});
+  }
+
+  /** Runs diagnostic commands (`GC.heap_info`, `VM.native_memory summary`…) in one jcmd call. */
+  async jcmd(commands) {
+    const file = join(this.dir, `jcmd-${randomUUID()}.txt`);
+    writeFileSync(file, `${commands.join('\n')}\n`);
+    try {
+      return await run(jcmd(this.java), [String(this.process.pid), '-f', file]);
+    } finally {
+      rmSync(file, { force: true });
+    }
   }
 
   /** Stops the instance. A shutdown that hangs is a bug: the thread dump goes to the log. */
