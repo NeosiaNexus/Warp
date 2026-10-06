@@ -5,7 +5,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { SCENARIOS } from './scenarios.js';
-import { variantStatus } from './status.js';
+import { variantStatus, versionNotes } from './status.js';
 
 const [dir, title = 'End-to-end tests'] = process.argv.slice(2);
 
@@ -51,6 +51,10 @@ if (!results.length) {
       lines.push(`| ${first ? `**${r.version}**` : ''} | ${first ? r.protocol : ''} | ${first ? r.server : ''} | ${v.name} | ${cells.join(' | ')} | ${result} |`);
     });
   }
+
+  // Backends booted again, and server quirks worked around: every one, so none goes unnoticed.
+  const notes = results.flatMap((r) => versionNotes(r).map((note) => `- **${r.version}**: ${escape(note)}`));
+  if (notes.length) lines.push('', '### Boot retries and server quirks', '', ...notes);
 
   // Failures, then what is known broken: whole versions, or single scenarios of a version.
   const known = (s) => s.status === 'xfail' || s.status === 'xpass';

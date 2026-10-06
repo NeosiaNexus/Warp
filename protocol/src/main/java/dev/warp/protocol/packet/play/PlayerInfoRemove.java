@@ -17,8 +17,8 @@
 package dev.warp.protocol.packet.play;
 
 import dev.warp.protocol.ProtocolVersion;
-import dev.warp.protocol.codec.McUuid;
 import dev.warp.protocol.packet.PacketCodec;
+import dev.warp.protocol.packet.PacketWatch;
 
 import java.util.List;
 import java.util.UUID;
@@ -28,9 +28,10 @@ import io.netty.buffer.ByteBuf;
 /**
  * Server removes tab list entries ({@code S→C}, "Player Info Remove", from 1.19.3).
  *
- * <p>The proxy decodes it before 1.20.2 only, to forget the entries a server removes, and sends it
- * to remove the entries the previous server left when a player switches servers. Layout: VarInt
- * count, then the UUIDs (Velocity's {@code RemovePlayerInfoPacket}, minecraft-data's {@code
+ * <p>The proxy watches it before 1.20.2 only, to forget the entries a server removes: the UUIDs are
+ * read in place ({@link #WATCH}) and the frame is forwarded as received. It also sends it, to
+ * remove the entries the previous server left when a player switches servers. Layout: VarInt count,
+ * then the UUIDs (Velocity's {@code RemovePlayerInfoPacket}, minecraft-data's {@code
  * packet_player_remove}).
  *
  * @param profileIds the UUIDs of the removed entries
@@ -47,12 +48,7 @@ public record PlayerInfoRemove(List<UUID> profileIds) implements PlayPacket {
       new PacketCodec<>() {
         @Override
         public PlayerInfoRemove decode(ByteBuf buf, ProtocolVersion version) {
-          int count = TabListEntries.readCount(buf, McUuid.ENCODED_SIZE);
-          UUID[] profileIds = new UUID[count];
-          for (int i = 0; i < count; i++) {
-            profileIds[i] = McUuid.read(buf);
-          }
-          return new PlayerInfoRemove(List.of(profileIds));
+          return new PlayerInfoRemove(TabListEntries.readUuids(buf));
         }
 
         @Override
@@ -60,4 +56,10 @@ public record PlayerInfoRemove(List<UUID> profileIds) implements PlayPacket {
           TabListEntries.writeUuids(buf, packet.profileIds());
         }
       };
+
+  /**
+   * Reports the players a server removes from the tab list. The packet holds nothing but their
+   * UUIDs, so it is read whole; the frame is still forwarded as received, never re-encoded.
+   */
+  public static final PacketWatch<PlayerInfoRemove> WATCH = CODEC::decode;
 }

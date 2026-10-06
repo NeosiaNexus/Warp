@@ -19,6 +19,7 @@ package dev.warp.protocol.packet.play;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketCodec;
+import dev.warp.protocol.packet.PacketWatch;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -84,6 +85,27 @@ final class SwitchPacketFixtures {
             buf.readableBytes() + " bytes left after decoding " + packet + " at " + version);
       }
       return decoded;
+    } finally {
+      buf.release();
+    }
+  }
+
+  /**
+   * What a watch reported for a fixture, and how far into it the watch read.
+   *
+   * @param packet what the watch reported, or {@code null}
+   * @param read the bytes the watch read
+   * @param length the fixture's length
+   */
+  record Watched<T extends Packet>(@Nullable T packet, int read, int length) {}
+
+  /** Runs {@code watch} over {@code packet} at {@code version}. */
+  static <T extends Packet> Watched<T> watch(
+      PacketWatch<T> watch, ProtocolVersion version, String packet) {
+    ByteBuf buf = Unpooled.wrappedBuffer(bytes(version, packet));
+    try {
+      T reported = watch.watch(buf, version);
+      return new Watched<>(reported, buf.readerIndex(), buf.writerIndex());
     } finally {
       buf.release();
     }

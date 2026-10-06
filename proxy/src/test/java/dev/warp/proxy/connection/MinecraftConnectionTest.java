@@ -42,6 +42,9 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.DecoderException;
+import io.netty.handler.timeout.ReadTimeoutException;
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.core.LogEvent;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -269,6 +272,107 @@ class MinecraftConnectionTest {
       assertNull(MinecraftConnection.describeRoutine(new IllegalStateException("bug"), false));
       assertNull(MinecraftConnection.describeRoutine(new DecoderException("bad packet"), true));
     }
+
+    @Test
+    @DisplayName("should log a read time-out as one line at INFO, and close the connection")
+    void readTimeout() {
+      EmbeddedChannel ch = createChannel();
+      try (LogCapture log = new LogCapture(MinecraftConnection.class)) {
+        ch.pipeline().fireExceptionCaught(ReadTimeoutException.INSTANCE);
+
+        LogEvent event = assertOne(log.events());
+        assertEquals(Level.INFO, event.getLevel());
+        assertEquals(
+            "Connection embedded timed out in STATUS: the client sent nothing for 30 s (reads on, 0"
+                + " bytes queued to send)",
+            event.getMessage().getFormattedMessage());
+        assertNull(event.getThrown(), "no stack trace for a quiet peer");
+        assertFalse(ch.isOpen());
+      } finally {
+        ch.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should still log a lost connection at DEBUG and a bug at ERROR with its trace")
+    void otherLevels() {
+      EmbeddedChannel lost = createChannel();
+      EmbeddedChannel faulty = createChannel();
+      try (LogCapture log = new LogCapture(MinecraftConnection.class)) {
+        IllegalStateException bug = new IllegalStateException("bug");
+
+        lost.pipeline().fireExceptionCaught(new IOException("Connection reset by peer"));
+        faulty.pipeline().fireExceptionCaught(bug);
+
+        List<LogEvent> events = log.events();
+        assertEquals(
+            List.of(Level.DEBUG, Level.ERROR), events.stream().map(LogEvent::getLevel).toList());
+        assertEquals(bug, events.get(1).getThrown());
+      } finally {
+        lost.finishAndReleaseAll();
+        faulty.finishAndReleaseAll();
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Read time-out description
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("read time-out description")
+  class TimeoutDescription {
+
+    private static MinecraftDecoder decoder(PacketDirection direction, ProtocolState state) {
+      return new MinecraftDecoder(direction, ProtocolVersion.MINECRAFT_1_21_4, state);
+    }
+
+    @Test
+    @DisplayName("should name a quiet backend, its state, and that the proxy had paused reading it")
+    void readsPaused() {
+      EmbeddedChannel ch = new EmbeddedChannel();
+      try {
+        ch.config().setAutoRead(false);
+
+        assertEquals(
+            "in PLAY: the backend sent nothing for 30 s (reads paused, 0 bytes queued to send)",
+            MinecraftConnection.describeTimeout(
+                ch, decoder(PacketDirection.CLIENTBOUND, ProtocolState.PLAY)));
+      } finally {
+        ch.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should count the bytes the peer has not taken yet")
+    void queuedBytes() {
+      EmbeddedChannel ch = new EmbeddedChannel();
+      try {
+        // Written but not flushed: still in the channel's outbound buffer.
+        var _ = ch.write(Unpooled.wrappedBuffer(new byte[1500]));
+
+        String description =
+            MinecraftConnection.describeTimeout(
+                ch, decoder(PacketDirection.SERVERBOUND, ProtocolState.LOGIN));
+
+        // The packet, and Netty's bookkeeping per queued message.
+        long queued = ch.unsafe().outboundBuffer().totalPendingWriteBytes();
+        assertTrue(queued >= 1500 && queued < 1500 + 256, "queued " + queued);
+        assertEquals(
+            "in LOGIN: the client sent nothing for 30 s (reads on, "
+                + queued
+                + " bytes queued to"
+                + " send)",
+            description);
+      } finally {
+        ch.finishAndReleaseAll();
+      }
+    }
+  }
+
+  private static LogEvent assertOne(List<LogEvent> events) {
+    assertEquals(1, events.size(), () -> "events: " + events);
+    return events.getFirst();
   }
 
   // ---------------------------------------------------------------------------

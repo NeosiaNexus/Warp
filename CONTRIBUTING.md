@@ -69,18 +69,20 @@ type(scope): description
 
 ## Continuous Integration
 
-Every pull request runs the checks below. **CI OK** aggregates the build, the end-to-end tests and
-the workflow lint into one check. It must be green before merging, as must **Conventional Commits**
-and the security checks of the [next section](#security-and-dependencies).
+Every pull request runs the checks below. **CI OK** aggregates the build, the allocation guard, the
+end-to-end tests and the workflow lint into one check. It must be green before merging, as must
+**Conventional Commits** and the security checks of the [next section](#security-and-dependencies).
 
 | Check | What it verifies |
 |---|---|
 | **Build & test** | Spotless formatting, compilation with ErrorProne and NullAway, unit and integration tests, Checkstyle, JaCoCo coverage, shadow jar. Failed tests are annotated on the diff; the run summary shows test and coverage tables |
+| **Allocation guard** | Bytes allocated per packet on the hot path, against a committed baseline, then one short run of every benchmark (see [Benchmarks](#benchmarks)) |
 | **E2E** | Real clients through Warp to real servers: one Minecraft version per era, or every version when the pull request changes Warp's modules or the end-to-end harness (see [End-to-end tests](#end-to-end-tests)) |
 | **Lint workflows** | [actionlint](https://github.com/rhysd/actionlint) (with ShellCheck on `run:` scripts) and [zizmor](https://docs.zizmor.sh) at its strictest persona |
 | **Conventional Commits** | The PR title's format (the title becomes the squash commit) |
 
-Pull requests that only touch documentation skip the build and the end-to-end tests.
+Pull requests that only touch documentation skip the build, the allocation guard and the end-to-end
+tests.
 
 Workflow conventions, enforced in review and by the linters:
 
@@ -89,7 +91,8 @@ Workflow conventions, enforced in review and by the linters:
 - `permissions: {}` at the top of each workflow; each job asks for the least it needs, with a
   comment saying why.
 - Every job has a `timeout-minutes`; runners are pinned (`ubuntu-24.04`), never `-latest`.
-- Pull-request runs are cancelled by a newer push; runs on `main` always complete.
+- Pull-request runs are cancelled by a newer push; runs on `main` always complete (the timing
+  trend, which measures one commit at a time, skips to the newest of those waiting).
 
 ## Security and Dependencies
 
@@ -133,14 +136,58 @@ e2e/run.sh --list                                        # the whole matrix
 
 | Where | What runs |
 |---|---|
-| Every pull request (**E2E**, part of **CI OK**) | One version per era, plus the online, offline, compression and Velocity forwarding variants on the reference version |
+| Every pull request (**E2E**, part of **CI OK**) | One version per era and the newest version, plus the online, offline, compression and Velocity forwarding variants on the newest version the bots speak natively |
 | Pull requests that change Warp's modules (`api/`, `protocol/`, `proxy/`, `jni/`) or the end-to-end harness, tests aside (**E2E**, part of **CI OK**; the paths are in [`.github/actions/changes`](.github/actions/changes/action.yml)) | Every protocol of the matrix instead, with more variants at era boundaries |
 | Every push to `main`, nightly, on demand (`e2e.yml`) | Every protocol of the matrix |
 | Pull requests labelled `e2e: full` | The whole matrix, for a pull request CI tests on one version per era only (a dependency, build or workflow change, say); ask a maintainer if you cannot set labels. On a pull request that already runs the whole matrix in CI, the label changes nothing |
+| Nightly, and on demand (`soak.yml`) | A 30-minute [soak](e2e/README.md#soak) on the reference version, on a clean and on a degraded network: fails on a memory, descriptor, thread or connection leak |
 
 Versions marked `knownBroken` in `e2e/versions.json` run and are reported without failing CI. To
 add a Minecraft version, follow
 [Adding a Minecraft version](e2e/README.md#adding-a-minecraft-version).
+
+## Benchmarks
+
+The JMH benchmarks in [`protocol/src/jmh`](protocol/src/jmh) measure the forwarding path and the
+codecs ([results and methodology](docs/benchmarks/)). Two checks watch the benchmarks of the hot
+path, relaying clientbound packets with compression passthrough and peeking at the id of a
+compressed packet:
+
+| Where | What runs |
+|---|---|
+| Every pull request (**Allocation guard**, part of **CI OK**) | Bytes allocated per packet, against [`alloc-baseline.json`](protocol/src/jmh/alloc-baseline.json), then every benchmark once so that none breaks unnoticed |
+| Every push to `main` (`benchmarks.yml`) | The timings of the same benchmarks, charted at [neosianexus.github.io/Warp/benchmarks](https://neosianexus.github.io/Warp/benchmarks/). Runs go one at a time: pushes that land while one measures are measured together, at the newest |
+
+Allocation gates pull requests; timings do not. The guard counts allocation with escape analysis
+off: the count then covers everything the code allocates, not what the JIT happened to keep in one
+run, and it moves by less than 0.3% from one run or machine to the next. A benchmark fails when it
+allocates more than its baseline plus the larger of 2 B and 1%. Timings depend on the runner's CPU
+model, which varies, so each model has its own series; on the same model, two runs agree within 3%.
+A benchmark 25% slower than on the previous run on the same model comments on the commit, and fails
+nothing.
+
+```bash
+bin/bench-guard.sh            # what CI runs: the allocation guard and the smoke run (~2 minutes)
+bin/bench-guard.sh --update   # measure allocation and rewrite the baseline
+bin/bench-guard.sh --timings  # the timings of the trend (~13 minutes)
+bin/bench-guard-test.py       # tests of the guard's verdict (CI runs them first)
+./gradlew :protocol:jmh -Pjmh.includes=ForwardingPath   # any benchmark, with its own settings
+```
+
+The script builds the benchmarks and runs them on the JDK of Gradle's toolchain, the one that
+compiles them (`./gradlew :protocol:jmhJava` prints its path). Every benchmark extends
+`AbstractMicrobenchmark`, which sets its iterations and its JVM: change them there, for all of
+them. Update the baseline and commit it in the same pull request when:
+
+- the guard reports less allocation: lock the gain in, or a later change could spend it unnoticed;
+- a change allocates more on the hot path on purpose: say why in the pull request;
+- a Netty or JDK update moves it (the report says which JDK the baseline was measured on);
+- a guarded benchmark, or a value of one of its parameters, is added or removed.
+
+The diff of the baseline shows reviewers what changed, benchmark by benchmark.
+
+The history of timings is `benchmarks/data.js` on the `gh-pages` branch, which only the workflow
+writes and GitHub Pages serves (Settings → Pages: deploy from the `gh-pages` branch, `/` folder).
 
 ## Release Automation
 

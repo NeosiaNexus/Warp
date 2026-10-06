@@ -1,5 +1,5 @@
 // Backends (src/backend.js): which servers accept forwarded players, how variants share backends,
-// and the files a backend is configured with.
+// how a backend that hangs while booting is booted again, and the files a backend is configured with.
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 
 import { Backend, backendGroups, forwardingUnsupported, paperForwardingConfig } from '../src/backend.js';
+import { ManagedProcess } from '../src/proc.js';
 import { findEntry, loadMatrix, resolveVariant } from '../src/versions.js';
 
 const matrix = loadMatrix();
@@ -71,6 +72,62 @@ describe('backend groups', () => {
 
     assert.equal(online.skip, null);
     assert.equal(velocity.skip, 'a control run has no proxy to forward player info');
+  });
+});
+
+describe('backend boot', () => {
+  const READY = 'console.log(\'Done (1.0s)! For help, type "help"\')';
+  // Prints the last line of a thread dump on SIGQUIT, as a JVM does, and never gets ready.
+  const HANG = "process.on('SIGQUIT', () => console.log('Full thread dump\\nJNI global refs: 3'))";
+
+  /** A backend whose server is a Node script per boot, `READY`, `HANG` or one that exits. */
+  class ScriptedBackend extends Backend {
+    constructor(...scripts) {
+      const logDir = mkdtempSync(join(tmpdir(), 'warp-e2e-boot-'));
+      dirs.push(logDir);
+      super({ name: 'lobby', dir: logDir, logDir, logSuffix: 't256' });
+      Object.assign(this, { scripts, boots: 0 });
+    }
+
+    prepare() {}
+
+    start() {
+      const script = `${this.scripts[this.boots++]}; setInterval(() => {}, 1000)`;
+      this.process = new ManagedProcess(this.name, process.execPath, ['-e', script], { cwd: this.logDir, logFile: this.logFile }).start();
+    }
+
+    async boot(...args) {
+      try {
+        return await super.boot(...args);
+      } finally {
+        await this.process.stop({ graceMs: 1_000 });
+      }
+    }
+  }
+
+  it('dumps the threads of a server that hangs into its log, and boots it again', async () => {
+    const backend = new ScriptedBackend(HANG, READY);
+    const hangs = [];
+
+    await backend.boot(null, {}, { timeoutMs: 1_000, onHang: (reason) => hangs.push(reason) });
+
+    assert.equal(backend.boots, 2);
+    assert.deepEqual(hangs, ['no ready line within 1 s']);
+    assert.match(readFileSync(backend.logFile, 'utf8'), /^Full thread dump\nJNI global refs: 3\nDone \(1\.0s\)!/);
+  });
+
+  it('gives up when the server hangs again', async () => {
+    const backend = new ScriptedBackend(HANG, HANG);
+
+    await assert.rejects(backend.boot(null, {}, { timeoutMs: 1_000, onHang: () => {} }), /no line matching .* within 1s/);
+    assert.equal(backend.boots, 2);
+  });
+
+  it('does not boot again a server that exited: a crash is not a hang', async () => {
+    const backend = new ScriptedBackend('process.exit(1)', READY);
+
+    await assert.rejects(backend.boot(null, {}, { timeoutMs: 1_000, onHang: () => assert.fail('not a hang') }), /exited \(1\)/);
+    assert.equal(backend.boots, 1);
   });
 });
 

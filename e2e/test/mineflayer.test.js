@@ -1,15 +1,18 @@
-// The bots (src/clients/mineflayer.js): corrections to minecraft-data, checked by parsing packets
-// with the harness's strict parser (a packet must be read to its last byte), and what bots read
-// from the packets servers send.
+// Corrections to minecraft-data and mineflayer, the tab list model, and what bots read from the
+// packets servers send (src/clients/mineflayer.js). The data corrections, the tab list and the
+// readings are checked by parsing packets with the harness's strict parser: a packet must be read
+// to its last byte.
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { describe, it } from 'node:test';
 
-import { correctProtocolData, listedUuids } from '../src/clients/mineflayer.js';
+import { TabList, answerPacksByUuid, correctProtocolData, endTicks, listedUuids } from '../src/clients/mineflayer.js';
 
 const require = createRequire(import.meta.url);
 const { createDeserializer, createSerializer } = require('minecraft-protocol');
 const minecraftData = require('minecraft-data');
+// What mineflayer's resource pack plugin builds its answers with.
+const UUID = require('uuid-1345');
 
 const varInt = (value) => {
   const bytes = [];
@@ -94,5 +97,123 @@ describe('player listings', () => {
 
     assert.deepEqual(listedUuids(legacy, PLAYER.name), []);
     assert.deepEqual(listedUuids(modern, PLAYER.name), []);
+  });
+});
+
+describe('mineflayer corrections', () => {
+  /** A client that records the name of every packet written to it. */
+  function recordingClient(state = 'play') {
+    const sent = [];
+    return { state, sent, write: (name) => sent.push(name) };
+  }
+
+  it('answers a resource pack with its UUID, which the pack offer gave as an object', () => {
+    const PACK = '8905415d-c434-4951-b900-8429e562767c';
+    const written = [];
+    const client = { write: (name, params) => written.push([name, params]) };
+
+    answerPacksByUuid(client);
+    client.write('resource_pack_receive', { uuid: new UUID(PACK), result: 3 });
+    client.write('position', { x: 1 });
+
+    assert.deepEqual(written, [['resource_pack_receive', { uuid: PACK, result: 3 }], ['position', { x: 1 }]]);
+    const serializer = createSerializer({ state: 'configuration', isServer: false, version: '26.1' });
+    const packet = serializer.createPacketBuffer({ name: 'resource_pack_receive', params: written[0][1] });
+    assert.equal(packet.subarray(1, 17).toString('hex'), PACK.replaceAll('-', ''), 'the UUID on the wire, not the nil one');
+  });
+
+  it('ends the tick after each movement packet, from 1.21.2', () => {
+    const client = recordingClient();
+
+    endTicks(client, '26.1');
+    for (const name of ['position', 'chat_command', 'position_look', 'flying']) client.write(name, {});
+
+    assert.deepEqual(client.sent, ['position', 'tick_end', 'chat_command', 'position_look', 'tick_end', 'flying', 'tick_end']);
+  });
+
+  it('leaves versions before 1.21.2 alone, which have no tick end', () => {
+    const client = recordingClient();
+
+    endTicks(client, '1.21.1');
+    client.write('position', {});
+
+    assert.deepEqual(client.sent, ['position']);
+  });
+
+  it('ends no tick outside the play state', () => {
+    const client = recordingClient('configuration');
+
+    endTicks(client, '26.1');
+    client.write('position', {});
+
+    assert.deepEqual(client.sent, ['position']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tab list model
+// ---------------------------------------------------------------------------
+
+const ALICE = '5c39a8cb-1a3a-4c86-9a47-0f0aaf0e3a01';
+const BOB = '0f3e1b7c-7b5d-4b55-8e0a-2c3d4e5f6a7b';
+
+/** A Join Game of `version`, which keeps the tab list before 1.20.2. */
+const JOIN_GAME = {
+  '1.7.10': { entityId: 1, gameMode: 1, dimension: 0, difficulty: 0, maxPlayers: 20, levelType: 'flat' },
+  '1.12.2': { entityId: 1, gameMode: 1, dimension: 0, difficulty: 0, maxPlayers: 20, levelType: 'flat', reducedDebugInfo: false },
+};
+
+/** Serializes clientbound play packets as a server of `version` would, parses them strictly, and applies them. */
+async function tabListAfter(version, packets) {
+  const serializer = createSerializer({ state: 'play', isServer: true, version });
+  const tabList = new TabList(minecraftData(version).version.version);
+  for (const [name, params] of packets) {
+    const packet = await parseStrictly(version, serializer.createPacketBuffer({ name, params }));
+    tabList.apply(packet.data.name, packet.data.params);
+  }
+  return tabList.names();
+}
+
+describe('tab list model', () => {
+  it('keys 1.7 entries by name, and keeps them across a Join Game', async () => {
+    const names = await tabListAfter('1.7.10', [
+      ['player_info', { playerName: 'Alice', online: true, ping: 5 }],
+      ['player_info', { playerName: '§cBob', online: true, ping: 5 }],
+      ['player_info', { playerName: 'Alice', online: true, ping: 40 }],
+      ['login', JOIN_GAME['1.7.10']],
+      ['player_info', { playerName: '§cBob', online: false, ping: 0 }],
+    ]);
+
+    assert.deepEqual(names, ['Alice']);
+  });
+
+  it('keys entries by UUID from 1.8, and keeps them across a Join Game before 1.20.2', async () => {
+    const names = await tabListAfter('1.12.2', [
+      ['player_info', { action: 'add_player', data: [{ uuid: ALICE, name: 'Alice', properties: [], gamemode: 0, ping: 1 }, { uuid: BOB, name: 'Bob', properties: [], gamemode: 0, ping: 1 }] }],
+      ['player_info', { action: 'update_latency', data: [{ uuid: ALICE, ping: 9 }] }],
+      ['login', JOIN_GAME['1.12.2']],
+      ['player_info', { action: 'remove_player', data: [{ uuid: BOB }] }],
+    ]);
+
+    assert.deepEqual(names, ['Alice']);
+  });
+
+  it('reads the action flags and Player Info Remove from 1.19.3', async () => {
+    const names = await tabListAfter('1.20.1', [
+      ['player_info', { action: { add_player: true, update_listed: true }, data: [{ uuid: ALICE, player: { name: 'Alice', properties: [] }, listed: 1 }, { uuid: BOB, player: { name: 'Bob', properties: [] }, listed: 1 }] }],
+      ['player_info', { action: { update_latency: true }, data: [{ uuid: BOB, latency: 3 }] }],
+      ['player_remove', { players: [ALICE] }],
+    ]);
+
+    assert.deepEqual(names, ['Bob']);
+  });
+
+  it('starts over at the Join Game that ends a configuration phase, from 1.20.2', () => {
+    const tabList = new TabList(764);
+    tabList.apply('player_info', { action: { add_player: true }, data: [{ uuid: ALICE, player: { name: 'Alice' } }] });
+
+    tabList.apply('login', {});
+
+    assert.deepEqual(tabList.names(), []);
   });
 });

@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import { BACKEND_PROTOCOL_ERRORS, backendGroups } from '../src/backend.js';
 import { connectClient } from '../src/clients/index.js';
 import { announcedProtocol } from '../src/clients/mineflayer.js';
-import { LOBBY_MODE, SCENARIOS, SURVIVAL_MODE, checkStatus, features, fromSurvival } from '../src/scenarios.js';
+import { LOBBY_MODE, QUIRKS, SCENARIOS, SURVIVAL_MODE, checkStatus, checkStayed, checkTabLists, features, fromSurvival } from '../src/scenarios.js';
 import { findEntry, jobsForTier, loadMatrix, resolveVariant } from '../src/versions.js';
 import { WARP_FAILURES } from '../src/warp.js';
 
@@ -30,14 +30,20 @@ describe('versions.json', () => {
     }
   });
 
-  it('only lists versions mineflayer speaks natively, or bridges them through ViaProxy', () => {
+  it('only lists versions the bots speak natively, or bridges them through ViaProxy', () => {
     for (const v of matrix.versions) {
       if (v.via) {
-        assert.notEqual(announcedProtocol(v.via), null, `${v.version}: mineflayer cannot speak ${v.via}`);
+        assert.notEqual(announcedProtocol(v.via), null, `${v.version}: the bots cannot speak ${v.via}`);
       } else {
-        assert.equal(announcedProtocol(v.client ?? v.version), v.protocol, `${v.version}: mineflayer would announce another protocol`);
+        assert.equal(announcedProtocol(v.client ?? v.version), v.protocol, `${v.version}: the bots would announce another protocol`);
       }
     }
+  });
+
+  it('drives 1.7 with minecraft-protocol alone, as mineflayer starts at 1.8.8', () => {
+    assert.match(connectClient(findEntry(matrix, '1.7.10'), {}).description, /^minecraft-protocol 1\.7\.10$/);
+    assert.match(connectClient(findEntry(matrix, '1.7.2'), { ports: {}, targets: [] }).description, /^minecraft-protocol 1\.7\.10 → ViaProxy → 1\.7\.2$/);
+    assert.match(connectClient(findEntry(matrix, '1.8.8'), {}).description, /^mineflayer 1\.8\.8$/);
   });
 
   it('keeps every tier, variant and extra variant resolvable', () => {
@@ -71,6 +77,42 @@ describe('versions.json', () => {
       for (const job of jobsForTier(matrix, tier)) {
         const variants = job.variants.split(',').map((name) => resolveVariant(matrix, name));
         for (const group of backendGroups(findEntry(matrix, job.mc), variants)) assert.equal(group.skip, null, `${tier} ${job.mc}: ${group.skip}`);
+      }
+    }
+  });
+
+  it('tests the profile key login of 1.19 to 1.19.2 on pull requests', () => {
+    const protocols = jobsForTier(matrix, 'pr').map((job) => job.protocol);
+    assert.ok(protocols.some((p) => features(p).profileKeys === true), 'no version from 1.19 to 1.19.2');
+  });
+
+  it('requires the newest version, and every variant on the newest the bots speak natively, on pull requests', () => {
+    const passing = matrix.versions.filter((v) => !v.knownBroken);
+    const newest = passing.at(-1);
+    const newestNative = passing.findLast((v) => !v.via);
+    const jobs = new Map(jobsForTier(matrix, 'pr').map((job) => [job.mc, job]));
+    assert.ok(jobs.has(newest.version), `${newest.version}, the newest version that passes, is not in the pr tier`);
+    const every = Object.keys(matrix.variants).filter((name) => name !== 'defaults').sort();
+    const variants = jobs.get(newestNative.version)?.variants.split(',').sort();
+    assert.deepEqual(variants, every, `${newestNative.version}, the newest version the bots speak natively, must run every variant on pull requests`);
+  });
+
+  it('runs on main every version and variant a pull request runs', () => {
+    const full = new Map(jobsForTier(matrix, 'full').map((job) => [job.mc, new Set(job.variants.split(','))]));
+    for (const job of jobsForTier(matrix, 'pr')) {
+      for (const variant of job.variants.split(',')) {
+        assert.ok(full.get(job.mc)?.has(variant), `${job.mc} ${variant} runs on pull requests but not in the full tier`);
+      }
+    }
+  });
+
+  it('works around only the server quirks the scenarios know, each with its issue', () => {
+    const quirky = matrix.versions.filter((v) => v.server.quirks);
+    assert.ok(quirky.length, 'no server quirk left: drop QUIRKS and what reads them');
+    for (const v of quirky) {
+      for (const [name, reason] of Object.entries(v.server.quirks)) {
+        assert.ok(Object.hasOwn(QUIRKS, name), `${v.version}: unknown server quirk "${name}"`);
+        assert.match(reason, /\(#\d+\)/, `${v.version} ${name}: reason links no issue`);
       }
     }
   });
@@ -114,7 +156,7 @@ describe('variants', () => {
 
 describe('scenario features', () => {
   it('switches servers on every version, through Warp', () => {
-    for (const protocol of [47, 763, 764, 777]) assert.equal(features(protocol).switching, true, protocol);
+    for (const protocol of [47, 762, 763, 764, 769, 777]) assert.equal(features(protocol).switching, true, String(protocol));
     assert.equal(features(769, { direct: true }).switching, 'no proxy in a control run');
   });
 
@@ -136,9 +178,43 @@ describe('scenario features', () => {
     assert.equal(features(5).resourcePack, 'no Resource Pack Send packet before 1.8');
   });
 
+  it('logs in with a profile key on 1.19 to 1.19.2 only, the versions whose Login Start carries one', () => {
+    assert.deepEqual(
+      [758, 759, 760, 761].map((protocol) => features(protocol).profileKeys === true),
+      [false, true, true, false],
+    );
+    assert.equal(features(758).profileKeys, 'only 1.19 to 1.19.2 clients send a profile key in Login Start');
+  });
+
+  it('signs chat from 1.20, whose servers take the keys that verify chat sessions from the mock', () => {
+    assert.equal(features(47).signedChat, "before 1.20 a server trusts only Mojang's own key to verify chat");
+    assert.notEqual(features(762).signedChat, true); // 1.19.4: Mojang's key is bundled in authlib
+    assert.equal(features(763).signedChat, true);
+    assert.equal(features(769).signedChat, true);
+  });
+
   it('knows every feature a scenario requires', () => {
     const known = Object.keys(features(769));
     for (const s of SCENARIOS.filter((x) => x.requires)) assert.ok(known.includes(s.requires), `${s.name} requires "${s.requires}"`);
+  });
+});
+
+describe('tab lists after a switch', () => {
+  const bot = (username, ...listed) => ({ username, listed: () => listed });
+
+  it('fails when a bot that did not switch left the lobby, which would pass for one left behind', () => {
+    const stayer = (username, gameMode) => ({ username, gameMode: () => gameMode });
+    assert.doesNotThrow(() => checkStayed([stayer('c', LOBBY_MODE), stayer('d', LOBBY_MODE)]));
+    assert.throws(() => checkStayed([stayer('c', LOBBY_MODE), stayer('d', SURVIVAL_MODE)]), /: d \(adventure\)$/);
+  });
+
+  it('passes when no switcher lists a player left behind', () => {
+    const detail = checkTabLists([bot('a', 'a', 'b'), bot('b', 'a', 'b')], ['c', 'd']);
+    assert.equal(detail, 'no player left behind in 2 tab lists');
+  });
+
+  it('fails when a switcher still lists a player of the previous server', () => {
+    assert.throws(() => checkTabLists([bot('a', 'a', 'c'), bot('b', 'b')], ['c', 'd']), /a lists c$/);
   });
 });
 
@@ -176,6 +252,7 @@ describe('failure patterns', () => {
       '# A fatal error has been detected by the Java Runtime Environment:',
       '2026-10-06 03:12:27.004 [multiThreadIoEventLoopGroup-3-2] WARN  dev.warp.proxy.connection.ClientPlaySessionHandler - Invalid KeepAlive ID from player e2e_keepalive',
       '2026-10-06 03:13:12.001 [multiThreadIoEventLoopGroup-3-2] INFO  dev.warp.proxy.connection.ConnectedPlayer - Player e2e_keepalive timed out (no KeepAlive response in 44999ms)',
+      '2026-10-06 12:13:13.939 [multiThreadIoEventLoopGroup-3-6] INFO  dev.warp.proxy.connection.MinecraftConnection - Connection /127.0.0.1:38044 timed out in PLAY: the client sent nothing for 30 s (reads on, 0 bytes queued to send)',
     ]) {
       assert.ok(matches(WARP_FAILURES, line), line);
     }
@@ -191,9 +268,12 @@ describe('failure patterns', () => {
     }
   });
 
-  it('flag backend disconnects caused by malformed packets, not ordinary ones', () => {
+  it('flag backend disconnects caused by malformed packets or chat acknowledgements, not ordinary ones', () => {
     assert.ok(matches(BACKEND_PROTOCOL_ERRORS, '[12:00:00 INFO]: e2e_login lost connection: Internal Exception: io.netty.handler.codec.DecoderException: Badly compressed packet - size of 2 is below server threshold of 256'));
     assert.ok(matches(BACKEND_PROTOCOL_ERRORS, '[12:00:00 ERROR]: Error receiving packet 42'));
+    // Paper 1.20.4, when a /server Warp kept from it took the client's acknowledgements along (#81).
+    assert.ok(matches(BACKEND_PROTOCOL_ERRORS, '[13:42:37 WARN]: Failed to validate message acknowledgements from e2e_chat'));
+    assert.ok(matches(BACKEND_PROTOCOL_ERRORS, '[13:42:37 INFO]: e2e_chat lost connection: Chat message validation failure'));
     assert.ok(!matches(BACKEND_PROTOCOL_ERRORS, '[12:00:00 INFO]: e2e_login lost connection: Disconnected'));
     assert.ok(!matches(BACKEND_PROTOCOL_ERRORS, '[12:00:00 INFO]: e2e_login lost connection: Timed out'));
   });

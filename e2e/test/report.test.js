@@ -92,6 +92,16 @@ describe('report', () => {
     assert.doesNotMatch(markdown, /Failures and known issues/);
   });
 
+  it('lists the backends booted again and the server quirks, without failing', () => {
+    const retried = { ...result('1.16.5', 754, [{ name: 'login', status: 'pass', detail: 'spawned' }]), bootRetries: [{ backend: 'survival', reason: 'no ready line within 240 s', log: 'logs/survival-t256.log' }] };
+    const quirky = { ...result('1.19', 759, [{ name: 'crowd', status: 'pass', detail: '5 switched 50 ms apart' }]), quirks: { concurrentLogins: 'shared random source (#103)' } };
+
+    const { status, markdown } = report(retried, quirky);
+
+    assert.equal(status, 0, markdown);
+    assert.match(markdown, /### Boot retries and server quirks\n\n- \*\*1\.16\.5\*\*: survival hung while booting .*\n- \*\*1\.19\*\*: the crowd's switches go 50 ms apart .*quirk `concurrentLogins`: .*\(#103\)/);
+  });
+
   it('keeps log lines from breaking the table', () => {
     const { markdown } = report(
       result('1.20.2', 764, [{ name: 'login', status: 'fail', detail: 'a|b \\| <c>' }], 'fail'),
