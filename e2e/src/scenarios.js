@@ -72,6 +72,12 @@ async function login(ctx) {
 }
 
 /**
+ * Pause after each chat line: a server kicks a player who chats too fast ("Kicked for spamming":
+ * each line adds 20, each tick takes 1 off, over 200 is a kick), about 10 lines in a burst.
+ */
+const CHAT_PACE_MS = 250;
+
+/**
  * Chat around the /server commands Warp answers itself, which never reach the backend.
  *
  * From 1.19.3 a server keeps, for each player, a window over the signed chat messages it sent them,
@@ -91,28 +97,34 @@ async function chat(ctx) {
   try {
     await bot.waitForGameMode(LOBBY_MODE, 10_000);
     let lines = 0;
-    // Each line comes back from the lobby (signed, where the bot signs) before the next step, so
-    // each command acknowledges the line before it.
+    // Every step must leave the bot on the lobby: a kicked player lands on Warp's fallback.
     const step = async (action) => {
       try {
         await action();
       } catch (e) {
         if (bot.gameMode() === LOBBY_MODE) throw e;
-        throw new Error(`${bot.username} left the lobby after chat line ${lines} (the lobby dropped it, see its log): ${e.message}`);
+      }
+      if (bot.gameMode() !== LOBBY_MODE) {
+        throw new Error(`${bot.username} left the lobby after chat line ${lines}: the lobby dropped it (see its log)`);
       }
     };
+    // Each line comes back from the lobby (signed, where the bot signs) before the next step, so
+    // each command acknowledges the line before it.
     const say = (count) =>
       step(async () => {
-        for (let i = 0; i < count; i++) await bot.say(`chat line ${++lines}`);
+        for (let i = 0; i < count; i++) {
+          await bot.say(`chat line ${++lines}`);
+          await sleep(CHAT_PACE_MS);
+        }
       });
-    await say(3);
+    await say(2);
     await step(() => bot.command('server', /^Servers:/));
-    await say(3);
+    await say(2);
     await step(() => bot.command('server nowhere', /^Unknown server: nowhere/));
-    await say(3);
+    await say(2);
     await step(() => bot.command('server lobby', /^Already connected to lobby/));
-    await say(3);
-    await sleep(500);
+    await say(2);
+    await step(() => sleep(500));
     bot.healthy();
     if (signed && bot.stats.signedChat < lines) {
       throw new Error(`${bot.stats.signedChat} of ${lines} chat lines came back signed: the lobby refused the bot's chat session`);
