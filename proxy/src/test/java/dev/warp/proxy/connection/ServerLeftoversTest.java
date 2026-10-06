@@ -108,11 +108,30 @@ class ServerLeftoversTest {
   class Clear {
 
     @Test
-    @DisplayName("should always reset the tab list header, footer and title from 1.8")
+    @DisplayName("should always clear the tab list header, footer and title from 1.8")
     void alwaysReset() {
       leftovers.track(new KeepAlive(1));
 
       List<PlayPacket> packets = leftovers.clear(ProtocolVersion.MINECRAFT_1_8);
+
+      assertEquals(3, packets.size());
+      assertInstanceOf(TabListHeaderFooter.class, packets.get(0));
+      assertEquals(new ClearTitles(false), packets.get(1));
+      assertEquals(new ClearTitles(true), packets.get(2));
+    }
+
+    @Test
+    @DisplayName("should hide the title before resetting it up to 1.16.5: a reset alone shows it")
+    void titleHiddenThenReset() {
+      List<PlayPacket> packets = leftovers.clear(ProtocolVersion.MINECRAFT_1_16_4);
+
+      assertEquals(List.of(new ClearTitles(false), new ClearTitles(true)), packets.subList(1, 3));
+    }
+
+    @Test
+    @DisplayName("should clear the title with one Clear Titles packet from 1.17")
+    void titleClearedFrom117() {
+      List<PlayPacket> packets = leftovers.clear(ProtocolVersion.MINECRAFT_1_17);
 
       assertEquals(2, packets.size());
       assertInstanceOf(TabListHeaderFooter.class, packets.get(0));

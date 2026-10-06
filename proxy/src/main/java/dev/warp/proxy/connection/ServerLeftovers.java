@@ -41,7 +41,8 @@ import java.util.UUID;
  * boss bars would stay on screen forever. Velocity clears the same things. The header, footer and
  * title are always reset; the tab list entries and boss bars are removed one by one, so their UUIDs
  * are followed here as the server adds and removes them. A loaded resource pack stays as well, but
- * no packet before 1.20.3 can unload it.
+ * no packet before 1.20.3 can unload it. 1.7 clients key their tab list by name instead of UUID: it
+ * is not followed, and the previous server's names stay listed.
  *
  * <p>Only fed before 1.20.2, where the packets it follows are decoded. Accessed from the player's
  * event loop only.
@@ -95,7 +96,7 @@ final class ServerLeftovers {
    * @return the packets to send before the next server's Join Game
    */
   List<PlayPacket> clear(ProtocolVersion version) {
-    List<PlayPacket> packets = new ArrayList<>(bossBars.size() + 3);
+    List<PlayPacket> packets = new ArrayList<>(bossBars.size() + 4);
     if (!tabListEntries.isEmpty()) {
       List<UUID> entries = List.copyOf(tabListEntries);
       packets.add(
@@ -110,6 +111,11 @@ final class ServerLeftovers {
     bossBars.clear();
     if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_8)) {
       packets.add(TabListHeaderFooter.empty(version));
+      if (version.isOlderThan(ProtocolVersion.MINECRAFT_1_17)) {
+        // The Title packet's reset alone blanks the title but shows the last subtitle again for a
+        // whole title duration (1.8.9 GuiIngame#displayTitle): hide first, then reset the times.
+        packets.add(new ClearTitles(false));
+      }
       packets.add(new ClearTitles(true));
     }
     return packets;
