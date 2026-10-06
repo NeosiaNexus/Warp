@@ -26,6 +26,12 @@ import java.util.zip.Inflater;
 /** Builds zlib streams for tests, including hand-assembled shapes no encoder emits by default. */
 public final class ZlibStreams {
 
+  /** The byte that {@link #maximalDynamicBlock(int)} decodes to. */
+  public static final byte MAXIMAL_DYNAMIC_BLOCK_DATA = 0x2A;
+
+  /** The longest run of zero code lengths a single code-length symbol 18 can encode. */
+  private static final int MAX_ZERO_RUN = 138;
+
   private ZlibStreams() {}
 
   /**
@@ -86,12 +92,6 @@ public final class ZlibStreams {
     writeAdler(out, data);
     return out.toByteArray();
   }
-
-  /** The byte that {@link #maximalDynamicBlock(int)} decodes to. */
-  public static final byte MAXIMAL_DYNAMIC_BLOCK_DATA = 0x2A;
-
-  /** The longest run of zero code lengths a single code-length symbol 18 can encode. */
-  private static final int MAX_ZERO_RUN = 138;
 
   /**
    * Builds a zlib stream of one dynamic-Huffman block declaring the most code lengths DEFLATE
