@@ -22,7 +22,6 @@ import dev.warp.protocol.netty.CipherDecoder;
 import dev.warp.protocol.netty.CipherEncoder;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
-import dev.warp.protocol.packet.TextComponent;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.login.EncryptionRequest;
 import dev.warp.protocol.packet.login.EncryptionResponse;
@@ -451,15 +450,14 @@ final class LoginSessionHandler implements SessionHandler {
         username != null ? username : "unknown",
         connection.channel().remoteAddress(),
         reason);
-    // The disconnect packet of the current protocol state: LoginAcknowledged moves the decoder to
+    // The disconnect packet of the client's current state: LoginAcknowledged moves it to
     // CONFIGURATION, completeLogin (before 1.20.2) to PLAY. The login reason is JSON in every
     // version; the configuration and play reasons follow the client's version.
     Packet disconnectPacket =
         switch (connection.decoder().state()) {
-          case HANDSHAKE, STATUS, LOGIN -> new LoginDisconnect(TextComponent.plainTextJson(reason));
-          case CONFIGURATION ->
-              new ConfigDisconnect(TextComponent.plainText(reason, clientVersion()));
-          case PLAY -> new PlayDisconnect(TextComponent.plainText(reason, clientVersion()));
+          case HANDSHAKE, STATUS, LOGIN -> LoginDisconnect.ofPlainText(reason);
+          case CONFIGURATION -> ConfigDisconnect.ofPlainText(reason, clientVersion());
+          case PLAY -> PlayDisconnect.ofPlainText(reason, clientVersion());
         };
     connection.writeAndClose(disconnectPacket);
   }

@@ -89,11 +89,10 @@ describe('variants', () => {
 });
 
 describe('scenario features', () => {
-  it('switches servers on every version and answers /server in chat from 1.19.3', () => {
-    assert.deepEqual(features(47), { proxyCommands: false, switching: true });
-    assert.deepEqual(features(760), { proxyCommands: false, switching: true });
-    assert.deepEqual(features(763), { proxyCommands: true, switching: true });
-    assert.deepEqual(features(764), { proxyCommands: true, switching: true });
+  it('switches servers on every version', () => {
+    assert.deepEqual(features(47), { switching: true });
+    assert.deepEqual(features(763), { switching: true });
+    assert.deepEqual(features(764), { switching: true });
   });
 });
 

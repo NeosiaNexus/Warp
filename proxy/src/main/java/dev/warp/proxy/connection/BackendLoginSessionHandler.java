@@ -33,7 +33,6 @@ import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.login.SetCompression;
 
 import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.Deflater;
@@ -206,7 +205,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
         "Backend {} rejected login for player {}: {}",
         serverAddress,
         player.username(),
-        new String(packet.rawReason(), StandardCharsets.UTF_8));
+        packet.reason());
     player.scheduleBackendFailure(backendConnection);
   }
 }

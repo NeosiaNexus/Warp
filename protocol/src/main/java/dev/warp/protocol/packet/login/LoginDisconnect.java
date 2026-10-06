@@ -17,34 +17,60 @@
 package dev.warp.protocol.packet.login;
 
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.packet.PacketCodec;
+import dev.warp.protocol.packet.TextComponent;
 
 import io.netty.buffer.ByteBuf;
 
 /**
  * Server disconnects the client during login ({@code S→C, ID 0x00}).
  *
- * <p>The reason is a JSON text component in every version: 1.20.3 moved the configuration and play
- * disconnects to NBT, not this one. The proxy stores the raw bytes and forwards them as-is,
- * deferring format interpretation to the serialisation layer.
+ * <p>The reason is a JSON text component in a VarInt-prefixed string, in every version: 1.20.3
+ * moved the configuration and play disconnect reasons to NBT, not this one.
  *
- * @param rawReason the raw text component bytes, a VarInt-prefixed JSON string
+ * @param reason the reason, a JSON text component such as {@code {"text":"Invalid username"}}
  */
-public record LoginDisconnect(byte[] rawReason) implements LoginPacket {
+public record LoginDisconnect(String reason) implements LoginPacket {
+
+  /** Longest reason a 1.14+ client reads, in UTF-16 code units. */
+  private static final int MAX_REASON_LENGTH = 262_144;
+
+  /** Longest reason a client before 1.14 reads, in UTF-16 code units. */
+  private static final int LEGACY_MAX_REASON_LENGTH = 32_767;
 
   /** Codec for reading and writing login disconnect packets. */
   public static final PacketCodec<LoginDisconnect> CODEC =
       new PacketCodec<>() {
         @Override
         public LoginDisconnect decode(ByteBuf buf, ProtocolVersion version) {
-          byte[] rawReason = new byte[buf.readableBytes()];
-          buf.readBytes(rawReason);
-          return new LoginDisconnect(rawReason);
+          return new LoginDisconnect(McString.read(buf, maxReasonLength(version)));
         }
 
         @Override
         public void encode(LoginDisconnect packet, ByteBuf buf, ProtocolVersion version) {
-          buf.writeBytes(packet.rawReason());
+          McString.write(buf, packet.reason(), maxReasonLength(version));
         }
       };
+
+  /**
+   * Creates a login disconnect whose reason is plain text.
+   *
+   * @param reason the text shown to the player
+   * @return the packet, valid for every protocol version
+   */
+  public static LoginDisconnect ofPlainText(String reason) {
+    return new LoginDisconnect(TextComponent.plainTextJson(reason));
+  }
+
+  /**
+   * Returns the longest reason a vanilla client of {@code version} reads: 32 767 UTF-16 code units
+   * until 1.13.2, 262 144 from 1.14. The login packet kept the old cap through 1.13 while the other
+   * text components moved to the new one.
+   */
+  private static int maxReasonLength(ProtocolVersion version) {
+    return version.isAtLeast(ProtocolVersion.MINECRAFT_1_14)
+        ? MAX_REASON_LENGTH
+        : LEGACY_MAX_REASON_LENGTH;
+  }
 }

@@ -36,6 +36,7 @@ import java.util.stream.Stream;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Reference wire bytes from {@code switch-packets.txt}, written by node-minecraft-protocol: the
@@ -112,14 +113,29 @@ final class SwitchPacketFixtures {
         if (line.isBlank() || line.startsWith("#")) {
           continue;
         }
-        String[] fields = line.split(" ");
-        fixtures
-            .computeIfAbsent(Integer.parseInt(fields[0]), k -> new HashMap<>())
-            .put(fields[1], HexFormat.of().parseHex(fields[2]));
+        String[] fields = line.split(" ", -1);
+        if (fields.length != 3) {
+          throw malformed(line, null);
+        }
+        int protocol;
+        byte[] body;
+        try {
+          protocol = Integer.parseInt(fields[0]);
+          body = HexFormat.of().parseHex(fields[2]);
+        } catch (NumberFormatException e) {
+          throw malformed(line, e);
+        } catch (IllegalArgumentException e) { // not hexadecimal
+          throw malformed(line, e);
+        }
+        fixtures.computeIfAbsent(protocol, k -> new HashMap<>()).put(fields[1], body);
       }
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
     return fixtures;
+  }
+
+  private static IllegalStateException malformed(String line, @Nullable Throwable cause) {
+    return new IllegalStateException("switch-packets.txt: malformed line: " + line, cause);
   }
 }

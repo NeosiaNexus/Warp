@@ -6,21 +6,17 @@ import { sleep } from './proc.js';
 export const LOBBY_MODE = 'creative';
 export const SURVIVAL_MODE = 'adventure';
 
-/** Proxy-side `/server` replies: Warp answers in chat from 1.19.3 (system chat packet). */
-const PROXY_COMMANDS_MIN_PROTOCOL = 761;
-
 export function features(protocol) {
   return {
-    proxyCommands: protocol >= PROXY_COMMANDS_MIN_PROTOCOL,
     // Every version switches: through the configuration phase from 1.20.2, with the new server's
-    // Join Game and a Respawn before. `/server` is intercepted on every version.
+    // Join Game and a Respawn before.
     switching: true,
   };
 }
 
-/** Asks Warp where the bot is ("Servers: [lobby], survival") when the version allows it. */
+/** Asks Warp where the bot is ("Servers: [lobby], survival"); every version, through Warp only. */
 async function proxyReportsServer(ctx, bot, expected) {
-  if (!ctx.features.proxyCommands) return;
+  if (!ctx.features.proxy) return;
   const reply = await bot.command('server', /^Servers:/);
   const current = /\[(\w+)\]/.exec(reply)?.[1];
   if (current !== expected) throw new Error(`/server says ${current}, expected ${expected}`);

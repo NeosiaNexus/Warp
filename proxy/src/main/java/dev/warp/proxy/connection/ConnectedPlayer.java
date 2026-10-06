@@ -573,18 +573,13 @@ public final class ConnectedPlayer {
   }
 
   /**
-   * Sends a chat message from the proxy to the player.
+   * Sends a message from the proxy to the player's chat box, on any protocol version.
    *
-   * <p>Warp has no chat packet for clients older than 1.19.3 yet (#45): for them the message is
-   * only logged, at debug level, rather than failing the connection.
+   * <p>Must be called while the client is in PLAY state.
    *
-   * @param message the plain text message
+   * @param message the plain text to show
    */
   void sendSystemMessage(String message) {
-    if (protocolVersion.isOlderThan(ProtocolVersion.MINECRAFT_1_19_3)) {
-      logger.debug("No chat packet for {} ({}), not sent: {}", username, protocolVersion, message);
-      return;
-    }
     byte[] raw = TextComponent.plainText(message, protocolVersion);
     clientConnection.writeAndFlush(new SystemChatMessage(raw, false));
   }
@@ -597,12 +592,10 @@ public final class ConnectedPlayer {
    */
   void disconnectWithReason(String reason) {
     if (clientConnection.channel().isActive()) {
-      byte[] raw = TextComponent.plainText(reason, protocolVersion);
-      ProtocolState state = clientConnection.decoder().state();
-      if (state == ProtocolState.CONFIGURATION) {
-        clientConnection.writeAndFlush(new ConfigDisconnect(raw));
+      if (clientConnection.decoder().state() == ProtocolState.CONFIGURATION) {
+        clientConnection.writeAndFlush(ConfigDisconnect.ofPlainText(reason, protocolVersion));
       } else {
-        clientConnection.writeAndFlush(new PlayDisconnect(raw));
+        clientConnection.writeAndFlush(PlayDisconnect.ofPlainText(reason, protocolVersion));
       }
     }
     disconnect();
@@ -717,11 +710,23 @@ public final class ConnectedPlayer {
       return;
     }
 
-    long id = ThreadLocalRandom.current().nextLong();
+    long id = nextKeepAliveId();
     pendingKeepAliveId = id;
     keepAliveSentTime = System.nanoTime();
     keepAliveOutstanding = true;
     clientConnection.writeAndFlush(new KeepAlive(id));
+  }
+
+  /**
+   * Returns a random keep-alive ID that the client's version carries without loss: any {@code long}
+   * from 1.12.2 on, a non-negative {@code int} before (the ID is an int in 1.7 and a VarInt up to
+   * 1.12.1), so the client echoes exactly the ID that {@link #handleKeepAliveResponse} expects.
+   */
+  private long nextKeepAliveId() {
+    ThreadLocalRandom random = ThreadLocalRandom.current();
+    return KeepAlive.hasLongId(protocolVersion)
+        ? random.nextLong()
+        : random.nextInt() & Integer.MAX_VALUE;
   }
 
   /**

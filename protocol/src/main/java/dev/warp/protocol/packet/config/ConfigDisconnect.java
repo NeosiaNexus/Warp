@@ -18,17 +18,18 @@ package dev.warp.protocol.packet.config;
 
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.packet.PacketCodec;
+import dev.warp.protocol.packet.TextComponent;
 
 import io.netty.buffer.ByteBuf;
 
 /**
  * Server disconnects the client during configuration ({@code S→C, ID 0x02}).
  *
- * <p>The reason is a text component whose wire format changed in 1.20.3 (JSON → NBT). The proxy
- * stores the raw bytes and forwards them as-is, deferring format interpretation to the
- * serialisation layer.
+ * <p>The reason is a text component whose wire format changed in 1.20.3, from a VarInt-prefixed
+ * JSON string to NBT. The proxy keeps the encoded bytes and never parses them.
  *
- * @param rawReason the raw text component bytes (JSON or NBT depending on version)
+ * @param rawReason the encoded reason, exactly as on the wire: a VarInt-prefixed JSON string before
+ *     1.20.3, an NBT tag from 1.20.3 (see {@link TextComponent})
  */
 public record ConfigDisconnect(byte[] rawReason) implements ConfigPacket {
 
@@ -47,4 +48,15 @@ public record ConfigDisconnect(byte[] rawReason) implements ConfigPacket {
           buf.writeBytes(packet.rawReason());
         }
       };
+
+  /**
+   * Creates a configuration disconnect whose reason is plain text, encoded for {@code version}.
+   *
+   * @param reason the text shown to the player
+   * @param version the client's protocol version, which selects JSON or NBT
+   * @return the packet
+   */
+  public static ConfigDisconnect ofPlainText(String reason, ProtocolVersion version) {
+    return new ConfigDisconnect(TextComponent.plainText(reason, version));
+  }
 }

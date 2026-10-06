@@ -212,7 +212,8 @@ class ClientSettingsCacheTest {
       clientConn.setSessionHandler(handler);
 
       PlayClientSettings playSettings =
-          new PlayClientSettings("de_DE", (byte) 16, 2, false, (byte) 31, 0, true, false, 1);
+          new PlayClientSettings(
+              "de_DE", (byte) 16, 2, false, (byte) 0, (byte) 31, 0, true, false, 1);
       handler.handle(playSettings);
 
       ClientInformation cached = player.cachedClientSettings();

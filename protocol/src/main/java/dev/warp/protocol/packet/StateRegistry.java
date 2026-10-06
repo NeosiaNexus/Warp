@@ -559,6 +559,15 @@ public final class StateRegistry {
                 .registerEncodeOnly(
                     SystemChatMessage.class,
                     SystemChatMessage.CODEC,
+                    // Chat Message until 1.18.2, System Chat Message from 1.19
+                    map(0x02, MINECRAFT_1_7_2),
+                    map(0x0F, MINECRAFT_1_9),
+                    map(0x0E, MINECRAFT_1_13),
+                    map(0x0F, MINECRAFT_1_15),
+                    map(0x0E, MINECRAFT_1_16),
+                    map(0x0F, MINECRAFT_1_17),
+                    map(0x5F, MINECRAFT_1_19),
+                    map(0x62, MINECRAFT_1_19_1),
                     map(0x60, MINECRAFT_1_19_3),
                     map(0x64, MINECRAFT_1_19_4),
                     map(0x67, MINECRAFT_1_20_2),
