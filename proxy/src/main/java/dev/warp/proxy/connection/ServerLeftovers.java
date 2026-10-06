@@ -45,7 +45,9 @@ import java.util.UUID;
  * instead, so its names are followed (Velocity's {@code VelocityTabListLegacy}). A loaded resource
  * pack stays as well, but no packet before 1.20.3 can unload it.
  *
- * <p>Only fed before 1.20.2, where the packets it follows are decoded. Accessed from the player's
+ * <p>Only fed before 1.20.2, where the packets it follows are watched: the decoder reports their
+ * additions and removals (every 1.7 tab list packet, as one cannot tell a new name from a latency
+ * update), read in place, and forwards the packets themselves untouched. Accessed from the player's
  * event loop only.
  */
 final class ServerLeftovers {
@@ -62,7 +64,7 @@ final class ServerLeftovers {
   /**
    * Follows a packet the current server sends the client.
    *
-   * @param packet a packet forwarded to the client
+   * @param packet what the decoder read of a packet forwarded to the client
    */
   void track(PlayPacket packet) {
     switch (packet) {

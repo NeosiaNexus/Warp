@@ -23,6 +23,7 @@ import static dev.warp.proxy.connection.SwitchHarness.frame;
 import static dev.warp.proxy.connection.SwitchHarness.handlerOf;
 import static dev.warp.proxy.connection.SwitchHarness.opaqueFrame;
 import static dev.warp.proxy.connection.SwitchHarness.types;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -253,6 +254,46 @@ class RespawnSwitchTest {
       assertEquals(BossBar.REMOVE, sent.get(1).as(BossBar.class).action());
       assertFalse(sent.get(3).as(ClearTitles.class).reset(), "the title hidden");
       assertTrue(sent.get(4).as(ClearTitles.class).reset(), "then its times reset");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("dev.warp.proxy.connection.RespawnSwitchTest#versions")
+    @DisplayName("should forward the tab list and boss bar packets it follows byte for byte")
+    void leftoversForwardedVerbatim(ProtocolVersion version) {
+      SwitchHarness setup = harness(version);
+      MinecraftConnection lobby = setup.spawnOn(LOBBY);
+      setup.sentToClient();
+
+      leaveLeftoversOn(setup, lobby);
+      List<Sent> sent = setup.sentToClient();
+
+      List<Leftover> leftovers = leftoversOf(version);
+      assertEquals(leftovers.stream().map(Leftover::type).toList(), types(sent));
+      for (int i = 0; i < leftovers.size(); i++) {
+        assertArrayEquals(leftovers.get(i).body(), sent.get(i).body());
+      }
+    }
+
+    @Test
+    @DisplayName("should not follow what the previous backend still sends after the switch")
+    void previousBackendNotFollowed() {
+      SwitchHarness setup = harness(ProtocolVersion.MINECRAFT_1_12_2);
+      MinecraftConnection lobby = setup.spawnOn(LOBBY);
+      setup.switchTo(SURVIVAL);
+      handlerOf(lobby).handle(new PlayerInfo(PlayerInfo.ADD_PLAYER, List.of(ALICE)));
+      handlerOf(lobby).handle(new BossBar(BOSS, BossBar.ADD));
+      setup.sentToClient();
+
+      setup.switchTo(CREATIVE);
+
+      assertEquals(
+          List.of(
+              TabListHeaderFooter.class,
+              ClearTitles.class,
+              ClearTitles.class,
+              JoinGame.class,
+              Respawn.class),
+          types(setup.sentToClient()));
     }
 
     @Test
@@ -511,56 +552,83 @@ class RespawnSwitchTest {
 
   /** The server adds a player to the tab list and shows a boss bar. */
   private static void leaveLeftoversOn(SwitchHarness setup, MinecraftConnection backend) {
-    ProtocolVersion version = setup.version;
+    for (Leftover leftover : leftoversOf(setup.version)) {
+      setup.receive(backend, frame(setup.version, leftover.type(), leftover.body()));
+    }
+  }
+
+  /**
+   * A packet that leaves something a Join Game does not clear, as the server sends it.
+   *
+   * @param type the packet
+   * @param body its bytes after the packet ID
+   */
+  @SuppressWarnings("ArrayRecordComponent") // test data, never mutated
+  private record Leftover(Class<? extends Packet> type, byte[] body) {}
+
+  /**
+   * The server adds Alice to the tab list and shows the boss bar, in the layouts of the version.
+   */
+  private static List<Leftover> leftoversOf(ProtocolVersion version) {
+    List<Leftover> leftovers = new ArrayList<>();
     if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_19_3)) {
-      setup.receive(backend, frame(version, addPlayerUpdate()));
+      leftovers.add(new Leftover(PlayerInfoUpdate.class, addPlayerUpdate()));
     } else if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_8)) {
-      setup.receive(backend, frame(version, addPlayer(version)));
+      leftovers.add(new Leftover(PlayerInfo.class, addPlayer(version)));
     } else {
-      setup.receive(backend, frame(version, new LegacyPlayerInfo("Alice", true, (short) 5)));
+      leftovers.add(new Leftover(LegacyPlayerInfo.class, legacyListed()));
     }
     if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_9)) {
-      setup.receive(backend, frame(version, new BossBar(BOSS, BossBar.ADD, bossBarAdd())));
+      leftovers.add(new Leftover(BossBar.class, bossBarAdd()));
     }
+    return leftovers;
   }
 
-  private static PlayerInfo addPlayer(ProtocolVersion version) {
-    return new PlayerInfo(
-        PlayerInfo.ADD_PLAYER,
-        List.of(ALICE),
-        bytes(
-            buf -> {
-              VarInt.write(buf, 1);
-              writeUuid(buf, ALICE);
-              writeString(buf, "Alice");
-              VarInt.write(buf, 0); // properties
-              VarInt.write(buf, 0); // game mode
-              VarInt.write(buf, 5); // latency
-              buf.writeBoolean(false); // display name
-              if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_19)) {
-                buf.writeBoolean(false); // public key
-              }
-            }));
+  /** Lists Alice on a 1.7 client: name, listed, latency. */
+  private static byte[] legacyListed() {
+    return bytes(
+        buf -> {
+          writeString(buf, "Alice");
+          buf.writeBoolean(true);
+          buf.writeShort(5);
+        });
   }
 
-  private static PlayerInfoUpdate addPlayerUpdate() {
-    return new PlayerInfoUpdate(
-        PlayerInfoUpdate.ADD_PLAYER | PlayerInfoUpdate.UPDATE_LISTED,
-        List.of(ALICE),
-        bytes(
-            buf -> {
-              VarInt.write(buf, 1);
-              writeUuid(buf, ALICE);
-              writeString(buf, "Alice");
-              VarInt.write(buf, 0); // properties
-              buf.writeBoolean(true); // listed
-            }));
+  private static byte[] addPlayer(ProtocolVersion version) {
+    return bytes(
+        buf -> {
+          VarInt.write(buf, PlayerInfo.ADD_PLAYER);
+          VarInt.write(buf, 1);
+          writeUuid(buf, ALICE);
+          writeString(buf, "Alice");
+          VarInt.write(buf, 0); // properties
+          VarInt.write(buf, 0); // game mode
+          VarInt.write(buf, 5); // latency
+          buf.writeBoolean(false); // display name
+          if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_19)) {
+            buf.writeBoolean(false); // public key
+          }
+        });
   }
 
-  /** The fields of a boss bar's ADD action: title, health, color, division, flags. */
+  private static byte[] addPlayerUpdate() {
+    return bytes(
+        buf -> {
+          buf.writeByte(PlayerInfoUpdate.ADD_PLAYER | PlayerInfoUpdate.UPDATE_LISTED);
+          VarInt.write(buf, 1);
+          writeUuid(buf, ALICE);
+          writeString(buf, "Alice");
+          VarInt.write(buf, 0); // properties
+          buf.writeBoolean(true); // listed
+        });
+  }
+
+  /** Shows the boss bar: UUID, action, then title, health, color, division, flags. */
   private static byte[] bossBarAdd() {
     return bytes(
         buf -> {
+          writeUuid(buf, BOSS);
+          VarInt.write(buf, BossBar.ADD);
           writeString(buf, "{\"text\":\"Boss\"}");
           buf.writeFloat(1);
           VarInt.write(buf, 0);

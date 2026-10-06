@@ -19,14 +19,18 @@ package dev.warp.proxy;
 import dev.warp.api.Warp;
 import dev.warp.api.WarpProvider;
 import dev.warp.proxy.auth.MojangSessionService;
+import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.config.WarpConfig;
+import dev.warp.proxy.connection.PlaySession;
 import dev.warp.proxy.connection.ServerChannelInitializer;
 import dev.warp.proxy.connection.ServerLoginContext;
 import dev.warp.proxy.server.ServerRegistry;
 
+import java.io.IOException;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
+import java.security.spec.InvalidKeySpecException;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.PooledByteBufAllocator;
@@ -131,10 +135,10 @@ public final class WarpServer implements Warp {
 
     TransportInfo transport = detectTransport();
     this.transportInfo = transport;
+    // Before the event loops, so that a configuration error leaves nothing to shut down.
+    ServerLoginContext loginContext = createLoginContext(transport);
     this.bossGroup = new MultiThreadIoEventLoopGroup(1, transport.ioFactory());
     this.workerGroup = new MultiThreadIoEventLoopGroup(transport.ioFactory());
-
-    ServerLoginContext loginContext = createLoginContext(transport);
 
     ServerBootstrap bootstrap =
         new ServerBootstrap()
@@ -254,6 +258,8 @@ public final class WarpServer implements Warp {
    * @param transport the detected transport for channel class resolution
    */
   private ServerLoginContext createLoginContext(TransportInfo transport) {
+    ProfileKeys profileKeys = loadProfileKeys();
+
     KeyPairGenerator gen;
     try {
       gen = KeyPairGenerator.getInstance("RSA");
@@ -283,10 +289,38 @@ public final class WarpServer implements Warp {
         config.compressionLevel(),
         config.compressionPassthrough(),
         service,
+        profileKeys,
+        new PlaySession(),
         serverRegistry,
         config.forwardingMode(),
         config.forwardingSecret(),
         transport.clientChannelClass());
+  }
+
+  /**
+   * Loads the checker of 1.19 to 1.19.2 profile keys: it trusts Mojang's key, or the one named by
+   * {@value ProfileKeys#SIGNER_PROPERTY}.
+   *
+   * @throws IllegalStateException if the property names a file that holds no RSA public key
+   */
+  private static ProfileKeys loadProfileKeys() {
+    String signer = System.getProperty(ProfileKeys.SIGNER_PROPERTY);
+    ProfileKeys profileKeys;
+    try {
+      profileKeys = ProfileKeys.fromSystemProperty();
+    } catch (IOException | InvalidKeySpecException e) {
+      throw new IllegalStateException(
+          "Cannot read an RSA public key from " + signer + " (" + ProfileKeys.SIGNER_PROPERTY + ")",
+          e);
+    }
+    if (signer != null) {
+      logger.warn(
+          "In online mode, the profile keys of 1.19 to 1.19.2 players are checked against {}"
+              + " instead of Mojang's key ({} system property)",
+          signer,
+          ProfileKeys.SIGNER_PROPERTY);
+    }
+    return profileKeys;
   }
 
   /**

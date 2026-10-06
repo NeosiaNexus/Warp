@@ -23,6 +23,7 @@ import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.codec.McUuid;
 import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.packet.PacketCodec;
+import dev.warp.protocol.packet.PacketWatch;
 
 import java.util.Collection;
 import java.util.List;
@@ -36,8 +37,10 @@ import io.netty.handler.codec.DecoderException;
  * PlayerInfoUpdate} and {@link PlayerInfoRemove} in 1.19.3).
  *
  * <p>The tab list survives the Join Game of a server switch, so the proxy keeps the UUIDs the
- * current server adds and removes, to remove the leftovers when the player leaves. It reads the
- * action and each entry's UUID, and carries the entries verbatim.
+ * current server adds and removes, to remove the leftovers when the player leaves. It watches the
+ * packet ({@link #WATCH}) rather than decoding it: the action and the entries' UUIDs are read in
+ * place, and the frame is forwarded as received. The proxy itself only writes removals ({@link
+ * #remove}).
  *
  * <p>Layout: VarInt action, VarInt count, then per entry a UUID and the action's fields. Adding a
  * player sends its name, properties, game mode, latency and optional display name, plus from 1.19
@@ -48,10 +51,8 @@ import io.netty.handler.codec.DecoderException;
  * @param action {@link #ADD_PLAYER}, {@link #UPDATE_GAME_MODE}, {@link #UPDATE_LATENCY}, {@link
  *     #UPDATE_DISPLAY_NAME} or {@link #REMOVE_PLAYER}
  * @param profileIds the UUID of every entry, in order
- * @param entries the entry count and the entries, verbatim
  */
-@SuppressWarnings("ArrayRecordComponent") // entries are never mutated
-public record PlayerInfo(int action, List<UUID> profileIds, byte[] entries) implements PlayPacket {
+public record PlayerInfo(int action, List<UUID> profileIds) implements PlayPacket {
 
   /** Adds players to the tab list. */
   public static final int ADD_PLAYER = 0;
@@ -80,51 +81,65 @@ public record PlayerInfo(int action, List<UUID> profileIds, byte[] entries) impl
    * @return the packet
    */
   public static PlayerInfo remove(Collection<UUID> profileIds) {
-    return new PlayerInfo(
-        REMOVE_PLAYER, List.copyOf(profileIds), TabListEntries.encodeUuids(profileIds));
+    return new PlayerInfo(REMOVE_PLAYER, List.copyOf(profileIds));
   }
 
-  /** Codec for reading and writing player info packets. */
+  /**
+   * Reports the players a server adds to and removes from the tab list: the action and every
+   * entry's UUID, read in place. The other actions (game mode, latency and display name updates)
+   * report nothing and allocate nothing, and are not read past their action.
+   */
+  public static final PacketWatch<PlayerInfo> WATCH =
+      (buf, version) -> {
+        int action = VarInt.read(buf);
+        return switch (action) {
+          case ADD_PLAYER -> new PlayerInfo(action, readAddedIds(buf, version));
+          case REMOVE_PLAYER -> new PlayerInfo(action, TabListEntries.readUuids(buf));
+          default -> null;
+        };
+      };
+
+  /**
+   * Codec of the tab list removals the proxy writes: the action, then the UUIDs, which is all a
+   * removal holds. Other actions carry fields the proxy never reads, and are refused.
+   */
   public static final PacketCodec<PlayerInfo> CODEC =
       new PacketCodec<>() {
         @Override
         public PlayerInfo decode(ByteBuf buf, ProtocolVersion version) {
           int action = VarInt.read(buf);
-          int start = buf.readerIndex();
-          int count = TabListEntries.readCount(buf, McUuid.ENCODED_SIZE);
-          UUID[] profileIds = new UUID[count];
-          for (int i = 0; i < count; i++) {
-            profileIds[i] = McUuid.read(buf);
-            skipEntry(buf, action, version);
+          if (action != REMOVE_PLAYER) {
+            throw new DecoderException("Only tab list removals are decoded, not action " + action);
           }
-          return new PlayerInfo(action, List.of(profileIds), TabListEntries.copyFrom(buf, start));
+          return new PlayerInfo(action, TabListEntries.readUuids(buf));
         }
 
         @Override
         public void encode(PlayerInfo packet, ByteBuf buf, ProtocolVersion version) {
-          VarInt.write(buf, packet.action());
-          buf.writeBytes(packet.entries());
+          if (packet.action() != REMOVE_PLAYER) {
+            throw new IllegalArgumentException(
+                "Only tab list removals are written, not action " + packet.action());
+          }
+          VarInt.write(buf, REMOVE_PLAYER);
+          TabListEntries.writeUuids(buf, packet.profileIds());
         }
       };
 
-  private static void skipEntry(ByteBuf buf, int action, ProtocolVersion version) {
-    switch (action) {
-      case ADD_PLAYER -> {
-        McString.skip(buf); // name
-        TabListEntries.skipProperties(buf);
-        VarInt.skip(buf); // game mode
-        VarInt.skip(buf); // latency
-        TabListEntries.skipOptionalString(buf); // display name
-        if (version.isAtLeast(MINECRAFT_1_19) && buf.readBoolean()) {
-          TabListEntries.skipPublicKey(buf);
-        }
+  /** Reads the UUIDs of the players an Add Player action lists, skipping their other fields. */
+  private static List<UUID> readAddedIds(ByteBuf buf, ProtocolVersion version) {
+    int count = TabListEntries.readCount(buf, McUuid.ENCODED_SIZE);
+    UUID[] profileIds = new UUID[count];
+    for (int i = 0; i < count; i++) {
+      profileIds[i] = McUuid.read(buf);
+      McString.skip(buf); // name
+      TabListEntries.skipProperties(buf);
+      VarInt.skip(buf); // game mode
+      VarInt.skip(buf); // latency
+      TabListEntries.skipOptionalString(buf); // display name
+      if (version.isAtLeast(MINECRAFT_1_19) && buf.readBoolean()) {
+        TabListEntries.skipPublicKey(buf);
       }
-      case UPDATE_GAME_MODE, UPDATE_LATENCY -> VarInt.skip(buf);
-      case UPDATE_DISPLAY_NAME -> TabListEntries.skipOptionalString(buf);
-      case REMOVE_PLAYER -> {
-        // The UUID is the whole entry.
-      }
-      default -> throw new DecoderException("Unknown player info action " + action);
     }
+    return List.of(profileIds);
   }
 }

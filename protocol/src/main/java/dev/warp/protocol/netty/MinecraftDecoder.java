@@ -24,7 +24,9 @@ import dev.warp.protocol.compress.FrameDecompressor;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketCodec;
 import dev.warp.protocol.packet.PacketDirection;
+import dev.warp.protocol.packet.PacketReader;
 import dev.warp.protocol.packet.PacketRegistry;
+import dev.warp.protocol.packet.PacketWatch;
 import dev.warp.protocol.packet.StateRegistry;
 
 import java.util.List;
@@ -51,6 +53,10 @@ import org.jspecify.annotations.Nullable;
  *       compressed ones (no inflation), or by inflating when the frame must be verified first.
  *   <li>If the registry has a decode codec for that ID in the current state and version, decode it
  *       (inflating if needed) and emit the {@link Packet}.
+ *   <li>If it has a {@link PacketWatch} instead, run it over the packet bytes (inflating a
+ *       compressed frame, and keeping the inflated bytes for the relay as below), emit the packet
+ *       it reports if any, then the original frame as in the next step. Watched packets are read in
+ *       place, never decoded nor copied.
  *   <li>Otherwise emit the <b>original frame</b> as a {@link ByteBuf} — length prefix, Data Length
  *       and payload exactly as received — so the relay can write it to the other connection
  *       verbatim. No inflate, no deflate, no copy, no allocation.
@@ -174,17 +180,22 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
     boolean handedOver = false;
     try {
       int packetId = readPacketId(packet);
-      PacketCodec<?> codec = registry.lookup(version, packetId);
-      if (codec == null) {
-        // Verified, but not inspected: forward the original compressed bytes, and keep the
-        // inflated ones in case the other connection cannot take the frame as it is.
-        inflatedFrame = frame;
-        inflatedPacket = packet.readerIndex(0);
-        handedOver = true;
-        forward(frame, out);
-        return;
+      switch (registry.lookup(version, packetId)) {
+        case PacketCodec<?> codec -> {
+          out.add(decodePacket(codec, packetId, packet));
+          return;
+        }
+        case PacketWatch<?> watch -> watchPacket(watch, packetId, packet, out);
+        case null -> {
+          // Not read at all: inflated only to verify the frame.
+        }
       }
-      out.add(decodePacket(codec, packetId, packet));
+      // Verified, but not decoded: forward the original compressed bytes, and keep the inflated
+      // ones in case the other connection cannot take the frame as it is.
+      inflatedFrame = frame;
+      inflatedPacket = packet.readerIndex(0);
+      handedOver = true;
+      forward(frame, out);
     } finally {
       if (!handedOver) {
         packet.release();
@@ -223,15 +234,24 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
     }
   }
 
-  /** Decodes or forwards a frame whose packet bytes start at the reader index, uncompressed. */
+  /**
+   * Decodes, watches or forwards a frame whose packet bytes start at the reader index,
+   * uncompressed.
+   */
   private void decodeUncompressed(ByteBuf frame, List<Object> out) {
     int packetId = readPacketId(frame);
-    PacketCodec<?> codec = registry.lookup(version, packetId);
-    if (codec == null) {
-      forward(frame, out);
+    PacketReader reader = registry.lookup(version, packetId);
+    if (reader == null) {
+      forward(frame, out); // the hot path: a plain null check, ahead of any type switch
       return;
     }
-    out.add(decodePacket(codec, packetId, frame));
+    switch (reader) {
+      case PacketCodec<?> codec -> out.add(decodePacket(codec, packetId, frame));
+      case PacketWatch<?> watch -> {
+        watchPacket(watch, packetId, frame, out);
+        forward(frame, out);
+      }
+    }
   }
 
   /** Emits the complete original frame, length prefix included, for verbatim forwarding. */
@@ -247,6 +267,24 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
       throw NEGATIVE_PACKET_ID;
     }
     return packetId;
+  }
+
+  /**
+   * Runs a watch over a packet's bytes and emits the packet it reports, if any, ahead of the frame
+   * the caller forwards. Unlike a decoded packet, a watched one may be read partially: the client
+   * receives it whole.
+   */
+  private void watchPacket(PacketWatch<?> watch, int packetId, ByteBuf buf, List<Object> out) {
+    Packet packet;
+    try {
+      packet = watch.watch(buf, version);
+    } catch (Exception e) {
+      throw new DecoderException(
+          "Failed to watch packet 0x" + Integer.toHexString(packetId) + " in state " + state, e);
+    }
+    if (packet != null) {
+      out.add(packet);
+    }
   }
 
   private Packet decodePacket(PacketCodec<?> codec, int packetId, ByteBuf buf) {
