@@ -43,7 +43,10 @@ export async function generateFixture(release, cacheDir) {
   const jar = await download(server.url, join(cacheDir, 'downloads', `minecraft-server-${release.id}.jar`), {
     sha1: server.sha1,
   });
-  const java = await findJava(release.javaVersion.majorVersion, cacheDir);
+  // A number, never a string: it picks the JDK, whose path is the command run below.
+  const javaMajor = Number(release.javaVersion?.majorVersion);
+  if (!Number.isInteger(javaMajor) || javaMajor < 8) throw new Error(`Minecraft ${release.id} lists no Java version`);
+  const java = await findJava(javaMajor, cacheDir);
   const workDir = mkdtempSync(join(tmpdir(), 'warp-packet-report-'));
   try {
     // Since 1.18 the server jar is a bundler: it unpacks the server and its libraries into the
