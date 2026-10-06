@@ -32,7 +32,7 @@ and one whose default server is a closed port) and run the scenarios:
 | Scenario | Checks |
 |---|---|
 | `status` | Server list ping through Warp |
-| `login` | Join, receive chunks, land on the lobby; `/server` answers (1.19.3+) |
+| `login` | Join, receive chunks, land on the lobby; `/server` answers |
 | `keepalive` | One bot stays connected through the whole run (at least 65 s, past Warp's first keep-alive time-out check) |
 | `switching` | Six `/server` switches back and forth (1.20.2+, configuration phase) |
 | `crowd` | Ten bots at once, then half of them switch server at the same moment |

@@ -516,7 +516,14 @@ public final class ConnectedPlayer {
     return pendingSwitchTarget;
   }
 
-  private void sendSystemMessage(String message) {
+  /**
+   * Sends a message from the proxy to the player's chat box, on any protocol version.
+   *
+   * <p>Must be called while the client is in PLAY state.
+   *
+   * @param message the plain text to show
+   */
+  void sendSystemMessage(String message) {
     byte[] raw = TextComponent.plainText(message, protocolVersion);
     clientConnection.writeAndFlush(new SystemChatMessage(raw, false));
   }

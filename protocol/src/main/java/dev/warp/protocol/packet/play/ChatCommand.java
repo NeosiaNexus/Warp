@@ -25,8 +25,9 @@ import io.netty.buffer.ByteBuf;
 /**
  * Client sends a chat command ({@code C→S}).
  *
- * <p>Split from the chat message packet in 1.19.3. The proxy intercepts this for command routing
- * between backend servers.
+ * <p>Split from the chat message packet in 1.19 (before, commands are chat lines starting with
+ * {@code /}, see {@link LegacyChatMessage}). The proxy intercepts this for command routing between
+ * backend servers.
  *
  * <p>The command string does not include the leading {@code /}. Signing-related fields (timestamp,
  * salt, signatures) vary across versions and are captured as raw bytes since the proxy does not

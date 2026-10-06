@@ -24,6 +24,7 @@ import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_15;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_16;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_16_2;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_17;
+import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_18_2;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_19;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_19_1;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_19_3;
@@ -58,6 +59,7 @@ import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPluginMessage;
@@ -267,10 +269,10 @@ public final class StateRegistry {
   // ---------------------------------------------------------------------------
   // Play — proxy-critical subset with version-range ID mappings
   //
-  // Decoded on receipt: only what the proxy acts on (keep-alives, its own commands, client
-  // settings, state transitions, bundles, disconnects, the entity id). Encode-only: packets the
-  // proxy may send but forwards untouched when received, so they keep their original compressed
-  // form end to end.
+  // Decoded on receipt: only what the proxy acts on (keep-alives, its own commands, which arrive as
+  // chat lines before 1.19, client settings, state transitions, bundles, disconnects, the entity
+  // id). Encode-only: packets the proxy may send but forwards untouched when received, so they
+  // keep their original compressed form end to end.
   // ---------------------------------------------------------------------------
 
   private static void registerPlay() {
@@ -328,9 +330,18 @@ public final class StateRegistry {
                     map(0x0B, MINECRAFT_1_20_5),
                     map(0x0D, MINECRAFT_1_21_2))
                 .register(
+                    LegacyChatMessage.class,
+                    LegacyChatMessage.CODEC,
+                    map(0x01, MINECRAFT_1_7_2),
+                    map(0x02, MINECRAFT_1_9),
+                    map(0x03, MINECRAFT_1_12),
+                    map(0x02, MINECRAFT_1_12_1),
+                    map(0x03, MINECRAFT_1_14, MINECRAFT_1_18_2))
+                .register(
                     ChatCommand.class,
                     ChatCommand.CODEC,
-                    map(0x04, MINECRAFT_1_19_3),
+                    map(0x03, MINECRAFT_1_19),
+                    map(0x04, MINECRAFT_1_19_1),
                     map(0x05, MINECRAFT_1_20_5))
                 .register(
                     AcknowledgeConfiguration.class,
@@ -473,6 +484,15 @@ public final class StateRegistry {
                 .registerEncodeOnly(
                     SystemChatMessage.class,
                     SystemChatMessage.CODEC,
+                    // Chat Message until 1.18.2, System Chat Message from 1.19
+                    map(0x02, MINECRAFT_1_7_2),
+                    map(0x0F, MINECRAFT_1_9),
+                    map(0x0E, MINECRAFT_1_13),
+                    map(0x0F, MINECRAFT_1_15),
+                    map(0x0E, MINECRAFT_1_16),
+                    map(0x0F, MINECRAFT_1_17),
+                    map(0x5F, MINECRAFT_1_19),
+                    map(0x62, MINECRAFT_1_19_1),
                     map(0x60, MINECRAFT_1_19_3),
                     map(0x64, MINECRAFT_1_19_4),
                     map(0x67, MINECRAFT_1_20_2),

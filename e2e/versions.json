@@ -101,7 +101,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/7ff6d2cec671ef0d95b3723b5c92890118fb882d73b7f8fa0a2cd31d97c55f86/paper-1.8.8-445.jar",
         "sha256": "7ff6d2cec671ef0d95b3723b5c92890118fb882d73b7f8fa0a2cd31d97c55f86"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #46"
     },
     {
       "version": "1.9",
@@ -113,7 +113,7 @@
         "url": "https://piston-data.mojang.com/v1/objects/b4d449cf2918e0f3bd8aa18954b916a4d1880f0d/server.jar",
         "sha1": "b4d449cf2918e0f3bd8aa18954b916a4d1880f0d"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #46"
     },
     {
       "version": "1.9.1",
@@ -126,7 +126,7 @@
         "url": "https://piston-data.mojang.com/v1/objects/bf95d9118d9b4b827f524c878efd275125b56181/server.jar",
         "sha1": "bf95d9118d9b4b827f524c878efd275125b56181"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #46"
     },
     {
       "version": "1.9.2",
@@ -138,7 +138,7 @@
         "url": "https://piston-data.mojang.com/v1/objects/2b95cc7b136017e064c46d04a5825fe4cfa1be30/server.jar",
         "sha1": "2b95cc7b136017e064c46d04a5825fe4cfa1be30"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #46"
     },
     {
       "version": "1.9.4",
@@ -151,7 +151,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/15a5821ddeacc596432c3fbf24262a2d264f556060ecd6f1838fb01ab5629a81/paper-1.9.4-775.jar",
         "sha256": "15a5821ddeacc596432c3fbf24262a2d264f556060ecd6f1838fb01ab5629a81"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #46"
     },
     {
       "version": "1.10.2",
@@ -164,7 +164,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/83354d24a22b6265e76c089b3d17a568abb446c0ccd12c2452f5e148412b16c2/paper-1.10.2-918.jar",
         "sha256": "83354d24a22b6265e76c089b3d17a568abb446c0ccd12c2452f5e148412b16c2"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #46"
     },
     {
       "version": "1.11",
@@ -176,7 +176,7 @@
         "url": "https://piston-data.mojang.com/v1/objects/48820c84cb1ed502cb5b2fe23b8153d5e4fa61c0/server.jar",
         "sha1": "48820c84cb1ed502cb5b2fe23b8153d5e4fa61c0"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #46"
     },
     {
       "version": "1.11.2",
@@ -189,7 +189,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/3d0f40ec1f9630dfdbafa626cc20c266d7fb90fc22583dc1b995e7fbfb76830d/paper-1.11.2-1106.jar",
         "sha256": "3d0f40ec1f9630dfdbafa626cc20c266d7fb90fc22583dc1b995e7fbfb76830d"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #46"
     },
     {
       "version": "1.12",
@@ -208,7 +208,7 @@
           }
         }
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #46"
     },
     {
       "version": "1.12.1",
@@ -227,7 +227,7 @@
           }
         }
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #43, #44, #46"
     },
     {
       "version": "1.12.2",
@@ -240,7 +240,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/3a2041807f492dcdc34ebb324a287414946e3e05ec3df6fd03f5b5f7d9afc210/paper-1.12.2-1620.jar",
         "sha256": "3a2041807f492dcdc34ebb324a287414946e3e05ec3df6fd03f5b5f7d9afc210"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.13",
@@ -253,7 +253,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/00db82d214242c9345266d44ff8d11a8e857a1a02edf7cb5fcc2d1d973283129/paper-1.13-173.jar",
         "sha256": "00db82d214242c9345266d44ff8d11a8e857a1a02edf7cb5fcc2d1d973283129"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.13.1",
@@ -266,7 +266,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/6637401d87d0f5db5aaee90d7103f52c5e1baaf6b6d4643a5793e7b02b5775cb/paper-1.13.1-386.jar",
         "sha256": "6637401d87d0f5db5aaee90d7103f52c5e1baaf6b6d4643a5793e7b02b5775cb"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.13.2",
@@ -279,7 +279,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/11e828d0565ab76a0a0e180c056364a95de44958cfd6a6af3f9b1dc70b03e9cd/paper-1.13.2-657.jar",
         "sha256": "11e828d0565ab76a0a0e180c056364a95de44958cfd6a6af3f9b1dc70b03e9cd"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.14",
@@ -292,7 +292,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/338be77f5239c44cff3f80f5c107b5e61ac48fb39348bce7249303209201072a/paper-1.14-17.jar",
         "sha256": "338be77f5239c44cff3f80f5c107b5e61ac48fb39348bce7249303209201072a"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.14.1",
@@ -305,7 +305,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/2bcf8017485cc41b3e72daa7285a46f26a85d055b9d638bc9a07f77632168ad7/paper-1.14.1-50.jar",
         "sha256": "2bcf8017485cc41b3e72daa7285a46f26a85d055b9d638bc9a07f77632168ad7"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.14.2",
@@ -319,7 +319,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/12034e578e014eb369e2929f3725bd409858bf94128e46d1f286d5be36c3cb0e/paper-1.14.2-107.jar",
         "sha256": "12034e578e014eb369e2929f3725bd409858bf94128e46d1f286d5be36c3cb0e"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.14.3",
@@ -332,7 +332,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/b6d2d8ac67d685141697a8cecd99c47baf604900007eb0e270fd6ea86cbbc540/paper-1.14.3-134.jar",
         "sha256": "b6d2d8ac67d685141697a8cecd99c47baf604900007eb0e270fd6ea86cbbc540"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.14.4",
@@ -345,7 +345,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/bd8ec5cdb22370d37816a6de26798df3d2b0d6f9c7c96c88ca45a1303fea50e8/paper-1.14.4-245.jar",
         "sha256": "bd8ec5cdb22370d37816a6de26798df3d2b0d6f9c7c96c88ca45a1303fea50e8"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.15",
@@ -358,7 +358,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/8b726c0deb6c3a265d679a3d3a2c0f8e5243fbc6ddcfcaf42e24209cb1f829b4/paper-1.15-21.jar",
         "sha256": "8b726c0deb6c3a265d679a3d3a2c0f8e5243fbc6ddcfcaf42e24209cb1f829b4"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.15.1",
@@ -371,7 +371,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/22a7a19f378db8edf92cdba57d91ceea7e4fa6470b677e6bbe57e8f7e1d9a4dd/paper-1.15.1-62.jar",
         "sha256": "22a7a19f378db8edf92cdba57d91ceea7e4fa6470b677e6bbe57e8f7e1d9a4dd"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.15.2",
@@ -384,7 +384,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/bd2dd6f2cc489cf9e2bb800cb4fb6d63e9d293945d3ac10b09dd9c6098fa9f34/paper-1.15.2-393.jar",
         "sha256": "bd2dd6f2cc489cf9e2bb800cb4fb6d63e9d293945d3ac10b09dd9c6098fa9f34"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.16",
@@ -396,7 +396,7 @@
         "url": "https://piston-data.mojang.com/v1/objects/a0d03225615ba897619220e256a266cb33a44b6b/server.jar",
         "sha1": "a0d03225615ba897619220e256a266cb33a44b6b"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.16.1",
@@ -409,7 +409,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/929559ba1dfc6de2904e17289fb3d1ac95f0ab48c7540cf5b8c2f055fea9d59c/paper-1.16.1-138.jar",
         "sha256": "929559ba1dfc6de2904e17289fb3d1ac95f0ab48c7540cf5b8c2f055fea9d59c"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.16.2",
@@ -422,7 +422,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/e5e10517daaa9bd6d54a8a0d22d866e31da7c1b47cb9e425ffaac236fde75ec9/paper-1.16.2-189.jar",
         "sha256": "e5e10517daaa9bd6d54a8a0d22d866e31da7c1b47cb9e425ffaac236fde75ec9"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.16.3",
@@ -435,7 +435,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/940303ee5f5bcc08377e388ea1c1daa109c1ac8c4d189dc67de1106853f2fc23/paper-1.16.3-253.jar",
         "sha256": "940303ee5f5bcc08377e388ea1c1daa109c1ac8c4d189dc67de1106853f2fc23"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.16.5",
@@ -448,7 +448,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/e67da4851d08cde378ab2b89be58849238c303351ed2482181a99c2c2b489276/paper-1.16.5-794.jar",
         "sha256": "e67da4851d08cde378ab2b89be58849238c303351ed2482181a99c2c2b489276"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.17",
@@ -461,7 +461,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/760a93b94a58d619bd647d71af84688617d0444d22b716500bc6b343858dc871/paper-1.17-79.jar",
         "sha256": "760a93b94a58d619bd647d71af84688617d0444d22b716500bc6b343858dc871"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.17.1",
@@ -474,7 +474,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/6cc1ee2f94253ce10b5374ed85fffc735a97d8f1b64db293683dfa24dd3cc05f/paper-1.17.1-411.jar",
         "sha256": "6cc1ee2f94253ce10b5374ed85fffc735a97d8f1b64db293683dfa24dd3cc05f"
       },
-      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #45, #46"
+      "knownBroken": "dropped at join: client settings decoded with 1.18 fields (#41); then #44, #46"
     },
     {
       "version": "1.18.1",
@@ -489,7 +489,7 @@
       },
       "knownBrokenScenarios": {
         "fallback-unreachable": "no fallback before 1.20.2 (#44), and the kick reason is malformed (#46)",
-        "fallback-rejected": "no fallback before 1.20.2 (#44), no chat packet before 1.19.3 (#45)"
+        "fallback-rejected": "no fallback before 1.20.2 (#44)"
       }
     },
     {
@@ -505,7 +505,7 @@
       },
       "knownBrokenScenarios": {
         "fallback-unreachable": "no fallback before 1.20.2 (#44), and the kick reason is malformed (#46)",
-        "fallback-rejected": "no fallback before 1.20.2 (#44), no chat packet before 1.19.3 (#45)"
+        "fallback-rejected": "no fallback before 1.20.2 (#44)"
       }
     },
     {
@@ -519,7 +519,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/0d39cacc51a77b2b071e1ce862fcbf0b4a4bd668cc7e8b313598d84fa09fabac/paper-1.19-81.jar",
         "sha256": "0d39cacc51a77b2b071e1ce862fcbf0b4a4bd668cc7e8b313598d84fa09fabac"
       },
-      "knownBroken": "backends refuse the login: Login Start lacks the 1.19 signature flag (#42); then #44, #45, #46"
+      "knownBroken": "backends refuse the login: Login Start lacks the 1.19 signature flag (#42); then #44, #46"
     },
     {
       "version": "1.19.2",
@@ -532,7 +532,7 @@
         "url": "https://fill-data.papermc.io/v1/objects/2eb5c7459ec94bcdc597ed711d549a3ab4b0fda13e412a0792a1a069b5903864/paper-1.19.2-307.jar",
         "sha256": "2eb5c7459ec94bcdc597ed711d549a3ab4b0fda13e412a0792a1a069b5903864"
       },
-      "knownBroken": "backends refuse the login: Login Start lacks the 1.19 signature flag (#42); then #44, #45, #46"
+      "knownBroken": "backends refuse the login: Login Start lacks the 1.19 signature flag (#42); then #44, #46"
     },
     {
       "version": "1.19.3",
