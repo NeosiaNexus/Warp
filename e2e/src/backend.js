@@ -10,6 +10,15 @@ import { ManagedProcess } from './proc.js';
 const READY = /Done \(\d+[.,]\d+s\)!/;
 
 /**
+ * The authlib host properties (`minecraft.api.<name>.host`) of every server the bots sign chat on,
+ * a set authlib reads in full or not at all: auth, account, session and services in authlib 4
+ * (1.20.1); account, session and services in 5 (1.20.2); session and services in 6 (1.20.4 to
+ * 1.21.8); session, services and profiles in 7 to 9 (1.21.10 to 26.2). authlib 10 (26.3) reads a
+ * discovery host instead, which the mock does not serve: bots reach 26.3 through ViaProxy, offline.
+ */
+const AUTHLIB_HOSTS = ['auth', 'account', 'session', 'services', 'profiles'];
+
+/**
  * Backend log lines that mean a client connection broke on the server side, usually a packet the
  * proxy mangled. Benign disconnects ("Disconnected", "Timed out") are not listed.
  */
@@ -153,11 +162,12 @@ export class Backend {
 /**
  * Points authlib at the mock Mojang. From 1.20 (authlib 4) the server fetches the keys that verify
  * player profile keys from the services host (`/publickeys`), so it then accepts the chat sessions of
- * bots whose keys the mock signed. authlib only takes custom hosts when all of them are set.
+ * bots whose keys the mock signed. authlib only takes custom hosts when all the ones it reads are
+ * set (else it logs "Ignoring hosts properties"), and ignores the others.
  */
 function authlibHosts(host) {
   if (!host) return [];
-  return ['auth', 'account', 'session', 'services'].map((service) => `-Dminecraft.api.${service}.host=${host}`);
+  return AUTHLIB_HOSTS.map((service) => `-Dminecraft.api.${service}.host=${host}`);
 }
 
 function serverProperties(b) {

@@ -95,11 +95,10 @@ const CHAT_PACE_MS = 250;
  *
  * The backend only tracks signed messages, so this checks something only where the bot signs its
  * chat: online variants (the bot opens a chat session over an encrypted connection only) from 1.20
- * (see {@link features}), when the bot speaks the version itself (ViaProxy serves it offline and
- * signs nothing). Elsewhere the chat is unsigned and it only checks that chat still flows.
+ * (see {@link features}). Elsewhere the chat is unsigned and it only checks that chat still flows.
  */
 async function chat(ctx) {
-  const signed = ctx.features.signedChat && ctx.variant.online && !ctx.entry.via;
+  const signed = ctx.features.signedChat && ctx.variant.online;
   const bot = await joinWarp(ctx, 'e2e_chat', ctx.warp, signed ? ctx.mojang.profileKeys('e2e_chat') : null);
   try {
     await bot.waitForGameMode(LOBBY_MODE, 10_000);
