@@ -62,6 +62,12 @@ public final class FrameDecoder extends ByteToMessageDecoder {
   /** Maximum frame payload: 3-byte VarInt max = 2,097,151 bytes. */
   private static final int MAX_FRAME_LENGTH = VarInt.MAX_21_BIT;
 
+  /** {@link #readFrameVarInt} result: the length prefix is not complete yet. */
+  private static final int INCOMPLETE = -1;
+
+  /** {@link #readFrameVarInt} result: the length prefix is wider than 3 bytes. */
+  private static final int TOO_WIDE = -2;
+
   // ---------------------------------------------------------------------------
   // Cached errors — zero-alloc on the hot error path
   // ---------------------------------------------------------------------------
@@ -69,15 +75,6 @@ public final class FrameDecoder extends ByteToMessageDecoder {
   @SuppressWarnings("StaticAssignmentOfThrowable")
   private static final DecoderException VARINT_TOO_WIDE =
       new DecoderException("Frame-length VarInt exceeds 3 bytes") {
-        @Override
-        public synchronized Throwable fillInStackTrace() {
-          return this;
-        }
-      };
-
-  @SuppressWarnings("StaticAssignmentOfThrowable")
-  private static final DecoderException NEGATIVE_LENGTH =
-      new DecoderException("Negative frame length") {
         @Override
         public synchronized Throwable fillInStackTrace() {
           return this;
@@ -114,14 +111,15 @@ public final class FrameDecoder extends ByteToMessageDecoder {
       int startIndex = in.readerIndex();
       int length = readFrameVarInt(in);
 
-      if (length == -1) {
-        // Incomplete VarInt — reset and wait for more data.
+      if (length < 0) {
+        // Incomplete VarInt: wait for more data. A malformed one is rejected only once the frames
+        // before it are delivered: if one of them closes the connection, the next call drops these
+        // bytes (dead-channel guard) instead of reporting a second error.
+        if (length == TOO_WIDE && out.isEmpty()) {
+          throw VARINT_TOO_WIDE;
+        }
         in.readerIndex(startIndex);
         return;
-      }
-
-      if (length < 0) {
-        throw NEGATIVE_LENGTH;
       }
 
       if (length > MAX_FRAME_LENGTH) {
@@ -155,20 +153,21 @@ public final class FrameDecoder extends ByteToMessageDecoder {
    * Reads a VarInt of at most 3 bytes from the buffer.
    *
    * <p>When ≥ 4 bytes are readable, the branchless fast path reads all bytes in a single {@link
-   * ByteBuf#getIntLE(int)} call and decodes via the BLSMSK bit trick (Netty PR #14050, by
+   * ByteBuf#getIntLE(int)} call and decodes via the BLSMSK bit trick (Netty PR #14050, by franz1981
+   * and bonzini). This produces constant ~3 ns/op regardless of VarInt length, vs ~6.5 ns/op for
+   * branch-per-byte approaches with unpredictable inputs.
    *
-   * @franz1981 and @bonzini). This produces constant ~3 ns/op regardless of VarInt length, vs ~6.5
-   *     ns/op for branch-per-byte approaches with unpredictable inputs.
-   *     <p>The safe path handles the rare case of fewer than 4 readable bytes (TCP fragmentation at
-   *     the frame boundary).
-   * @return the decoded value (0 to {@value dev.warp.protocol.codec.VarInt#MAX_21_BIT}), or {@code
-   *     -1} if not enough bytes are available yet
-   * @throws DecoderException if the VarInt exceeds 3 bytes
+   * <p>The safe path handles the rare case of fewer than 4 readable bytes (TCP fragmentation at the
+   * frame boundary).
+   *
+   * @return the decoded value (0 to {@value dev.warp.protocol.codec.VarInt#MAX_21_BIT}), {@link
+   *     #INCOMPLETE} if not enough bytes are available yet, or {@link #TOO_WIDE} if the VarInt
+   *     exceeds 3 bytes, the reader index then left unchanged
    */
   private static int readFrameVarInt(ByteBuf buf) {
     int readable = buf.readableBytes();
     if (readable == 0) {
-      return -1;
+      return INCOMPLETE;
     }
 
     int index = buf.readerIndex();
@@ -191,7 +190,7 @@ public final class FrameDecoder extends ByteToMessageDecoder {
 
       int atStop = ~raw & 0x808080;
       if (atStop == 0) {
-        throw VARINT_TOO_WIDE;
+        return TOO_WIDE;
       }
 
       int bitsToKeep = Integer.numberOfTrailingZeros(atStop) + 1;
@@ -213,7 +212,7 @@ public final class FrameDecoder extends ByteToMessageDecoder {
     }
 
     if (readable < 2) {
-      return -1;
+      return INCOMPLETE;
     }
 
     byte b1 = buf.getByte(index + 1);
@@ -223,12 +222,12 @@ public final class FrameDecoder extends ByteToMessageDecoder {
     }
 
     if (readable < 3) {
-      return -1;
+      return INCOMPLETE;
     }
 
     byte b2 = buf.getByte(index + 2);
     if (b2 < 0) {
-      throw VARINT_TOO_WIDE;
+      return TOO_WIDE;
     }
     buf.readerIndex(index + 3);
     return (b0 & 0x7F) | ((b1 & 0x7F) << 7) | (b2 << 14);

@@ -19,20 +19,26 @@ package dev.warp.protocol.netty;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.codec.VarInt;
+import dev.warp.protocol.fuzz.InboundRecorder;
 
 import java.util.Arrays;
+import java.util.List;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.DecoderException;
+import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -350,6 +356,46 @@ class FrameDecoderTest {
 
       assertThrows(DecoderException.class, () -> ch.writeInbound(in));
       ch.finish();
+    }
+
+    @Test
+    @DisplayName("should deliver the frames before a malformed length, then reject it")
+    void framesBeforeMalformedLength() {
+      InboundRecorder recorder = new InboundRecorder();
+      EmbeddedChannel ch = new EmbeddedChannel(new FrameDecoder(), recorder);
+
+      ch.writeInbound(
+          Unpooled.wrappedBuffer(
+              new byte[] {0x01, 0x2A, (byte) 0x80, (byte) 0x80, (byte) 0x80, 0x01}));
+
+      assertEquals(1, recorder.messages().size());
+      assertFrame(new byte[] {0x2A}, (ByteBuf) recorder.messages().getFirst());
+      assertEquals(1, recorder.failures().size());
+      assertInstanceOf(DecoderException.class, recorder.failures().getFirst());
+      ch.finishAndReleaseAll();
+    }
+
+    @Test
+    @DisplayName("should not reject a malformed length once a frame before it closed the channel")
+    void malformedLengthAfterClosingFrame() {
+      DecoderException rejection = new DecoderException("rejected by the next decoder");
+      ChannelInboundHandlerAdapter rejecting =
+          new ChannelInboundHandlerAdapter() {
+            @Override
+            public void channelRead(ChannelHandlerContext ctx, Object msg) {
+              ReferenceCountUtil.release(msg);
+              throw rejection;
+            }
+          };
+      InboundRecorder recorder = new InboundRecorder();
+      EmbeddedChannel ch = new EmbeddedChannel(new FrameDecoder(), rejecting, recorder);
+
+      ch.writeInbound(
+          Unpooled.wrappedBuffer(
+              new byte[] {0x01, 0x2A, (byte) 0x80, (byte) 0x80, (byte) 0x80, 0x01}));
+
+      assertEquals(List.of(rejection), recorder.failures());
+      assertFalse(ch.finishAndReleaseAll());
     }
   }
 

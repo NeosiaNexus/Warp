@@ -17,17 +17,22 @@
 package dev.warp.protocol.netty;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.compress.FrameDecompressor;
 import dev.warp.protocol.compress.JavaCompressor;
+import dev.warp.protocol.fuzz.InboundRecorder;
 
+import java.util.List;
 import java.util.Random;
 import java.util.zip.Deflater;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.DecoderException;
 import org.junit.jupiter.api.DisplayName;
@@ -162,6 +167,30 @@ class CompressionDecoderTest {
       assertTrue(ch.writeInbound(Frames.compressed(new byte[500], 6)));
       ch.<ByteBuf>readInbound().release();
       ch.finish();
+    }
+  }
+
+  @Nested
+  @DisplayName("closed channel")
+  class ClosedChannel {
+
+    @Test
+    @DisplayName("should drop the frames read along with the one that closed the connection")
+    void dropsFramesAfterRejection() {
+      InboundRecorder recorder = new InboundRecorder();
+      EmbeddedChannel ch =
+          new EmbeddedChannel(
+              new FrameDecoder(),
+              new CompressionDecoder(THRESHOLD, new JavaCompressor(Deflater.DEFAULT_COMPRESSION)),
+              recorder);
+      ByteBuf belowThreshold = Frames.compressed(new byte[100], Deflater.DEFAULT_COMPRESSION);
+
+      ch.writeInbound(Unpooled.wrappedBuffer(belowThreshold, Frames.uncompressed(new byte[] {1})));
+
+      assertEquals(1, recorder.failures().size());
+      assertInstanceOf(DecoderException.class, recorder.failures().getFirst());
+      assertEquals(List.of(), recorder.messages());
+      ch.finishAndReleaseAll();
     }
   }
 
