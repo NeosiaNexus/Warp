@@ -13,9 +13,11 @@ import { parseArgs } from 'node:util';
 import { Backend, fetchPreseeded, fetchServerJar, serverCacheDir } from './backend.js';
 import { connectClient } from './clients/index.js';
 import { findJava } from './java.js';
+import { Netem } from './netem.js';
 import { killAll, run, sleep } from './proc.js';
 import { SCENARIOS, features, startKeepAlive } from './scenarios.js';
 import { startSessionServer } from './session.js';
+import { SOAK, soakJvmArgs, soakMarkdown } from './soak.js';
 import { E2E_DIR, findEntry, loadMatrix, resolveVariant } from './versions.js';
 import { Warp } from './warp.js';
 
@@ -37,9 +39,16 @@ Versions and variants
   --backend-threshold N   ad-hoc variant: backends' network-compression-threshold (default: Warp's)
   --scenarios LIST        subset of: ${SCENARIOS.map((s) => s.name).join(', ')}
 
+Soak and network
+  --soak MINUTES          instead of the scenarios, --bots bots stay connected for MINUTES, switching
+                          servers and reconnecting; fails on sustained growth of Warp's memory, file
+                          descriptors or threads, or on connections it keeps (see e2e/README.md)
+  --netem SPEC            degrade the network between the bots and Warp, both ways, with tc netem
+                          (e.g. "delay 50ms 20ms distribution normal loss 1%"); Linux, root or sudo
+
 Environment
   --jar PATH              Warp shadow jar (default: build it with Gradle)
-  --bots N                bots in the crowd scenario (default 10)
+  --bots N                bots in the crowd scenario and the soak (default 10)
   --port-base N           first of the 8 local ports used (default 26100)
   --out DIR               run directory (default e2e/build)
   --cache DIR             download cache (default $WARP_E2E_CACHE or ~/.cache/warp-e2e)
@@ -59,6 +68,8 @@ async function main() {
       threshold: { type: 'string' },
       'backend-threshold': { type: 'string' },
       scenarios: { type: 'string' },
+      soak: { type: 'string' },
+      netem: { type: 'string' },
       jar: { type: 'string' },
       bots: { type: 'string', default: '10' },
       'port-base': { type: 'string', default: '26100' },
@@ -82,14 +93,24 @@ async function main() {
         return { entry: findEntry(matrix, key.trim()), variants: names.split(',').map((n) => resolveVariant(matrix, n.trim())) };
       })
     : opts.mc.split(',').map((key) => ({ entry: findEntry(matrix, key.trim()), variants: resolveVariants(matrix, opts) }));
-  const scenarios = selectScenarios(opts.scenarios);
+  const scenarios = opts.soak === undefined ? selectScenarios(opts.scenarios) : soakScenario(opts);
   const ports = await reservePorts(Number(opts['port-base']));
+  // The bots' side of the network: Warp, or the lobby itself in a control run.
+  const netem = opts.netem === undefined ? null : new Netem({ spec: opts.netem, ports: opts.direct ? [ports.lobby] : [ports.warp, ports.warpAlt] });
   const jar = opts.jar ? resolve(opts.jar) : await buildWarp();
   mkdirSync(opts.out, { recursive: true });
 
   const results = [];
-  for (const { entry, variants } of runs) {
-    results.push(await runVersion({ matrix, entry, variants: adaptVariants(entry, variants), scenarios, ports, jar, opts }));
+  try {
+    if (netem) {
+      await netem.start();
+      log(`netem on 127.0.0.1:${netem.ports.join(', ')}, both ways: ${netem.spec}`);
+    }
+    for (const { entry, variants } of runs) {
+      results.push(await runVersion({ matrix, entry, variants: adaptVariants(entry, variants), scenarios, ports, netem, jar, opts }));
+    }
+  } finally {
+    netem?.stop();
   }
   report(results, opts);
   return results.some((r) => r.status === 'fail') ? 1 : 0;
@@ -99,7 +120,7 @@ async function main() {
 // One version: backends per threshold, Warp per variant
 // ---------------------------------------------------------------------------
 
-async function runVersion({ matrix, entry, variants, scenarios, ports, jar, opts }) {
+async function runVersion({ matrix, entry, variants, scenarios, ports, netem, jar, opts }) {
   const cache = opts.cache;
   const runDir = join(opts.out, entry.version);
   rmSync(runDir, { recursive: true, force: true });
@@ -122,7 +143,7 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, jar, opts
       const backends = await startBackends({ entry, serverJar, serverJava, preseeded, backendThreshold, ports, runDir, logDir, cache });
       try {
         for (const variant of variants.filter((v) => v.backendThreshold === backendThreshold)) {
-          result.variants.push(await runVariant({ matrix, entry, variant, scenarios, backends, ports, jar, warpJava, runDir, logDir, opts }));
+          result.variants.push(await runVariant({ matrix, entry, variant, scenarios, backends, ports, netem, jar, warpJava, runDir, logDir, opts }));
         }
       } finally {
         await stopBackends(backends, result);
@@ -183,10 +204,10 @@ async function stopBackends(backends, result) {
   if (forced.length) log(`backend(s) ${forced.join(', ')} ignored "stop" and were killed`);
 }
 
-async function runVariant({ matrix, entry, variant, scenarios, backends, ports, jar, warpJava, runDir, logDir, opts }) {
+async function runVariant({ matrix, entry, variant, scenarios, backends, ports, netem, jar, warpJava, runDir, logDir, opts }) {
   const label = `${entry.version} ${variant.name}`;
   log(`variant ${variant.name}: ${describeVariant(variant)}`);
-  const outcome = { name: variant.name, settings: describeVariant(variant), scenarios: [], failures: [], stacks: [] };
+  const outcome = { name: variant.name, settings: describeVariant(variant), scenarios: [], failures: [], stacks: [], shutdown: [] };
   const marks = { lobby: backends.lobby.process.mark(), survival: backends.survival.process.mark() };
   const session = variant.online ? await startSessionServer(ports.session) : null;
   const common = {
@@ -209,6 +230,8 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
           port: ports.warp,
           servers: { lobby: ports.lobby, survival: ports.survival },
           fallbackOrder: ['lobby', 'survival'],
+          // The JVM resolves the recording against its own directory: the path must be absolute.
+          jvmArgs: opts.soak === undefined ? [] : soakJvmArgs(resolve(logDir, `warp-${variant.name}.jfr`)),
         }),
         // Same backends, but the default server is a closed port: every join must fall back.
         new Warp({
@@ -227,11 +250,14 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
     direct: opts.direct,
     features: opts.direct ? { proxy: false, switching: false } : { proxy: true, ...features(entry.protocol) },
     client: connectClient(entry, { tools: matrix.tools, cache: opts.cache, java: warpJava, ports, targets: Object.values(targets), logDir, runDir }),
-    warp: { port: targets.warp },
+    warp: { port: targets.warp, instance: instances[0] ?? null },
     warpAlt: { port: targets.warpAlt },
     lobby: backends.lobby,
     survival: backends.survival,
     bots: Number(opts.bots),
+    // --soak: its duration, where it writes its time series, and the report it leaves for the summary.
+    soak: opts.soak === undefined ? null : { minutes: Number(opts.soak), dir: runDir, report: null },
+    netem,
     // Scenarios that fail on this version because of a known Warp bug: they run and are reported,
     // but do not fail the version. Not in a control run (no Warp) or with --strict.
     knownBrokenScenarios: opts.direct || opts.strict ? {} : (entry.knownBrokenScenarios ?? {}),
@@ -266,12 +292,15 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
     await ctx.client.stop?.();
     for (const line of ctx.client.failures?.() ?? []) outcome.failures.push(line);
     for (const instance of instances) {
+      const stopping = Date.now();
       const exit = await instance.stop();
+      outcome.shutdown.push({ name: instance.name, seconds: secondsSince(stopping), forced: Boolean(exit?.forced) });
       if (exit?.forced) outcome.failures.push(`${instance.name} did not shut down within 20 s (thread dump in logs/)`);
       for (const line of instance.failures()) outcome.failures.push(`${instance.name}: ${line}`);
     }
     await session?.close();
   }
+  if (ctx.soak?.report) outcome.soak = ctx.soak.report;
   for (const [name, backend] of Object.entries(backends)) {
     for (const line of backend.protocolErrors(marks[name])) outcome.failures.push(`${name}: ${line}`);
   }
@@ -360,6 +389,14 @@ function adaptVariants(entry, variants) {
   return unique;
 }
 
+/** --soak: the soak replaces the scenarios, and measures Warp (so not in a control run). */
+function soakScenario(opts) {
+  if (!(Number(opts.soak) > 0)) throw new UsageError('--soak takes a number of minutes');
+  if (opts.scenarios) throw new UsageError('--soak replaces the scenarios: drop --scenarios');
+  if (opts.direct) throw new UsageError('--soak measures Warp: it cannot run with --direct');
+  return [SOAK];
+}
+
 function selectScenarios(list) {
   if (!list) return SCENARIOS;
   const names = list.split(',').map((s) => s.trim());
@@ -419,14 +456,17 @@ function report(results, opts) {
 }
 
 function markdown(results) {
+  // A soak has a section of its own; any other variant is a row of the table.
+  const soaks = results.flatMap((r) => r.variants.filter((v) => v.soak).map((v) => soakMarkdown(r, v)));
   const rows = results.flatMap((r) =>
-    r.variants.map((v) => {
+    r.variants.filter((v) => !v.soak).map((v) => {
       const cells = v.scenarios.map((s) => `${SCENARIO_ICONS[s.status]} ${s.name}`).join(' · ');
       const status = r.knownBroken && v.status === 'fail' ? 'xfail' : r.knownBroken ? 'xpass' : v.status;
       return `| ${r.version} | ${r.protocol} | ${v.name} | ${ICONS[status]} | ${cells}${v.failures?.length ? ` · ❌ ${v.failures.length} log failure(s)` : ''} | ${r.seconds}s |`;
     }),
   );
-  return `| Version | Protocol | Variant | Result | Scenarios | Time |\n|---|---|---|---|---|---|\n${rows.join('\n')}\n`;
+  const table = rows.length ? `| Version | Protocol | Variant | Result | Scenarios | Time |\n|---|---|---|---|---|---|\n${rows.join('\n')}\n` : '';
+  return [...soaks, table].filter(Boolean).join('\n');
 }
 
 function printMatrix(matrix) {

@@ -10,6 +10,7 @@ e2e/run.sh --mc 1.8.8,1.20.2 --variants online,offline   # several versions and 
 e2e/run.sh --mc 1.21.4 --passthrough off --scenarios login,switching
 e2e/run.sh --mc 26.3 --strict                            # a known-broken version, failing for real
 e2e/run.sh --mc 1.21.1 --direct                          # control run without Warp
+e2e/run.sh --mc 1.21.4 --soak 30 --bots 20               # half an hour under load (see Soak)
 e2e/run.sh --list                                        # the whole matrix
 e2e/run.sh --help
 ```
@@ -63,6 +64,71 @@ Defined in `versions.json`: `online` (mock Mojang session server, encryption on)
 higher (`backend-higher`) or no (`backend-uncompressed`) threshold than Warp. Variants that share a
 backend threshold share the backends; only Warp restarts between them. Ad-hoc flags (`--online`,
 `--passthrough`, `--threshold`, `--backend-threshold`) build a one-off variant.
+
+## Soak
+
+```bash
+e2e/run.sh --mc 1.21.4 --soak 30 --bots 20
+e2e/run.sh --mc 1.21.4 --soak 30 --bots 20 --netem "delay 50ms 20ms distribution normal loss 1%"
+```
+
+`--soak MINUTES` replaces the scenarios with a long run that looks for leaks. A crowd of `--bots`
+bots joins Warp and stays for MINUTES; every 10 s a quarter of them switch server (and must receive
+the new world), a tenth reconnect, and a server list ping goes through. A bot that is kicked, sees
+a protocol error or receives nothing for 30 s is a failure; it reconnects at the next cycle.
+
+Every 5 s the harness samples Warp's process: resident memory, file descriptors, connections to
+clients and to backends, threads and CPU from `/proc`; heap and native memory through `jcmd`. Every
+30 s the sample forces a full GC first: the heap left is the live heap, and Netty reports the
+buffers leaked so far rather than only at the end. This Warp runs with a fixed, pre-touched heap
+(`-Xms512m -Xmx512m -XX:+AlwaysPreTouch`), so that resident memory only moves with native memory,
+which native memory tracking breaks down; direct memory is its "Other" category, Netty's buffers.
+It also keeps a flight recording, `logs/warp-<variant>.jfr`.
+
+The soak has three phases: warm-up (a fifth of it, 1 to 5 minutes, while the JIT, pools and caches
+fill up), steady state, and drain (every bot leaves). Besides what fails any run (an ERROR, a buffer
+leak, a hung shutdown), a soak fails when:
+
+| Check | Fails when, over the steady phase |
+|---|---|
+| Resident memory | it grows by more than 64 MiB or 10 %, whichever is larger |
+| Live heap | it grows by more than 8 MiB or 25 % |
+| Direct memory | it grows by more than 16 MiB or 25 % |
+| File descriptors | they grow by more than 8 or 10 % |
+| Threads | they grow by more than 4 or 10 % |
+| Connections | Warp still holds a client or backend connection 30 s after every bot left (drain) |
+| Bots | any bot fails, in any phase |
+
+Growth is measured between the medians of the first and last thirds of the steady phase, and is
+only sustained if the resource was still growing in the last third: a pool that fills up early and
+stays full is not a leak. A soak shorter than about 5 minutes is too short for the live heap check,
+which it then skips.
+
+Results go to `e2e/build/<version>/`: `soak-<variant>.csv` and `soak-<variant>.json` (the time
+series, a row every 5 s), and the summary (resources, then each phase: joins, switches and their
+latency, failures, memory, descriptors, threads, CPU) in `summary.md` and the GitHub run summary.
+
+### Degraded network
+
+`--netem SPEC` puts [netem](https://man7.org/linux/man-pages/man8/tc-netem.8.html) between the bots
+and Warp, with any run: latency, jitter, loss, duplication, reordering. Only TCP traffic to and from
+Warp's ports goes through it, both ways (a `prio` qdisc on `lo` whose fourth band, reached by `u32`
+port filters only, holds netem); Warp's connections to its backends and the rest of the machine's
+loopback traffic are untouched. The run removes it when it ends, Ctrl-C and crashes included.
+
+It needs Linux, and root or passwordless sudo. Without either, a user namespace has a loopback
+interface of its own; it has no network either, so every download must already be cached and the
+jar built:
+
+```bash
+unshare --map-root-user --net sh -c 'ip link set lo up &&
+  e2e/run.sh --mc 1.21.4 --soak 5 --jar proxy/build/libs/warp-*.jar --netem "delay 50ms 20ms loss 1%"'
+```
+
+[`soak.yml`](../.github/workflows/soak.yml) soaks 1.21.4 every night for 30 minutes with 20 bots, on
+a clean network and on a degraded one (`delay 50ms 20ms distribution normal loss 1%`) in parallel,
+and on demand for a duration and a network of your choice. The run summary has both reports; the
+time series, logs and flight recordings are its artifacts.
 
 ## The matrix (`versions.json`)
 

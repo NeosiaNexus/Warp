@@ -131,11 +131,13 @@ class Bot {
   constructor(bot, username) {
     this.bot = bot;
     this.username = username;
-    this.stats = { packets: 0, chunks: 0, errors: [], kicked: null, ended: null };
+    this.stats = { packets: 0, chunks: 0, lastPacket: Date.now(), errors: [], kicked: null, ended: null };
     this.messages = [];
     this.quitting = false;
+    this.closed = new Promise((resolve) => bot.once('end', resolve));
     bot._client.on('packet', (data, meta) => {
       this.stats.packets++;
+      this.stats.lastPacket = Date.now();
       if (meta.name === 'map_chunk') this.stats.chunks++;
       else if (meta.name === 'map_chunk_bulk') this.stats.chunks += data.meta?.length ?? 1; // 1.8
     });
@@ -191,9 +193,11 @@ class Bot {
     if (ended) throw new Error(`${this.username} disconnected: ${ended}`);
   }
 
+  /** Disconnects; resolves once the connection is closed (after 5 s at most). */
   quit() {
     this.quitting = true;
     this.bot.quit();
+    return Promise.race([this.closed, sleep(5_000)]);
   }
 }
 
