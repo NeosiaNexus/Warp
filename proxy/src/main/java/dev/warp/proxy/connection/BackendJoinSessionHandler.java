@@ -55,7 +55,7 @@ final class BackendJoinSessionHandler implements SessionHandler {
     switch (packet) {
       case JoinGame joinGame -> serverSwitch.joined(backendConnection, joinGame);
       case KeepAlive keepAlive -> backendConnection.writeAndFlush(keepAlive);
-      case PlayDisconnect ignored -> {
+      case PlayDisconnect _ -> {
         logger.info("Backend kicked {} before its Join Game", player.username());
         player.scheduleBackendFailure(backendConnection);
       }
