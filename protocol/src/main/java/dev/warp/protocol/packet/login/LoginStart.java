@@ -33,16 +33,23 @@ import org.jspecify.annotations.Nullable;
  * <p>Version history:
  *
  * <ul>
- *   <li><b>1.7.2–1.19</b>: Only {@code name}
- *   <li><b>1.19.1–1.19.2</b>: Added optional UUID (boolean-prefixed)
- *   <li><b>1.19.3+</b>: UUID is always present (no boolean prefix)
+ *   <li><b>1.7.2–1.18.2</b>: {@code name}
+ *   <li><b>1.19</b>: {@code name}, signature data
+ *   <li><b>1.19.1–1.19.2</b>: {@code name}, signature data, optional UUID
+ *   <li><b>1.19.3–1.20.1</b>: {@code name}, optional UUID
+ *   <li><b>1.20.2+</b>: {@code name}, UUID (always present)
  * </ul>
  *
- * <p>The 1.19–1.19.2 signature fields (public key, profile signature) are skipped during decode —
- * they were a short-lived experiment removed in 1.19.3 and are irrelevant for proxy forwarding.
+ * <p>Signature data is a boolean followed, when {@code true}, by the player's chat signing key
+ * (expiry timestamp, public key, Mojang signature). An optional UUID is a boolean followed, when
+ * {@code true}, by the UUID.
+ *
+ * <p>The signing key is skipped when decoding and always encoded as absent: Warp does not forward
+ * it, and the offline-mode backends it logs players into do not require one.
  *
  * @param name the player's username (max 16 characters)
- * @param playerUuid the player's UUID, or {@code null} for versions before 1.19.1
+ * @param playerUuid the player's UUID, or {@code null} when unknown (always {@code null} when
+ *     decoded before 1.19.1, required to encode for 1.20.2+)
  */
 public record LoginStart(String name, @Nullable UUID playerUuid) implements LoginPacket {
 
@@ -55,53 +62,46 @@ public record LoginStart(String name, @Nullable UUID playerUuid) implements Logi
         @Override
         public LoginStart decode(ByteBuf buf, ProtocolVersion version) {
           String name = McString.read(buf, MAX_USERNAME);
-          @Nullable UUID uuid = null;
-
           if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
-            // 1.20.2+: UUID always present, no boolean prefix
-            uuid = McUuid.read(buf);
-          } else if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_19_1)) {
-            // 1.19.1–1.20.1: skip signature fields (1.19.1–1.19.2 only), optional UUID
-            if (version.isOlderThan(ProtocolVersion.MINECRAFT_1_19_3)) {
-              skipSignatureFields(buf);
-            }
-            if (buf.readBoolean()) {
-              uuid = McUuid.read(buf);
-            }
-          } else if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_19)) {
-            // 1.19: has signature fields but no UUID
-            skipSignatureFields(buf);
+            return new LoginStart(name, McUuid.read(buf));
           }
-          // 1.7.2–1.18.2: just the name, nothing else
-
+          if (hasSignatureData(version) && buf.readBoolean()) {
+            buf.skipBytes(Long.BYTES); // key expiry timestamp
+            McByteArray.skip(buf); // public key
+            McByteArray.skip(buf); // signature
+          }
+          @Nullable UUID uuid =
+              version.isAtLeast(ProtocolVersion.MINECRAFT_1_19_1) && buf.readBoolean()
+                  ? McUuid.read(buf)
+                  : null;
           return new LoginStart(name, uuid);
         }
 
         @Override
         public void encode(LoginStart packet, ByteBuf buf, ProtocolVersion version) {
           McString.write(buf, packet.name(), MAX_USERNAME);
-
+          @Nullable UUID uuid = packet.playerUuid();
           if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
-            if (packet.playerUuid() == null) {
+            if (uuid == null) {
               throw new IllegalStateException("playerUuid is required for 1.20.2+");
             }
-            McUuid.write(buf, packet.playerUuid());
-          } else if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_19_1)) {
-            // 1.19.1–1.20.1: no signature data on encode, optional UUID
-            buf.writeBoolean(packet.playerUuid() != null);
-            if (packet.playerUuid() != null) {
-              McUuid.write(buf, packet.playerUuid());
-            }
+            McUuid.write(buf, uuid);
+            return;
           }
-          // 1.7.2–1.19: just the name
-        }
-
-        private void skipSignatureFields(ByteBuf buf) {
-          if (buf.readBoolean()) { // has signature data
-            buf.skipBytes(Long.BYTES); // timestamp
-            McByteArray.skip(buf); // public key
-            McByteArray.skip(buf); // signature
+          if (hasSignatureData(version)) {
+            buf.writeBoolean(false); // no signing key
+          }
+          if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_19_1)) {
+            buf.writeBoolean(uuid != null);
+            if (uuid != null) {
+              McUuid.write(buf, uuid);
+            }
           }
         }
       };
+
+  /** Whether {@code version} carries signature data after the name (1.19 to 1.19.2). */
+  private static boolean hasSignatureData(ProtocolVersion version) {
+    return version.isBetween(ProtocolVersion.MINECRAFT_1_19, ProtocolVersion.MINECRAFT_1_19_2);
+  }
 }

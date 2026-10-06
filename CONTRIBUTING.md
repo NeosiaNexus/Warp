@@ -9,9 +9,8 @@ vulnerabilities are reported privately, never in an issue: see the [security pol
 
 **Requirements:**
 - Git
-- JDK 21 to run Gradle (CI uses 21; Gradle 8.12 runs on JDK 23 at most, not on 24 or newer).
-  Gradle compiles and tests with JDK 25 through its toolchain support, and downloads one if none
-  is installed.
+- JDK 17 or newer to run Gradle (CI uses 21). Gradle compiles and tests with JDK 25 through its
+  toolchain support, and downloads one if none is installed.
 - Node.js 22+, only for the [end-to-end tests](#end-to-end-tests)
 
 **Build & test:**
@@ -143,8 +142,8 @@ add a Minecraft version, follow
 ## Release Automation
 
 [release-please](https://github.com/googleapis/release-please) maintains a release PR from the
-Conventional Commits merged into `main`; merging it tags the release and attaches the jar and its
-`SHA256SUMS`.
+Conventional Commits merged into `main`; merging it tags the release and attaches the jar, its
+`SHA256SUMS` and its signed provenance.
 
 Pull requests opened with the default `GITHUB_TOKEN` wait for a manual approval before CI runs on
 them, so the release workflow authenticates as a GitHub App when one is configured:
@@ -167,10 +166,13 @@ them, so the release workflow authenticates as a GitHub App when one is configur
 Without these, the workflow falls back to `GITHUB_TOKEN` and CI on the release PR needs a manual
 "Approve workflows to run".
 
-Every released jar carries a signed build provenance attestation:
+Every released jar carries a signed SLSA build provenance attestation, stored on the repository and
+attached to the release as `warp-<version>.jar.intoto.jsonl` (a Sigstore bundle):
 
 ```bash
 gh attestation verify warp-<version>.jar --repo NeosiaNexus/Warp
+# or against the attached bundle, without querying the attestations API:
+gh attestation verify warp-<version>.jar --repo NeosiaNexus/Warp --bundle warp-<version>.jar.intoto.jsonl
 ```
 
 ## Architecture

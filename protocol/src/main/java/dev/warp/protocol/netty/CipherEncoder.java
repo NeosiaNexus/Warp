@@ -56,6 +56,8 @@ public final class CipherEncoder extends MessageToByteEncoder<ByteBuf> {
    */
   public CipherEncoder(SecretKey key) throws GeneralSecurityException {
     this.cipher = Cipher.getInstance("AES/CFB8/NoPadding");
+    // The protocol fixes the IV to the shared secret itself, and every client does the same. The
+    // secret is random and new for each connection, so no key and IV pair is ever reused.
     this.cipher.init(Cipher.ENCRYPT_MODE, key, new IvParameterSpec(key.getEncoded()));
   }
 
