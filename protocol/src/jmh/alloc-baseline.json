@@ -1,0 +1,17 @@
+{
+  "tolerance": {
+    "absolute": 2,
+    "relative": 0.01
+  },
+  "jdk": "25.0.2",
+  "benchmarks": {
+    "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=CHUNK]": 16.3,
+    "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=ENTITY_MOVE]": 44.5,
+    "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=MIXED]": 20.1,
+    "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=CHUNK]": 8168.8,
+    "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=ENTITY_MOVE]": 308.8,
+    "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=MIXED]": 811.0,
+    "PacketIdPeekBenchmark.peek[workload=CHUNK]": 0.0,
+    "PacketIdPeekBenchmark.peek[workload=MIXED]": 0.0
+  }
+}

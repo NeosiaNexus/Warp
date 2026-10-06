@@ -1,0 +1,68 @@
+name: Packet reports
+
+# Keeps the packet id fixtures StateRegistryTest checks Warp against (checked in, so the build never
+# needs the network) equal to what Mojang's data generator reports:
+#
+# - on a pull request that touches them or their generator, every fixture is generated again from
+#   its release and must not differ: a fixture cannot be edited by hand to make a wrong id pass;
+# - weekly, the latest Minecraft release is checked against the fixture of its protocol. It fails
+#   when no fixture has that protocol (a new Minecraft version Warp does not know yet), or when the
+#   release reuses a protocol with other packet ids. Releases already covered are not checked
+#   again: their jars are pinned by sha1 and never change, so neither do their reports.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/packet-reports.yml
+      - e2e/src/download.js
+      - e2e/src/java.js
+      - e2e/src/packet-reports.js
+      - e2e/src/proc.js
+      - e2e/src/versions.js
+      - e2e/tools/packet-reports.js
+      - protocol/src/test/resources/dev/warp/protocol/packet/reports/**
+  schedule:
+    - cron: '29 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: Space-separated Minecraft versions to check (default the latest release)
+        type: string
+        default: latest
+
+permissions: {}
+
+# One run per pull request (a new push cancels the previous one).
+concurrency:
+  group: packet-reports-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Check against Mojang
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read # check out the fixtures and the generator
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            e2e
+            protocol/src/test/resources/dev/warp/protocol/packet/reports
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: e2e/.nvmrc
+
+      # The generator only uses Node.js built-ins. The Java each release needs is found on the
+      # runner, or downloaded and checksum-verified like the end-to-end servers' (e2e/src/java.js).
+      - name: Compare Mojang's reports with the fixtures
+        env:
+          # No version: every fixture.
+          VERSIONS: ${{ github.event_name != 'pull_request' && (inputs.versions || 'latest') || '' }}
+        run: |
+          read -ra versions <<< "$VERSIONS"
+          node e2e/tools/packet-reports.js --check "${versions[@]}"
