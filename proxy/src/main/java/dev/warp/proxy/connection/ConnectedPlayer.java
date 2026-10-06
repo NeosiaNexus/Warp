@@ -690,11 +690,23 @@ public final class ConnectedPlayer {
       return;
     }
 
-    long id = ThreadLocalRandom.current().nextLong();
+    long id = nextKeepAliveId();
     pendingKeepAliveId = id;
     keepAliveSentTime = System.nanoTime();
     keepAliveOutstanding = true;
     clientConnection.writeAndFlush(new KeepAlive(id));
+  }
+
+  /**
+   * Returns a random keep-alive ID that the client's version carries without loss: any {@code long}
+   * from 1.12.2 on, a non-negative {@code int} before (the ID is an int in 1.7 and a VarInt up to
+   * 1.12.1), so the client echoes exactly the ID that {@link #handleKeepAliveResponse} expects.
+   */
+  private long nextKeepAliveId() {
+    ThreadLocalRandom random = ThreadLocalRandom.current();
+    return KeepAlive.hasLongId(protocolVersion)
+        ? random.nextLong()
+        : random.nextInt() & Integer.MAX_VALUE;
   }
 
   /**

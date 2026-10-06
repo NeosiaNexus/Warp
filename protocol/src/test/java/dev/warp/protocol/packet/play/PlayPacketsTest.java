@@ -18,18 +18,25 @@ package dev.warp.protocol.packet.play;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McString;
 
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 @DisplayName("Play packet codecs")
 class PlayPacketsTest {
@@ -42,45 +49,115 @@ class PlayPacketsTest {
   @DisplayName("KeepAlive")
   class KeepAliveCodec {
 
+    /** 0x12345678 as a VarInt: seven bits at a time, low group first. */
+    private static final byte[] VAR_INT_0X12345678 = {
+      (byte) 0xF8, (byte) 0xAC, (byte) 0xD1, (byte) 0x91, 0x01
+    };
+
+    static Stream<Arguments> wireFormsAcrossIdWidths() {
+      byte[] int32 = {0x12, 0x34, 0x56, 0x78};
+      byte[] int64 = {0, 0, 0, 0, 0x12, 0x34, 0x56, 0x78};
+      return Stream.of(
+          Arguments.of(ProtocolVersion.MINECRAFT_1_7_2, int32),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_7_6, int32),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_8, VAR_INT_0X12345678),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_12_1, VAR_INT_0X12345678),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_12_2, int64),
+          Arguments.of(ProtocolVersion.latest(), int64));
+    }
+
+    static Stream<ProtocolVersion> versionsWithIntId() {
+      return Stream.of(
+          ProtocolVersion.MINECRAFT_1_7_2,
+          ProtocolVersion.MINECRAFT_1_7_6,
+          ProtocolVersion.MINECRAFT_1_8,
+          ProtocolVersion.MINECRAFT_1_12_1);
+    }
+
+    static Stream<ProtocolVersion> versionsWithLongId() {
+      return Stream.of(ProtocolVersion.MINECRAFT_1_12_2, ProtocolVersion.latest());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("wireFormsAcrossIdWidths")
+    @DisplayName("should write the id as an int, then a VarInt, then a long")
+    void writesIdInVersionWireForm(ProtocolVersion version, byte[] expected) {
+      KeepAlive packet = new KeepAlive(0x12345678L);
+
+      byte[] wire = encode(packet, version);
+
+      assertArrayEquals(expected, wire);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versionsWithIntId")
+    @DisplayName("should roundtrip every int id, negative ones included, before 1.12.2")
+    void roundtripsIntIds(ProtocolVersion version) {
+      for (long id : new long[] {Integer.MIN_VALUE, -1, 0, 1, Integer.MAX_VALUE}) {
+        KeepAlive decoded = decode(encode(new KeepAlive(id), version), version);
+
+        assertEquals(id, decoded.id(), version + " id " + id);
+      }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versionsWithIntId")
+    @DisplayName("should refuse to truncate an id that does not fit in 32 bits before 1.12.2")
+    void refusesIdsOutsideIntRange(ProtocolVersion version) {
+      long[] tooWide = {
+        Integer.MAX_VALUE + 1L, Integer.MIN_VALUE - 1L, 1L << 32, Long.MAX_VALUE, Long.MIN_VALUE
+      };
+      for (long id : tooWide) {
+        ByteBuf buf = Unpooled.buffer();
+        try {
+          assertThrows(
+              IllegalArgumentException.class,
+              () -> KeepAlive.CODEC.encode(new KeepAlive(id), buf, version),
+              version + " id " + id);
+          assertEquals(0, buf.writerIndex(), "nothing may be written for id " + id);
+        } finally {
+          buf.release();
+        }
+      }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versionsWithLongId")
+    @DisplayName("should roundtrip every long id from 1.12.2")
+    void roundtripsLongIds(ProtocolVersion version) {
+      for (long id : new long[] {Long.MIN_VALUE, 0xDEADBEEFCAFEBABEL, -1, 0, Long.MAX_VALUE}) {
+        KeepAlive decoded = decode(encode(new KeepAlive(id), version), version);
+
+        assertEquals(id, decoded.id(), version + " id " + id);
+      }
+    }
+
     @Test
-    @DisplayName("should roundtrip as long for 1.12.2+")
-    void roundtripLong() {
-      KeepAlive original = new KeepAlive(123456789L);
+    @DisplayName("should report a 64-bit id from 1.12.2 only")
+    void reportsLongIdFrom1122() {
+      assertFalse(KeepAlive.hasLongId(ProtocolVersion.MINECRAFT_1_7_2));
+      assertFalse(KeepAlive.hasLongId(ProtocolVersion.MINECRAFT_1_8));
+      assertFalse(KeepAlive.hasLongId(ProtocolVersion.MINECRAFT_1_12_1));
+      assertTrue(KeepAlive.hasLongId(ProtocolVersion.MINECRAFT_1_12_2));
+      assertTrue(KeepAlive.hasLongId(ProtocolVersion.latest()));
+    }
+
+    private static byte[] encode(KeepAlive packet, ProtocolVersion version) {
       ByteBuf buf = Unpooled.buffer();
       try {
-        KeepAlive.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_21_4);
-        assertEquals(8, buf.readableBytes()); // long = 8 bytes
-        KeepAlive decoded = KeepAlive.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_21_4);
-        assertEquals(123456789L, decoded.id());
+        KeepAlive.CODEC.encode(packet, buf, version);
+        return ByteBufUtil.getBytes(buf);
       } finally {
         buf.release();
       }
     }
 
-    @Test
-    @DisplayName("should roundtrip as VarInt for 1.8–1.12.1")
-    void roundtripVarInt() {
-      KeepAlive original = new KeepAlive(42);
-      ByteBuf buf = Unpooled.buffer();
+    private static KeepAlive decode(byte[] wire, ProtocolVersion version) {
+      ByteBuf buf = Unpooled.wrappedBuffer(wire);
       try {
-        KeepAlive.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_8);
-        KeepAlive decoded = KeepAlive.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_8);
-        assertEquals(42L, decoded.id());
-      } finally {
-        buf.release();
-      }
-    }
-
-    @Test
-    @DisplayName("should roundtrip as int for 1.7.x")
-    void roundtripInt() {
-      KeepAlive original = new KeepAlive(12345);
-      ByteBuf buf = Unpooled.buffer();
-      try {
-        KeepAlive.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_7_2);
-        assertEquals(4, buf.readableBytes()); // int = 4 bytes
-        KeepAlive decoded = KeepAlive.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_7_2);
-        assertEquals(12345L, decoded.id());
+        KeepAlive decoded = KeepAlive.CODEC.decode(buf, version);
+        assertEquals(0, buf.readableBytes(), "trailing bytes after the id");
+        return decoded;
       } finally {
         buf.release();
       }
