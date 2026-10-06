@@ -101,7 +101,7 @@ Tiers pick what runs where:
 
 - `pr`, on every pull request (required): one version per protocol era among those that pass,
   and the offline, transcode and backend-lower variants on the newest. A known-broken version never goes there, a version with
-  known-broken scenarios can. Versions before 1.18 join it once they pass (#41).
+  known-broken scenarios can.
 - `full`, on every push to `main`, nightly, on demand, and on pull requests labelled
   `e2e: full`: every version, and more variants at era boundaries.
 
