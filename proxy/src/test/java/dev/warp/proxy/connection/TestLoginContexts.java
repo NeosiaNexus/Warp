@@ -64,7 +64,17 @@ final class TestLoginContexts {
    * @return the context
    */
   static ServerLoginContext offline(ProfileKeys profileKeys) {
-    return context(false, new MojangSessionService(), profileKeys);
+    return context(false, -1, new MojangSessionService(), profileKeys);
+  }
+
+  /**
+   * Returns {@link #offline()} compressing from {@code compressionThreshold} bytes.
+   *
+   * @param compressionThreshold the configured threshold, or {@code -1} for no compression
+   * @return the context
+   */
+  static ServerLoginContext offline(int compressionThreshold) {
+    return context(false, compressionThreshold, new MojangSessionService(), ProfileKeys.mojang());
   }
 
   /**
@@ -75,11 +85,14 @@ final class TestLoginContexts {
    * @return the context
    */
   static ServerLoginContext online(MojangSessionService sessionService, ProfileKeys profileKeys) {
-    return context(true, sessionService, profileKeys);
+    return context(true, -1, sessionService, profileKeys);
   }
 
   private static ServerLoginContext context(
-      boolean onlineMode, MojangSessionService sessionService, ProfileKeys profileKeys) {
+      boolean onlineMode,
+      int compressionThreshold,
+      MojangSessionService sessionService,
+      ProfileKeys profileKeys) {
     ServerRegistry registry =
         new ServerRegistry(
             Map.of("lobby", new InetSocketAddress(InetAddress.getLoopbackAddress(), 1)),
@@ -88,7 +101,7 @@ final class TestLoginContexts {
     return new ServerLoginContext(
         KEY_PAIR,
         onlineMode,
-        -1, // compression disabled
+        compressionThreshold,
         Deflater.DEFAULT_COMPRESSION,
         true,
         sessionService,

@@ -201,6 +201,61 @@ class LoginSessionHandlerTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Compression
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("compression")
+  class Compression {
+
+    private static final int THRESHOLD = 256;
+
+    static Stream<ProtocolVersion> versionsBefore18() {
+      return ProtocolVersion.values().stream()
+          .filter(version -> version.isOlderThan(ProtocolVersion.MINECRAFT_1_8));
+    }
+
+    static Stream<ProtocolVersion> versionsFrom18() {
+      return ProtocolVersion.values().stream()
+          .filter(version -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_8));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versionsFrom18")
+    @DisplayName("should send Set Compression with the threshold before Login Success")
+    void setCompressionFrom18(ProtocolVersion version) {
+      EmbeddedChannel channel = loginChannel(version, TestLoginContexts.offline(THRESHOLD));
+      try {
+        sendLoginStart(channel, "Steve", version);
+
+        // Frame length 3, packet id 0x03, VarInt 256: still uncompressed, as the client expects.
+        assertArrayEquals(new byte[] {0x03, 0x03, (byte) 0x80, 0x02}, nextFrame(channel));
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versionsBefore18")
+    @DisplayName("should log a 1.7 client in uncompressed, as it predates compression")
+    void noCompressionBefore18(ProtocolVersion version) {
+      EmbeddedChannel channel = loginChannel(version, TestLoginContexts.offline(THRESHOLD));
+      try {
+        sendLoginStart(channel, "Steve", version);
+        channel.runPendingTasks();
+
+        // Plain frames: a length then the packet id, no data length for a compressed frame.
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version);
+        byte[] reason = nextPacket(channel, ProtocolState.PLAY, PlayDisconnect.class, version);
+        assertArrayEquals(
+            jsonString("{\"text\":\"Could not connect to any available server.\"}"), reason);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Profile keys (1.19 to 1.19.2)
   // ---------------------------------------------------------------------------
 
@@ -879,6 +934,17 @@ class LoginSessionHandlerTest {
       int expectedId =
           StateRegistry.get(state, PacketDirection.CLIENTBOUND).packetId(version, type);
       assertEquals(expectedId, VarInt.read(frame), type.getSimpleName() + " packet id");
+      return ByteBufUtil.getBytes(frame);
+    } finally {
+      frame.release();
+    }
+  }
+
+  /** Reads the next frame the proxy sent, whole: its length prefix and its content. */
+  private byte[] nextFrame(EmbeddedChannel channel) {
+    ByteBuf frame = channel.readOutbound();
+    assertNotNull(frame, "expected a frame");
+    try {
       return ByteBufUtil.getBytes(frame);
     } finally {
       frame.release();
