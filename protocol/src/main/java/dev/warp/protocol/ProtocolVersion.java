@@ -34,9 +34,9 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>Ordering follows the protocol ID: a higher ID means a newer version.
  *
- * <p>Warp supports every release protocol from 1.7.2 (protocol 4) to 26.3 (protocol 777), all
- * registered here in release order: {@link #oldest()} and {@link #latest()} are the two ends. The
- * end-to-end suite runs real clients on every one of them from 1.8 on.
+ * <p>Every release protocol from 1.7.2 (protocol 4) on is registered here, in release order, with
+ * {@link #oldest()} and {@link #latest()} at the two ends. The end-to-end suite ({@code e2e/})
+ * plays each one from 1.8 on, with real-protocol bots going through Warp to real servers.
  */
 public final class ProtocolVersion implements Comparable<ProtocolVersion> {
 

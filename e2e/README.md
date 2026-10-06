@@ -121,7 +121,8 @@ Tiers pick what runs where:
 3. If the bot library has no data for it yet, add `"via": "<newest version it speaks>"`.
 4. Run it: `e2e/run.sh --mc <version>`, and `npm test` in `e2e/` (checks the matrix).
 5. Until Warp supports it fully, add `"knownBroken"` (or `"knownBrokenScenarios"`) with the
-   issue; CI then reports it without failing.
+   issue; CI then reports it without failing. Once it passes, give the top-level `README.md` its
+   new newest version (the supported range, and the versions the suite plays).
 
 The harness itself is tested with `npm test` (matrix consistency, failure patterns, downloads, the
 report, protocol data corrections), which CI runs before every end-to-end matrix.
