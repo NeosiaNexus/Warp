@@ -42,7 +42,7 @@ import org.jspecify.annotations.Nullable;
  * Reference wire bytes from {@code switch-packets.txt}, written by node-minecraft-protocol: the
  * packets Warp reads and writes to switch servers before 1.20.2, per protocol version.
  */
-final class SwitchPacketFixtures {
+public final class SwitchPacketFixtures {
 
   private static final Map<Integer, Map<String, byte[]>> FIXTURES = load();
 
@@ -65,8 +65,15 @@ final class SwitchPacketFixtures {
     return FIXTURES.getOrDefault(version.protocol(), Map.of()).containsKey(packet);
   }
 
-  /** Returns the body of {@code packet} at {@code version}, without its packet ID. */
-  static byte[] bytes(ProtocolVersion version, String packet) {
+  /**
+   * Returns the body of {@code packet} at {@code version}, without its packet ID.
+   *
+   * @param version the protocol version
+   * @param packet the name of the fixture, as in {@code switch-packets.txt}
+   * @return a copy of the bytes
+   * @throws IllegalArgumentException if there is no such fixture
+   */
+  public static byte[] bytes(ProtocolVersion version, String packet) {
     byte[] bytes = FIXTURES.getOrDefault(version.protocol(), Map.of()).get(packet);
     if (bytes == null) {
       throw new IllegalArgumentException("No fixture " + packet + " for " + version);

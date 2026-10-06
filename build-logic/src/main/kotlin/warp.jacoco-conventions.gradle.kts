@@ -8,8 +8,16 @@ jacoco {
     toolVersion = libs.findVersion("jacoco").get().requiredVersion
 }
 
+// The test tasks whose coverage is reported. Fuzzing (warp.fuzz-conventions) runs a Test task too,
+// but never as part of a build, and without the JaCoCo agent.
+val coveredTests = tasks.withType<Test>().named { it != "fuzz" }
+
+tasks.withType<Test>().named { it == "fuzz" }.configureEach {
+    the<JacocoTaskExtension>().isEnabled = false
+}
+
 tasks.withType<JacocoReport>().configureEach {
-    dependsOn(tasks.withType<Test>())
+    dependsOn(coveredTests)
     reports {
         xml.required = true
         html.required = true
@@ -18,7 +26,7 @@ tasks.withType<JacocoReport>().configureEach {
 }
 
 // Generate coverage report automatically after tests run.
-tasks.withType<Test>().configureEach {
+coveredTests.configureEach {
     finalizedBy(tasks.withType<JacocoReport>())
 }
 

@@ -28,6 +28,7 @@ jacoco = "0.8.15"
 # Testing
 junit = "5.12.2"
 mockito = "5.24.0"
+jazzer = "0.30.0"
 
 # Benchmarking
 jmh = "1.37"
@@ -97,6 +98,8 @@ junit-jupiter-engine = { group = "org.junit.jupiter", name = "junit-jupiter-engi
 junit-platform-launcher = { group = "org.junit.platform", name = "junit-platform-launcher" }
 mockito-core = { group = "org.mockito", name = "mockito-core", version.ref = "mockito" }
 mockito-junit-jupiter = { group = "org.mockito", name = "mockito-junit-jupiter", version.ref = "mockito" }
+jazzer-api = { group = "com.code-intelligence", name = "jazzer-api", version.ref = "jazzer" }
+jazzer-junit = { group = "com.code-intelligence", name = "jazzer-junit", version.ref = "jazzer" }
 
 # Benchmarking
 jmh-core = { group = "org.openjdk.jmh", name = "jmh-core", version.ref = "jmh" }

@@ -1,0 +1,2 @@
+# Fuzz test inputs (seeds and past findings) are raw bytes: never convert their line endings.
+**/src/test/resources/**/*Inputs/** binary
