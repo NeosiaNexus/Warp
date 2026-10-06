@@ -19,11 +19,13 @@ package dev.warp.protocol.compress;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import dev.warp.protocol.codec.VarInt;
 
 import java.util.Random;
+import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
 
 import io.netty.buffer.ByteBuf;
@@ -48,13 +50,19 @@ class FrameDecompressorTest {
     @Test
     @DisplayName("should reject a negative data length")
     void rejectsNegative() {
-      assertThrows(DecoderException.class, () -> validating().checkHeader(-1, 10));
+      assertThrows(DecoderException.class, () -> lenient().checkHeader(-1, 10));
     }
 
     @Test
     @DisplayName("should reject below-threshold frames when validating, like a vanilla server")
     void rejectsBelowThresholdWhenValidating() {
       assertThrows(DecoderException.class, () -> validating().checkHeader(THRESHOLD - 1, 50));
+    }
+
+    @Test
+    @DisplayName("should accept frames declaring exactly the threshold when validating")
+    void acceptsThresholdWhenValidating() {
+      assertDoesNotThrow(() -> validating().checkHeader(THRESHOLD, 50));
     }
 
     @Test
@@ -114,8 +122,10 @@ class FrameDecompressorTest {
       byte[] packet = randomBytes(500, 2);
       ByteBuf payload = Unpooled.wrappedBuffer(zlib(packet, 6));
 
-      assertThrows(
-          DecoderException.class, () -> lenient().inflate(ALLOC, payload, packet.length + 1));
+      DecoderException e =
+          assertThrows(
+              DecoderException.class, () -> lenient().inflate(ALLOC, payload, packet.length + 1));
+      assertEquals("Decompressed size does not match claimed data length", e.getMessage());
     }
 
     @Test
@@ -124,8 +134,10 @@ class FrameDecompressorTest {
       byte[] packet = randomBytes(500, 3);
       ByteBuf payload = Unpooled.wrappedBuffer(zlib(packet, 6));
 
-      assertThrows(
-          DecoderException.class, () -> lenient().inflate(ALLOC, payload, packet.length - 1));
+      DecoderException e =
+          assertThrows(
+              DecoderException.class, () -> lenient().inflate(ALLOC, payload, packet.length - 1));
+      assertInstanceOf(DataFormatException.class, e.getCause());
     }
 
     @Test
@@ -139,6 +151,16 @@ class FrameDecompressorTest {
     }
 
     @Test
+    @DisplayName("should accept declared sizes exactly at the cap")
+    void acceptsCap() {
+      FrameDecompressor capped =
+          new FrameDecompressor(THRESHOLD, false, 1024, new JavaCompressor(6));
+      ByteBuf payload = Unpooled.wrappedBuffer(zlib(new byte[1024], 6));
+
+      assertArrayEquals(new byte[1024], drain(capped.inflate(ALLOC, payload, 1024)));
+    }
+
+    @Test
     @DisplayName("should enforce the per-second decompression budget")
     void enforcesBudget() {
       FrameDecompressor decompressor = lenient();
@@ -149,6 +171,32 @@ class FrameDecompressorTest {
       assertThrows(
           DecoderException.class,
           () -> decompressor.inflate(ALLOC, Unpooled.wrappedBuffer(zlib(packet, 6)), 600));
+    }
+
+    @Test
+    @DisplayName("should spend the whole budget before refusing a single byte")
+    void spendsWholeBudget() {
+      FrameDecompressor decompressor = lenient();
+      decompressor.setMaxDecompressionRate(1000);
+
+      decompressor.inflate(ALLOC, Unpooled.wrappedBuffer(zlib(new byte[600], 6)), 600).release();
+      decompressor.inflate(ALLOC, Unpooled.wrappedBuffer(zlib(new byte[400], 6)), 400).release();
+      assertThrows(
+          DecoderException.class,
+          () -> decompressor.inflate(ALLOC, Unpooled.wrappedBuffer(zlib(new byte[1], 6)), 1));
+    }
+
+    @Test
+    @DisplayName("should not limit the rate when the budget is zero")
+    void zeroBudgetDisablesLimit() {
+      FrameDecompressor decompressor = lenient();
+      decompressor.setMaxDecompressionRate(0);
+      byte[] zlib = zlib(new byte[600], 6);
+
+      for (int i = 0; i < 3; i++) {
+        assertDoesNotThrow(
+            () -> decompressor.inflate(ALLOC, Unpooled.wrappedBuffer(zlib), 600).release());
+      }
     }
   }
 
@@ -185,6 +233,30 @@ class FrameDecompressorTest {
       packet[0] = 0x27;
 
       assertEquals(0x27, lenient().peekPacketId(Unpooled.wrappedBuffer(zlib(packet, 6))));
+    }
+  }
+
+  @Nested
+  @DisplayName("lifecycle")
+  class Lifecycle {
+
+    @Test
+    @DisplayName("should expose the threshold it validates against")
+    void exposesThreshold() {
+      assertEquals(THRESHOLD, validating().threshold());
+    }
+
+    @Test
+    @DisplayName("should close the compressor it owns")
+    void closesCompressor() {
+      TrackingCompressor compressor = new TrackingCompressor();
+      FrameDecompressor decompressor =
+          new FrameDecompressor(
+              THRESHOLD, true, FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE, compressor);
+
+      decompressor.close();
+
+      assertEquals(1, compressor.closes());
     }
   }
 

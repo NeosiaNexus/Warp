@@ -19,6 +19,8 @@ package dev.warp.protocol.netty;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
@@ -35,6 +37,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.handler.codec.DecoderException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -88,6 +91,20 @@ class FrameForwarderTest {
   @Nested
   @DisplayName("re-encoding")
   class ReEncoding {
+
+    @Test
+    @DisplayName("should re-frame frames between uncompressed connections when verbatim is off")
+    void reFramesWhenVerbatimDisabled() {
+      Sink sink = Sink.uncompressed();
+      sink.forwarder.setVerbatimEnabled(false);
+      // Length 3 as a padded 3-byte VarInt: the encoder writes it in one byte.
+      ByteBuf frame =
+          Unpooled.wrappedBuffer(new byte[] {(byte) 0x83, (byte) 0x80, 0x00, 0x55, 1, 2});
+
+      sink.forwarder.forward(frame, null, null);
+
+      assertArrayEquals(new byte[] {3, 0x55, 1, 2}, sink.output());
+    }
 
     @Test
     @DisplayName("should send below-threshold compressed frames uncompressed, never re-deflated")
@@ -169,6 +186,197 @@ class FrameForwarderTest {
       assertArrayEquals(packet, decodeCompressed(sink.output(), 256));
       assertEquals(1, deflater.deflations);
     }
+  }
+
+  @Nested
+  @DisplayName("frames the source already inflated")
+  class InflatedBySource {
+
+    @Test
+    @DisplayName("should forward the frame verbatim when it is canonical here, dropping the packet")
+    void verbatimWhenCanonical() {
+      Sink sink = Sink.compressed(256, new RefusingCompressor());
+      // Compressible, so the frame's length (a few bytes of zlib) is far below the threshold.
+      byte[] packet = Frames.packet(0x55, new byte[999]);
+      ByteBuf frame = Frames.compressed(packet, 6);
+      byte[] wire = ByteBufUtil.getBytes(frame);
+      ByteBuf inflated = Unpooled.wrappedBuffer(packet.clone());
+
+      sink.forwarder.forward(frame, source(256), inflated);
+
+      assertArrayEquals(wire, sink.output());
+      assertEquals(0, inflated.refCnt());
+    }
+
+    @Test
+    @DisplayName("should re-encode the packet when the frame is below this connection's threshold")
+    void reEncodedBelowThreshold() {
+      Sink sink = Sink.compressed(2048, new RefusingCompressor());
+      byte[] packet = Frames.packet(0x55, new byte[999]);
+      ByteBuf frame = Frames.compressed(packet, 6);
+
+      sink.forwarder.forward(frame, source(256), Unpooled.wrappedBuffer(packet.clone()));
+
+      byte[] out = sink.output();
+      assertArrayEquals(packet, decodeCompressed(out, 2048));
+      assertEquals(0, dataLength(out), "sent uncompressed below the threshold");
+      assertEquals(0, frame.refCnt());
+    }
+
+    @Test
+    @DisplayName("should re-encode the packet when verbatim forwarding is disabled")
+    void reEncodedWhenVerbatimDisabled() {
+      CountingCompressor deflater = new CountingCompressor();
+      Sink sink = Sink.compressed(256, deflater);
+      sink.forwarder.setVerbatimEnabled(false);
+      byte[] packet = Frames.packet(0x55, new byte[999]);
+
+      sink.forwarder.forward(
+          Frames.compressed(packet, 6), source(256), Unpooled.wrappedBuffer(packet.clone()));
+
+      assertArrayEquals(packet, decodeCompressed(sink.output(), 256));
+      assertEquals(1, deflater.deflations);
+    }
+
+    @Test
+    @DisplayName("should re-encode the packet for an uncompressed connection")
+    void reEncodedForUncompressed() {
+      Sink sink = Sink.uncompressed();
+      byte[] packet = Frames.packet(0x55, new byte[999]);
+
+      sink.forwarder.forward(
+          Frames.compressed(packet, 6), source(256), Unpooled.wrappedBuffer(packet.clone()));
+
+      ByteBuf out = Unpooled.wrappedBuffer(sink.output());
+      assertEquals(packet.length, VarInt.read(out));
+      assertArrayEquals(packet, ByteBufUtil.getBytes(out));
+    }
+
+    @Test
+    @DisplayName("should never write a frame of an uncompressed source to a compressed connection")
+    void reEncodedFromUncompressedSource() {
+      Sink sink = Sink.compressed(256, new RefusingCompressor());
+      // Packet id 0 reads as "Data Length 0" in the compressed format: written as it is, the
+      // frame would be valid there, and the peer would lose the id.
+      byte[] packet = Frames.packet(0x00, new byte[99]);
+
+      sink.forwarder.forward(Frames.plain(packet), null, Unpooled.wrappedBuffer(packet.clone()));
+
+      byte[] out = sink.output();
+      assertArrayEquals(packet, decodeCompressed(out, 256));
+      assertEquals(0, dataLength(out));
+    }
+
+    @Test
+    @DisplayName("should release both the frame and the packet when the connection is closed")
+    void releasesBothWhenClosed() {
+      Sink sink = Sink.compressed(256, new RefusingCompressor());
+      sink.channel.close().syncUninterruptibly();
+      byte[] packet = packet(300);
+      ByteBuf frame = Frames.compressed(packet, 6);
+      ByteBuf inflated = Unpooled.wrappedBuffer(packet.clone());
+
+      sink.forwarder.forward(frame, source(256), inflated);
+
+      assertEquals(0, frame.refCnt());
+      assertEquals(0, inflated.refCnt());
+    }
+  }
+
+  @Nested
+  @DisplayName("threshold 0: every packet compressed")
+  class ThresholdZero {
+
+    @Test
+    @DisplayName("should forward compressed frames verbatim")
+    void compressedVerbatim() {
+      Sink sink = Sink.compressed(0, new RefusingCompressor());
+      ByteBuf frame = Frames.compressed(packet(100), 6);
+      byte[] wire = ByteBufUtil.getBytes(frame);
+
+      sink.forwarder.forward(frame, source(0), null);
+
+      assertArrayEquals(wire, sink.output());
+    }
+
+    @Test
+    @DisplayName("should forward frames its source inflated verbatim")
+    void inflatedVerbatim() {
+      Sink sink = Sink.compressed(0, new RefusingCompressor());
+      byte[] packet = packet(100);
+      ByteBuf frame = Frames.compressed(packet, 6);
+      byte[] wire = ByteBufUtil.getBytes(frame);
+
+      sink.forwarder.forward(frame, source(0), Unpooled.wrappedBuffer(packet.clone()));
+
+      assertArrayEquals(wire, sink.output());
+    }
+
+    @Test
+    @DisplayName("should compress the frames of an uncompressed source")
+    void compressesUncompressedSource() {
+      CountingCompressor deflater = new CountingCompressor();
+      Sink sink = Sink.compressed(0, deflater);
+      byte[] packet = packet(100);
+
+      sink.forwarder.forward(Frames.plain(packet), null, null);
+
+      byte[] out = sink.output();
+      assertArrayEquals(packet, decodeCompressed(out, 0));
+      assertEquals(packet.length, dataLength(out));
+      assertEquals(1, deflater.deflations);
+    }
+  }
+
+  @Nested
+  @DisplayName("canonical frames")
+  class CanonicalFrames {
+
+    @Test
+    @DisplayName("should take uncompressed packets only below the threshold")
+    void uncompressedBelowThreshold() {
+      FrameForwarder forwarder = new FrameForwarder(new EmbeddedChannel());
+      forwarder.compressionEnabled(256);
+
+      assertTrue(forwarder.accepts(0, 255));
+      assertFalse(forwarder.accepts(0, 256));
+    }
+
+    @Test
+    @DisplayName("should take compressed packets only from the threshold up")
+    void compressedFromThreshold() {
+      FrameForwarder forwarder = new FrameForwarder(new EmbeddedChannel());
+      forwarder.compressionEnabled(256);
+
+      assertTrue(forwarder.accepts(256, 20));
+      assertFalse(forwarder.accepts(255, 20));
+    }
+  }
+
+  @Test
+  @DisplayName("should validate a frame it re-encodes against its source's threshold")
+  void validatesReEncodedFrames() {
+    Sink sink = Sink.compressed(1024, new RefusingCompressor());
+    FrameDecompressor validating =
+        new FrameDecompressor(
+            256, true, FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE, new JavaCompressor(6));
+    ByteBuf frame = Frames.compressed(packet(100), 6);
+
+    assertThrows(DecoderException.class, () -> sink.forwarder.forward(frame, validating, null));
+    assertEquals(0, frame.refCnt());
+    sink.channel.finishAndReleaseAll();
+  }
+
+  @Test
+  @DisplayName("should refuse to forward verbatim to a connection without framing encoder")
+  void requiresFramingEncoder() {
+    EmbeddedChannel channel = new EmbeddedChannel();
+    FrameForwarder forwarder = new FrameForwarder(channel);
+    ByteBuf frame = Frames.plain(packet(10));
+
+    assertThrows(IllegalStateException.class, () -> forwarder.forward(frame, null, null));
+    frame.release();
+    channel.finishAndReleaseAll();
   }
 
   @Test

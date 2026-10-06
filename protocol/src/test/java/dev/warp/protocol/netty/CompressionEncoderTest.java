@@ -19,17 +19,22 @@ package dev.warp.protocol.netty;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.compress.JavaCompressor;
+import dev.warp.protocol.compress.PacketCompressor;
+import dev.warp.protocol.compress.TrackingCompressor;
 
 import java.util.Random;
 import java.util.zip.Deflater;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.handler.codec.EncoderException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -342,11 +347,108 @@ class CompressionEncoderTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Limits and lifecycle
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("limits and lifecycle")
+  class LimitsAndLifecycle {
+
+    @Test
+    @DisplayName("should send an empty packet uncompressed even when everything is compressed")
+    void emptyPacketUncompressed() {
+      EmbeddedChannel ch =
+          new EmbeddedChannel(
+              new CompressionEncoder(0, new JavaCompressor(Deflater.DEFAULT_COMPRESSION)));
+
+      assertTrue(ch.writeOutbound(Unpooled.EMPTY_BUFFER));
+
+      // Packet Length 1 as a padded 3-byte VarInt, then Data Length 0 and no packet bytes.
+      ByteBuf out = ch.readOutbound();
+      assertArrayEquals(
+          new byte[] {(byte) 0x81, (byte) 0x80, 0x00, 0x00}, ByteBufUtil.getBytes(out));
+      out.release();
+      ch.finish();
+    }
+
+    @Test
+    @DisplayName("should accept a compressed frame of exactly MAX_21_BIT bytes")
+    void maximumCompressedFrame() {
+      // Data Length (one byte for a one-byte packet) plus the compressed bytes fill the frame.
+      EmbeddedChannel ch =
+          new EmbeddedChannel(
+              new CompressionEncoder(0, new FixedOutputCompressor(VarInt.MAX_21_BIT - 1)));
+
+      assertTrue(ch.writeOutbound(Unpooled.wrappedBuffer(new byte[] {0x2A})));
+
+      ByteBuf out = ch.readOutbound();
+      assertEquals(VarInt.MAX_21_BIT, VarInt.read(out));
+      assertEquals(VarInt.MAX_21_BIT, out.readableBytes());
+      out.release();
+      ch.finish();
+    }
+
+    @Test
+    @DisplayName("should reject a compressed frame longer than MAX_21_BIT bytes")
+    void oversizedCompressedFrame() {
+      EmbeddedChannel ch =
+          new EmbeddedChannel(
+              new CompressionEncoder(0, new FixedOutputCompressor(VarInt.MAX_21_BIT)));
+
+      EncoderException e =
+          assertThrows(
+              EncoderException.class,
+              () -> ch.writeOutbound(Unpooled.wrappedBuffer(new byte[] {0x2A})));
+      assertEquals(
+          "Compressed frame exceeds maximum length of " + VarInt.MAX_21_BIT + " bytes",
+          e.getMessage());
+      ch.finish();
+    }
+
+    @Test
+    @DisplayName("should close its compressor when removed from the pipeline")
+    void closesCompressorOnRemoval() {
+      TrackingCompressor compressor = new TrackingCompressor();
+      CompressionEncoder encoder = new CompressionEncoder(THRESHOLD, compressor);
+      EmbeddedChannel ch = new EmbeddedChannel(encoder);
+
+      ch.pipeline().remove(encoder);
+
+      assertEquals(1, compressor.closes());
+      ch.finish();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
   private static EmbeddedChannel encoderChannel() {
     return new EmbeddedChannel(
         new CompressionEncoder(THRESHOLD, new JavaCompressor(Deflater.DEFAULT_COMPRESSION)));
+  }
+
+  /** "Compresses" any packet into the given number of zero bytes. */
+  private static final class FixedOutputCompressor implements PacketCompressor {
+
+    private final int outputLength;
+
+    FixedOutputCompressor(int outputLength) {
+      this.outputLength = outputLength;
+    }
+
+    @Override
+    public void inflate(ByteBuf source, ByteBuf destination, int uncompressedSize) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void deflate(ByteBuf source, ByteBuf destination) {
+      source.skipBytes(source.readableBytes());
+      destination.writeZero(outputLength);
+    }
+
+    @Override
+    public void close() {}
   }
 }

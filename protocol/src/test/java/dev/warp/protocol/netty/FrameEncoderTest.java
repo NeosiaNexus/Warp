@@ -140,6 +140,20 @@ class FrameEncoderTest {
   class ErrorHandling {
 
     @Test
+    @DisplayName("should accept a payload of exactly MAX_21_BIT bytes")
+    void maximumPayload() {
+      EmbeddedChannel ch = new EmbeddedChannel(FrameEncoder.INSTANCE);
+
+      assertTrue(ch.writeOutbound(Unpooled.wrappedBuffer(new byte[VarInt.MAX_21_BIT])));
+
+      ByteBuf out = ch.readOutbound();
+      assertEquals(VarInt.MAX_21_BIT, VarInt.read(out));
+      assertEquals(VarInt.MAX_21_BIT, out.readableBytes());
+      out.release();
+      ch.finish();
+    }
+
+    @Test
     @DisplayName("should reject payload exceeding MAX_21_BIT")
     void oversizedPayload() {
       EmbeddedChannel ch = new EmbeddedChannel(FrameEncoder.INSTANCE);

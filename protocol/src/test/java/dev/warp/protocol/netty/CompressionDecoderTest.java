@@ -17,12 +17,14 @@
 package dev.warp.protocol.netty;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.compress.FrameDecompressor;
 import dev.warp.protocol.compress.JavaCompressor;
+import dev.warp.protocol.compress.TrackingCompressor;
 
 import java.util.Random;
 import java.util.zip.Deflater;
@@ -161,6 +163,24 @@ class CompressionDecoderTest {
       ch.<ByteBuf>readInbound().release();
       assertTrue(ch.writeInbound(Frames.compressed(new byte[500], 6)));
       ch.<ByteBuf>readInbound().release();
+      ch.finish();
+    }
+  }
+
+  @Nested
+  @DisplayName("lifecycle")
+  class Lifecycle {
+
+    @Test
+    @DisplayName("should close its decompressor when removed from the pipeline")
+    void closesDecompressorOnRemoval() {
+      TrackingCompressor compressor = new TrackingCompressor();
+      CompressionDecoder decoder = new CompressionDecoder(THRESHOLD, compressor);
+      EmbeddedChannel ch = new EmbeddedChannel(decoder);
+
+      ch.pipeline().remove(decoder);
+
+      assertEquals(1, compressor.closes());
       ch.finish();
     }
   }

@@ -31,6 +31,7 @@ import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.compress.FrameDecompressor;
 import dev.warp.protocol.compress.JavaCompressor;
 import dev.warp.protocol.compress.PacketCompressor;
+import dev.warp.protocol.compress.TrackingCompressor;
 import dev.warp.protocol.compress.ZlibStreams;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
@@ -41,14 +42,19 @@ import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.status.StatusRequest;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Objects;
 import java.util.stream.Stream;
 import java.util.zip.DataFormatException;
 
+import io.netty.buffer.AbstractByteBufAllocator;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
+import io.netty.buffer.UnpooledByteBufAllocator;
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.DecoderException;
 import org.junit.jupiter.api.DisplayName;
@@ -429,6 +435,98 @@ class MinecraftDecoderTest {
       ch.finishAndReleaseAll();
     }
 
+    @Test
+    @DisplayName("should hand the inflated packet of a verified frame to that frame's forwarder")
+    void handsInflatedPacketToItsFrame() {
+      EmbeddedChannel ch =
+          compressedChannel(PacketDirection.SERVERBOUND, new CountingCompressor(), false);
+      MinecraftDecoder decoder = ch.pipeline().get(MinecraftDecoder.class);
+      byte[] packet = Frames.packet(UNREGISTERED_ID, new byte[2000]);
+
+      assertTrue(ch.writeInbound(Frames.compressed(packet, 6)));
+      ByteBuf frame = ch.readInbound();
+
+      assertNull(decoder.takeInflatedPacket(Unpooled.EMPTY_BUFFER), "another frame");
+      ByteBuf inflated = decoder.takeInflatedPacket(frame);
+      assertNotNull(inflated);
+      assertArrayEquals(packet, Frames.drain(inflated));
+      assertNull(decoder.takeInflatedPacket(frame), "handed over once");
+      frame.release();
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should release an inflated packet nobody took once the next frame arrives")
+    void releasesUntakenPacketOnNextFrame() {
+      EmbeddedChannel ch =
+          compressedChannel(PacketDirection.SERVERBOUND, new CountingCompressor(), false);
+      RecordingAllocator alloc = new RecordingAllocator();
+      ch.config().setAllocator(alloc);
+
+      assertTrue(
+          ch.writeInbound(Frames.compressed(Frames.packet(UNREGISTERED_ID, new byte[500]), 6)));
+      ch.<ByteBuf>readInbound().release();
+      ByteBuf kept = alloc.only();
+      assertEquals(1, kept.refCnt());
+
+      assertTrue(ch.writeInbound(Frames.uncompressed(Frames.packet(UNREGISTERED_ID, new byte[3]))));
+      ch.<ByteBuf>readInbound().release();
+      assertEquals(0, kept.refCnt());
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should release the inflated bytes of a packet it decodes")
+    void releasesDecodedPacketBytes() {
+      EmbeddedChannel ch =
+          compressedChannel(PacketDirection.CLIENTBOUND, new CountingCompressor(), true);
+      RecordingAllocator alloc = new RecordingAllocator();
+      ch.config().setAllocator(alloc);
+      byte[] keepAlive = Frames.packet(KEEP_ALIVE_ID_1_21_4, new byte[] {0, 0, 0, 0, 0, 0, 0, 42});
+
+      assertTrue(ch.writeInbound(Frames.compressed(keepAlive, 6)));
+
+      assertInstanceOf(KeepAlive.class, ch.readInbound());
+      assertEquals(0, alloc.only().refCnt());
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should release the kept packet and close its decompressor when removed")
+    void releasesAndClosesOnRemoval() {
+      TrackingCompressor compressor = new TrackingCompressor();
+      EmbeddedChannel ch = compressedChannel(PacketDirection.SERVERBOUND, compressor, false);
+      RecordingAllocator alloc = new RecordingAllocator();
+      ch.config().setAllocator(alloc);
+      assertTrue(
+          ch.writeInbound(Frames.compressed(Frames.packet(UNREGISTERED_ID, new byte[500]), 6)));
+      ch.<ByteBuf>readInbound().release();
+
+      ch.pipeline().remove(MinecraftDecoder.class);
+
+      assertEquals(0, alloc.only().refCnt());
+      assertEquals(1, compressor.closes());
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should close the decompressor it replaces when compression is enabled again")
+    void closesReplacedDecompressor() {
+      TrackingCompressor first = new TrackingCompressor();
+      TrackingCompressor second = new TrackingCompressor();
+      EmbeddedChannel ch = compressedChannel(PacketDirection.CLIENTBOUND, first, true);
+      MinecraftDecoder decoder = ch.pipeline().get(MinecraftDecoder.class);
+
+      decoder.enableCompression(
+          new FrameDecompressor(
+              THRESHOLD, false, FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE, second),
+          true);
+
+      assertEquals(1, first.closes());
+      assertEquals(0, second.closes());
+      assertFalse(ch.finish());
+    }
+
     private static EmbeddedChannel compressedChannel(
         PacketDirection direction, PacketCompressor compressor, boolean peek) {
       MinecraftDecoder decoder =
@@ -463,6 +561,34 @@ class MinecraftDecoderTest {
 
       assertArrayEquals(wire, Frames.drain(ch.readInbound()));
       assertFalse(ch.finish());
+    }
+  }
+
+  /** Records the direct buffers it allocates, to check who releases them. */
+  private static final class RecordingAllocator extends AbstractByteBufAllocator {
+    private final List<ByteBuf> allocated = new ArrayList<>();
+
+    @Override
+    protected ByteBuf newHeapBuffer(int initialCapacity, int maxCapacity) {
+      return UnpooledByteBufAllocator.DEFAULT.heapBuffer(initialCapacity, maxCapacity);
+    }
+
+    @Override
+    protected ByteBuf newDirectBuffer(int initialCapacity, int maxCapacity) {
+      ByteBuf buf = UnpooledByteBufAllocator.DEFAULT.directBuffer(initialCapacity, maxCapacity);
+      allocated.add(buf);
+      return buf;
+    }
+
+    @Override
+    public boolean isDirectBufferPooled() {
+      return false;
+    }
+
+    /** Returns the one buffer allocated so far. */
+    ByteBuf only() {
+      assertEquals(1, allocated.size(), "direct buffers allocated");
+      return allocated.getFirst();
     }
   }
 
@@ -611,6 +737,7 @@ class MinecraftDecoderTest {
 
       decoder.setVersion(ProtocolVersion.MINECRAFT_1_21_4);
       assertEquals(ProtocolVersion.MINECRAFT_1_21_4, decoder.version());
+      assertEquals(PacketDirection.SERVERBOUND, decoder.direction());
     }
   }
 
@@ -658,6 +785,24 @@ class MinecraftDecoderTest {
       }
 
       assertNull(ch.readInbound());
+    }
+
+    @Test
+    @DisplayName("should drop a frame that reaches it after the connection closed")
+    void dropsFramesOfClosedConnection() {
+      MinecraftDecoder decoder =
+          new MinecraftDecoder(
+              PacketDirection.CLIENTBOUND, ProtocolVersion.MINECRAFT_1_21_4, ProtocolState.PLAY);
+      EmbeddedChannel ch = new EmbeddedChannel(decoder);
+      ChannelHandlerContext ctx = ch.pipeline().context(decoder);
+      ch.close().syncUninterruptibly();
+      ByteBuf frame = Frames.plain(Frames.packet(0x7F, new byte[] {1, 2, 3}));
+      List<Object> out = new ArrayList<>();
+
+      decoder.decode(ctx, frame, out);
+
+      assertTrue(out.isEmpty());
+      frame.release();
     }
   }
 
