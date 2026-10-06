@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { BACKEND_PROTOCOL_ERRORS } from '../src/backend.js';
+import { BACKEND_PROTOCOL_ERRORS, backendGroups } from '../src/backend.js';
 import { connectClient } from '../src/clients/index.js';
 import { announcedProtocol } from '../src/clients/mineflayer.js';
 import { SCENARIOS, checkStatus, features } from '../src/scenarios.js';
@@ -61,6 +61,20 @@ describe('versions.json', () => {
     assert.ok(protocols.some((p) => p >= CONFIGURATION_PHASE), 'no version from 1.20.2');
   });
 
+  it('tests modern forwarding on pull requests', () => {
+    const variants = jobsForTier(matrix, 'pr').flatMap((job) => job.variants.split(','));
+    assert.ok(variants.some((name) => resolveVariant(matrix, name).forwarding !== 'none'));
+  });
+
+  it('only schedules variants that each version can run', () => {
+    for (const tier of Object.keys(matrix.tiers)) {
+      for (const job of jobsForTier(matrix, tier)) {
+        const variants = job.variants.split(',').map((name) => resolveVariant(matrix, name));
+        for (const group of backendGroups(findEntry(matrix, job.mc), variants)) assert.equal(group.skip, null, `${tier} ${job.mc}: ${group.skip}`);
+      }
+    }
+  });
+
   it('says why each known-broken version or scenario fails, with an issue', () => {
     const scenarios = new Map(SCENARIOS.map((s) => [s.name, s]));
     for (const v of matrix.versions) {
@@ -87,13 +101,37 @@ describe('variants', () => {
     assert.equal(v.online, false);
     assert.equal(v.passthrough, false);
   });
+
+  it('forward nothing unless they say so', () => {
+    assert.equal(resolveVariant(matrix, 'online').forwarding, 'none');
+    assert.equal(resolveVariant(matrix, 'velocity').forwarding, 'velocity');
+  });
+
+  it('refuse a forwarding mode Warp does not have', () => {
+    assert.throws(() => resolveVariant(matrix, 'online', { forwarding: 'bungeecord' }), /forwarding "bungeecord" is not one of none, velocity/);
+  });
 });
 
 describe('scenario features', () => {
-  it('switches servers on every version', () => {
-    assert.deepEqual(features(47), { switching: true });
-    assert.deepEqual(features(763), { switching: true });
-    assert.deepEqual(features(764), { switching: true });
+  it('switches servers on every version, through Warp', () => {
+    for (const protocol of [47, 763, 764, 777]) assert.equal(features(protocol).switching, true, protocol);
+    assert.equal(features(769, { direct: true }).switching, 'no proxy in a control run');
+  });
+
+  it('checks forwarded identities in forwarding variants only', () => {
+    assert.equal(features(769, { forwarding: 'velocity' }).forwarding, true);
+    assert.equal(features(769).forwarding, 'the variant forwards no player info');
+    assert.equal(features(769, { direct: true, forwarding: 'velocity' }).forwarding, 'no proxy in a control run');
+  });
+
+  it('offers resource packs from 1.8, where they became a packet of their own', () => {
+    assert.equal(features(47).resourcePack, true);
+    assert.equal(features(5).resourcePack, 'no Resource Pack Send packet before 1.8');
+  });
+
+  it('knows every feature a scenario requires', () => {
+    const known = Object.keys(features(769));
+    for (const s of SCENARIOS.filter((x) => x.requires)) assert.ok(known.includes(s.requires), `${s.name} requires "${s.requires}"`);
   });
 });
 

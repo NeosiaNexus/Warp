@@ -122,6 +122,19 @@ export function connect({ host, port, version, username, spawnTimeoutMs = 45_000
   });
 }
 
+/**
+ * UUIDs a Player Info packet adds `username` under: the backend's own view of who the player is.
+ * Up to 1.19.2 the packet carries one action, from 1.19.3 a set of them.
+ */
+export function listedUuids(packet, username) {
+  const adds = typeof packet.action === 'object' ? packet.action.add_player : packet.action === 'add_player';
+  if (!adds) return [];
+  return packet.data.filter((entry) => (entry.player?.name ?? entry.name) === username).map((entry) => entry.uuid);
+}
+
+/** Resource pack offers: one pack at a time up to 1.20.2, packs added by UUID from 1.20.3. */
+const RESOURCE_PACK_PACKETS = new Set(['resource_pack_send', 'add_resource_pack']);
+
 class Bot {
   /**
    * @param {object} bot mineflayer bot
@@ -133,16 +146,29 @@ class Bot {
     this.username = username;
     this.stats = { packets: 0, chunks: 0, errors: [], kicked: null, ended: null };
     this.messages = [];
+    /** What the servers it played on said, in order: brands, resource pack offers, own UUIDs. */
+    this.brands = [];
+    this.resourcePacks = [];
+    this.listedAs = [];
     this.quitting = false;
     bot._client.on('packet', (data, meta) => {
       this.stats.packets++;
       if (meta.name === 'map_chunk') this.stats.chunks++;
       else if (meta.name === 'map_chunk_bulk') this.stats.chunks += data.meta?.length ?? 1; // 1.8
+      else if (RESOURCE_PACK_PACKETS.has(meta.name)) this.resourcePacks.push({ url: data.url, hash: data.hash, id: data.uuid });
+      else if (meta.name === 'player_info') this.listedAs.push(...listedUuids(data, username));
     });
+    // mineflayer decodes the brand on the channel of the version: `MC|Brand` before 1.13.
+    for (const channel of ['MC|Brand', 'minecraft:brand']) bot._client.on(channel, (brand) => this.brands.push(brand));
     bot.on('error', (e) => this.stats.errors.push(String(e?.stack ?? e)));
     bot.on('kicked', (reason) => { this.stats.kicked = text(reason); });
     bot.on('end', (reason) => { if (!this.quitting) this.stats.ended = String(reason ?? 'unknown'); });
     bot.on('message', (message) => this.messages.push(message.toString()));
+  }
+
+  /** The UUID the proxy gave the player in its Login Success. */
+  get uuid() {
+    return this.bot._client.uuid;
   }
 
   /** `survival`, `creative`, `adventure` or `spectator`, as last announced by the server. */
@@ -169,14 +195,36 @@ class Bot {
     return this.waitFor(() => this.gameMode() === mode, `game mode ${mode} (is ${this.gameMode()})`, timeoutMs);
   }
 
+  /**
+   * Waits until one of the lists the bot keeps (`brands`, `resourcePacks`, `listedAs`) has an entry
+   * at `index`, and returns it.
+   */
+  async waitForEntry(list, index, what, timeoutMs) {
+    await this.waitFor(() => this[list].length > index, what, timeoutMs);
+    return this[list][index];
+  }
+
+  /**
+   * Resolves with the first chat line from index `from` on that matches `pattern`; on a time-out,
+   * the error quotes the last lines received instead.
+   */
+  async waitForMessage(pattern, what, timeoutMs, from = 0) {
+    let found;
+    try {
+      await this.waitFor(() => (found = this.messages.slice(from).find((m) => pattern.test(m))) !== undefined, what, timeoutMs);
+    } catch (e) {
+      const last = this.messages.slice(Math.max(from, this.messages.length - 3)).map((m) => JSON.stringify(m));
+      e.message += last.length ? `; last chat lines: ${last.join(', ')}` : '; no chat line received';
+      throw e;
+    }
+    return found;
+  }
+
   /** Sends a chat command and resolves with the first chat line matching `reply`. */
   async command(command, reply, timeoutMs = 10_000) {
     const from = this.messages.length;
     this.bot.chat(`/${command}`);
-    if (!reply) return null;
-    let found = null;
-    await this.waitFor(() => (found = this.messages.slice(from).find((m) => reply.test(m))) !== undefined, `reply to /${command}`, timeoutMs);
-    return found;
+    return reply ? this.waitForMessage(reply, `reply to /${command}`, timeoutMs, from) : null;
   }
 
   chat(message) {

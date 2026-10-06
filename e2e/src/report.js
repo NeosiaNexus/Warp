@@ -19,7 +19,7 @@ function collect(dir) {
 
 const results = collect(dir).sort((a, b) => a.protocol - b.protocol);
 const count = (status) => results.filter((r) => r.status === status).length;
-const STATUS = { pass: '✅ Passed', fail: '❌ Failed', xfail: '⚠️ Known broken', xpass: '🎉 Passes, remove from known broken' };
+const STATUS = { pass: '✅ Passed', fail: '❌ Failed', xfail: '⚠️ Known broken', xpass: '🎉 Passes, remove from known broken', skip: '⏭️ Skipped' };
 const SCENARIO = { pass: '✅', fail: '❌', skip: '⏭️', xfail: '⚠️', xpass: '🎉' };
 const scenarios = (r, status) => r.variants.flatMap((v) => v.scenarios.filter((s) => s.status === status));
 
@@ -29,6 +29,7 @@ const partly = results.filter((r) => scenarios(r, 'xfail').length).length;
 if (partly) totals.push(`⚠️ **${partly}** with known-broken scenarios`);
 const fixed = count('xpass') + results.filter((r) => scenarios(r, 'xpass').length).length;
 if (fixed) totals.push(`🎉 **${fixed}** fixed`);
+if (count('skip')) totals.push(`⏭️ **${count('skip')}** skipped`);
 const minutes = Math.round(results.reduce((sum, r) => sum + (r.seconds ?? 0), 0) / 60);
 lines.push(`${totals.join(' · ')} · ${results.length} versions, ${minutes} min of test time`, '');
 
@@ -43,15 +44,16 @@ if (!results.length) {
   for (const r of results) {
     r.variants.forEach((v, i) => {
       const cells = columns.map((name) => SCENARIO[v.scenarios.find((s) => s.name === name)?.status] ?? '');
-      const status = r.knownBroken ? (v.status === 'pass' ? 'xpass' : 'xfail') : v.status;
+      const status = !r.knownBroken || v.status === 'skip' ? v.status : v.status === 'pass' ? 'xpass' : 'xfail';
+      const result = status === 'skip' ? `${STATUS.skip}: ${escape(v.reason)}` : STATUS[status];
       const first = i === 0;
-      lines.push(`| ${first ? `**${r.version}**` : ''} | ${first ? r.protocol : ''} | ${first ? r.server : ''} | ${v.name} | ${cells.join(' | ')} | ${STATUS[status]} |`);
+      lines.push(`| ${first ? `**${r.version}**` : ''} | ${first ? r.protocol : ''} | ${first ? r.server : ''} | ${v.name} | ${cells.join(' | ')} | ${result} |`);
     });
   }
 
   // Failures, then what is known broken: whole versions, or single scenarios of a version.
   const known = (s) => s.status === 'xfail' || s.status === 'xpass';
-  const notable = results.filter((r) => r.status !== 'pass' || r.variants.some((v) => v.scenarios.some(known)));
+  const notable = results.filter((r) => !['pass', 'skip'].includes(r.status) || r.variants.some((v) => v.scenarios.some(known)));
   if (notable.length) {
     lines.push('', '### Failures and known issues', '');
     for (const r of notable) {

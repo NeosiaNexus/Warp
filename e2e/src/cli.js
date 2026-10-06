@@ -1,22 +1,24 @@
 // Warp end-to-end runner. See `e2e/run.sh --help`.
 //
 // For each requested Minecraft version: download the pinned server, boot two backends (lobby and
-// survival), then for each variant (online/offline, passthrough, thresholds) boot Warp, run the
-// scenarios with real-protocol bots, and check Warp's log for errors and buffer leaks. Backends are
-// shared by every variant that uses the same compression threshold.
+// survival), then for each variant (online/offline, passthrough, thresholds, forwarding) boot Warp,
+// run the scenarios with real-protocol bots, and check Warp's log for errors and buffer leaks.
+// Backends are shared by every variant that uses the same compression threshold and forwarding.
+import { randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, cpSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
-import { Backend, fetchPreseeded, fetchServerJar, serverCacheDir } from './backend.js';
+import { Backend, backendGroups, fetchPreseeded, fetchServerJar, serverCacheDir } from './backend.js';
 import { connectClient } from './clients/index.js';
 import { findJava } from './java.js';
+import { startPackServer } from './packs.js';
 import { killAll, run, sleep } from './proc.js';
 import { SCENARIOS, features, startKeepAlive } from './scenarios.js';
 import { startSessionServer } from './session.js';
-import { E2E_DIR, findEntry, loadMatrix, resolveVariant } from './versions.js';
+import { E2E_DIR, FORWARDING_MODES, findEntry, loadMatrix, resolveVariant } from './versions.js';
 import { Warp } from './warp.js';
 
 const ROOT = resolve(E2E_DIR, '..');
@@ -35,6 +37,7 @@ Versions and variants
   --passthrough on|off    ad-hoc variant: compression passthrough (default on)
   --threshold N           ad-hoc variant: Warp's compression threshold (default 256)
   --backend-threshold N   ad-hoc variant: backends' network-compression-threshold (default: Warp's)
+  --forwarding MODE       ad-hoc variant: player info forwarding, ${FORWARDING_MODES.join(' or ')} (default none)
   --scenarios LIST        subset of: ${SCENARIOS.map((s) => s.name).join(', ')}
 
 Environment
@@ -58,6 +61,7 @@ async function main() {
       passthrough: { type: 'string' },
       threshold: { type: 'string' },
       'backend-threshold': { type: 'string' },
+      forwarding: { type: 'string' },
       scenarios: { type: 'string' },
       jar: { type: 'string' },
       bots: { type: 'string', default: '10' },
@@ -88,18 +92,23 @@ async function main() {
   mkdirSync(opts.out, { recursive: true });
 
   const results = [];
-  for (const { entry, variants } of runs) {
-    results.push(await runVersion({ matrix, entry, variants: adaptVariants(entry, variants), scenarios, ports, jar, opts }));
+  const packServer = await startPackServer(['lobby', 'survival']);
+  try {
+    for (const { entry, variants } of runs) {
+      results.push(await runVersion({ matrix, entry, variants: adaptVariants(entry, variants), scenarios, ports, packs: packServer.packs, jar, opts }));
+    }
+  } finally {
+    await packServer.close();
   }
   report(results, opts);
   return results.some((r) => r.status === 'fail') ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
-// One version: backends per threshold, Warp per variant
+// One version: backends per threshold and forwarding, Warp per variant
 // ---------------------------------------------------------------------------
 
-async function runVersion({ matrix, entry, variants, scenarios, ports, jar, opts }) {
+async function runVersion({ matrix, entry, variants, scenarios, ports, packs, jar, opts }) {
   const cache = opts.cache;
   const runDir = join(opts.out, entry.version);
   rmSync(runDir, { recursive: true, force: true });
@@ -117,12 +126,17 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, jar, opts
       fetchServerJar(entry.server, cache),
       fetchPreseeded(entry.server, cache),
     ]);
-    const thresholds = [...new Set(variants.map((v) => v.backendThreshold))];
-    for (const backendThreshold of thresholds) {
-      const backends = await startBackends({ entry, serverJar, serverJava, preseeded, backendThreshold, ports, runDir, logDir, cache });
+    for (const group of backendGroups(entry, variants, { direct: opts.direct })) {
+      if (group.skip) {
+        for (const variant of group.variants) result.variants.push(skipVariant(variant, group.skip));
+        continue;
+      }
+      // A fresh secret for each boot of forwarding backends, shared with the Warp instances.
+      const forwarding = group.forwarding && { ...group.forwarding, secret: randomBytes(16).toString('hex') };
+      const backends = await startBackends({ entry, serverJar, serverJava, preseeded, threshold: group.threshold, forwarding, packs, ports, runDir, logDir, cache });
       try {
-        for (const variant of variants.filter((v) => v.backendThreshold === backendThreshold)) {
-          result.variants.push(await runVariant({ matrix, entry, variant, scenarios, backends, ports, jar, warpJava, runDir, logDir, opts }));
+        for (const variant of group.variants) {
+          result.variants.push(await runVariant({ matrix, entry, variant, scenarios, backends, forwarding, packs, ports, jar, warpJava, runDir, logDir, opts }));
         }
       } finally {
         await stopBackends(backends, result);
@@ -132,13 +146,14 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, jar, opts
     result.variants.push({ name: 'setup', status: 'fail', scenarios: [], failures: [String(e.stack ?? e)] });
   }
   result.seconds = Math.round((Date.now() - started) / 1000);
-  result.status = classify(result.variants.every((v) => v.status === 'pass'), knownBroken);
+  const ran = result.variants.filter((v) => v.status !== 'skip');
+  result.status = ran.length ? classify(ran.every((v) => v.status === 'pass'), knownBroken) : 'skip';
   writeFileSync(join(runDir, 'result.json'), `${JSON.stringify(result, null, 2)}\n`);
   endGroup();
   return result;
 }
 
-async function startBackends({ entry, serverJar, serverJava, preseeded, backendThreshold, ports, runDir, logDir, cache }) {
+async function startBackends({ entry, serverJar, serverJava, preseeded, threshold, forwarding, packs, ports, runDir, logDir, cache }) {
   const template = join(serverCacheDir(entry.server, cache), 'template');
   const backends = ['lobby', 'survival'].map(
     (name, i) =>
@@ -146,16 +161,20 @@ async function startBackends({ entry, serverJar, serverJava, preseeded, backendT
         name,
         dir: join(runDir, name),
         server: entry.server,
+        protocol: entry.protocol,
         jar: serverJar,
         java: serverJava,
         port: ports[name],
-        compressionThreshold: backendThreshold,
+        compressionThreshold: threshold,
         gameMode: i === 0 ? 1 : 2,
+        resourcePack: packs[name],
+        forwarding,
         logDir,
-        logSuffix: `t${backendThreshold}`,
+        logSuffix: `t${threshold}${forwarding ? `-${forwarding.mode}` : ''}`,
       }),
   );
-  log(`booting backends (${entry.server.type} ${entry.server.version}, Java ${entry.java}, threshold ${backendThreshold})`);
+  const accepting = forwarding ? `, ${forwarding.mode} forwarding` : '';
+  log(`booting backends (${entry.server.type} ${entry.server.version}, Java ${entry.java}, threshold ${threshold}${accepting})`);
   const booted = Date.now();
   for (const b of backends) {
     b.prepare(template, preseeded);
@@ -183,7 +202,13 @@ async function stopBackends(backends, result) {
   if (forced.length) log(`backend(s) ${forced.join(', ')} ignored "stop" and were killed`);
 }
 
-async function runVariant({ matrix, entry, variant, scenarios, backends, ports, jar, warpJava, runDir, logDir, opts }) {
+/** The outcome of a variant the version cannot run, and why. */
+function skipVariant(variant, reason) {
+  log(`variant ${variant.name}: skipped, ${reason}`);
+  return { name: variant.name, settings: describeVariant(variant), status: 'skip', reason, scenarios: [], failures: [] };
+}
+
+async function runVariant({ matrix, entry, variant, scenarios, backends, forwarding, packs, ports, jar, warpJava, runDir, logDir, opts }) {
   const label = `${entry.version} ${variant.name}`;
   log(`variant ${variant.name}: ${describeVariant(variant)}`);
   const outcome = { name: variant.name, settings: describeVariant(variant), scenarios: [], failures: [], stacks: [] };
@@ -196,6 +221,7 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
     sessionServer: session?.url ?? null,
     passthrough: variant.passthrough,
     threshold: variant.threshold,
+    forwarding,
     logDir,
   };
   // --direct: control run without Warp, to tell a proxy bug from a client or server quirk.
@@ -225,12 +251,13 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
     entry,
     variant,
     direct: opts.direct,
-    features: opts.direct ? { proxy: false, switching: false } : { proxy: true, ...features(entry.protocol) },
+    features: features(entry.protocol, { direct: opts.direct, forwarding: variant.forwarding }),
     client: connectClient(entry, { tools: matrix.tools, cache: opts.cache, java: warpJava, ports, targets: Object.values(targets), logDir, runDir }),
     warp: { port: targets.warp },
     warpAlt: { port: targets.warpAlt },
     lobby: backends.lobby,
     survival: backends.survival,
+    packs,
     bots: Number(opts.bots),
     // Scenarios that fail on this version because of a known Warp bug: they run and are reported,
     // but do not fail the version. Not in a control run (no Warp) or with --strict.
@@ -287,9 +314,9 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
 }
 
 async function runScenario(scenario, ctx) {
-  if (scenario.requires && !ctx.features[scenario.requires]) {
-    return record({ name: scenario.name, status: 'skip', seconds: 0, detail: `needs ${scenario.requires} (not in protocol ${ctx.entry.protocol})` });
-  }
+  // `true`, or why this run lacks the feature the scenario needs.
+  const support = scenario.requires ? ctx.features[scenario.requires] : true;
+  if (support !== true) return record({ name: scenario.name, status: 'skip', seconds: 0, detail: support });
   const knownBroken = ctx.knownBrokenScenarios[scenario.name];
   const marks = knownBroken ? ctx.processes().map((p) => [p, p.mark()]) : [];
   const result = await attempt(scenario.name, () => scenario.run(ctx));
@@ -338,9 +365,18 @@ function resolveVariants(matrix, opts) {
   }
   if (opts.threshold) adHoc.threshold = Number(opts.threshold);
   if (opts['backend-threshold']) adHoc.backendThreshold = Number(opts['backend-threshold']);
+  if (opts.forwarding) {
+    if (!FORWARDING_MODES.includes(opts.forwarding)) throw new UsageError(`--forwarding takes ${FORWARDING_MODES.join(' or ')}`);
+    adHoc.forwarding = opts.forwarding;
+  }
   if (Object.keys(adHoc).length && opts.variants) throw new UsageError('use either --variants or ad-hoc flags, not both');
   if (Object.keys(adHoc).length) {
-    const name = [adHoc.online ? 'online' : 'offline', adHoc.passthrough === false ? 'transcode' : null, adHoc.backendThreshold !== undefined ? `backend${adHoc.backendThreshold}` : null]
+    const name = [
+      adHoc.online ? 'online' : 'offline',
+      adHoc.passthrough === false ? 'transcode' : null,
+      adHoc.backendThreshold !== undefined ? `backend${adHoc.backendThreshold}` : null,
+      adHoc.forwarding !== 'none' ? adHoc.forwarding : null,
+    ]
       .filter(Boolean)
       .join('-');
     return [{ ...resolveVariant(matrix, 'offline', adHoc), name }];
@@ -421,8 +457,8 @@ function report(results, opts) {
 function markdown(results) {
   const rows = results.flatMap((r) =>
     r.variants.map((v) => {
-      const cells = v.scenarios.map((s) => `${SCENARIO_ICONS[s.status]} ${s.name}`).join(' · ');
-      const status = r.knownBroken && v.status === 'fail' ? 'xfail' : r.knownBroken ? 'xpass' : v.status;
+      const cells = v.status === 'skip' ? v.reason : v.scenarios.map((s) => `${SCENARIO_ICONS[s.status]} ${s.name}`).join(' · ');
+      const status = !r.knownBroken || v.status === 'skip' ? v.status : v.status === 'fail' ? 'xfail' : 'xpass';
       return `| ${r.version} | ${r.protocol} | ${v.name} | ${ICONS[status]} | ${cells}${v.failures?.length ? ` · ❌ ${v.failures.length} log failure(s)` : ''} | ${r.seconds}s |`;
     }),
   );
@@ -442,7 +478,8 @@ function describeServer(server) {
 }
 
 function describeVariant(v) {
-  return `${v.online ? 'online' : 'offline'}, passthrough ${v.passthrough ? 'on' : 'off'}, threshold warp=${v.threshold} backend=${v.backendThreshold}`;
+  const forwarding = v.forwarding === 'none' ? '' : `, ${v.forwarding} forwarding`;
+  return `${v.online ? 'online' : 'offline'}, passthrough ${v.passthrough ? 'on' : 'off'}, threshold warp=${v.threshold} backend=${v.backendThreshold}${forwarding}`;
 }
 
 const firstLine = (e) => String(e?.message ?? e).split('\n')[0];

@@ -10,6 +10,21 @@ import { ManagedProcess } from './proc.js';
 const READY = /Done \(\d+[.,]\d+s\)!/;
 
 /**
+ * First protocol whose Paper builds accept Velocity modern forwarding: 1.13.1. It travels in a login
+ * plugin message, which 1.13 introduced; Paper's 1.13 builds do not read it yet.
+ */
+const PAPER_VELOCITY_SINCE = 401;
+
+/** First protocol whose Paper builds read `config/paper-global.yml` rather than `paper.yml`: 1.19. */
+const PAPER_GLOBAL_CONFIG_SINCE = 759;
+
+/**
+ * First protocol whose servers read the resource pack's SHA-1 from `resource-pack-sha1`: 1.9. They
+ * still read `resource-pack-hash`, as 1.8 does, but warn that it is deprecated.
+ */
+const RESOURCE_PACK_SHA1_SINCE = 107;
+
+/**
  * Backend log lines that mean a client connection broke on the server side, usually a packet the
  * proxy mangled. Benign disconnects ("Disconnected", "Timed out") are not listed.
  */
@@ -53,19 +68,75 @@ export function serverId(server) {
   return `${server.type}-${server.version}${server.build ? `-${server.build}` : ''}`;
 }
 
+/**
+ * Why the server of a matrix entry cannot accept players forwarded in `mode`, or null when it can
+ * (always for `none`). Vanilla servers trust no proxy; Paper accepts Velocity modern forwarding from
+ * 1.13.1.
+ */
+export function forwardingUnsupported(entry, mode) {
+  if (mode === 'none') return null;
+  if (entry.server.type !== 'paper') return `${entry.server.type} servers accept no forwarded player info, only Paper does`;
+  if (entry.protocol < PAPER_VELOCITY_SINCE) return 'Paper accepts Velocity forwarding from 1.13.1';
+  return null;
+}
+
+/**
+ * Groups a version's variants by the backends they need, in order of first use: variants with the
+ * same compression threshold and forwarding share one boot of the backends. A variant the server
+ * cannot run gets a group of its own, with the reason, and boots nothing.
+ * @param {object} entry versions.json entry
+ * @param {object[]} variants resolved variants
+ * @param {{direct?: boolean}} run `direct`: a control run, where bots join the lobby without Warp
+ * @returns {{threshold: number, forwarding: {mode: string, online: boolean}|null, skip: string|null, variants: object[]}[]}
+ */
+export function backendGroups(entry, variants, { direct = false } = {}) {
+  const groups = new Map();
+  for (const variant of variants) {
+    const skip =
+      forwardingUnsupported(entry, variant.forwarding) ??
+      (direct && variant.forwarding !== 'none' ? 'a control run has no proxy to forward player info' : null);
+    const forwarding = variant.forwarding === 'none' ? null : { mode: variant.forwarding, online: variant.online };
+    const key = skip ? `skip ${variant.name}` : JSON.stringify([variant.backendThreshold, forwarding]);
+    if (!groups.has(key)) groups.set(key, { threshold: variant.backendThreshold, forwarding, skip, variants: [] });
+    groups.get(key).variants.push(variant);
+  }
+  return [...groups.values()];
+}
+
+/**
+ * Paper's Velocity forwarding settings: `paper.yml` up to 1.18.2, `config/paper-global.yml` from
+ * 1.19. Paper fills in every other setting with its default.
+ * @param {number} protocol
+ * @param {{secret: string, online: boolean}} forwarding `online`: whether the proxy authenticates
+ *   players (Paper then treats them as online-mode players)
+ * @returns {{file: string, yaml: string}} the file, relative to the server directory, and its content
+ */
+export function paperForwardingConfig(protocol, { secret, online }) {
+  const velocity = `    enabled: true\n    online-mode: ${online}\n    secret: '${secret}'\n`;
+  return protocol < PAPER_GLOBAL_CONFIG_SINCE
+    ? { file: 'paper.yml', yaml: `settings:\n  velocity-support:\n${velocity}` }
+    : { file: join('config', 'paper-global.yml'), yaml: `proxies:\n  velocity:\n${velocity}` };
+}
+
 export class Backend {
   /**
    * @param {object} options
    * @param {string} options.name server name in Warp's config ("lobby", "survival")
    * @param {string} options.dir working directory (wiped)
    * @param {object} options.server matrix entry's `server` object
+   * @param {number} options.protocol matrix entry's protocol
    * @param {string} options.jar server jar
    * @param {string} options.java java executable
    * @param {number} options.port
    * @param {number} options.compressionThreshold `network-compression-threshold`
    * @param {number} options.gameMode 1 = creative, 2 = adventure: tells bots which backend they reached
+   * @param {{url: string, sha1: string, id: string}} options.resourcePack the pack this server
+   *   offers to players
+   * @param {{secret: string, online: boolean}|null} options.forwarding Velocity modern forwarding
+   *   (Paper only, see {@link forwardingUnsupported}), or null to accept players straight
    * @param {string} options.logDir
-   * @param {string} options.logSuffix distinguishes the logs of successive boots (one per threshold)
+   * @param {string} options.logSuffix distinguishes the logs of successive boots (one per backend
+   *   threshold and forwarding mode)
    */
   constructor(options) {
     Object.assign(this, options);
@@ -95,6 +166,11 @@ export class Backend {
       writeFileSync(join(this.dir, 'plugins', 'bStats', 'config.yml'), 'enabled: false\n');
       mkdirSync(join(this.dir, 'plugins', 'PluginMetrics'), { recursive: true });
       writeFileSync(join(this.dir, 'plugins', 'PluginMetrics', 'config.yml'), 'opt-out: true\n');
+    }
+    if (this.forwarding) {
+      const { file, yaml } = paperForwardingConfig(this.protocol, this.forwarding);
+      mkdirSync(dirname(join(this.dir, file)), { recursive: true });
+      writeFileSync(join(this.dir, file), yaml);
     }
   }
 
@@ -181,6 +257,11 @@ function serverProperties(b) {
     'enable-rcon': false,
     'snooper-enabled': false,
     motd: `warp-e2e ${b.name}`,
+    // Offered to every player on join, never required (from 1.17). Its id is read from 1.20.3.
+    'resource-pack': b.resourcePack.url,
+    [b.protocol < RESOURCE_PACK_SHA1_SINCE ? 'resource-pack-hash' : 'resource-pack-sha1']: b.resourcePack.sha1,
+    'resource-pack-id': b.resourcePack.id,
+    'require-resource-pack': false,
   };
   return `${Object.entries(props).map(([k, v]) => `${k}=${v}`).join('\n')}\n`;
 }

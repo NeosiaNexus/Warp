@@ -76,7 +76,7 @@ and the security checks of the [next section](#security-and-dependencies).
 | Check | What it verifies |
 |---|---|
 | **Build & test** | Spotless formatting, compilation with ErrorProne and NullAway, unit and integration tests, Checkstyle, JaCoCo coverage, shadow jar. Failed tests are annotated on the diff; the run summary shows test and coverage tables |
-| **E2E** | Real clients through Warp to real servers, one Minecraft version per era (see [End-to-end tests](#end-to-end-tests)) |
+| **E2E** | Real clients through Warp to real servers: one Minecraft version per era, or every version when the pull request changes the protocol, the proxy or the end-to-end harness (see [End-to-end tests](#end-to-end-tests)) |
 | **Lint workflows** | [actionlint](https://github.com/rhysd/actionlint) (with ShellCheck on `run:` scripts) and [zizmor](https://docs.zizmor.sh) at its strictest persona |
 | **Conventional Commits** | The PR title's format (the title becomes the squash commit) |
 
@@ -119,21 +119,24 @@ Gradle (build tools included), `ci(deps)` for actions, `test(deps)` for npm.
 ## End-to-end tests
 
 [`e2e/`](e2e/README.md) runs real-protocol bots through Warp to real Paper or vanilla servers and
-checks that players can join, play, switch servers and fall back, for every protocol from 1.8 to
-26.3. Locally (Node.js 22+; servers, their JDKs and ViaProxy are downloaded and cached on first
-use, and Warp's jar is built if needed):
+checks that players can join, play, chat, switch servers and fall back, that the servers' brand
+and resource packs reach them, and that backends know them by the identity Warp forwards, for
+every protocol from 1.8 to 26.3. Locally (Node.js 22+; servers, their JDKs and ViaProxy are
+downloaded and cached on first use, and Warp's jar is built if needed):
 
 ```bash
 e2e/run.sh --mc 1.21.4                                   # one version
 e2e/run.sh --mc 1.8.8,1.20.2 --variants online,offline   # several versions and variants
+e2e/run.sh --mc 1.21.4 --variants velocity               # Velocity modern forwarding
 e2e/run.sh --list                                        # the whole matrix
 ```
 
 | Where | What runs |
 |---|---|
-| Every pull request (**E2E**, part of **CI OK**) | One version per era, plus the online, offline and compression variants on the reference version |
+| Every pull request (**E2E**, part of **CI OK**) | One version per era, plus the online, offline, compression and Velocity forwarding variants on the reference version |
+| Pull requests that change `protocol/`, `proxy/` or `e2e/` (**E2E**, part of **CI OK**) | Every protocol of the matrix instead, with more variants at era boundaries |
 | Every push to `main`, nightly, on demand (`e2e.yml`) | Every protocol of the matrix |
-| Pull requests labelled `e2e: full` | The whole matrix as well. Use it for changes to the protocol, compression, login, forwarding or server switching; ask a maintainer if you cannot set labels |
+| Pull requests labelled `e2e: full` | The whole matrix, for a pull request CI tests on one version per era only (a dependency, build or workflow change, say); ask a maintainer if you cannot set labels. On a pull request that already runs the whole matrix in CI, the label changes nothing |
 
 Versions marked `knownBroken` in `e2e/versions.json` run and are reported without failing CI. To
 add a Minecraft version, follow

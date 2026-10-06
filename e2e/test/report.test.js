@@ -61,6 +61,19 @@ describe('report', () => {
     assert.match(markdown, /🎉 `fallback-rejected` passes/);
   });
 
+  it('shows why a variant was skipped, without failing', () => {
+    const passed = result('1.8.8', 47, [{ name: 'login', status: 'pass', detail: 'spawned' }]);
+    passed.variants.push({ name: 'velocity', settings: 'online', status: 'skip', reason: 'Paper accepts Velocity forwarding from 1.13.1', scenarios: [], failures: [] });
+    const skipped = { ...result('1.16', 735, [], 'skip'), variants: [{ ...passed.variants[1], reason: 'vanilla servers accept no forwarded player info, only Paper does' }] };
+
+    const { status, markdown } = report(passed, skipped);
+
+    assert.equal(status, 0);
+    assert.match(markdown, /✅ \*\*1\*\* passed .* ⏭️ \*\*1\*\* skipped/);
+    assert.match(markdown, /\| velocity \| .*\| ⏭️ Skipped: Paper accepts Velocity forwarding from 1\.13\.1 \|/);
+    assert.doesNotMatch(markdown, /Failures and known issues/);
+  });
+
   it('keeps log lines from breaking the table', () => {
     const { markdown } = report(
       result('1.20.2', 764, [{ name: 'login', status: 'fail', detail: 'a|b \\| <c>' }], 'fail'),

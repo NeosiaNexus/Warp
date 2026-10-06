@@ -10,7 +10,8 @@
     "defaults": {
       "online": false,
       "passthrough": true,
-      "threshold": 256
+      "threshold": 256,
+      "forwarding": "none"
     },
     "online": {
       "online": true
@@ -31,6 +32,10 @@
     "backend-uncompressed": {
       "online": true,
       "backendThreshold": -1
+    },
+    "velocity": {
+      "online": true,
+      "forwarding": "velocity"
     }
   },
   "tiers": {
@@ -52,12 +57,13 @@
         "1.21.4": [
           "offline",
           "transcode",
-          "backend-lower"
+          "backend-lower",
+          "velocity"
         ]
       }
     },
     "full": {
-      "description": "Every push to main, nightly, on demand, and on pull requests labelled \"e2e: full\": every protocol version, all variants on era boundaries.",
+      "description": "Pull requests that change protocol/, proxy/ or e2e/ (required), every push to main, nightly, on demand, and pull requests labelled \"e2e: full\": every protocol version, all variants on era boundaries.",
       "versions": "all",
       "variants": [
         "online"
@@ -73,20 +79,32 @@
           "offline",
           "transcode"
         ],
+        "1.13.1": [
+          "velocity"
+        ],
+        "1.18.2": [
+          "velocity"
+        ],
+        "1.19": [
+          "velocity"
+        ],
         "1.20.1": [
           "offline",
-          "transcode"
+          "transcode",
+          "velocity"
         ],
         "1.20.2": [
           "offline",
-          "transcode"
+          "transcode",
+          "velocity"
         ],
         "1.21.4": [
           "offline",
           "transcode",
           "backend-lower",
           "backend-higher",
-          "backend-uncompressed"
+          "backend-uncompressed",
+          "velocity"
         ]
       }
     }
