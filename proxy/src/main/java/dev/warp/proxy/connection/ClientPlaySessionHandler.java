@@ -117,52 +117,24 @@ final class ClientPlaySessionHandler implements SessionHandler {
       case LegacyChatMessage chatMessage -> handleLegacyChatMessage(chatMessage);
       case PlayClientSettings settings -> handleClientSettings(settings);
       case ResourcePackResponse response -> forwardToBackend(response);
-      case AcknowledgeConfiguration ignored -> handleAcknowledgeConfiguration();
+      case AcknowledgeConfiguration _ -> handleAcknowledgeConfiguration();
       case TabCompleteRequest request -> forwardToBackend(request);
       case PlayPluginMessage pluginMessage -> handlePluginMessage(pluginMessage);
-      // Clientbound packets should never arrive from a client — silently ignore.
-      case PlayDisconnect ignored -> {
-        /* protocol violation */
-      }
-      case JoinGame ignored -> {
-        /* protocol violation */
-      }
-      case Respawn ignored -> {
-        /* protocol violation */
-      }
-      case SystemChatMessage ignored -> {
-        /* protocol violation */
-      }
-      case StartConfiguration ignored -> {
-        /* protocol violation */
-      }
-      case Transfer ignored -> {
-        /* protocol violation */
-      }
-      case BundleDelimiter ignored -> {
-        /* protocol violation */
-      }
-      case TabCompleteResponse ignored -> {
-        /* protocol violation */
-      }
-      case PlayerInfo ignored -> {
-        /* protocol violation */
-      }
-      case PlayerInfoUpdate ignored -> {
-        /* protocol violation */
-      }
-      case PlayerInfoRemove ignored -> {
-        /* protocol violation */
-      }
-      case BossBar ignored -> {
-        /* protocol violation */
-      }
-      case TabListHeaderFooter ignored -> {
-        /* protocol violation */
-      }
-      case ClearTitles ignored -> {
-        /* protocol violation */
-      }
+      // Clientbound packets should never arrive from a client: a protocol violation, ignored.
+      case PlayDisconnect _,
+          JoinGame _,
+          Respawn _,
+          SystemChatMessage _,
+          StartConfiguration _,
+          Transfer _,
+          BundleDelimiter _,
+          TabCompleteResponse _,
+          PlayerInfo _,
+          PlayerInfoUpdate _,
+          PlayerInfoRemove _,
+          BossBar _,
+          TabListHeaderFooter _,
+          ClearTitles _ -> {}
     }
   }
 

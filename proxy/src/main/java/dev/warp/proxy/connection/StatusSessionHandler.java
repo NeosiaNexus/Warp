@@ -74,11 +74,10 @@ final class StatusSessionHandler implements SessionHandler {
 
     // Exhaustive switch on the sealed StatusPacket hierarchy.
     switch (statusPacket) {
-      case StatusRequest ignored -> handleStatusRequest();
+      case StatusRequest _ -> handleStatusRequest();
       case PingRequest ping -> handlePingRequest(ping);
       // Clientbound packets should never arrive from a client.
-      case StatusResponse ignored -> connection.close();
-      case PongResponse ignored -> connection.close();
+      case StatusResponse _, PongResponse _ -> connection.close();
     }
   }
 

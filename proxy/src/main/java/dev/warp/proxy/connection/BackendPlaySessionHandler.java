@@ -116,9 +116,9 @@ final class BackendPlaySessionHandler implements SessionHandler {
       case KeepAlive keepAlive -> handleKeepAlive(keepAlive);
       case JoinGame joinGame -> handleJoinGame(joinGame);
       case Respawn respawn -> forwardToClient(respawn);
-      case PlayDisconnect disconnect -> handleDisconnect(disconnect);
+      case PlayDisconnect _ -> handleDisconnect();
       case SystemChatMessage chatMessage -> forwardToClient(chatMessage);
-      case StartConfiguration ignored -> handleStartConfiguration();
+      case StartConfiguration _ -> handleStartConfiguration();
       case Transfer transfer -> forwardToClient(transfer);
       case BundleDelimiter delimiter -> handleBundleDelimiter(delimiter);
       case PlayPluginMessage pluginMessage -> handlePluginMessage(pluginMessage);
@@ -130,25 +130,13 @@ final class BackendPlaySessionHandler implements SessionHandler {
       case BossBar bossBar -> forwardTracked(bossBar);
       case TabListHeaderFooter headerFooter -> forwardToClient(headerFooter);
       case ClearTitles clearTitles -> forwardToClient(clearTitles);
-      // Serverbound packets should never arrive from a backend — silently ignore.
-      case ChatCommand ignored -> {
-        /* protocol violation */
-      }
-      case LegacyChatMessage ignored -> {
-        /* protocol violation */
-      }
-      case PlayClientSettings ignored -> {
-        /* protocol violation */
-      }
-      case ResourcePackResponse ignored -> {
-        /* protocol violation */
-      }
-      case AcknowledgeConfiguration ignored -> {
-        /* protocol violation */
-      }
-      case TabCompleteRequest ignored -> {
-        /* protocol violation */
-      }
+      // Serverbound packets should never arrive from a backend: a protocol violation, ignored.
+      case ChatCommand _,
+          LegacyChatMessage _,
+          PlayClientSettings _,
+          ResourcePackResponse _,
+          AcknowledgeConfiguration _,
+          TabCompleteRequest _ -> {}
     }
   }
 
@@ -205,8 +193,7 @@ final class BackendPlaySessionHandler implements SessionHandler {
     forwardToClient(joinGame);
   }
 
-  @SuppressWarnings("unused")
-  private void handleDisconnect(PlayDisconnect disconnect) {
+  private void handleDisconnect() {
     logger.info("Backend kicked player {} during play", player.username());
     player.scheduleBackendFailure(backendConnection);
   }

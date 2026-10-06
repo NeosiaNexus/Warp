@@ -18,6 +18,7 @@ package dev.warp.protocol.compress;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
@@ -114,6 +115,16 @@ class DeflatePeekTest {
 
       assertArrayEquals(packet, ZlibStreams.inflate(stream, packet.length));
       assertEquals(0x33, peek(stream));
+    }
+
+    @Test
+    @DisplayName("should read a block declaring every code length, the last run ending on the last")
+    void maximalCodeLengths() throws DataFormatException {
+      byte[] stream = ZlibStreams.maximalDynamicBlock(0);
+
+      assertArrayEquals(
+          new byte[] {ZlibStreams.MAXIMAL_DYNAMIC_BLOCK_DATA}, ZlibStreams.inflate(stream, 1));
+      assertEquals(ZlibStreams.MAXIMAL_DYNAMIC_BLOCK_DATA, peek(stream));
     }
 
     @Test
@@ -229,6 +240,16 @@ class DeflatePeekTest {
           assertTrue(result == DeflatePeek.UNKNOWN || result == id, "prefix " + length);
         }
       }
+    }
+
+    @ParameterizedTest(name = "{0} past the last")
+    @ValueSource(ints = {1, 2, 79})
+    @DisplayName("should decline a code-length run going past the declared code lengths")
+    void codeLengthRunOverrun(int overrun) {
+      byte[] stream = ZlibStreams.maximalDynamicBlock(overrun);
+
+      assertThrows(DataFormatException.class, () -> ZlibStreams.inflate(stream, 1));
+      assertEquals(DeflatePeek.UNKNOWN, peek(stream));
     }
 
     @Test

@@ -16,12 +16,18 @@
  */
 package dev.warp.protocol.packet;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.codec.McString;
 
 import java.nio.charset.StandardCharsets;
 
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -52,6 +58,18 @@ class TextComponentTest {
     // Should start with 0x08 (TAG_String)
     assertTrue(result.length > 3);
     assertTrue(result[0] == 0x08, "Should start with TAG_String (0x08)");
+  }
+
+  @Test
+  @DisplayName("should produce a VarInt-prefixed JSON string on request, whatever the version")
+  void jsonOnRequest() {
+    byte[] result = TextComponent.plainTextJson("Invalid username");
+
+    ByteBuf buf = Unpooled.wrappedBuffer(result);
+    assertEquals("{\"text\":\"Invalid username\"}", McString.read(buf));
+    assertFalse(buf.isReadable());
+    assertArrayEquals(
+        result, TextComponent.plainText("Invalid username", ProtocolVersion.oldest()));
   }
 
   @Test
