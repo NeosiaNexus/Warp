@@ -69,18 +69,20 @@ type(scope): description
 
 ## Continuous Integration
 
-Every pull request runs the checks below. **CI OK** aggregates the build, the end-to-end tests and
-the workflow lint into one check. It must be green before merging, as must **Conventional Commits**
+Every pull request runs the checks below. **CI OK** aggregates the build, the allocation guard, the
+end-to-end tests and the workflow lint into one check. It must be green before merging, as must **Conventional Commits**
 and the security checks of the [next section](#security-and-dependencies).
 
 | Check | What it verifies |
 |---|---|
 | **Build & test** | Spotless formatting, compilation with ErrorProne and NullAway, unit and integration tests, Checkstyle, JaCoCo coverage, shadow jar. Failed tests are annotated on the diff; the run summary shows test and coverage tables |
+| **Allocation guard** | Bytes allocated per packet on the hot path, against a committed baseline, then one short run of every benchmark (see [Benchmarks](#benchmarks)) |
 | **E2E** | Real clients through Warp to real servers, one Minecraft version per era (see [End-to-end tests](#end-to-end-tests)) |
 | **Lint workflows** | [actionlint](https://github.com/rhysd/actionlint) (with ShellCheck on `run:` scripts) and [zizmor](https://docs.zizmor.sh) at its strictest persona |
 | **Conventional Commits** | The PR title's format (the title becomes the squash commit) |
 
-Pull requests that only touch documentation skip the build and the end-to-end tests.
+Pull requests that only touch documentation skip the build, the allocation guard and the end-to-end
+tests.
 
 Workflow conventions, enforced in review and by the linters:
 
@@ -138,6 +140,45 @@ e2e/run.sh --list                                        # the whole matrix
 Versions marked `knownBroken` in `e2e/versions.json` run and are reported without failing CI. To
 add a Minecraft version, follow
 [Adding a Minecraft version](e2e/README.md#adding-a-minecraft-version).
+
+## Benchmarks
+
+The JMH benchmarks in [`protocol/src/jmh`](protocol/src/jmh) measure the forwarding path and the
+codecs ([results and methodology](docs/benchmarks/)). Two checks watch the hot path: relaying
+clientbound packets with compression passthrough, and peeking at the id of a compressed packet.
+
+| Where | What runs |
+|---|---|
+| Every pull request (**Allocation guard**, part of **CI OK**) | Bytes allocated per packet, against [`alloc-baseline.json`](protocol/src/jmh/alloc-baseline.json), then every benchmark once so that none breaks unnoticed |
+| Every push to `main` (`benchmarks.yml`) | The timings of the same benchmarks, charted at [neosianexus.github.io/Warp/benchmarks](https://neosianexus.github.io/Warp/benchmarks/) |
+
+Allocation gates pull requests; timings do not. The guard counts allocation with escape analysis
+off: the count then covers everything the code allocates, not what the JIT happened to keep in one
+run, and it is the same from one run or machine to the next. A benchmark fails when it allocates
+more than its baseline plus the larger of 2 B and 1%. Timings on shared runners vary by tens of
+percent, so a benchmark 1.5× slower than on the previous push only comments on the commit; each
+point of the chart names the CPU it ran on.
+
+```bash
+bin/bench-guard.sh            # what CI runs: the allocation guard and the smoke run (~1 minute)
+bin/bench-guard.sh --update   # measure allocation and rewrite the baseline
+bin/bench-guard.sh --timings  # the timings of the trend (~10 minutes)
+./gradlew :protocol:jmh -Pjmh.includes=ForwardingPath   # any benchmark, with its own settings
+```
+
+The script builds the benchmarks and runs them on JDK 25 (`JAVA_HOME_25_X64`, `JAVA_HOME`, the
+`PATH` or the JDK that Gradle provisioned for the toolchain). Update the baseline and commit it in
+the same pull request when:
+
+- the guard reports less allocation: lock the gain in, or a later change could spend it unnoticed;
+- a change allocates more on the hot path on purpose: say why in the pull request;
+- a Netty or JDK update moves it (the report says which JDK the baseline was measured on);
+- a guarded benchmark, or a value of one of its parameters, is added or removed.
+
+The diff of the baseline shows reviewers what changed, benchmark by benchmark.
+
+The history of timings is `benchmarks/data.js` on the `gh-pages` branch, which only the workflow
+writes and GitHub Pages serves (Settings → Pages: deploy from the `gh-pages` branch, `/` folder).
 
 ## Release Automation
 
