@@ -179,6 +179,25 @@ class TextComponentTest {
     }
   }
 
+  @Nested
+  @DisplayName("translatableJson")
+  class TranslatableJson {
+
+    @Test
+    @DisplayName("should wrap the key in a translatable component")
+    void wraps() {
+      assertEquals(
+          "{\"translate\":\"multiplayer.disconnect.invalid_public_key\"}",
+          TextComponent.translatableJson("multiplayer.disconnect.invalid_public_key"));
+    }
+
+    @Test
+    @DisplayName("should escape the key as a JSON string")
+    void escapes() {
+      assertEquals("{\"translate\":\"a\\\"b\\\\c\"}", TextComponent.translatableJson("a\"b\\c"));
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------

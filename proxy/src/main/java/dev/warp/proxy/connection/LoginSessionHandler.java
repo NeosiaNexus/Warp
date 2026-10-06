@@ -25,6 +25,8 @@ import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.login.EncryptionRequest;
 import dev.warp.protocol.packet.login.EncryptionResponse;
+import dev.warp.protocol.packet.login.EncryptionResponse.EncryptedToken;
+import dev.warp.protocol.packet.login.EncryptionResponse.SignedToken;
 import dev.warp.protocol.packet.login.LoginAcknowledged;
 import dev.warp.protocol.packet.login.LoginDisconnect;
 import dev.warp.protocol.packet.login.LoginPacket;
@@ -36,12 +38,14 @@ import dev.warp.protocol.packet.login.SetCompression;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.proxy.auth.AuthenticationException;
 import dev.warp.proxy.auth.MojangSessionService;
+import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.auth.ServerHash;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
+import java.security.PublicKey;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
@@ -121,6 +125,14 @@ final class LoginSessionHandler implements SessionHandler {
   private byte @Nullable [] verifyToken;
   private @Nullable GameProfile authenticatedProfile;
 
+  /** The profile key a 1.19 to 1.19.2 client sent, once accepted; {@code null} if it sent none. */
+  private @Nullable PublicKey profileKey;
+
+  /**
+   * The UUID the profile key is signed for (1.19.1, 1.19.2); {@code null} before or without one.
+   */
+  private @Nullable UUID profileKeyHolder;
+
   // ---------------------------------------------------------------------------
   // Constructor
   // ---------------------------------------------------------------------------
@@ -182,6 +194,24 @@ final class LoginSessionHandler implements SessionHandler {
 
     this.username = name;
 
+    // 1.19 to 1.19.2: a profile key is checked on arrival, in online and offline mode alike, and
+    // its absence is accepted (Velocity's InitialLoginSessionHandler with force-key-authentication
+    // off: Warp forwards no key, so a backend has nothing to require one for).
+    LoginStart.ProfilePublicKey key = packet.profileKey();
+    if (key != null) {
+      switch (loginContext.profileKeys().check(key, packet.playerUuid(), clientVersion())) {
+        case ProfileKeys.Verdict.Refused(String reason) -> {
+          disconnectTranslated(reason);
+          return;
+        }
+        case ProfileKeys.Verdict.Accepted(PublicKey accepted) -> {
+          this.profileKey = accepted;
+          // From 1.19.1 the key is signed for this UUID: the player must authenticate as it.
+          this.profileKeyHolder = packet.playerUuid();
+        }
+      }
+    }
+
     if (loginContext.onlineMode()) {
       beginOnlineMode();
     } else {
@@ -198,27 +228,37 @@ final class LoginSessionHandler implements SessionHandler {
     // Prevent duplicate processing.
     state = LoginState.AUTHENTICATING;
 
+    byte[] token = this.verifyToken;
+    if (token == null) {
+      disconnect("Internal error");
+      return;
+    }
+
     try {
-      // Decrypt the verify token and shared secret with the RSA private key.
       Cipher rsaCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
       rsaCipher.init(Cipher.DECRYPT_MODE, loginContext.rsaKeyPair().getPrivate());
 
-      byte[] decryptedVerifyToken = rsaCipher.doFinal(packet.verifyToken());
-      byte[] decryptedSharedSecret = rsaCipher.doFinal(packet.sharedSecret());
-
-      // Validate the verify token. The 1.19–1.19.2 alt crypto path sends an empty
-      // verify token (handled by EncryptionResponse codec) — skip validation only for
-      // that specific version range where the client uses message signatures instead.
-      boolean altCryptoPath =
-          clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_19)
-              && clientVersion().isOlderThan(ProtocolVersion.MINECRAFT_1_19_3)
-              && packet.verifyToken().length == 0;
-
-      if (!altCryptoPath
-          && (verifyToken == null || !MessageDigest.isEqual(verifyToken, decryptedVerifyToken))) {
-        disconnect("Verify token mismatch");
-        return;
+      // The client proves it received the verify token: encrypted with the proxy's key, or, from a
+      // 1.19 to 1.19.2 client that sent a profile key, signed with that key. A client with a key
+      // must sign (vanilla and Velocity refuse the encrypted form from it), one without cannot.
+      @Nullable PublicKey playerKey = this.profileKey;
+      switch (packet.verifyToken()) {
+        case EncryptedToken(byte[] encrypted) -> {
+          if (playerKey != null || !MessageDigest.isEqual(token, rsaCipher.doFinal(encrypted))) {
+            disconnect("Verify token mismatch");
+            return;
+          }
+        }
+        case SignedToken(long salt, byte[] signature) -> {
+          if (playerKey == null
+              || !ProfileKeys.signsVerifyToken(playerKey, token, salt, signature)) {
+            disconnect("Invalid verify token signature");
+            return;
+          }
+        }
       }
+
+      byte[] decryptedSharedSecret = rsaCipher.doFinal(packet.sharedSecret());
 
       // Validate shared secret length.
       if (decryptedSharedSecret.length != SHARED_SECRET_LENGTH) {
@@ -334,6 +374,12 @@ final class LoginSessionHandler implements SessionHandler {
                               || state != LoginState.AUTHENTICATING) {
                             return; // Client disconnected or state changed during auth.
                           }
+                          UUID holder = this.profileKeyHolder;
+                          if (holder != null && !holder.equals(profile.uuid())) {
+                            // The key belongs to another player (Velocity: internalAddHolder).
+                            disconnectTranslated(ProfileKeys.INVALID);
+                            return;
+                          }
                           completeLogin(profile);
                         });
 
@@ -442,6 +488,19 @@ final class LoginSessionHandler implements SessionHandler {
 
   private ProtocolVersion clientVersion() {
     return connection.decoder().version();
+  }
+
+  /**
+   * Refuses the login with a reason the client translates, as vanilla servers and Velocity word
+   * profile key refusals. Only called in the login state.
+   */
+  private void disconnectTranslated(String key) {
+    logger.warn(
+        "Disconnecting {} from {}: {}",
+        username != null ? username : "unknown",
+        connection.channel().remoteAddress(),
+        key);
+    connection.writeAndClose(LoginDisconnect.ofTranslation(key));
   }
 
   private void disconnect(String reason) {

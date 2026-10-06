@@ -19,11 +19,12 @@ package dev.warp.protocol.packet.login;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolVersion;
-import dev.warp.protocol.codec.McByteArray;
 import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.codec.McUuid;
 import dev.warp.protocol.codec.VarInt;
@@ -71,6 +72,12 @@ class LoginPacketsTest {
       out.writeBytes(part);
     }
     return out.toByteArray();
+  }
+
+  private static byte[] filled(int length, int value) {
+    byte[] bytes = new byte[length];
+    Arrays.fill(bytes, (byte) value);
+    return bytes;
   }
 
   // ---------------------------------------------------------------------------
@@ -130,22 +137,98 @@ class LoginPacketsTest {
       assertEquals(expectedDecoded, decoded);
     }
 
-    static Stream<Arguments> signingKeyVersions() {
+    /**
+     * A realistic profile key: a 2048-bit RSA key is 294 bytes of DER, and Mojang's 4096-bit key
+     * signs it with 512 bytes. Distinct fillers catch a swap of the two arrays.
+     */
+    private static final LoginStart.ProfilePublicKey KEY =
+        new LoginStart.ProfilePublicKey(1_656_000_000_000L, filled(294, 0x30), filled(512, 0x5A));
+
+    /** {@link #KEY} on the wire after its presence flag, written out by hand. */
+    private static final byte[] KEY_ON_WIRE =
+        concat(
+            HexFormat.of().parseHex("00000181914ab000"), // expiry, big-endian long
+            new byte[] {(byte) 0xA6, 0x02}, // VarInt 294
+            filled(294, 0x30),
+            new byte[] {(byte) 0x80, 0x04}, // VarInt 512
+            filled(512, 0x5A));
+
+    /** The bytes of a login with {@link #KEY}, where the field exists (1.19 to 1.19.2). */
+    static Stream<Arguments> profileKeyLayouts() {
       return Stream.of(
-          Arguments.of(ProtocolVersion.MINECRAFT_1_19, new byte[0], NOTCH_WITHOUT_UUID),
-          Arguments.of(ProtocolVersion.MINECRAFT_1_19_2, concat(TRUE, BINARY_UUID), NOTCH));
+          // name, key (present)
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_19,
+              new LoginStart("Notch", KEY, null),
+              concat(NOTCH_ON_WIRE, TRUE, KEY_ON_WIRE)),
+          // name, key (present), uuid (present)
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_19_1,
+              new LoginStart("Notch", KEY, PLAYER_UUID),
+              concat(NOTCH_ON_WIRE, TRUE, KEY_ON_WIRE, TRUE, BINARY_UUID)),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_1_19_2,
+              new LoginStart("Notch", KEY, PLAYER_UUID),
+              concat(NOTCH_ON_WIRE, TRUE, KEY_ON_WIRE, TRUE, BINARY_UUID)));
     }
 
     @ParameterizedTest(name = "{0}")
-    @MethodSource("signingKeyVersions")
-    @DisplayName("should skip the chat signing key a 1.19 to 1.19.2 client sends")
-    void skipsSigningKey(
-        ProtocolVersion version, byte[] afterSignatureData, LoginStart expectedDecoded) {
-      byte[] wire = concat(NOTCH_ON_WIRE, signingKey(), afterSignatureData);
+    @MethodSource("profileKeyLayouts")
+    @DisplayName("should roundtrip the profile key of a 1.19 to 1.19.2 client byte for byte")
+    void roundtripsProfileKey(ProtocolVersion version, LoginStart login, byte[] expectedWire) {
+      byte[] wire = encode(login, version);
+      LoginStart decoded = decode(expectedWire, version);
 
-      LoginStart decoded = decode(wire, version);
+      assertArrayEquals(expectedWire, wire);
+      assertEquals(login.name(), decoded.name());
+      assertEquals(login.playerUuid(), decoded.playerUuid());
+      LoginStart.ProfilePublicKey key = decoded.profileKey();
+      assertNotNull(key, "profile key");
+      assertEquals(KEY.expiresAt(), key.expiresAt());
+      assertArrayEquals(KEY.publicKey(), key.publicKey());
+      assertArrayEquals(KEY.keySignature(), key.keySignature());
+    }
 
-      assertEquals(expectedDecoded, decoded);
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versionsWithoutProfileKey")
+    @DisplayName("should leave the profile key out where the field does not exist")
+    void dropsProfileKeyOutside119(ProtocolVersion version) {
+      byte[] withKey = encode(new LoginStart("Notch", KEY, PLAYER_UUID), version);
+
+      assertArrayEquals(encode(NOTCH, version), withKey);
+    }
+
+    static Stream<ProtocolVersion> versionsWithoutProfileKey() {
+      return Stream.of(
+          ProtocolVersion.MINECRAFT_1_18_2,
+          ProtocolVersion.MINECRAFT_1_19_3,
+          ProtocolVersion.MINECRAFT_1_20_2);
+    }
+
+    /** A key or signature one byte longer than vanilla reads, after the expiry. */
+    static Stream<Arguments> oversizedKeys() {
+      return Stream.of(
+          Arguments.of(
+              "513-byte key",
+              concat(new byte[] {(byte) 0x81, 0x04}, new byte[513], new byte[] {0})),
+          Arguments.of(
+              "4097-byte signature",
+              concat(new byte[] {0}, new byte[] {(byte) 0x81, 0x20}, new byte[4097])));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("oversizedKeys")
+    @DisplayName("should refuse a profile key larger than vanilla reads")
+    void rejectsOversizedKey(String what, byte[] arrays) {
+      byte[] wire = concat(NOTCH_ON_WIRE, TRUE, new byte[Long.BYTES], arrays);
+      ByteBuf buf = Unpooled.wrappedBuffer(wire);
+      try {
+        assertThrows(
+            DecoderException.class,
+            () -> LoginStart.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_19_2));
+      } finally {
+        buf.release();
+      }
     }
 
     /** The optional uuid flagged as absent, on each side of the signature data removal. */
@@ -178,20 +261,6 @@ class LoginPacketsTest {
             IllegalStateException.class,
             () ->
                 LoginStart.CODEC.encode(NOTCH_WITHOUT_UUID, buf, ProtocolVersion.MINECRAFT_1_20_2));
-      } finally {
-        buf.release();
-      }
-    }
-
-    /** Present signature data with a realistic 294-byte RSA public key and 512-byte signature. */
-    private static byte[] signingKey() {
-      ByteBuf buf = Unpooled.buffer();
-      try {
-        buf.writeBoolean(true);
-        buf.writeLong(1_656_000_000_000L); // key expiry timestamp
-        McByteArray.write(buf, new byte[294]); // public key
-        McByteArray.write(buf, new byte[512]); // signature
-        return ByteBufUtil.getBytes(buf);
       } finally {
         buf.release();
       }
@@ -463,6 +532,24 @@ class LoginPacketsTest {
       }
     }
 
+    @Test
+    @DisplayName("should write a translated reason as a VarInt-prefixed translatable component")
+    void writesTranslatable() {
+      String json = "{\"translate\":\"multiplayer.disconnect.invalid_public_key\"}";
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        LoginDisconnect.CODEC.encode(
+            LoginDisconnect.ofTranslation("multiplayer.disconnect.invalid_public_key"),
+            buf,
+            ProtocolVersion.MINECRAFT_1_19_2);
+
+        // 57 bytes of JSON: a one-byte VarInt length.
+        assertArrayEquals(concat(new byte[] {57}, ascii(json)), ByteBufUtil.getBytes(buf));
+      } finally {
+        buf.release();
+      }
+    }
+
     @ParameterizedTest(name = "{0}")
     @MethodSource("allVersions")
     @DisplayName("should read a backend's reason as its JSON, without the length prefix")
@@ -670,53 +757,150 @@ class LoginPacketsTest {
   @DisplayName("EncryptionResponse")
   class EncryptionResponseCodec {
 
-    @Test
-    @DisplayName("should roundtrip at 1.8")
-    void roundtrip18() {
-      byte[] sharedSecret = new byte[128];
-      byte[] verifyToken = new byte[128];
-      sharedSecret[0] = 0x01;
-      verifyToken[0] = 0x02;
-      EncryptionResponse original = new EncryptionResponse(sharedSecret, verifyToken);
+    /** What a 1024-bit server key encrypts the shared secret and the verify token to. */
+    private static final byte[] SECRET = filled(128, 0x11);
+
+    private static final byte[] TOKEN = filled(128, 0x22);
+
+    /** What a 2048-bit player key signs the verify token to. */
+    private static final byte[] SIGNATURE = filled(256, 0x33);
+
+    /** The sign bit is set, so a signed/unsigned slip would show up. */
+    private static final long SALT = 0x8877665544332211L;
+
+    private static final byte[] VARINT_128 = {(byte) 0x80, 0x01};
+    private static final byte[] VARINT_256 = {(byte) 0x80, 0x02};
+
+    private static final EncryptionResponse ENCRYPTED =
+        new EncryptionResponse(SECRET, new EncryptionResponse.EncryptedToken(TOKEN));
+
+    private static final EncryptionResponse SIGNED =
+        new EncryptionResponse(SECRET, new EncryptionResponse.SignedToken(SALT, SIGNATURE));
+
+    /** The bytes of {@link #ENCRYPTED} on each side of every layout change. */
+    static Stream<Arguments> encryptedLayouts() {
+      byte[] shortPrefixed =
+          concat(new byte[] {0, (byte) 128}, SECRET, new byte[] {0, (byte) 128}, TOKEN);
+      byte[] varIntPrefixed = concat(VARINT_128, SECRET, VARINT_128, TOKEN);
+      byte[] withFlag = concat(VARINT_128, SECRET, new byte[] {1}, VARINT_128, TOKEN);
+      return Stream.of(
+          Arguments.of(ProtocolVersion.MINECRAFT_1_7_2, shortPrefixed),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_7_6, shortPrefixed),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_8, varIntPrefixed),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_18_2, varIntPrefixed),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_19, withFlag),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_19_1, withFlag),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_19_2, withFlag),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_19_3, varIntPrefixed),
+          Arguments.of(ProtocolVersion.latest(), varIntPrefixed));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("encryptedLayouts")
+    @DisplayName(
+        "should roundtrip an encrypted verify token through the exact layout of each version")
+    void roundtripsEncryptedToken(ProtocolVersion version, byte[] expectedWire) {
+      byte[] wire = encode(ENCRYPTED, version);
+      EncryptionResponse decoded = decode(expectedWire, version);
+
+      assertArrayEquals(expectedWire, wire);
+      assertArrayEquals(SECRET, decoded.sharedSecret());
+      EncryptionResponse.EncryptedToken token =
+          assertInstanceOf(EncryptionResponse.EncryptedToken.class, decoded.verifyToken());
+      assertArrayEquals(TOKEN, token.encrypted());
+    }
+
+    static Stream<ProtocolVersion> signedTokenVersions() {
+      return Stream.of(
+          ProtocolVersion.MINECRAFT_1_19,
+          ProtocolVersion.MINECRAFT_1_19_1,
+          ProtocolVersion.MINECRAFT_1_19_2);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("signedTokenVersions")
+    @DisplayName("should roundtrip the salt and signature of a 1.19 to 1.19.2 client byte for byte")
+    void roundtripsSignedToken(ProtocolVersion version) {
+      // shared secret, false (no encrypted token), salt as a big-endian long, signature
+      byte[] expectedWire =
+          concat(
+              VARINT_128,
+              SECRET,
+              new byte[] {0},
+              HexFormat.of().parseHex("8877665544332211"),
+              VARINT_256,
+              SIGNATURE);
+
+      byte[] wire = encode(SIGNED, version);
+      EncryptionResponse decoded = decode(expectedWire, version);
+
+      assertArrayEquals(expectedWire, wire);
+      assertArrayEquals(SECRET, decoded.sharedSecret());
+      EncryptionResponse.SignedToken token =
+          assertInstanceOf(EncryptionResponse.SignedToken.class, decoded.verifyToken());
+      assertEquals(SALT, token.salt());
+      assertArrayEquals(SIGNATURE, token.signature());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versionsWithoutSignedToken")
+    @DisplayName("should refuse to write a signed verify token where the protocol has none")
+    void rejectsSignedTokenOutside119(ProtocolVersion version) {
       ByteBuf buf = Unpooled.buffer();
       try {
-        EncryptionResponse.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_8);
-        EncryptionResponse decoded =
-            EncryptionResponse.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_8);
-        assertArrayEquals(sharedSecret, decoded.sharedSecret());
-        assertArrayEquals(verifyToken, decoded.verifyToken());
+        assertThrows(
+            IllegalStateException.class,
+            () -> EncryptionResponse.CODEC.encode(SIGNED, buf, version));
       } finally {
         buf.release();
       }
     }
 
+    static Stream<ProtocolVersion> versionsWithoutSignedToken() {
+      return Stream.of(
+          ProtocolVersion.MINECRAFT_1_7_2,
+          ProtocolVersion.MINECRAFT_1_18_2,
+          ProtocolVersion.MINECRAFT_1_19_3,
+          ProtocolVersion.latest());
+    }
+
     @Test
-    @DisplayName("should roundtrip for 1.7.2 (short-prefixed arrays)")
-    void roundtrip17() {
-      EncryptionResponse original = new EncryptionResponse(new byte[] {1, 2}, new byte[] {3, 4});
-      ByteBuf buf = Unpooled.buffer();
+    @DisplayName("should refuse a signature longer than 256 bytes")
+    void rejectsOversizedSignature() {
+      byte[] wire =
+          concat(
+              VARINT_128,
+              SECRET,
+              new byte[] {0},
+              new byte[Long.BYTES],
+              new byte[] {(byte) 0x81, 0x02}, // VarInt 257
+              new byte[257]);
+      ByteBuf buf = Unpooled.wrappedBuffer(wire);
       try {
-        EncryptionResponse.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_7_2);
-        EncryptionResponse decoded =
-            EncryptionResponse.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_7_2);
-        assertArrayEquals(new byte[] {1, 2}, decoded.sharedSecret());
-        assertArrayEquals(new byte[] {3, 4}, decoded.verifyToken());
+        assertThrows(
+            DecoderException.class,
+            () -> EncryptionResponse.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_19_2));
       } finally {
         buf.release();
       }
     }
 
-    @Test
-    @DisplayName("should roundtrip for 1.19 (normal path with boolean prefix)")
-    void roundtrip119NormalPath() {
-      EncryptionResponse original = new EncryptionResponse(new byte[] {1, 2}, new byte[] {3, 4});
+    private static byte[] encode(EncryptionResponse packet, ProtocolVersion version) {
       ByteBuf buf = Unpooled.buffer();
       try {
-        EncryptionResponse.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_19);
-        EncryptionResponse decoded =
-            EncryptionResponse.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_19);
-        assertArrayEquals(new byte[] {1, 2}, decoded.sharedSecret());
-        assertArrayEquals(new byte[] {3, 4}, decoded.verifyToken());
+        EncryptionResponse.CODEC.encode(packet, buf, version);
+        return ByteBufUtil.getBytes(buf);
+      } finally {
+        buf.release();
+      }
+    }
+
+    private static EncryptionResponse decode(byte[] wire, ProtocolVersion version) {
+      ByteBuf buf = Unpooled.wrappedBuffer(wire);
+      try {
+        EncryptionResponse decoded = EncryptionResponse.CODEC.decode(buf, version);
+        assertEquals(0, buf.readableBytes(), "bytes left after EncryptionResponse");
+        return decoded;
       } finally {
         buf.release();
       }

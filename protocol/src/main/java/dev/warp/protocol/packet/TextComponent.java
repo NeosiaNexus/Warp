@@ -82,6 +82,20 @@ public final class TextComponent {
     return "{\"text\":\"" + escapeJson(text) + "\"}";
   }
 
+  /**
+   * Returns the JSON text component the client translates into its own language, {@code
+   * {"translate":"..."}}, the key escaped as a JSON string requires (RFC 8259, section 7).
+   *
+   * <p>This is how vanilla servers and Velocity word the reasons the game defines, such as {@code
+   * multiplayer.disconnect.invalid_public_key}.
+   *
+   * @param key the translation key
+   * @return the JSON text component
+   */
+  public static String translatableJson(String key) {
+    return "{\"translate\":\"" + escapeJson(key) + "\"}";
+  }
+
   // ---------------------------------------------------------------------------
   // Wire formats
   // ---------------------------------------------------------------------------

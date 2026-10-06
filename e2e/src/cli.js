@@ -14,6 +14,7 @@ import { Backend, fetchPreseeded, fetchServerJar, serverCacheDir } from './backe
 import { connectClient } from './clients/index.js';
 import { findJava } from './java.js';
 import { killAll, run, sleep } from './proc.js';
+import { createSigner, signerPem } from './profile-keys.js';
 import { SCENARIOS, features, startKeepAlive } from './scenarios.js';
 import { startSessionServer } from './session.js';
 import { E2E_DIR, findEntry, loadMatrix, resolveVariant } from './versions.js';
@@ -86,10 +87,12 @@ async function main() {
   const ports = await reservePorts(Number(opts['port-base']));
   const jar = opts.jar ? resolve(opts.jar) : await buildWarp();
   mkdirSync(opts.out, { recursive: true });
+  // Signs the bots' 1.19 to 1.19.2 profile keys in Mojang's place; every Warp instance trusts it.
+  const signer = createSigner();
 
   const results = [];
   for (const { entry, variants } of runs) {
-    results.push(await runVersion({ matrix, entry, variants: adaptVariants(entry, variants), scenarios, ports, jar, opts }));
+    results.push(await runVersion({ matrix, entry, variants: adaptVariants(entry, variants), scenarios, ports, jar, signer, opts }));
   }
   report(results, opts);
   return results.some((r) => r.status === 'fail') ? 1 : 0;
@@ -99,7 +102,7 @@ async function main() {
 // One version: backends per threshold, Warp per variant
 // ---------------------------------------------------------------------------
 
-async function runVersion({ matrix, entry, variants, scenarios, ports, jar, opts }) {
+async function runVersion({ matrix, entry, variants, scenarios, ports, jar, signer, opts }) {
   const cache = opts.cache;
   const runDir = join(opts.out, entry.version);
   rmSync(runDir, { recursive: true, force: true });
@@ -122,7 +125,7 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, jar, opts
       const backends = await startBackends({ entry, serverJar, serverJava, preseeded, backendThreshold, ports, runDir, logDir, cache });
       try {
         for (const variant of variants.filter((v) => v.backendThreshold === backendThreshold)) {
-          result.variants.push(await runVariant({ matrix, entry, variant, scenarios, backends, ports, jar, warpJava, runDir, logDir, opts }));
+          result.variants.push(await runVariant({ matrix, entry, variant, scenarios, backends, ports, jar, signer, warpJava, runDir, logDir, opts }));
         }
       } finally {
         await stopBackends(backends, result);
@@ -183,7 +186,7 @@ async function stopBackends(backends, result) {
   if (forced.length) log(`backend(s) ${forced.join(', ')} ignored "stop" and were killed`);
 }
 
-async function runVariant({ matrix, entry, variant, scenarios, backends, ports, jar, warpJava, runDir, logDir, opts }) {
+async function runVariant({ matrix, entry, variant, scenarios, backends, ports, jar, signer, warpJava, runDir, logDir, opts }) {
   const label = `${entry.version} ${variant.name}`;
   log(`variant ${variant.name}: ${describeVariant(variant)}`);
   const outcome = { name: variant.name, settings: describeVariant(variant), scenarios: [], failures: [], stacks: [] };
@@ -194,6 +197,7 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
     java: warpJava,
     online: variant.online,
     sessionServer: session?.url ?? null,
+    profileKeySigner: signerPem(signer),
     passthrough: variant.passthrough,
     threshold: variant.threshold,
     logDir,
@@ -232,6 +236,7 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
     lobby: backends.lobby,
     survival: backends.survival,
     bots: Number(opts.bots),
+    profileKeySigner: signer,
     // Scenarios that fail on this version because of a known Warp bug: they run and are reported,
     // but do not fail the version. Not in a control run (no Warp) or with --strict.
     knownBrokenScenarios: opts.direct || opts.strict ? {} : (entry.knownBrokenScenarios ?? {}),

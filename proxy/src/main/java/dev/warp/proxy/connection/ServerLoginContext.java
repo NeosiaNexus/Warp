@@ -17,6 +17,7 @@
 package dev.warp.proxy.connection;
 
 import dev.warp.proxy.auth.MojangSessionService;
+import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.config.ForwardingMode;
 import dev.warp.proxy.server.ServerRegistry;
 
@@ -37,6 +38,7 @@ import io.netty.channel.Channel;
  * @param compressionLevel the zlib compression level (0–9 or {@code -1} for default)
  * @param compressionPassthrough whether uninspected packets keep their original compressed form
  * @param sessionService the Mojang session service for online-mode authentication
+ * @param profileKeys the checker of the profile public keys 1.19 to 1.19.2 clients send
  * @param serverRegistry the registry of backend servers
  * @param forwardingMode the player info forwarding mode
  * @param forwardingSecret the shared HMAC secret for Velocity modern forwarding
@@ -50,6 +52,7 @@ public record ServerLoginContext(
     int compressionLevel,
     boolean compressionPassthrough,
     MojangSessionService sessionService,
+    ProfileKeys profileKeys,
     ServerRegistry serverRegistry,
     ForwardingMode forwardingMode,
     byte[] forwardingSecret,

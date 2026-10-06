@@ -64,6 +64,16 @@ public record LoginDisconnect(String reason) implements LoginPacket {
   }
 
   /**
+   * Creates a login disconnect whose reason the client translates, as vanilla servers word theirs.
+   *
+   * @param key the translation key, such as {@code multiplayer.disconnect.invalid_public_key}
+   * @return the packet, valid for every protocol version
+   */
+  public static LoginDisconnect ofTranslation(String key) {
+    return new LoginDisconnect(TextComponent.translatableJson(key));
+  }
+
+  /**
    * Returns the longest reason a vanilla client of {@code version} reads: 32 767 UTF-16 code units
    * until 1.13.2, 262 144 from 1.14. The login packet kept the old cap through 1.13 while the other
    * text components moved to the new one.

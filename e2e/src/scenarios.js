@@ -1,7 +1,11 @@
 // End-to-end scenarios. Each one drives real-protocol bots through Warp and throws on the first
 // sign of trouble. Backends are told apart by game mode, which every version announces when a
 // player joins: lobby = creative, survival = adventure.
+import { randomUUID } from 'node:crypto';
+
 import { sleep } from './proc.js';
+import { FIRST_PROTOCOL, LAST_PROTOCOL, createProfileKeys, createSigner } from './profile-keys.js';
+import { mockUuid } from './session.js';
 
 export const LOBBY_MODE = 'creative';
 export const SURVIVAL_MODE = 'adventure';
@@ -11,6 +15,8 @@ export function features(protocol) {
     // Every version switches: through the configuration phase from 1.20.2, with the new server's
     // Join Game and a Respawn before.
     switching: true,
+    // 1.19 to 1.19.2 clients send their chat signing key in Login Start.
+    profileKeys: protocol >= FIRST_PROTOCOL && protocol <= LAST_PROTOCOL,
   };
 }
 
@@ -22,8 +28,8 @@ async function proxyReportsServer(ctx, bot, expected) {
   if (current !== expected) throw new Error(`/server says ${current}, expected ${expected}`);
 }
 
-async function joinWarp(ctx, username, target = ctx.warp) {
-  return ctx.client.connect({ host: '127.0.0.1', port: target.port, username });
+async function joinWarp(ctx, username, target = ctx.warp, options = {}) {
+  return ctx.client.connect({ host: '127.0.0.1', port: target.port, username, ...options });
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +154,68 @@ async function fallbackRejected(ctx) {
   }
 }
 
+const DAY_MS = 86_400_000;
+const INVALID_KEY = 'multiplayer.disconnect.invalid_public_key';
+const EXPIRED_KEY = 'multiplayer.disconnect.invalid_public_key_signature';
+
+/**
+ * 1.19 to 1.19.2: bots log in with a profile key, as every client of a Microsoft account does. The
+ * harness signs the keys in Mojang's place (`ctx.profileKeySigner`, which Warp trusts). A valid key
+ * logs in (online, the bot signs the verify token instead of encrypting it) and plays: chat,
+ * `/server`, a switch. Warp refuses, with Velocity's reasons, a key the signer did not sign, an
+ * expired one, and online from 1.19.1, a key issued to another player than the one authenticated.
+ */
+async function profileKey(ctx) {
+  const name = 'e2e_signed';
+  const uuid = mockUuid(name);
+  const profileKeys = createProfileKeys({ signer: ctx.profileKeySigner, uuid, expiresAt: Date.now() + DAY_MS });
+  const bot = await joinWarp(ctx, name, ctx.warp, { profileKeys, uuid });
+  try {
+    await bot.waitForChunks(30, 30_000, 0);
+    await bot.waitForGameMode(LOBBY_MODE, 5_000);
+    await proxyReportsServer(ctx, bot, 'lobby');
+    bot.chat('signed hello from e2e');
+    await bot.command('server survival');
+    await bot.waitForGameMode(SURVIVAL_MODE, 20_000);
+    await proxyReportsServer(ctx, bot, 'survival');
+    await sleep(500);
+    bot.healthy();
+  } finally {
+    bot.quit();
+  }
+
+  const refusals = [
+    { what: 'a key the signer did not sign', reason: INVALID_KEY, signer: createSigner(2048), uuid },
+    { what: 'an expired key', reason: EXPIRED_KEY, expiresAt: Date.now() - 60_000, uuid },
+  ];
+  // The key is signed for the UUID the bot announces; the session server vouches for another one.
+  if (ctx.variant.online && ctx.entry.protocol > FIRST_PROTOCOL) {
+    refusals.push({ what: 'a key issued to another player', reason: INVALID_KEY, uuid: randomUUID() });
+  }
+  for (const [i, refusal] of refusals.entries()) {
+    const keys = createProfileKeys({
+      signer: refusal.signer ?? ctx.profileKeySigner,
+      uuid: refusal.uuid,
+      expiresAt: refusal.expiresAt ?? Date.now() + DAY_MS,
+    });
+    await expectRefused(ctx, `e2e_signed_no${i}`, { profileKeys: keys, uuid: refusal.uuid }, refusal);
+  }
+  return `logged in with a signed key, chatted and switched; refused ${refusals.map((r) => r.what).join(', ')}`;
+}
+
+/** Joins with `options` and expects Warp to refuse the login with `reason` (a translation key). */
+async function expectRefused(ctx, username, options, { what, reason }) {
+  let bot;
+  try {
+    bot = await joinWarp(ctx, username, ctx.warp, options);
+  } catch (e) {
+    if (String(e.message).includes(`"translate":"${reason}"`)) return;
+    throw new Error(`${what}: expected a refusal with ${reason}, got: ${e.message}`);
+  }
+  bot.quit();
+  throw new Error(`${what}: logged in, expected a refusal with ${reason}`);
+}
+
 /**
  * Background soak: one bot stays connected while every other scenario runs, then must still be
  * healthy. Warp sends a keep-alive every 15 s and drops a player whose answer is more than 30 s
@@ -184,6 +252,7 @@ export const SCENARIOS = [
   { name: 'login', run: login },
   { name: 'keepalive', background: true },
   { name: 'switching', run: switching, requires: 'switching' },
+  { name: 'profile-key', run: profileKey, requires: 'profileKeys' },
   { name: 'crowd', run: crowd },
   { name: 'fallback-unreachable', run: fallbackUnreachable, requires: 'proxy' },
   { name: 'fallback-rejected', run: fallbackRejected, requires: 'proxy' },
