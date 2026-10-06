@@ -1,0 +1,71 @@
+name: E2E matrix
+
+# Every protocol version Warp supports, end to end, with all the variants of e2e/versions.json:
+# on every push to main, nightly (to catch flakiness), on demand, and on a pull request labelled
+# `e2e: full`. Pull requests otherwise run the quick tier as part of CI.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: Comma-separated Minecraft versions (default all)
+        type: string
+        default: ''
+      variants:
+        description: Comma-separated variants replacing each version's own (default none)
+        type: string
+        default: ''
+  pull_request:
+    types: [labeled, synchronize, reopened]
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build Warp
+    # On pull requests, only when labelled `e2e: full` (and not for any other label).
+    if: >-
+      ${{ github.event_name != 'pull_request'
+          || (contains(github.event.pull_request.labels.*.name, 'e2e: full')
+              && (github.event.action != 'labeled' || github.event.label.name == 'e2e: full')) }}
+    # One matrix per PR (a new push cancels it); on main, runs queue instead of being cancelled.
+    concurrency:
+      group: e2e-matrix-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # check out the code
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up build
+        uses: $/.github/actions/setup-build
+
+      - name: Build the shadow jar
+        run: ./gradlew :proxy:shadowJar
+
+      - name: Upload Warp jar
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: warp-jar
+          path: proxy/build/libs/warp-*.jar
+          if-no-files-found: error
+          retention-days: 7
+
+  e2e:
+    name: E2E
+    needs: build
+    permissions:
+      contents: read # check out the harness
+    uses: $/.github/workflows/_e2e.yml
+    with:
+      tier: full
+      versions: ${{ inputs.versions || '' }}
+      variants: ${{ inputs.variants || '' }}
