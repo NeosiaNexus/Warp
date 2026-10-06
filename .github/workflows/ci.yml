@@ -102,7 +102,8 @@ jobs:
 
   # Bytes allocated per packet on the hot path, against protocol/src/jmh/alloc-baseline.json, then
   # one short run of every benchmark (bin/bench-guard.sh). Counted with escape analysis off, the
-  # allocation is the same on every run, so unlike timings it can gate pull requests.
+  # allocation repeats within 0.3% from one run to the next, so unlike timings it can gate pull
+  # requests.
   allocation-guard:
     name: Allocation guard
     needs: changes
@@ -116,6 +117,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Test the guard script
+        run: python3 bin/bench-guard-test.py
 
       - name: Set up build
         uses: $/.github/actions/setup-build
