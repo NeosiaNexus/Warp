@@ -52,7 +52,9 @@ A run fails if a scenario fails, and also if:
 
 Strict parsing also catches errors in the bots' protocol data. Those are corrected in memory
 (`correctProtocolData` in `src/clients/mineflayer.js`) once a `--direct` run proves the server
-alone triggers them, never skipped: today, the recipe serializer ids of 1.20.5 to 1.21.1.
+alone triggers them, never skipped: today, the recipe serializer ids of 1.20.5 to 1.21.1. Bots also
+end their ticks as the game does from 1.21.2 (`endTicks`): mineflayer never sends a Client Tick End,
+and a 26.3 server kicks a player that sends two positions in the same tick.
 
 Logs and `result.json` go to `e2e/build/<version>/`.
 
