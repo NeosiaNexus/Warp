@@ -1,9 +1,9 @@
 name: Detect changes
 description: >-
   What a pull request needs, from the files it changes: the build and the end-to-end tests unless
-  it only changes documentation, and the whole end-to-end matrix when it changes what Warp's jar is
-  built from or what the end-to-end tests run with. Any other event needs the build and the quick
-  end-to-end tier. The job needs `pull-requests: read` to list the files of a pull request.
+  it only changes documentation, and the whole end-to-end matrix when it changes Warp's modules or
+  what the end-to-end tests run with. Any other event needs the build and the quick end-to-end
+  tier. The job needs `pull-requests: read` to list the files of a pull request.
 
 outputs:
   code:
@@ -31,13 +31,12 @@ runs:
             - '!LICENSE'
             - '!.github/ISSUE_TEMPLATE/**'
             - '!.github/PULL_REQUEST_TEMPLATE.md'
-          # What Warp's jar is built from (its code, dependencies and build), and what the end-to-end
-          # tests run with (the harness, its npm dependencies, its workflow, this filter). Unit
-          # tests, benchmarks and the harness's own tests change neither: CI runs them anyway.
+          # Warp's modules (their code, and how each builds its part of the jar) and what the
+          # end-to-end tests run with (the harness, its npm dependencies, its workflow, this filter).
+          # Unit tests, benchmarks and the harness's own tests change neither: CI runs them anyway.
+          # Dependency and build tool bumps run the quick tier, then the full matrix on main.
           e2e-full:
-            - '{api,protocol,proxy,jni,build-logic,gradle}/**'
-            - '{build,settings}.gradle.kts'
-            - 'gradle.properties'
+            - '{api,protocol,proxy,jni}/**'
             - 'e2e/**'
             - '.github/workflows/_e2e.yml'
             - '.github/actions/changes/**'

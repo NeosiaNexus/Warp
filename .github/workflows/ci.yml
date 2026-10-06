@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   # Pull requests that only touch documentation skip the build and the end-to-end tests; those that
-  # change what Warp's jar is built from or the end-to-end harness run the whole end-to-end matrix
+  # change Warp's modules or the end-to-end harness run the whole end-to-end matrix
   # (.github/actions/changes says which files count).
   changes:
     name: Detect changes
@@ -127,9 +127,8 @@ jobs:
           annotations: true
 
   # One passing version per protocol era, plus the variants on the newest (e2e/versions.json, tier
-  # `pr`); every version (tier `full`) for a pull request that changes Warp's code, dependencies or
-  # build, or the harness. The full matrix also runs on main, nightly, and on PRs labelled
-  # `e2e: full` (e2e.yml).
+  # `pr`); every version (tier `full`) for a pull request that changes Warp's modules or the harness.
+  # The full matrix also runs on main, nightly, and on PRs labelled `e2e: full` (e2e.yml).
   e2e:
     name: E2E (${{ needs.changes.outputs.e2e-tier }})
     needs: [changes, build]

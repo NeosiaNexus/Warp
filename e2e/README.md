@@ -123,11 +123,11 @@ Tiers pick what runs where:
 - `pr`, on every pull request (required): one version per protocol era among those that pass,
   and the offline, transcode, backend-lower and velocity variants on the newest. A known-broken
   version never goes there, a version with known-broken scenarios can.
-- `full`, on pull requests that change what Warp's jar is built from (its modules, dependencies
-  and build) or what the end-to-end tests run with (the harness, its npm dependencies and workflow),
-  tests aside (required, instead of `pr`; `.github/actions/changes` lists the paths), on every push
-  to `main`, nightly, on demand, and on pull requests labelled `e2e: full`:
-  every version, and more variants at era boundaries (`velocity` where Paper's Velocity support
+- `full`, on pull requests that change Warp's modules (`api/`, `protocol/`, `proxy/`, `jni/`) or
+  what the end-to-end tests run with (the harness, its npm dependencies and workflow), tests aside
+  (required, instead of `pr`; `.github/actions/changes` lists the paths), on every push to `main`,
+  nightly, on demand, and on pull requests labelled `e2e: full` (a Netty bump, say): every
+  version, and more variants at era boundaries (`velocity` where Paper's Velocity support
   changes: 1.13.1 and 1.18.2 for `paper.yml`, 1.19 for `paper-global.yml`, 1.20.1 and 1.20.2 on
   each side of the configuration phase, and the newest). `npm test` checks that no tier schedules a
   variant its version cannot run.

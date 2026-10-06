@@ -63,7 +63,7 @@
       }
     },
     "full": {
-      "description": "Pull requests that change Warp's code, dependencies or build, or the harness (required), every push to main, nightly, on demand, and pull requests labelled \"e2e: full\": every protocol version, all variants on era boundaries.",
+      "description": "Pull requests that change Warp's modules or the harness (required), every push to main, nightly, on demand, and pull requests labelled \"e2e: full\": every protocol version, all variants on era boundaries.",
       "versions": "all",
       "variants": [
         "online"

@@ -2,8 +2,8 @@ name: E2E matrix
 
 # Every protocol version Warp supports, end to end, with all the variants of e2e/versions.json:
 # on every push to main, nightly (to catch flakiness), on demand, and on a pull request labelled
-# `e2e: full`. Pull requests that change Warp's code, dependencies or build, or the harness, run it
-# as part of CI already (the label then adds nothing); the others run the quick tier there.
+# `e2e: full`. Pull requests that change Warp's modules or the harness run it as part of CI already
+# (the label then adds nothing); the others run the quick tier there.
 on:
   push:
     branches: [main]
