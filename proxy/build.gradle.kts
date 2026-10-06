@@ -3,6 +3,7 @@ plugins {
     id("warp.spotless-conventions")
     id("warp.checkstyle-conventions")
     id("warp.jacoco-conventions")
+    id("warp.pitest-conventions")
     id("com.gradleup.shadow")
     application
 }

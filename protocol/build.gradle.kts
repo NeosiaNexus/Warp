@@ -4,6 +4,7 @@ plugins {
     id("warp.checkstyle-conventions")
     id("warp.jacoco-conventions")
     id("warp.jmh-conventions")
+    id("warp.pitest-conventions")
 }
 
 description = "Warp Protocol — Minecraft protocol codec and packet definitions"
