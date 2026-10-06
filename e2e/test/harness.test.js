@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import { BACKEND_PROTOCOL_ERRORS } from '../src/backend.js';
 import { connectClient } from '../src/clients/index.js';
 import { announcedProtocol } from '../src/clients/mineflayer.js';
-import { SCENARIOS, checkStatus, features } from '../src/scenarios.js';
+import { SCENARIOS, checkStatus, checkTabLists, features } from '../src/scenarios.js';
 import { findEntry, jobsForTier, loadMatrix, resolveVariant } from '../src/versions.js';
 import { WARP_FAILURES } from '../src/warp.js';
 
@@ -91,9 +91,30 @@ describe('variants', () => {
 
 describe('scenario features', () => {
   it('switches servers on every version', () => {
-    assert.deepEqual(features(47), { switching: true });
-    assert.deepEqual(features(763), { switching: true });
-    assert.deepEqual(features(764), { switching: true });
+    assert.equal(features(5).switching, true);
+    assert.equal(features(47).switching, true);
+    assert.equal(features(763).switching, true);
+    assert.equal(features(764).switching, true);
+  });
+
+  it('checks tab lists from 1.8, where they are keyed by UUID', () => {
+    assert.equal(features(5).tabList, false);
+    assert.equal(features(47).tabList, true);
+    assert.equal(features(763).tabList, true);
+    assert.equal(features(764).tabList, true);
+  });
+});
+
+describe('tab lists after a switch', () => {
+  const bot = (username, ...listed) => ({ username, listed: () => listed });
+
+  it('passes when no switcher lists a player left behind', () => {
+    const detail = checkTabLists([bot('a', 'a', 'b'), bot('b', 'a', 'b')], ['c', 'd']);
+    assert.equal(detail, 'no player left behind in 2 tab lists');
+  });
+
+  it('fails when a switcher still lists a player of the previous server', () => {
+    assert.throws(() => checkTabLists([bot('a', 'a', 'c'), bot('b', 'b')], ['c', 'd']), /a lists c$/);
   });
 });
 
