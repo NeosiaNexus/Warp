@@ -36,7 +36,6 @@ velocity-native = "4.2.0"
 
 # Build plugins
 shadow = "9.6.1"
-plexus-utils = "4.0.3"
 
 [libraries]
 # Netty
@@ -103,9 +102,6 @@ mockito-junit-jupiter = { group = "org.mockito", name = "mockito-junit-jupiter",
 jmh-core = { group = "org.openjdk.jmh", name = "jmh-core", version.ref = "jmh" }
 jmh-generator-annprocess = { group = "org.openjdk.jmh", name = "jmh-generator-annprocess", version.ref = "jmh" }
 velocity-native = { group = "com.velocitypowered", name = "velocity-native", version.ref = "velocity-native" }
-
-# Build classpath: minimum versions of what the build plugins bring (build-logic/build.gradle.kts)
-plexus-utils = { group = "org.codehaus.plexus", name = "plexus-utils", version.ref = "plexus-utils" }
 
 [bundles]
 netty = ["netty-buffer", "netty-codec", "netty-handler", "netty-transport"]
