@@ -71,6 +71,31 @@ function findMapper(type, test) {
 }
 
 // ---------------------------------------------------------------------------
+// Corrections to mineflayer
+// ---------------------------------------------------------------------------
+
+/** The movement packets mineflayer sends, at most one per physics tick. */
+const MOVEMENT_PACKETS = new Set(['flying', 'look', 'position', 'position_look']);
+
+/**
+ * Ends the bot's ticks with a Client Tick End, as the game does from 1.21.2 and mineflayer never
+ * does. From 26.3 the server counts the positions it receives between two of them, and kicks a
+ * player that sends a second one ("Invalid move player packet received"). A tick end right after
+ * each movement packet keeps every two of them in different ticks, as the game sends them.
+ *
+ * @param {object} client the bot's minecraft-protocol client
+ * @param {string} version the version the bot speaks
+ */
+export function endTicks(client, version) {
+  if (!minecraftData(version)?.protocol?.play?.toServer?.types?.packet_tick_end) return;
+  const write = client.write.bind(client);
+  client.write = (name, params) => {
+    write(name, params);
+    if (MOVEMENT_PACKETS.has(name) && client.state === 'play') write('tick_end', {});
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Bots
 // ---------------------------------------------------------------------------
 
@@ -93,8 +118,11 @@ export async function ping({ host, port, version }) {
 
 /**
  * Connects a bot and resolves once it has spawned in the world.
- * @param {object|null} profileKeys a profile key pair Mojang signed (see mojang.js): the bot then
- *   opens a chat session and signs its chat, as a client logged in with a Microsoft account does
+ *
+ * With `profileKeys` (from `createProfileKeys`), the bot plays a client logged in to a Microsoft
+ * account, without the session server call. On 1.19 to 1.19.2 it sends the key and its certificate
+ * in Login Start, announcing their `uuid`, and signs the verify token with the key instead of
+ * encrypting it. From 1.19.3 it opens a chat session with them and signs its chat.
  */
 export function connect({ host, port, version, username, profileKeys = null, spawnTimeoutMs = 45_000 }) {
   correctProtocolData(version);
@@ -109,6 +137,7 @@ export function connect({ host, port, version, username, profileKeys = null, spa
       hideErrors: true,
       logErrors: false,
     });
+    endTicks(bot._client, version);
     const handle = new Bot(bot, username, profileKeys !== null);
     const fail = (why) => {
       clearTimeout(timer);
@@ -128,13 +157,15 @@ export function connect({ host, port, version, username, profileKeys = null, spa
 
 /**
  * Offline login (no Mojang account) that still hands minecraft-protocol a profile and its key, the
- * way its Microsoft login does. It opens a chat session at Join Game when the server announced that
- * profile's UUID, over an encrypted connection only, and from then on signs chat.
+ * way its Microsoft login does: its Login Start and encryption code then send the key, and from
+ * 1.19.3 it opens a chat session at Join Game when the server announced that profile's UUID, over an
+ * encrypted connection only, and from then on signs chat.
  */
 function keyedAuth(profileKeys) {
   return (client, options) => {
     client.username = options.username;
-    client.session = { selectedProfile: { id: profileKeys.uuid, name: options.username } };
+    // Undashed: minecraft-protocol compares it so with the UUID the server announced.
+    client.session = { selectedProfile: { id: profileKeys.uuid.replace(/-/g, ''), name: options.username } };
     client.profileKeys = profileKeys;
     options.connect(client);
   };

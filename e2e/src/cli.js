@@ -13,9 +13,10 @@ import { parseArgs } from 'node:util';
 import { Backend, fetchPreseeded, fetchServerJar, serverCacheDir } from './backend.js';
 import { connectClient } from './clients/index.js';
 import { findJava } from './java.js';
-import { killAll, run, sleep } from './proc.js';
-import { SCENARIOS, features, startKeepAlive } from './scenarios.js';
 import { startMockMojang } from './mojang.js';
+import { killAll, run, sleep } from './proc.js';
+import { signerPem } from './profile-keys.js';
+import { SCENARIOS, features, startKeepAlive } from './scenarios.js';
 import { E2E_DIR, findEntry, loadMatrix, resolveVariant } from './versions.js';
 import { Warp } from './warp.js';
 
@@ -86,8 +87,8 @@ async function main() {
   const ports = await reservePorts(Number(opts['port-base']));
   const jar = opts.jar ? resolve(opts.jar) : await buildWarp();
   mkdirSync(opts.out, { recursive: true });
-
-  // Up for the whole run: backends fetch its keys when they boot, Warp checks logins against it.
+  // Up for the whole run: it signs the bots' profile keys, which Warp and the backends trust, and
+  // Warp checks online logins against it.
   const mojang = await startMockMojang(ports.mojang);
   const results = [];
   try {
@@ -201,6 +202,7 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, ports, 
     java: warpJava,
     online: variant.online,
     sessionServer: variant.online ? mojang.hasJoinedUrl : null,
+    profileKeySigner: signerPem(mojang.signer),
     passthrough: variant.passthrough,
     threshold: variant.threshold,
     logDir,

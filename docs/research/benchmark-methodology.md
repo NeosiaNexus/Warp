@@ -295,7 +295,7 @@ The harness should use **its own minimal codec**: VarInt, framing, zlib through 
 Alternatives: `tcpdump` on the backend port followed by offline TCP reassembly (tool-neutral, more work), or importing ReplayMod `.mcpr` files (clientbound only, ms timestamps).
 
 **Backend for recording.**
-- Use a pinned Paper build at a protocol version **V supported by every proxy under test**. MC now uses year-based versions (26.x). Warp's newest registered protocol is 26.1.1 and SoulFire's native version is 26.3, so pick the newest version that all of them speak at recording time.
+- Use a pinned Paper build at a protocol version **V supported by every proxy under test**. MC now uses year-based versions (26.x). Warp's newest registered version and SoulFire's native version are both 26.3, so pick the newest version that all of them speak at recording time.
 - Use defaults: `view-distance=10`, `simulation-distance=10`, `network-compression-threshold=256`, anti-xray off.
 - **Pre-generate the world** (e.g. with Chunky) so that world generation does not distort send timing.
 - Disable plugins except a bot-population helper if needed.

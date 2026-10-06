@@ -1,14 +1,17 @@
 // Mock Mojang for the whole run, on one local port:
 //   - session server for online-mode runs: Warp is pointed at its `hasJoined` with
 //     -Dmojang.sessionserver, and it vouches for every player;
-//   - services key set (`/publickeys`), which backends from 1.20 fetch to verify the profile keys
-//     that sign player chat: with it, a bot can open a chat session the backend accepts.
+//   - Mojang's key pair (`signer`), which signs the bots' profile keys. Warp trusts it through
+//     -Dwarp.profilekeys.signer (1.19 to 1.19.2 logins), and it is published as the services key set
+//     (`/publickeys`), which backends from 1.20 fetch to verify the chat sessions those keys open.
 //
 // It vouches for each player with the UUID an offline-mode backend gives it (backends get no player
 // forwarding), so the bot and the backend agree on who signs: a chat signature covers the sender's
 // UUID.
-import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
+
+import { createProfileKeys, createSigner } from './profile-keys.js';
 
 /** How long a bot's profile key stays valid: far longer than any run. */
 const PROFILE_KEY_LIFETIME_MS = 24 * 60 * 60 * 1000;
@@ -27,15 +30,14 @@ export function offlineUuid(name) {
 /**
  * Starts the mock.
  * @param {number} port local port (0 for any)
- * @returns {Promise<{host: string, hasJoinedUrl: string, publicKey: Buffer, profileKeys: Function, close: Function}>}
+ * @param {object} signer Mojang's key pair, from `createSigner`
+ * @returns {Promise<{host: string, hasJoinedUrl: string, signer: object, profileKeys: Function, close: Function}>}
  */
-export function startMockMojang(port) {
-  // Mojang's key pair: signs the bots' profile keys, published as the services key set.
-  const mojang = generateKeyPairSync('rsa', { modulusLength: 2048 });
-  const publicKey = mojang.publicKey.export({ type: 'spki', format: 'der' });
+export function startMockMojang(port, signer = createSigner()) {
+  const publicKey = signer.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
   const keySet = JSON.stringify({
-    profilePropertyKeys: [{ publicKey: publicKey.toString('base64') }],
-    playerCertificateKeys: [{ publicKey: publicKey.toString('base64') }],
+    profilePropertyKeys: [{ publicKey }],
+    playerCertificateKeys: [{ publicKey }],
   });
 
   const server = createServer((req, res) => {
@@ -49,26 +51,9 @@ export function startMockMojang(port) {
     res.end(JSON.stringify({ id: offlineUuid(name), name, properties: [] }));
   });
 
-  /**
-   * A profile key pair for `name`, signed the way Mojang signs them from 1.19.1 (version 2): over
-   * the player's UUID, the expiry and the public key, with SHA1withRSA (`ProfilePublicKey.Data`).
-   * Shaped as minecraft-protocol expects `client.profileKeys`.
-   */
-  function profileKeys(name) {
-    const uuid = offlineUuid(name);
-    const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
-    const expiresOn = new Date(Date.now() + PROFILE_KEY_LIFETIME_MS);
-    const expiry = Buffer.alloc(8);
-    expiry.writeBigInt64BE(BigInt(expiresOn.getTime()));
-    const payload = Buffer.concat([Buffer.from(uuid, 'hex'), expiry, pair.publicKey.export({ type: 'spki', format: 'der' })]);
-    return {
-      uuid,
-      public: pair.publicKey,
-      private: pair.privateKey,
-      expiresOn,
-      signatureV2: sign('sha1', payload, mojang.privateKey),
-    };
-  }
+  /** A valid profile key for `name`, issued to the UUID the mock vouches for. */
+  const profileKeys = (name) =>
+    createProfileKeys({ signer, uuid: offlineUuid(name), expiresAt: Date.now() + PROFILE_KEY_LIFETIME_MS });
 
   return new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -77,7 +62,7 @@ export function startMockMojang(port) {
       resolve({
         host,
         hasJoinedUrl: `${host}/session/minecraft/hasJoined`,
-        publicKey,
+        signer,
         profileKeys,
         close: () => new Promise((done) => server.close(done)),
       });
