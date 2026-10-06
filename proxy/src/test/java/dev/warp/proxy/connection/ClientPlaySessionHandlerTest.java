@@ -175,6 +175,7 @@ class ClientPlaySessionHandlerTest {
       assertArrayEquals(content, Arrays.copyOfRange(answer, 1, 1 + content.length));
       assertNull(session.nextToPlayer(), "no StartConfiguration");
       assertFalse(session.player().isSwitching());
+      assertNull(session.toBackend(), "the proxy's own command never reaches the backend");
     }
 
     @Test

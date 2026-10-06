@@ -57,8 +57,8 @@ class ChatCommandTest {
   class Keyed {
 
     @Test
-    @DisplayName("should read the command a 1.19 client sends and write its signature data back")
-    void command119() {
+    @DisplayName("should read an unsigned 1.19 command and write its signature data back")
+    void unsignedCommand119() {
       ByteBuf wire = Unpooled.buffer();
       McString.write(wire, "server survival");
       wire.writeLong(1_700_000_000_000L); // timestamp
@@ -70,18 +70,47 @@ class ChatCommandTest {
     }
 
     @Test
-    @DisplayName("should read the command a 1.19.2 client sends and write its signature data back")
-    void command1192() {
+    @DisplayName("should read a signed 1.19 command and write its signature data back")
+    void signedCommand119() {
       ByteBuf wire = Unpooled.buffer();
-      McString.write(wire, "server");
+      McString.write(wire, "msg Steve hello");
       wire.writeLong(1_700_000_000_000L); // timestamp
-      wire.writeLong(0L); // salt
-      VarInt.write(wire, 0); // argument signatures
-      wire.writeBoolean(false); // signed preview
-      VarInt.write(wire, 0); // last seen messages
-      wire.writeBoolean(false); // no last received message
+      wire.writeLong(0x5A17_5A17_5A17_5A17L); // salt
+      VarInt.write(wire, 1); // argument signatures
+      McString.write(wire, "message");
+      writeSignature(wire, 0x11);
+      wire.writeBoolean(true); // signed preview
 
-      assertRoundtrip(wire, ProtocolVersion.MINECRAFT_1_19_1, "server");
+      assertRoundtrip(wire, ProtocolVersion.MINECRAFT_1_19, "msg Steve hello");
+    }
+
+    @Test
+    @DisplayName("should read a signed 1.19.2 command and write its signature data back")
+    void signedCommand1192() {
+      ByteBuf wire = Unpooled.buffer();
+      McString.write(wire, "msg Steve hello");
+      wire.writeLong(1_700_000_000_000L); // timestamp
+      wire.writeLong(0x5A17_5A17_5A17_5A17L); // salt
+      VarInt.write(wire, 1); // argument signatures
+      McString.write(wire, "message");
+      writeSignature(wire, 0x22);
+      wire.writeBoolean(false); // signed preview
+      VarInt.write(wire, 1); // last seen messages
+      wire.writeLong(0x0123_4567_89AB_CDEFL).writeLong(0x0FED_CBA9_8765_4321L); // sender
+      writeSignature(wire, 0x33);
+      wire.writeBoolean(true); // last received message
+      wire.writeLong(0x0123_4567_89AB_CDEFL).writeLong(0x0FED_CBA9_8765_4321L); // sender
+      writeSignature(wire, 0x44);
+
+      assertRoundtrip(wire, ProtocolVersion.MINECRAFT_1_19_1, "msg Steve hello");
+    }
+
+    /** A VarInt-prefixed 256-byte RSA signature, every byte set to {@code fill}. */
+    private static void writeSignature(ByteBuf wire, int fill) {
+      VarInt.write(wire, 256);
+      for (int i = 0; i < 256; i++) {
+        wire.writeByte(fill);
+      }
     }
 
     private void assertRoundtrip(ByteBuf wire, ProtocolVersion version, String command) {

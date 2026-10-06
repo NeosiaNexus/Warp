@@ -79,9 +79,9 @@ class SystemChatMessageTest {
   }
 
   /**
-   * One version on each side of every packet id or layout change, with the id and the trailer it
-   * expects. Velocity's {@code LegacyChatPacket} and {@code SystemChatPacket} and minecraft-data
-   * ({@code chat} and {@code system_chat}) agree on every row.
+   * One version on each side of every packet id or layout change from 1.7.2 to 1.21.4, with the id
+   * and the trailer it expects. Velocity's {@code LegacyChatPacket} and {@code SystemChatPacket}
+   * and minecraft-data ({@code chat} and {@code system_chat}) agree on every row.
    */
   static Stream<Arguments> versions() {
     return Stream.of(
@@ -103,8 +103,15 @@ class SystemChatMessageTest {
         // 1.19.1 and 1.19.2 share protocol 760
         Arguments.of(ProtocolVersion.MINECRAFT_1_19_1, 0x62, Trailer.OVERLAY),
         Arguments.of(ProtocolVersion.MINECRAFT_1_19_3, 0x60, Trailer.OVERLAY),
+        Arguments.of(ProtocolVersion.MINECRAFT_1_19_4, 0x64, Trailer.OVERLAY),
+        // 1.20 and 1.20.1 share protocol 763
+        Arguments.of(ProtocolVersion.MINECRAFT_1_20_1, 0x64, Trailer.OVERLAY),
         Arguments.of(ProtocolVersion.MINECRAFT_1_20_2, 0x67, Trailer.OVERLAY),
         Arguments.of(ProtocolVersion.MINECRAFT_1_20_3, 0x69, Trailer.OVERLAY),
+        Arguments.of(ProtocolVersion.MINECRAFT_1_20_5, 0x6C, Trailer.OVERLAY),
+        // 1.21 and 1.21.1 share protocol 767
+        Arguments.of(ProtocolVersion.MINECRAFT_1_21_1, 0x6C, Trailer.OVERLAY),
+        Arguments.of(ProtocolVersion.MINECRAFT_1_21_2, 0x73, Trailer.OVERLAY),
         Arguments.of(ProtocolVersion.MINECRAFT_1_21_4, 0x73, Trailer.OVERLAY));
   }
 
