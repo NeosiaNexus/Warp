@@ -33,20 +33,23 @@ import io.netty.buffer.ByteBuf;
  */
 public record LoginDisconnect(String reason) implements LoginPacket {
 
-  /** Longest reason a client accepts, in UTF-16 code units (vanilla's JSON text component cap). */
+  /** Longest reason a 1.14+ client reads, in UTF-16 code units. */
   private static final int MAX_REASON_LENGTH = 262_144;
+
+  /** Longest reason a client before 1.14 reads, in UTF-16 code units. */
+  private static final int LEGACY_MAX_REASON_LENGTH = 32_767;
 
   /** Codec for reading and writing login disconnect packets. */
   public static final PacketCodec<LoginDisconnect> CODEC =
       new PacketCodec<>() {
         @Override
         public LoginDisconnect decode(ByteBuf buf, ProtocolVersion version) {
-          return new LoginDisconnect(McString.read(buf, MAX_REASON_LENGTH));
+          return new LoginDisconnect(McString.read(buf, maxReasonLength(version)));
         }
 
         @Override
         public void encode(LoginDisconnect packet, ByteBuf buf, ProtocolVersion version) {
-          McString.write(buf, packet.reason(), MAX_REASON_LENGTH);
+          McString.write(buf, packet.reason(), maxReasonLength(version));
         }
       };
 
@@ -58,5 +61,16 @@ public record LoginDisconnect(String reason) implements LoginPacket {
    */
   public static LoginDisconnect ofPlainText(String reason) {
     return new LoginDisconnect(TextComponent.plainTextJson(reason));
+  }
+
+  /**
+   * Returns the longest reason a vanilla client of {@code version} reads: 32 767 UTF-16 code units
+   * until 1.13.2, 262 144 from 1.14. The login packet kept the old cap through 1.13 while the other
+   * text components moved to the new one.
+   */
+  private static int maxReasonLength(ProtocolVersion version) {
+    return version.isAtLeast(ProtocolVersion.MINECRAFT_1_14)
+        ? MAX_REASON_LENGTH
+        : LEGACY_MAX_REASON_LENGTH;
   }
 }

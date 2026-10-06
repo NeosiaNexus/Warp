@@ -399,6 +399,65 @@ class LoginPacketsTest {
           DecoderException.class,
           () -> LoginDisconnect.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_8));
     }
+
+    /** The longest reason vanilla reads: 32 767 characters until 1.13.2, 262 144 from 1.14. */
+    static Stream<Arguments> versionsAcrossLengthBoundary() {
+      return Stream.of(
+          Arguments.of(ProtocolVersion.MINECRAFT_1_7_2, 32_767),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_13, 32_767),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_13_2, 32_767),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_14, 262_144),
+          Arguments.of(ProtocolVersion.MINECRAFT_1_20_3, 262_144),
+          Arguments.of(ProtocolVersion.MINECRAFT_26_1, 262_144));
+    }
+
+    @ParameterizedTest(name = "{0}: {1}")
+    @MethodSource("versionsAcrossLengthBoundary")
+    @DisplayName("should write a reason as long as the client reads and refuse a longer one")
+    void writeLengthLimit(ProtocolVersion version, int maxLength) {
+      String longest = "x".repeat(maxLength);
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        LoginDisconnect.CODEC.encode(new LoginDisconnect(longest), buf, version);
+
+        assertArrayEquals(prefixedString(longest), ByteBufUtil.getBytes(buf));
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> LoginDisconnect.CODEC.encode(new LoginDisconnect(longest + "x"), buf, version));
+      } finally {
+        buf.release();
+      }
+    }
+
+    @ParameterizedTest(name = "{0}: {1}")
+    @MethodSource("versionsAcrossLengthBoundary")
+    @DisplayName("should read a reason as long as vanilla writes and reject a longer one")
+    void readLengthLimit(ProtocolVersion version, int maxLength) {
+      String longest = "x".repeat(maxLength);
+
+      LoginDisconnect decoded =
+          LoginDisconnect.CODEC.decode(Unpooled.wrappedBuffer(prefixedString(longest)), version);
+
+      assertEquals(longest, decoded.reason());
+      assertThrows(
+          DecoderException.class,
+          () ->
+              LoginDisconnect.CODEC.decode(
+                  Unpooled.wrappedBuffer(prefixedString(longest + "x")), version));
+    }
+
+    /** A protocol string written out independently of the codec: VarInt length, then UTF-8. */
+    private static byte[] prefixedString(String text) {
+      byte[] utf8 = text.getBytes(StandardCharsets.UTF_8);
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        VarInt.write(buf, utf8.length);
+        buf.writeBytes(utf8);
+        return ByteBufUtil.getBytes(buf);
+      } finally {
+        buf.release();
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
