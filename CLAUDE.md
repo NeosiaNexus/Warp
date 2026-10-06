@@ -1,6 +1,6 @@
 # Warp Proxy
 
-High-performance Minecraft proxy in Java 25. Core innovation: **blind forwarding**, which skips decompression/deserialization for ~90% of PLAY-state packets.
+High-performance Minecraft proxy in Java 25. Core innovation: **blind forwarding**, which skips deserialization (and, with compression passthrough, decompression) for every PLAY-state packet the proxy does not act on.
 
 ## Build & Run
 
@@ -71,4 +71,4 @@ build-logic/ Gradle convention plugins (java, spotless, publish)
 - Hot path = packet forwarding. Zero allocations, no blocking, no locks.
 - Use Netty ByteBuf directly and avoid unnecessary copies or wrapping
 - Blind packets (unregistered) = raw ByteBuf passthrough, never deserialized
-- Profile before optimizing. Benchmarks live in integration tests.
+- Profile before optimizing. Benchmarks are JMH, in `protocol/src/jmh` (results in `docs/benchmarks/`).

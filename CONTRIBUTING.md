@@ -9,8 +9,9 @@ vulnerabilities are reported privately, never in an issue: see the [security pol
 
 **Requirements:**
 - Git
-- JDK 21 to run Gradle 8.12, which does not run on newer JDKs yet. Gradle compiles and tests with
-  JDK 25 through its toolchain support, and downloads one if none is installed.
+- JDK 21 to run Gradle (CI uses 21; Gradle 8.12 runs on JDK 23 at most, not on 24 or newer).
+  Gradle compiles and tests with JDK 25 through its toolchain support, and downloads one if none
+  is installed.
 - Node.js 22+, only for the [end-to-end tests](#end-to-end-tests)
 
 **Build & test:**

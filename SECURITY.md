@@ -21,13 +21,13 @@ Warp is in pre-release (`0.x`). Only the latest release receives security fixes:
 
 Report it privately through GitHub's private vulnerability reporting:
 **[Report a vulnerability](https://github.com/NeosiaNexus/Warp/security/advisories/new)** (also
-under the repository's *Security* tab). Only the maintainer can see the report, and the
+under the repository's *Security* tab). Only you and the maintainer can see the report, and the
 conversation and the fix are prepared in a private advisory.
 
 ## What to include
 
-- The affected component (proxy, protocol codec, API) and the Warp version or commit: the first
-  line Warp logs at startup, `Starting Warp <version> (commit: <sha>, branch: <branch>)`.
+- The affected component (proxy, protocol codec, API) and the Warp version or commit, from the
+  startup log line `Starting Warp <version> (commit: <sha>, branch: <branch>)`.
 - The Minecraft client version and the backend software involved, and the relevant `warp.conf`
   settings (`online-mode`, forwarding mode, compression), **without the forwarding secret**.
 - The impact: what an attacker can achieve, and from where (any client on the network, an

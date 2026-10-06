@@ -3,13 +3,13 @@
 [![CI](https://github.com/NeosiaNexus/Warp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/NeosiaNexus/Warp/actions/workflows/ci.yml?query=branch%3Amain)
 [![E2E matrix](https://github.com/NeosiaNexus/Warp/actions/workflows/e2e.yml/badge.svg?branch=main)](https://github.com/NeosiaNexus/Warp/actions/workflows/e2e.yml?query=branch%3Amain)
 [![CodeQL](https://github.com/NeosiaNexus/Warp/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/NeosiaNexus/Warp/actions/workflows/codeql.yml?query=branch%3Amain)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/NeosiaNexus/Warp/badge)](https://scorecard.dev/viewer/?uri=github.com/NeosiaNexus/Warp)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/NeosiaNexus/Warp/badge)](https://scorecard.dev/viewer/?uri=github.com/NeosiaNexus/Warp)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![Java 25](https://img.shields.io/badge/Java-25-orange.svg?logo=openjdk)](https://adoptium.net/)
 
-A high-performance Minecraft Java Edition proxy built on Java 25 and Netty. Warp forwards the
-packets it does not need to read exactly as they arrived: no decoding, no decompression, no
-recompression.
+A high-performance Minecraft Java Edition proxy built on Java 25 and Netty. Warp relays the
+packets it does not need to read as raw frames: no decoding and, when its compression threshold
+matches the backends', no decompression or recompression either.
 
 ## Why Warp
 
@@ -17,7 +17,7 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 
 | Problem | How Warp addresses it | Status |
 |---|---|---|
-| **Decompresses packets it never reads** | Blind forwarding: in play, Warp decodes only the few packet types it acts on and forwards every other frame as it arrived, compressed bytes included | Available |
+| **Decompresses packets it never reads** | Blind forwarding: in play, Warp decodes only the few packet types it acts on, and relays every other frame undecoded, still compressed when both sides use the same threshold | Available |
 | **Server switches that hang or crash the client** | A switch that does not complete within 30 s is ended instead of hanging on "Reconfiguring", no terminal packet is ever sent inside a bundle, and client settings are replayed to the new server | Available |
 | **Decompression bombs** | Impossible compression ratios are refused before inflating, sizes are capped, and each connection has an inflate budget | Available |
 | **No graceful drain** | Multi-phase drain with Transfer packet support, designed for rolling deployments and Kubernetes | Planned |
@@ -29,9 +29,10 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 
 > [!IMPORTANT]
 > **Pre-release.** Warp is under active development and not ready for production. Players can
-> join through it today (online or offline mode), play, switch servers and fall back when a server
-> fails. The plugin API, operations features and the rest of the [roadmap](#roadmap) are not built
-> yet. Releases are `0.1.0-beta` pre-releases; see the [changelog](CHANGELOG.md).
+> join through it today (online or offline mode) and play; on 1.20.2 and newer clients they can
+> also switch servers and fall back when a server fails. The plugin API, operations features and
+> the rest of the [roadmap](#roadmap) are not built yet. Releases are `0.1.0-beta` pre-releases;
+> see the [changelog](CHANGELOG.md).
 
 ## Features
 
@@ -43,11 +44,11 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
   virtual thread and never blocks the event loop. Offline mode is available for development.
 - **Player info forwarding**: [Velocity modern forwarding](https://docs.papermc.io/velocity/player-information-forwarding)
   (HMAC-SHA256 signed, Minecraft 1.13+ backends such as Paper), or none.
-- **Several backend servers**: `/server` lists them and switches between them. Switching uses the
-  configuration phase, so it needs 1.20.2+ clients.
-- **Fallback**: when a server is unreachable or refuses the login, Warp tries the servers of
-  `fallback-order` in turn before disconnecting the player. A 1.20.2+ player kicked during play is
-  moved to the next server the same way.
+- **Several backend servers**: `/server` lists them (1.19.3+ clients) and switches between them.
+  Switching uses the configuration phase, so it needs 1.20.2+ clients.
+- **Fallback** (1.20.2+ clients): when the server a player joins or switches to is unreachable or
+  refuses the login, or kicks them during play, Warp tries the servers of `fallback-order` in turn
+  before disconnecting the player. Older clients are disconnected instead.
 - **Server list ping** answered by Warp itself (a fixed response for now).
 
 **Performance**
@@ -56,12 +57,12 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
   connection to the other as raw bytes.
 - **Compression passthrough**: Warp reads the packet id of a compressed frame without inflating it.
   When Warp and the backends use the same compression threshold (256 by default, as on Paper),
-  every frame is forwarded verbatim in both directions: no inflate, no deflate, no copy. With
-  different thresholds, only the frames between the two are re-encoded. In the
-  [first micro-benchmarks](docs/benchmarks/2026-10-05-compression-passthrough.md), relaying a
-  compressed chunk took 8.2 µs instead of 838 µs (96 µs instead of 856 µs with encryption). These
-  are indicative numbers from a WSL2 machine and a synthetic corpus, not a published comparison:
-  read the caveats in the report.
+  every frame Warp does not inspect is forwarded verbatim in both directions: no inflate, no
+  deflate, no copy. With different thresholds, only the frames between the two are re-encoded.
+  In the [first micro-benchmarks](docs/benchmarks/2026-10-05-compression-passthrough.md),
+  relaying a compressed chunk took 8.2 µs instead of 838 µs (96 µs instead of 856 µs with
+  encryption). These are indicative numbers from a WSL2 machine and a synthetic corpus, not a
+  published comparison: read the caveats in the report.
 - **Both legs on one event loop**: a player's client and backend connections share an event loop,
   so forwarding involves no cross-thread hand-off. Writes are flushed once per read burst, with
   write-buffer back-pressure between the two sides.
@@ -75,8 +76,8 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 - **Modular architecture**: clean separation between API, protocol, proxy and native bindings.
 - **Compile-time null safety and static analysis**: ErrorProne, NullAway, Checkstyle, Spotless and
   JaCoCo on every build.
-- **Supply chain**: every third-party GitHub Action pinned to a commit, release jars published with
-  a `SHA256SUMS` file and a signed build provenance attestation.
+- **Supply chain**: every third-party GitHub Action pinned to a commit; the release workflow
+  publishes each jar with a `SHA256SUMS` file and a signed build provenance attestation.
 - **Automated releases**: Conventional Commits, release-please, SemVer with pre-releases.
 
 ### Roadmap
@@ -88,7 +89,7 @@ Planned, not implemented yet:
 - **Graceful drain** with Transfer packets, for rolling deployments and Kubernetes.
 - **Observability**: `/livez`, `/readyz` and `/startupz` health probes, Prometheus metrics,
   OpenTelemetry tracing.
-- **Server switching for clients older than 1.20.2.**
+- **Server switching and fallback for clients older than 1.20.2.**
 - **Configurable server list ping** (MOTD, player counts).
 - **Native compression and cryptography** (libdeflate, AES): `jni/` is a placeholder today.
 - **Plugin API on Maven Central.**
@@ -116,8 +117,9 @@ and [`e2e/versions.json`](e2e/versions.json) are the current answer to "does my 
 ### Requirements
 
 - **To run Warp**: Java 25 or newer ([Adoptium Temurin](https://adoptium.net/) recommended).
-- **To build it**: Git and JDK 21 to run Gradle 8.12, which does not run on newer JDKs yet. Gradle
-  compiles with JDK 25 through its toolchain support and downloads one if none is installed.
+- **To build it**: Git, and JDK 21 to run Gradle (CI uses 21; Gradle 8.12 runs on JDK 23 at most,
+  not on 24 or newer). Gradle compiles with JDK 25 through its toolchain support and downloads one
+  if none is installed.
 
 ### Build from source
 
@@ -127,10 +129,10 @@ cd Warp
 ./gradlew build
 ```
 
-The shadow JAR is produced at `proxy/build/libs/warp-<version>.jar`. Pre-built jars, with their
-checksums and provenance attestation, are attached to each
-[release](https://github.com/NeosiaNexus/Warp/releases); `main` moves faster than the releases
-during the beta.
+The shadow JAR is produced at `proxy/build/libs/warp-<version>.jar`. Pre-built jars are attached
+to the [releases](https://github.com/NeosiaNexus/Warp/releases); releases after 0.1.0-beta.5 also
+come with a `SHA256SUMS` file and a signed provenance attestation. During the beta, `main` moves
+well ahead of the releases: build from source to try the latest changes.
 
 ### Run
 
@@ -144,7 +146,8 @@ mkdir -p run && cd run
 
 `bin/warp.sh` starts the most recently built `proxy/build/libs/warp-*.jar` with tuned JVM flags
 (ZGC, async logging, and `sun.misc.Unsafe` access for Netty on Java 25). Set `WARP_JAR` to start
-another jar, such as a downloaded release. Without the scripts:
+another jar, such as a downloaded release. The scripts use the `java` on your `PATH`, which must be
+Java 25 or newer (not the JDK 21 that runs Gradle). Without the scripts:
 
 ```bash
 java --sun-misc-unsafe-memory-access=allow -jar /path/to/warp-<version>.jar

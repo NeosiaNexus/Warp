@@ -42,7 +42,7 @@ body:
     id: warp-version
     attributes:
       label: Warp version or commit
-      description: The first line Warp logs at startup.
+      description: The `Starting Warp` line of the startup log (it follows the configuration summary), or the jar's file name.
       placeholder: "Starting Warp 0.1.0-beta.5 (commit: abc1234, branch: main)"
     validations:
       required: true
