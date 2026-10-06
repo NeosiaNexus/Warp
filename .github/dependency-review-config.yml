@@ -1,10 +1,10 @@
-# Licence policy of the dependency review (.github/workflows/dependency-review.yml).
+# License policy of the dependency review (.github/workflows/dependency-review.yml).
 #
 # It applies to the dependencies a pull request adds or changes in the runtime scope: the libraries
 # shaded into Warp's jar or exposed to plugins through the API (npm also reports the e2e harness's
-# packages as runtime). Warp is AGPL-3.0-or-later, so they must be under a licence it can be combined
-# with. Any other licence fails the review: if the dependency is acceptable anyway, list its package
-# URL under allow-dependencies-licenses with a comment saying why. A licence GitHub cannot detect is
+# packages as runtime). Warp is AGPL-3.0-or-later, so they must be under a license it can be combined
+# with. Any other license fails the review: if the dependency is acceptable anyway, list its package
+# URL under allow-dependencies-licenses with a comment saying why. A license GitHub cannot detect is
 # reported without failing.
 
 allow-licenses:
@@ -37,7 +37,7 @@ allow-licenses:
   - MPL-2.0
   - GPL-3.0-or-later
   - AGPL-3.0-or-later
-  # The OpenJDK class library licence: copyleft with a linking exception
+  # The OpenJDK class library license: copyleft with a linking exception
   - GPL-2.0-only WITH Classpath-exception-2.0
 
 # Reviewed exceptions, by package URL (any version unless one is given).

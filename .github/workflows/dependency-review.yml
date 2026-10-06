@@ -3,7 +3,7 @@ name: Dependency review
 # Compares the dependencies of a pull request with those of its base: GitHub Actions and npm from
 # the manifests, Gradle from the snapshots of dependency-graph.yml. Fails on a known vulnerability
 # of moderate severity or above in any dependency the pull request adds or changes, and on a
-# runtime dependency whose licence is not in .github/dependency-review-config.yml. The report is the
+# runtime dependency whose license is not in .github/dependency-review-config.yml. The report is the
 # job summary; nothing is posted on the pull request.
 on:
   pull_request:
@@ -16,11 +16,11 @@ concurrency:
 
 jobs:
   review:
-    name: Vulnerabilities & licences
+    name: Vulnerabilities & licenses
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
-      contents: read # check out the licence policy, read the dependency graph
+      contents: read # check out the license policy, read the dependency graph
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -72,9 +72,9 @@ jobs:
           show-patched-versions: true
           comment-summary-in-pr: never
 
-      # Licences matter for what Warp distributes: the runtime scope only. Runs even when the step
+      # Licenses matter for what Warp distributes: the runtime scope only. Runs even when the step
       # above failed, so that one run reports both.
-      - name: Review licences
+      - name: Review licenses
         if: ${{ !cancelled() }}
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:

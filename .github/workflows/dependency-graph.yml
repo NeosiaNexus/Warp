@@ -37,7 +37,7 @@ jobs:
 
       # Scopes: what ships in the jar or reaches plugins through the API (the runtime classpath of
       # the four modules) is `runtime`; tests, benchmarks and build tools are `development`. The
-      # dependency review checks licences on the runtime scope only.
+      # dependency review checks licenses on the runtime scope only.
       - name: Generate the dependency graph
         uses: gradle/actions/dependency-submission@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
         env:
@@ -46,3 +46,6 @@ jobs:
         with:
           dependency-graph: generate-and-upload
           artifact-retention-days: 7
+          # setup-build already set Gradle up with this provider (only a job's first gradle/actions
+          # step does); stated anyway so that the proprietary default provider can never apply.
+          cache-provider: basic

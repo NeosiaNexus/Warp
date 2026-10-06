@@ -7,7 +7,9 @@ name: Scorecard
 # Publishing requires this exact workflow shape, checked by the OpenSSF API: no workflow or job
 # `env`/`defaults`, no write permission at the workflow level, and only these actions in the job.
 on:
-  # Runs again when a branch protection rule changes, for the Branch-Protection check.
+  # Runs again when a classic branch protection rule changes, for the Branch-Protection check.
+  # Changes to a ruleset (what protects main today) trigger no workflow: the next push or weekly
+  # run picks them up.
   branch_protection_rule:
   push:
     branches: [main]
