@@ -1,19 +1,19 @@
-name: Bug Report
+name: Bug report
 description: Report a bug or unexpected behavior in Warp.
 labels: ["type: bug", "status: needs triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a bug. Please fill out the fields below so we can reproduce and fix it.
+        Thanks for taking the time to report a bug. The details below are what it takes to reproduce a proxy issue: which client, which backend, which mode.
 
-        **Security vulnerabilities** — do NOT open a public issue. Use [GitHub Security Advisories](https://github.com/NeosiaNexus/warp/security/advisories/new) instead.
+        **Security vulnerabilities must not be reported here.** Use [private vulnerability reporting](https://github.com/NeosiaNexus/Warp/security/advisories/new) instead (see [SECURITY.md](https://github.com/NeosiaNexus/Warp/blob/main/SECURITY.md)). For questions, use [Discussions](https://github.com/NeosiaNexus/Warp/discussions/categories/q-a).
 
   - type: textarea
     id: description
     attributes:
-      label: Description
-      description: A clear and concise description of the bug.
+      label: What happened?
+      description: What went wrong, and what the player or the console saw (kick message, client crash, error).
     validations:
       required: true
 
@@ -21,15 +21,7 @@ body:
     id: expected
     attributes:
       label: Expected behavior
-      description: What did you expect to happen?
-    validations:
-      required: true
-
-  - type: textarea
-    id: actual
-    attributes:
-      label: Actual behavior
-      description: What actually happened? Include error messages or stack traces if applicable.
+      description: What should have happened instead?
     validations:
       required: true
 
@@ -37,29 +29,98 @@ body:
     id: steps
     attributes:
       label: Steps to reproduce
-      description: Minimal steps to reproduce the issue.
+      description: The smallest setup and steps that trigger the bug.
       placeholder: |
-        1. Start Warp with config ...
-        2. Connect with client version ...
-        3. Observe ...
+        1. Start Warp with two Paper backends (lobby, survival)
+        2. Join with a 1.21.4 client
+        3. Run /server survival
+        4. ...
     validations:
       required: true
 
   - type: input
     id: warp-version
     attributes:
-      label: Warp version
-      description: Output of the version command or the JAR filename.
-      placeholder: "0.1.0-beta.2"
+      label: Warp version or commit
+      description: The `Starting Warp` line of the startup log (it follows the configuration summary), or the jar's file name.
+      placeholder: "Starting Warp 0.1.0-beta.5 (commit: abc1234, branch: main)"
     validations:
       required: true
+
+  - type: input
+    id: client-version
+    attributes:
+      label: Minecraft client version
+      description: Version and launcher, with any mods that touch networking (ViaFabricPlus, Krypton, ...).
+      placeholder: "1.21.4 vanilla; 1.20.1 Fabric with Sodium"
+    validations:
+      required: true
+
+  - type: input
+    id: backend
+    attributes:
+      label: Backend software and version
+      description: For each backend involved, including the build number and proxy-related plugins or mods.
+      placeholder: "Paper 1.21.4 build 232; Fabric 1.20.1 with FabricProxy-Lite"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: online-mode
+    attributes:
+      label: Online mode
+      description: "`online-mode` in `warp.conf`."
+      options:
+        - "Online (online-mode = true)"
+        - "Offline (online-mode = false)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: forwarding-mode
+    attributes:
+      label: Forwarding mode
+      description: "`forwarding.mode` in `warp.conf`."
+      options:
+        - "velocity (modern forwarding)"
+        - "none"
+    validations:
+      required: true
+
+  - type: input
+    id: compression
+    attributes:
+      label: Compression settings
+      description: "Warp's `compression.threshold` and `compression.passthrough`, and the backends' `network-compression-threshold`, if you changed any of them."
+      placeholder: "Warp threshold 256, passthrough true; Paper 256"
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        Warp's console or `logs/warp.log` around the problem, and the client or backend error if there is one. Remove anything you do not want to share (IP addresses, tokens). This field is formatted as code automatically.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Your `warp.conf`, or the relevant part of it. Never paste the forwarding secret.
+      render: hocon
+    validations:
+      required: false
 
   - type: input
     id: java-version
     attributes:
       label: Java version
-      description: Output of `java -version`.
-      placeholder: "OpenJDK 25.0.2"
+      description: Output of `java -version` on the machine running Warp.
+      placeholder: "OpenJDK 25.0.2 (Temurin)"
     validations:
       required: true
 
@@ -73,24 +134,23 @@ body:
         - macOS (x86_64)
         - macOS (aarch64)
         - Windows
-        - Docker / Container
+        - Docker / container
         - Other
     validations:
       required: true
 
   - type: textarea
-    id: plugins
-    attributes:
-      label: Plugins
-      description: List of plugins loaded on the proxy, if any.
-      placeholder: "None"
-    validations:
-      required: false
-
-  - type: textarea
     id: additional
     attributes:
       label: Additional context
-      description: Logs, screenshots, config snippets, or anything else that might help.
+      description: Screenshots, packet captures, anything else that might help.
     validations:
       required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues and this bug is not reported yet.
+          required: true
