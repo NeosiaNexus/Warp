@@ -26,6 +26,7 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.VarInt;
 
 import java.nio.charset.StandardCharsets;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Stream;
@@ -236,6 +237,31 @@ class ConfigPacketsTest {
         assertTrue(decoded.enableTextFiltering());
         assertEquals(false, decoded.allowServerListings());
         assertEquals(2, decoded.particleStatus());
+      } finally {
+        buf.release();
+      }
+    }
+
+    /**
+     * A 26.1 client's packet as node-minecraft-protocol 1.68 serialises it, packet id excluded: the
+     * layout of 1.21.2, which every protocol up to 26.1 keeps (vanilla 26.1 writes the same
+     * fields). Every field is away from its default, so a field read at the wrong place shows.
+     */
+    @Test
+    @DisplayName("should decode a 26.1 client's packet and encode it back to the same bytes")
+    void keepsTheBytesOfA26Client() {
+      String wireHex = "05656e5f47420c01017f00010002";
+      ByteBuf buf = Unpooled.buffer().writeBytes(HexFormat.of().parseHex(wireHex));
+      try {
+        ClientInformation decoded =
+            ClientInformation.CODEC.decode(buf, ProtocolVersion.MINECRAFT_26_1);
+        buf.clear();
+        ClientInformation.CODEC.encode(decoded, buf, ProtocolVersion.MINECRAFT_26_1);
+
+        assertEquals(
+            new ClientInformation("en_GB", (byte) 12, 1, true, (byte) 0x7F, 0, true, false, 2),
+            decoded);
+        assertEquals(wireHex, HexFormat.of().formatHex(ByteBufUtil.getBytes(buf)));
       } finally {
         buf.release();
       }

@@ -172,6 +172,7 @@ public final class ProtocolVersion implements Comparable<ProtocolVersion> {
   // ---------------------------------------------------------------------------
   public static final ProtocolVersion MINECRAFT_26_1 = register(775, "26.1");
   public static final ProtocolVersion MINECRAFT_26_1_1 = register(775, "26.1.1");
+  public static final ProtocolVersion MINECRAFT_26_1_2 = register(775, "26.1.2");
 
   /** Cached unmodifiable view of all registered versions. */
   private static final List<ProtocolVersion> UNMODIFIABLE_VERSIONS =
@@ -221,7 +222,7 @@ public final class ProtocolVersion implements Comparable<ProtocolVersion> {
   }
 
   /**
-   * Returns the newest supported version (1.21.4 at the time of writing).
+   * Returns the newest supported version: the last one registered.
    *
    * @return the latest registered protocol version
    */
@@ -230,7 +231,7 @@ public final class ProtocolVersion implements Comparable<ProtocolVersion> {
   }
 
   /**
-   * Returns the oldest supported version (1.7.2 at the time of writing).
+   * Returns the oldest supported version: the first one registered.
    *
    * @return the earliest registered protocol version
    */

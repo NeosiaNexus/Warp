@@ -123,20 +123,10 @@ class StateRegistryTest {
   class MojangReportIds {
 
     /**
-     * The protocols whose packet ids are known to be wrong: 1.21.5 to 26.1 still use the ids of
-     * 1.21.4 (#48). Each must keep differing from Mojang's report, so that fixing one fails the
-     * build until it leaves this set.
+     * The protocols whose packet ids are known to be wrong, none today. Each must keep differing
+     * from Mojang's report, so that fixing one fails the build until it leaves this set.
      */
-    private static final Set<Integer> KNOWN_WRONG =
-        Stream.of(
-                ProtocolVersion.MINECRAFT_1_21_5,
-                ProtocolVersion.MINECRAFT_1_21_6,
-                ProtocolVersion.MINECRAFT_1_21_7,
-                ProtocolVersion.MINECRAFT_1_21_9,
-                ProtocolVersion.MINECRAFT_1_21_11,
-                ProtocolVersion.MINECRAFT_26_1)
-            .map(ProtocolVersion::protocol)
-            .collect(Collectors.toUnmodifiableSet());
+    private static final Set<Integer> KNOWN_WRONG = Set.of();
 
     /**
      * Mojang's name of each packet Warp registers from 1.21 on, in each state and direction, as the
@@ -439,34 +429,36 @@ class StateRegistryTest {
 
     private final PacketRegistry serverbound = StateRegistry.get(PLAY, SERVERBOUND);
 
-    @ParameterizedTest(name = "{0}")
-    @MethodSource("signedCommandSplit")
-    @DisplayName("should decode the unsigned command at 0x04 and forward the signed one at 0x05")
-    void unsignedCommandAt0x04(ProtocolVersion version) {
-      assertSame(ChatCommand.CODEC, serverbound.lookup(version, 0x04));
-      assertNull(serverbound.lookup(version, 0x05));
+    @ParameterizedTest(name = "{0}: unsigned at {1}, signed at {2}")
+    @MethodSource("commandIds")
+    @DisplayName("should decode the unsigned command and forward the signed one untouched")
+    void decodeOnlyUnsignedCommand(ProtocolVersion version, int unsigned, int signed) {
+      assertSame(ChatCommand.CODEC, serverbound.lookup(version, unsigned));
+      assertNull(serverbound.lookup(version, signed));
     }
 
-    @ParameterizedTest(name = "{0}")
-    @MethodSource("bothCommandsMoved")
-    @DisplayName("should decode the unsigned command at 0x05 and forward the signed one at 0x06")
-    void unsignedCommandAt0x05(ProtocolVersion version) {
-      assertSame(ChatCommand.CODEC, serverbound.lookup(version, 0x05));
-      assertNull(serverbound.lookup(version, 0x06));
-    }
-
-    /** 1.20.5 to 1.21.1: the unsigned command stayed at 0x04, the new signed one took 0x05. */
-    static Stream<ProtocolVersion> signedCommandSplit() {
+    /**
+     * Every version from 1.20.5, with the ids of its two command packets: the unsigned command
+     * stayed at 0x04 when the signed one split off at 0x05, and both moved together since (Mojang's
+     * reports, from 1.21 on).
+     */
+    static Stream<Arguments> commandIds() {
       return ProtocolVersion.values().stream()
-          .filter(
-              v -> v.isBetween(ProtocolVersion.MINECRAFT_1_20_5, ProtocolVersion.MINECRAFT_1_21_1));
+          .filter(v -> v.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5))
+          .map(v -> Arguments.of(v, unsignedCommandId(v), unsignedCommandId(v) + 1));
     }
 
-    /** 1.21.2 to 1.21.4: both moved up by one (1.21.5+ is audited in #48). */
-    static Stream<ProtocolVersion> bothCommandsMoved() {
-      return ProtocolVersion.values().stream()
-          .filter(
-              v -> v.isBetween(ProtocolVersion.MINECRAFT_1_21_2, ProtocolVersion.MINECRAFT_1_21_4));
+    private static int unsignedCommandId(ProtocolVersion version) {
+      if (version.isAtLeast(ProtocolVersion.MINECRAFT_26_1)) {
+        return 0x07;
+      }
+      if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_21_6)) {
+        return 0x06;
+      }
+      if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_21_2)) {
+        return 0x05;
+      }
+      return 0x04;
     }
   }
 

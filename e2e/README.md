@@ -74,8 +74,7 @@ One entry per protocol number:
   "protocol": 773,
   "java": 21,
   "client": "1.21.9",
-  "server": { "type": "paper", "version": "1.21.10", "build": 130, "url": "…", "sha256": "…" },
-  "knownBroken": "packet ids for 1.21.5+ not audited yet (#48)"
+  "server": { "type": "paper", "version": "1.21.10", "build": 130, "url": "…", "sha256": "…" }
 }
 ```
 
