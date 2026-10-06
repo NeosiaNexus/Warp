@@ -42,6 +42,9 @@ allow-licenses:
 
 # Reviewed exceptions, by package URL (any version unless one is given).
 allow-dependencies-licenses:
+  # Guava, Caffeine and Gson depend on it. Apache-2.0, the only license its POM and sources state,
+  # which GitHub reports as "Apache-1.1 AND Apache-2.0" for its recent releases.
+  - pkg:maven/com.google.errorprone/error_prone_annotations
   # e2e harness only, never distributed: declares "BSD" with no version, which ClearlyDefined
   # reports as LicenseRef-bad-bsd.
   - pkg:npm/vec3
