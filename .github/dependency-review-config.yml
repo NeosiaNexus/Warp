@@ -40,8 +40,14 @@ allow-licenses:
   # The OpenJDK class library license: copyleft with a linking exception
   - GPL-2.0-only WITH Classpath-exception-2.0
 
-# Reviewed exceptions, by package URL (any version unless one is given).
+# Reviewed exceptions, by package URL. The action matches type, namespace and name, never the
+# version: an entry covers every version of its package.
 allow-dependencies-licenses:
   # e2e harness only, never distributed: declares "BSD" with no version, which ClearlyDefined
   # reports as LicenseRef-bad-bsd.
   - pkg:npm/vec3
+  # Pulled in by Gson. Apache-2.0: its POM, every source header and the COPYING file of
+  # google/error-prone say so. ClearlyDefined declares 2.48.0 "Apache-1.1 AND Apache-2.0" because
+  # ScanCode reads Apache-1.1 into its META-INF/MANIFEST.MF, whose only license text is
+  # `Bundle-License: "Apache 2.0";link="http://www.apache.org/licenses/LICENSE-2.0.txt"`.
+  - pkg:maven/com.google.errorprone/error_prone_annotations
