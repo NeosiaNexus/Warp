@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { parseNetemSpec } from '../src/netem.js';
-import { RESOURCES, checkGrowth, csv, soakMarkdown, warmUpMs } from '../src/soak.js';
+import { RESOURCES, checkGrowth, csv, retainedObjects, soakMarkdown, warmUpMs } from '../src/soak.js';
 
 const rss = RESOURCES.find((r) => r.key === 'rss');
 const heapLive = RESOURCES.find((r) => r.key === 'heapLive');
@@ -57,6 +57,39 @@ describe('leak check', () => {
     assert.equal(warmUpMs(10 * 60_000), 120_000);
     assert.equal(warmUpMs(3 * 60_000), 60_000);
     assert.equal(warmUpMs(60_000), 30_000);
+  });
+});
+
+describe('objects left once every player has left', () => {
+  const histogram = (entries) => new Map(Object.entries(entries));
+  const before = histogram({ 'dev.warp.proxy.WarpServer': 1, 'io.netty.channel.epoll.EpollServerSocketChannel': 1, '[B': 9000 });
+
+  it('passes when Warp is back to what it held before the first player, give or take a cache per player', () => {
+    const after = histogram({ 'dev.warp.proxy.WarpServer': 1, 'dev.warp.proxy.server.Registry': 1, 'dev.warp.proxy.auth.Profile': 20, '[B': 12000 });
+    const retained = retainedObjects(before, after, 20);
+
+    assert.equal(retained.status, 'pass');
+    assert.deepEqual(retained.classes.map((c) => `${c.name} +${c.growth}`), ['dev.warp.proxy.auth.Profile +20', 'dev.warp.proxy.server.Registry +1']);
+  });
+
+  it('fails on objects kept per connection: players, channels', () => {
+    const after = histogram({
+      'dev.warp.proxy.WarpServer': 1,
+      'dev.warp.proxy.connection.ConnectedPlayer': 65,
+      'io.netty.channel.epoll.EpollSocketChannel': 130,
+      'io.netty.channel.epoll.EpollServerSocketChannel': 1,
+    });
+    const retained = retainedObjects(before, after, 20);
+
+    assert.equal(retained.status, 'fail');
+    assert.equal(retained.leaked, 2);
+    assert.deepEqual(retained.classes.map((c) => c.name), ['io.netty.channel.epoll.EpollSocketChannel', 'dev.warp.proxy.connection.ConnectedPlayer']);
+  });
+
+  it('only tracks Warp and Netty channels, not the libraries Warp relocates', () => {
+    const after = histogram({ ...Object.fromEntries(before), 'dev.warp.libs.caffeine.cache.Node': 500, 'java.lang.String': 90000 });
+
+    assert.deepEqual(retainedObjects(before, after, 20), { status: 'pass', limit: 20, before: 1, after: 1, leaked: 0, classes: [] });
   });
 });
 

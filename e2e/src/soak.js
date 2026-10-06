@@ -1,16 +1,16 @@
 // Soak: a crowd of bots stays connected through Warp for a long time, switching servers and
 // reconnecting, while the harness samples Warp's process (src/sampler.js). It fails on sustained
-// growth of memory, file descriptors or threads (a leak), on connections Warp still holds once every
-// player has left, and on any bot failure (kick, protocol error, stalled connection). Warp's log
-// (ERROR, Netty LEAK) and its shutdown are checked by the runner, as after every scenario.
+// growth of memory, file descriptors or threads (a leak), on connections or objects Warp still holds
+// once every player has left, and on any bot failure (kick, protocol error, stalled connection).
+// Warp's log (ERROR, Netty LEAK) and its shutdown are checked by the runner, as after every scenario.
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { sleep } from './proc.js';
-import { ProcessSampler } from './sampler.js';
+import { ProcessSampler, parseHistogram } from './sampler.js';
 import { LOBBY_MODE, SURVIVAL_MODE, checkStatus } from './scenarios.js';
 
-/** One churn cycle: a quarter of the bots switch server, a tenth reconnect, one server list ping. */
+/** One churn cycle: a quarter of the bots switch server, a fifth reconnect, one server list ping. */
 const CYCLE_MS = 10_000;
 const SAMPLE_EVERY_MS = 5_000;
 /** Each forced full GC measures the live heap, and lets Netty report the buffers leaked so far. */
@@ -53,6 +53,12 @@ export const RESOURCES = [
   { key: 'threads', label: 'Threads', unit: '', abs: 4, rel: 0.1 },
 ];
 
+/**
+ * Classes whose objects must not outlive the players: Warp's own (not the libraries it relocates
+ * under dev.warp.libs) and Netty's socket channels.
+ */
+const TRACKED_CLASS = /^(?:dev\.warp\.(?!libs\.).*|io\.netty\.channel\..*(?<!Server)SocketChannel)$/;
+
 /** Warm-up: a fifth of the soak, 1 to 5 minutes (at most half of it). The leak checks skip it. */
 export function warmUpMs(durationMs) {
   return Math.min(Math.max(durationMs * 0.2, 60_000), 300_000, durationMs / 2);
@@ -90,9 +96,12 @@ export async function soak(ctx) {
   const network = ctx.netem ? { spec: ctx.netem.spec, before: await ctx.netem.stats() } : null;
   log(`soak: ${ctx.bots} bots for ${ctx.soak.minutes} min (warm-up ${clock(warmUp / 1000)})${network ? `, netem ${network.spec}` : ''}`);
 
+  const histogram = async () => parseHistogram(await warp.jcmd(['GC.class_histogram']));
+  const objects = { before: null, after: null };
   let error = null;
   let drain = null;
   await sampler.sample({ gc: true }); // Warp idle, before the first player
+  objects.before = await histogram();
   sampler.start();
   try {
     await crowd.join();
@@ -115,11 +124,15 @@ export async function soak(ctx) {
   } finally {
     await crowd.leave();
     await sampler.stop();
-    if (warp.process.alive) await sampler.sample({ gc: true }); // every player gone: back to idle
+    if (warp.process.alive) {
+      // Every player gone: Warp is idle again, and should hold what it held before the first.
+      await sampler.sample({ gc: true });
+      objects.after = await histogram().catch(() => null);
+    }
   }
   if (network) network.after = await ctx.netem.stats();
 
-  const report = summarize({ ctx, samples: sampler.samples, crowd, warmUp, durationMs, drain, network, error });
+  const report = summarize({ ctx, samples: sampler.samples, crowd, warmUp, durationMs, drain, objects, network, error });
   const base = join(ctx.soak.dir, `soak-${ctx.variant.name}`);
   writeFileSync(`${base}.json`, `${JSON.stringify({ ...report, samples: sampler.samples }, null, 2)}\n`);
   writeFileSync(`${base}.csv`, csv(sampler.samples));
@@ -129,7 +142,7 @@ export async function soak(ctx) {
   if (error) throw error;
   if (report.problems.length) throw new Error(report.problems.join('; '));
   const ops = report.phases.reduce((sum, p) => ({ switches: sum.switches + p.switches, joins: sum.joins + p.joins }), { switches: 0, joins: 0 });
-  return `${ctx.bots} bots for ${ctx.soak.minutes} min: ${ops.switches} switches, ${ops.joins} joins, no leak, every connection released`;
+  return `${ctx.bots} bots for ${ctx.soak.minutes} min: ${ops.switches} switches, ${ops.joins} joins, no leak, every connection and object released`;
 }
 
 /** Polls Warp's connections until none is left; null fields if it still holds some at the deadline. */
@@ -177,7 +190,7 @@ class Crowd {
   }
 
   /**
-   * One cycle: a quarter of the bots switch server and a tenth reconnect (each in turn, so that
+   * One cycle: a quarter of the bots switch server and a fifth reconnect (each in turn, so that
    * every bot does both), bots that failed come back, and a server list ping goes through.
    */
   async cycle() {
@@ -187,7 +200,7 @@ class Crowd {
     const switching = at(this.cycles * Math.ceil(size / 4), Math.ceil(size / 4)).filter((name) => this.bots.has(name));
     const rejoining = new Set([
       ...this.names.filter((name) => !this.bots.has(name)),
-      ...at(Math.floor(size / 2) + this.cycles * Math.ceil(size / 10), Math.ceil(size / 10)).filter((name) => !switching.includes(name)),
+      ...at(Math.floor(size / 2) + this.cycles * Math.ceil(size / 5), Math.ceil(size / 5)).filter((name) => !switching.includes(name)),
     ]);
     this.cycles++;
     await Promise.all([...switching.map((name) => this.switchServer(name)), ...[...rejoining].map((name) => this.rejoin(name)), this.ping()]);
@@ -294,8 +307,25 @@ export function checkGrowth(samples, resource, from, to) {
   return { status: sustained ? 'fail' : 'pass', first, middle, last, growth, limit };
 }
 
+/**
+ * Objects of the tracked classes that outlived the players: instances once every player has left,
+ * against before the first one joined. A class may keep up to one more per player (a cache keyed
+ * by player), not more: that is an object per connection or per switch, kept.
+ */
+export function retainedObjects(before, after, players) {
+  const grown = [...after]
+    .filter(([name]) => TRACKED_CLASS.test(name))
+    .map(([name, count]) => ({ name, before: before.get(name) ?? 0, after: count }))
+    .map((c) => ({ ...c, growth: c.after - c.before }))
+    .filter((c) => c.growth > 0)
+    .sort((a, b) => b.growth - a.growth || a.name.localeCompare(b.name));
+  const total = (histogram) => [...histogram].filter(([name]) => TRACKED_CLASS.test(name)).reduce((sum, [, count]) => sum + count, 0);
+  const leaked = grown.filter((c) => c.growth > players);
+  return { status: leaked.length ? 'fail' : 'pass', limit: players, before: total(before), after: total(after), leaked: leaked.length, classes: grown.slice(0, 10) };
+}
+
 /** The soak's verdict and statistics, as stored in result.json and rendered in the summaries. */
-export function summarize({ ctx, samples, crowd, warmUp, durationMs, drain, network, error }) {
+export function summarize({ ctx, samples, crowd, warmUp, durationMs, drain, objects, network, error }) {
   const end = samples.at(-1)?.t ?? 0;
   const steady = [warmUp / 1000, durationMs / 1000];
   const resources = RESOURCES.map((resource) => {
@@ -314,6 +344,12 @@ export function summarize({ ctx, samples, crowd, warmUp, durationMs, drain, netw
   for (const r of resources.filter((x) => x.status === 'fail')) {
     problems.push(`${r.label} grew by ${amount(r.growth, r.unit)} over the steady phase (limit ${amount(r.limit, r.unit)})`);
   }
+  const retained = objects.before && objects.after ? retainedObjects(objects.before, objects.after, ctx.bots) : null;
+  if (retained?.status === 'fail') {
+    const [top] = retained.classes;
+    const others = retained.leaked > 1 ? `, and ${retained.leaked - 1} other class(es)` : '';
+    problems.push(`Warp held ${top.growth} more ${top.name} objects once every player had left than before the first joined (limit ${retained.limit}, one per player)${others}`);
+  }
   if (drain && drain.seconds === null) problems.push(`Warp still holds ${drain.clients} client and ${drain.backends} backend connection(s) ${DRAIN_TIMEOUT_MS / 1000} s after every player left`);
   if (crowd.failures.length) problems.push(`${crowd.failures.length} bot failure(s), first: ${describeFailure(crowd.failures[0])}`);
   if (error) problems.unshift(String(error.message ?? error).split('\n')[0]);
@@ -329,6 +365,7 @@ export function summarize({ ctx, samples, crowd, warmUp, durationMs, drain, netw
     resources,
     heap: { peak: heapPeak, max: heapMax },
     drain,
+    objects: retained,
     phases,
     network: network && { spec: network.spec, ...difference(network.before, network.after) },
     failures: crowd.failures,
@@ -429,6 +466,11 @@ export function consoleSummary(report) {
     const steady = r.status === 'skip' ? 'not enough samples' : `${amount(r.first, r.unit)} → ${amount(r.last, r.unit)} (limit +${amount(r.limit, r.unit)})`;
     lines.push(`  ${r.status === 'fail' ? '✗' : '✓'} ${r.label.padEnd(26)} start ${amount(r.start, r.unit).padStart(8)}  peak ${amount(r.peak, r.unit).padStart(8)}  end ${amount(r.end, r.unit).padStart(8)}  steady ${steady}`);
   }
+  if (report.objects) {
+    const [top] = report.objects.classes;
+    const largest = top ? `, largest growth ${top.name} +${top.growth}` : '';
+    lines.push(`  ${report.objects.status === 'fail' ? '✗' : '✓'} ${'Objects once all left'.padEnd(26)} ${report.objects.before} → ${report.objects.after} tracked objects${largest} (limit +${report.objects.limit} per class)`);
+  }
   for (const p of report.phases) {
     lines.push(`  ${p.name.padEnd(8)} ${clock(p.from)}-${clock(p.to)}  ${p.joins} joins, ${p.switches} switches, ${p.pings} pings, ${p.failures} failures`);
   }
@@ -471,7 +513,19 @@ export function soakMarkdown(result, variant) {
   }
   lines.push(`| Heap used | | | ${amount(soak.heap.peak, 'MiB')} of ${amount(soak.heap.max, 'MiB')} | | | |`);
   const held = soak.drain ? soak.drain.clients + soak.drain.backends : null;
-  lines.push(`| Connections once every player left | | | | ${held ?? '?'} | none | ${held === 0 ? '✅' : '❌'} |`, '');
+  lines.push(`| Connections once every player left | | | | ${held ?? '?'} | none | ${held === 0 ? '✅' : '❌'} |`);
+  const objects = soak.objects;
+  if (objects) {
+    const icon = objects.status === 'pass' ? '✅' : '❌';
+    lines.push(`| Objects of Warp and Netty channels | ${count(objects.before)} | | | ${count(objects.after)} | +${objects.limit} per class | ${icon} |`);
+  }
+  lines.push('');
+  if (objects?.classes.length) {
+    lines.push(`<details${objects.status === 'fail' ? ' open' : ''}><summary>Classes with more objects once every player had left than before the first joined</summary>`, '');
+    lines.push('| Class | Before | After | |', '|---|--:|--:|:-:|');
+    for (const c of objects.classes) lines.push(`| \`${c.name}\` | ${count(c.before)} | ${count(c.after)} | ${c.growth > objects.limit ? '❌' : '✅'} |`);
+    lines.push('', '</details>', '');
+  }
 
   const phases = soak.phases;
   const row = (label, cell) => lines.push(`| ${label} | ${phases.map((p) => cell(p) ?? '').join(' | ')} |`);
@@ -532,6 +586,7 @@ const describeFailure = (f) => `${f.op}${f.bot ? ` ${f.bot}` : ''}: ${f.error}`;
 const signed = (value, unit) => `${value >= 0 ? '+' : '−'}${amount(Math.abs(value), unit)}`;
 const count = (n) => (n ?? 0).toLocaleString('en-US');
 const withLatency = (n, ms) => (ms ? `${count(n)} (${ms.p50} / ${ms.p95} ms)` : count(n));
-const escape = (text) => String(text).replace(/\|/g, '\\|').replace(/</g, '&lt;').slice(0, 300);
+/** Makes text safe in a Markdown table cell or list: backslashes first, then pipes and tags. */
+const escape = (text) => String(text).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/</g, '&lt;').slice(0, 300);
 const clock = (seconds) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 const log = (message) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${message}`);

@@ -202,20 +202,36 @@ export function classifyConnections(inodes, table, { port, backends }) {
  * Netty's direct buffers. Metaspace is what its two parts (metadata, class space) use.
  */
 export function parseJcmd(text) {
-  const kib = (pattern) => {
-    const value = pattern.exec(text)?.[1];
-    return value === undefined ? null : Number(value);
+  const number = (match) => (match ? Number(match[1]) : null);
+  // The first "used=" after the heading of a metaspace part ("Metadata:", "Class space:").
+  const used = (heading) => {
+    const at = text.indexOf(heading);
+    return at < 0 ? null : number(/used=(\d+)KB/.exec(text.slice(at)));
   };
   const heap = /committed (\d+)K, used (\d+)K/.exec(text);
-  const direct = kib(/^-\s+Other \(reserved=\d+KB, committed=(\d+)KB/m);
-  const metadata = kib(/\(\s*Metadata:\s*\)(?:\s*\(.*\))*?\s*\(\s*used=(\d+)KB\)/);
-  const classSpace = kib(/\(\s*Class space:\s*\)(?:\s*\(.*\))*?\s*\(\s*used=(\d+)KB\)/);
+  const direct = number(/^-\s+Other \(reserved=\d+KB, committed=(\d+)KB/m.exec(text));
+  const metadata = used('Metadata:');
+  const classSpace = used('Class space:');
   return {
     heapCommitted: heap ? mib(Number(heap[1]) * 1024) : null,
     heapUsed: heap ? mib(Number(heap[2]) * 1024) : null,
     direct: direct === null ? null : mib(direct * 1024),
     metaspace: metadata === null ? null : mib((metadata + (classSpace ?? 0)) * 1024),
   };
+}
+
+/**
+ * Live instances per class from `GC.class_histogram` (which collects garbage first). The lambdas
+ * and other hidden classes of a class are counted together, without their address suffix.
+ * @returns {Map<string, number>}
+ */
+export function parseHistogram(text) {
+  const counts = new Map();
+  for (const [, instances, name] of text.matchAll(/^\s*\d+:\s+(\d+)\s+\d+\s+(\S+)/gm)) {
+    const key = name.replace(/\/0x[0-9a-f]+$/, '');
+    counts.set(key, (counts.get(key) ?? 0) + Number(instances));
+  }
+  return counts;
 }
 
 const mib = (bytes) => Math.round((bytes / MIB) * 10) / 10;

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { classifyConnections, parseCpuTicks, parseJcmd, parseStatus, parseTcpTable } from '../src/sampler.js';
+import { classifyConnections, parseCpuTicks, parseHistogram, parseJcmd, parseStatus, parseTcpTable } from '../src/sampler.js';
 
 describe('/proc parsers', () => {
   it('reads resident memory and threads from /proc/<pid>/status', () => {
@@ -72,5 +72,26 @@ Total: reserved=1606838KB, committed=231910KB
     const output = 'garbage-first heap   total reserved 524288K, committed 524288K, used 102400K [0x0, 0x1)\n';
 
     assert.deepEqual(parseJcmd(output), { heapCommitted: 512, heapUsed: 100, direct: null, metaspace: null });
+  });
+});
+
+describe('class histogram parser', () => {
+  it('counts live instances per class, the hidden classes of a class together', () => {
+    const output = `331908:
+ num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:         17014         896184  [B (java.base@25.0.2)
+   2:          3479         447816  java.lang.Class (java.base@25.0.2)
+ 437:            65           3120  dev.warp.proxy.connection.ConnectedPlayer
+ 438:             3             48  dev.warp.proxy.connection.ConnectedPlayer$$Lambda/0x000000005815c210
+ 439:             2             32  dev.warp.proxy.connection.ConnectedPlayer$$Lambda/0x000000005815c448
+Total         77776        3495488
+`;
+    const histogram = parseHistogram(output);
+
+    assert.equal(histogram.get('[B'), 17014);
+    assert.equal(histogram.get('dev.warp.proxy.connection.ConnectedPlayer'), 65);
+    assert.equal(histogram.get('dev.warp.proxy.connection.ConnectedPlayer$$Lambda'), 5);
+    assert.equal(histogram.has('Total'), false);
   });
 });
