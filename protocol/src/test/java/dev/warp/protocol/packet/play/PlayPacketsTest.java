@@ -19,6 +19,7 @@ package dev.warp.protocol.packet.play;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -161,6 +162,113 @@ class PlayPacketsTest {
         KeepAlive decoded = KeepAlive.CODEC.decode(buf, version);
         assertEquals(0, buf.readableBytes(), "trailing bytes after the id");
         return decoded;
+      } finally {
+        buf.release();
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // JoinGame (26.2+)
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("JoinGame from 26.2")
+  class JoinGameOnlineMode {
+
+    /**
+     * The Join Game of a vanilla server, as it arrived on the wire, packet id excluded: a bot
+     * logging in to the vanilla 26.2 and 26.3 servers, offline. Both end with the online mode flag
+     * ({@code false}, as on any backend behind a proxy), then the enforces secure chat flag; 26.3
+     * writes the game modes as VarInts, {@code 00 00} instead of {@code 00 ff}.
+     */
+    static Stream<Arguments> vanillaServerCaptures() {
+      return Stream.of(
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_26_2,
+              "000000010003136d696e6563726166743a6f766572776f726c64146d696e6563726166743a7468"
+                  + "655f6e6574686572116d696e6563726166743a7468655f656e6405020200010000136d696e65"
+                  + "63726166743a6f766572776f726c64d87cf18482a4621900ff00010000c1ffffff0f0000"),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_26_3,
+              "000000010003136d696e6563726166743a6f766572776f726c64146d696e6563726166743a7468"
+                  + "655f6e6574686572116d696e6563726166743a7468655f656e6405020200010000136d696e65"
+                  + "63726166743a6f766572776f726c64f5bc5f1952f4f432000000010000c1ffffff0f0000"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("vanillaServerCaptures")
+    @DisplayName("should carry a vanilla server's packet verbatim after the hardcore flag")
+    void keepsTheBytesOfAVanillaServer(ProtocolVersion version, String wireHex) {
+      byte[] wire = HexFormat.of().parseHex(wireHex);
+
+      JoinGame joinGame = decode(wire, version);
+
+      assertEquals(1, joinGame.entityId());
+      assertFalse(joinGame.hardcore());
+      assertArrayEquals(wire, encode(joinGame, version));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("vanillaServerCaptures")
+    @DisplayName("should set the online mode flag, the next to last byte, and nothing else")
+    void setsOnlineMode(ProtocolVersion version, String wireHex) {
+      byte[] wire = HexFormat.of().parseHex(wireHex);
+      JoinGame offline = decode(wire, version);
+
+      JoinGame online = offline.withOnlineMode(true, version);
+
+      byte[] expected = wire.clone();
+      expected[expected.length - 2] = 1;
+      assertArrayEquals(expected, encode(online, version));
+      assertArrayEquals(wire, encode(offline, version), "the original packet is unchanged");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("vanillaServerCaptures")
+    @DisplayName("should return the same packet when the flag already has the value")
+    void keepsMatchingFlag(ProtocolVersion version, String wireHex) {
+      JoinGame offline = decode(HexFormat.of().parseHex(wireHex), version);
+
+      assertSame(offline, offline.withOnlineMode(false, version));
+    }
+
+    @Test
+    @DisplayName("should leave a packet before 26.2 alone, which has no online mode flag")
+    void noFlagBefore262() {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_26_1;
+      JoinGame joinGame = new JoinGame(1, false, new JoinGame.Opaque(new byte[] {0, 0}));
+
+      assertSame(joinGame, joinGame.withOnlineMode(true, version));
+    }
+
+    @Test
+    @DisplayName("should refuse a packet that cannot end with the two flags")
+    void refusesOtherBodies() {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_26_2;
+      JoinGame decoded =
+          SwitchPacketFixtures.decode(
+              JoinGame.CODEC, ProtocolVersion.MINECRAFT_1_20_1, "join_game");
+      JoinGame tooShort = new JoinGame(1, false, new JoinGame.Opaque(new byte[] {0}));
+
+      assertThrows(IllegalArgumentException.class, () -> decoded.withOnlineMode(true, version));
+      assertThrows(IllegalArgumentException.class, () -> tooShort.withOnlineMode(true, version));
+    }
+
+    private static JoinGame decode(byte[] wire, ProtocolVersion version) {
+      ByteBuf buf = Unpooled.wrappedBuffer(wire);
+      try {
+        return JoinGame.CODEC.decode(buf, version);
+      } finally {
+        buf.release();
+      }
+    }
+
+    private static byte[] encode(JoinGame packet, ProtocolVersion version) {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        JoinGame.CODEC.encode(packet, buf, version);
+        return ByteBufUtil.getBytes(buf);
       } finally {
         buf.release();
       }
@@ -508,6 +616,17 @@ class PlayPacketsTest {
               settings((byte) 0, (byte) 0x7F, 0, true, false, 2)),
           Arguments.of(
               ProtocolVersion.MINECRAFT_26_1,
+              "05656e5f47420c01017f00010002",
+              settings((byte) 0, (byte) 0x7F, 0, true, false, 2)),
+          // node-minecraft-protocol has no 26.2 and 26.3 yet: Mojang's own codec (from the server
+          // jars) writes the same bytes, 26.3 encoding its three enums by an id equal to their
+          // ordinal
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_26_2,
+              "05656e5f47420c01017f00010002",
+              settings((byte) 0, (byte) 0x7F, 0, true, false, 2)),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_26_3,
               "05656e5f47420c01017f00010002",
               settings((byte) 0, (byte) 0x7F, 0, true, false, 2)));
     }

@@ -25,7 +25,7 @@ import java.security.KeyPair;
 import io.netty.channel.Channel;
 
 /**
- * Server-wide configuration shared across all client connections.
+ * Server-wide configuration and state shared across all client connections.
  *
  * <p>Created once during server startup and injected into {@link ServerChannelInitializer}. Using a
  * record rather than injecting {@link dev.warp.proxy.WarpServer WarpServer} directly keeps session
@@ -37,6 +37,7 @@ import io.netty.channel.Channel;
  * @param compressionLevel the zlib compression level (0–9 or {@code -1} for default)
  * @param compressionPassthrough whether uninspected packets keep their original compressed form
  * @param sessionService the Mojang session service for online-mode authentication
+ * @param playSession the play session of the proxy, whose ID 26.2+ clients receive on login
  * @param serverRegistry the registry of backend servers
  * @param forwardingMode the player info forwarding mode
  * @param forwardingSecret the shared HMAC secret for Velocity modern forwarding
@@ -50,6 +51,7 @@ public record ServerLoginContext(
     int compressionLevel,
     boolean compressionPassthrough,
     MojangSessionService sessionService,
+    PlaySession playSession,
     ServerRegistry serverRegistry,
     ForwardingMode forwardingMode,
     byte[] forwardingSecret,

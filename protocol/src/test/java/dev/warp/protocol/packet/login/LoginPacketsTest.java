@@ -19,6 +19,7 @@ package dev.warp.protocol.packet.login;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -230,6 +231,30 @@ class LoginPacketsTest {
     private static final String DASHED_UUID = "f81d4fae-7dec-11d0-a765-00a0c91e6bf6";
     private static final String UNDASHED_UUID = "f81d4fae7dec11d0a76500a0c91e6bf6";
 
+    private static final UUID SESSION_ID = UUID.fromString("00112233-4455-6677-8899-aabbccddeeff");
+
+    private static final LoginSuccess NOTCH_WITH_SKIN =
+        new LoginSuccess(
+            PLAYER_UUID,
+            "Notch",
+            List.of(new LoginSuccess.Property("textures", "dGV4dHVyZXM=", "c2ln")),
+            false,
+            SESSION_ID);
+
+    /**
+     * {@link #NOTCH_WITH_SKIN} as vanilla writes it from 26.2, with Mojang's own codec ({@code
+     * ClientboundLoginFinishedPacket.STREAM_CODEC}, run from the 26.2 and 26.3 server jars): uuid,
+     * name, one property (name, value, signature present, signature), then the play session ID.
+     */
+    private static final String MOJANG_FROM_26_2 =
+        "f81d4fae7dec11d0a76500a0c91e6bf6"
+            + "054e6f746368"
+            + "01"
+            + "087465787475726573"
+            + "0c64475634644856795a584d3d"
+            + "010463326c6e"
+            + "00112233445566778899aabbccddeeff";
+
     /** How the player UUID is laid out on the wire. */
     enum UuidForm {
       UNDASHED,
@@ -256,7 +281,7 @@ class LoginPacketsTest {
     @MethodSource("versionsAcrossUuidBoundaries")
     @DisplayName("should roundtrip the uuid and username on each side of every uuid format change")
     void roundtripAcrossUuidBoundaries(ProtocolVersion version, UuidForm form) {
-      LoginSuccess original = new LoginSuccess(PLAYER_UUID, "Notch", List.of(), false);
+      LoginSuccess original = new LoginSuccess(PLAYER_UUID, "Notch", List.of(), false, SESSION_ID);
 
       LoginSuccess decoded = decode(encode(original, version), version);
 
@@ -269,7 +294,7 @@ class LoginPacketsTest {
     @MethodSource("versionsAcrossUuidBoundaries")
     @DisplayName("should write the uuid in the wire form of each version")
     void writesUuidInVersionForm(ProtocolVersion version, UuidForm form) {
-      LoginSuccess packet = new LoginSuccess(PLAYER_UUID, "Notch", List.of(), false);
+      LoginSuccess packet = new LoginSuccess(PLAYER_UUID, "Notch", List.of(), false, SESSION_ID);
 
       byte[] wire = encode(packet, version);
 
@@ -285,7 +310,7 @@ class LoginPacketsTest {
     @Test
     @DisplayName("should send a 1.7.2 client the uuid as a 32-character string without dashes")
     void writesExactUndashedStringBytes() {
-      LoginSuccess packet = new LoginSuccess(PLAYER_UUID, "Notch", List.of(), false);
+      LoginSuccess packet = new LoginSuccess(PLAYER_UUID, "Notch", List.of(), false, SESSION_ID);
 
       byte[] wire = encode(packet, ProtocolVersion.MINECRAFT_1_7_2);
 
@@ -295,7 +320,7 @@ class LoginPacketsTest {
     @Test
     @DisplayName("should send a 1.12.2 client the uuid as a 36-character dashed string")
     void writesExactDashedStringBytes() {
-      LoginSuccess packet = new LoginSuccess(PLAYER_UUID, "Notch", List.of(), false);
+      LoginSuccess packet = new LoginSuccess(PLAYER_UUID, "Notch", List.of(), false, SESSION_ID);
 
       byte[] wire = encode(packet, ProtocolVersion.MINECRAFT_1_12_2);
 
@@ -305,7 +330,7 @@ class LoginPacketsTest {
     @Test
     @DisplayName("should send a 1.16 client the uuid as 16 raw bytes")
     void writesExactBinaryBytes() {
-      LoginSuccess packet = new LoginSuccess(PLAYER_UUID, "Notch", List.of(), false);
+      LoginSuccess packet = new LoginSuccess(PLAYER_UUID, "Notch", List.of(), false, SESSION_ID);
 
       byte[] wire = encode(packet, ProtocolVersion.MINECRAFT_1_16);
 
@@ -362,7 +387,7 @@ class LoginPacketsTest {
       UUID uuid = UUID.randomUUID();
       List<LoginSuccess.Property> props =
           List.of(new LoginSuccess.Property("textures", "base64data", "signature"));
-      LoginSuccess original = new LoginSuccess(uuid, "jeb_", props, true);
+      LoginSuccess original = new LoginSuccess(uuid, "jeb_", props, true, null);
       ByteBuf buf = Unpooled.buffer();
       try {
         LoginSuccess.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_20_5);
@@ -376,6 +401,85 @@ class LoginPacketsTest {
       } finally {
         buf.release();
       }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("fromTheSessionId")
+    @DisplayName("should write the exact bytes of Mojang's codec, the play session ID last")
+    void writesMojangBytesFrom262(ProtocolVersion version) {
+      byte[] wire = encode(NOTCH_WITH_SKIN, version);
+
+      assertEquals(MOJANG_FROM_26_2, HexFormat.of().formatHex(wire));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("fromTheSessionId")
+    @DisplayName("should read every field of the bytes of Mojang's codec")
+    void readsMojangBytesFrom262(ProtocolVersion version) {
+      LoginSuccess decoded = decode(HexFormat.of().parseHex(MOJANG_FROM_26_2), version);
+
+      assertEquals(NOTCH_WITH_SKIN, decoded);
+    }
+
+    /**
+     * The Login Success of a vanilla server, as it arrived on the wire, packet id excluded: a bot
+     * named {@code WarpCapture} logging in to the vanilla 26.2 and 26.3 servers, offline and
+     * uncompressed. Each server draws its own play session ID.
+     */
+    static Stream<Arguments> vanillaServerCaptures() {
+      return Stream.of(
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_26_2,
+              "c25a55d31da930c0b9b6e004bd8fb3c80b576172704361707475726500"
+                  + "996f7370c5674490a666d3900fcd81fc",
+              UUID.fromString("996f7370-c567-4490-a666-d3900fcd81fc")),
+          Arguments.of(
+              ProtocolVersion.MINECRAFT_26_3,
+              "c25a55d31da930c0b9b6e004bd8fb3c80b576172704361707475726500"
+                  + "80d927cc4f1b4ba9ba021d483a72d41c",
+              UUID.fromString("80d927cc-4f1b-4ba9-ba02-1d483a72d41c")));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("vanillaServerCaptures")
+    @DisplayName("should read a vanilla server's packet to its last byte and write it back as is")
+    void keepsTheBytesOfAVanillaServer(ProtocolVersion version, String wireHex, UUID sessionId) {
+      byte[] wire = HexFormat.of().parseHex(wireHex);
+
+      LoginSuccess decoded = decode(wire, version);
+
+      assertEquals("WarpCapture", decoded.username());
+      assertTrue(decoded.properties().isEmpty());
+      assertEquals(sessionId, decoded.sessionId());
+      assertArrayEquals(wire, encode(decoded, version));
+    }
+
+    @Test
+    @DisplayName("should have no play session ID before 26.2")
+    void noSessionIdBefore262() {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_26_1;
+      String withoutSessionId = MOJANG_FROM_26_2.substring(0, MOJANG_FROM_26_2.length() - 32);
+
+      byte[] wire = encode(NOTCH_WITH_SKIN, version);
+      LoginSuccess decoded = decode(HexFormat.of().parseHex(withoutSessionId), version);
+
+      assertEquals(withoutSessionId, HexFormat.of().formatHex(wire));
+      assertNull(decoded.sessionId());
+    }
+
+    @Test
+    @DisplayName("should refuse to write a 26.2 packet without a play session ID")
+    void requiresSessionIdFrom262() {
+      LoginSuccess withoutSessionId =
+          new LoginSuccess(PLAYER_UUID, "Notch", List.of(), false, null);
+
+      assertThrows(
+          IllegalStateException.class,
+          () -> encode(withoutSessionId, ProtocolVersion.MINECRAFT_26_2));
+    }
+
+    static Stream<ProtocolVersion> fromTheSessionId() {
+      return Stream.of(ProtocolVersion.MINECRAFT_26_2, ProtocolVersion.MINECRAFT_26_3);
     }
 
     private static byte[] encode(LoginSuccess packet, ProtocolVersion version) {

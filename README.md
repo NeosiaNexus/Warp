@@ -40,6 +40,8 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 
 **Proxying**
 
+- **Minecraft Java Edition 1.7.2 to 26.3**: every release protocol in between, each one played
+  end to end from 1.8 on (see [below](#tested-on-every-minecraft-version)).
 - **Online mode**: Mojang authentication and AES/CFB8 encryption. The session server call runs on a
   virtual thread and never blocks the event loop. Offline mode is available for development.
 - **Player info forwarding**: [Velocity modern forwarding](https://docs.papermc.io/velocity/player-information-forwarding)

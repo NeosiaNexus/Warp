@@ -243,22 +243,23 @@ class ConfigPacketsTest {
     }
 
     /**
-     * A 26.1 client's packet as node-minecraft-protocol 1.68 serialises it, packet id excluded: the
-     * layout of 1.21.2, which every protocol up to 26.1 keeps (vanilla 26.1 writes the same
-     * fields). The settings are those of the play state's captures: locale {@code en_GB}, view
-     * distance 12, chat commands only, chat colors on, all skin parts, left hand, text filtering
-     * on, server listing refused, minimal particles.
+     * A 26.x client's packet, packet id excluded: the layout of 1.21.2, which every protocol up to
+     * 26.3 keeps. The 26.1 bytes are node-minecraft-protocol 1.68's (vanilla 26.1 writes the same
+     * fields); the 26.2 and 26.3 ones are Mojang's own codec's, run from the server jars (26.3
+     * encodes its three enums by an id equal to their ordinal). The settings are those of the play
+     * state's captures: locale {@code en_GB}, view distance 12, chat commands only, chat colors on,
+     * all skin parts, left hand, text filtering on, server listing refused, minimal particles.
      */
-    @Test
-    @DisplayName("should decode a 26.1 client's packet and encode it back to the same bytes")
-    void keepsTheBytesOfA26Client() {
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versions26")
+    @DisplayName("should decode a 26.x client's packet and encode it back to the same bytes")
+    void keepsTheBytesOfA26Client(ProtocolVersion version) {
       String wireHex = "05656e5f47420c01017f00010002";
       ByteBuf buf = Unpooled.buffer().writeBytes(HexFormat.of().parseHex(wireHex));
       try {
-        ClientInformation decoded =
-            ClientInformation.CODEC.decode(buf, ProtocolVersion.MINECRAFT_26_1);
+        ClientInformation decoded = ClientInformation.CODEC.decode(buf, version);
         buf.clear();
-        ClientInformation.CODEC.encode(decoded, buf, ProtocolVersion.MINECRAFT_26_1);
+        ClientInformation.CODEC.encode(decoded, buf, version);
 
         assertEquals(
             new ClientInformation("en_GB", (byte) 12, 1, true, (byte) 0x7F, 0, true, false, 2),
@@ -267,6 +268,14 @@ class ConfigPacketsTest {
       } finally {
         buf.release();
       }
+    }
+
+    /** The 26.x protocols, which all keep the 1.21.2 layout. */
+    static Stream<ProtocolVersion> versions26() {
+      return Stream.of(
+          ProtocolVersion.MINECRAFT_26_1,
+          ProtocolVersion.MINECRAFT_26_2,
+          ProtocolVersion.MINECRAFT_26_3);
     }
   }
 

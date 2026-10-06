@@ -8,7 +8,7 @@ can actually join, play, switch servers and survive a fallback, on every version
 e2e/run.sh --mc 1.21.4                                   # one version, default variant (online)
 e2e/run.sh --mc 1.8.8,1.20.2 --variants online,offline   # several versions and variants
 e2e/run.sh --mc 1.21.4 --passthrough off --scenarios login,switching
-e2e/run.sh --mc 26.3 --strict                            # a known-broken version, failing for real
+e2e/run.sh --mc 26.3 --strict                            # known-broken flags ignored: fails for real
 e2e/run.sh --mc 1.21.1 --direct                          # control run without Warp
 e2e/run.sh --list                                        # the whole matrix
 e2e/run.sh --help
@@ -52,7 +52,9 @@ A run fails if a scenario fails, and also if:
 
 Strict parsing also catches errors in the bots' protocol data. Those are corrected in memory
 (`correctProtocolData` in `src/clients/mineflayer.js`) once a `--direct` run proves the server
-alone triggers them, never skipped: today, the recipe serializer ids of 1.20.5 to 1.21.1.
+alone triggers them, never skipped: today, the recipe serializer ids of 1.20.5 to 1.21.1. Bots also
+end their ticks as the game does from 1.21.2 (`endTicks`): mineflayer never sends a Client Tick End,
+and a 26.3 server kicks a player that sends two positions in the same tick.
 
 Logs and `result.json` go to `e2e/build/<version>/`.
 
@@ -108,7 +110,10 @@ Tiers pick what runs where:
 
 1. Find the protocol number (it is in the client jar's `version.json`) and add it to
    `ProtocolVersion` in Warp, then run `npm run packet-reports -- <version>` in `e2e/` (see
-   below) and give each packet Warp registers its id in that protocol.
+   below) and give each packet Warp registers its id in that protocol. Then compare the format of
+   every packet Warp decodes or encodes with the previous release: their codecs in the server jar
+   (unobfuscated from 26.1, so `javap -c` reads them) and Velocity's packet classes. 26.2, for
+   instance, added a session ID to Login Success and an online mode flag to Join Game.
 2. Add the entry to `versions.json`, in protocol order. Take the latest **STABLE** Paper build from
    `https://fill.papermc.io/v3/projects/paper/versions/<version>/builds?channel=STABLE` (URL and
    sha256 are in `downloads["server:default"]`), and the server's Java from the version's
@@ -116,7 +121,8 @@ Tiers pick what runs where:
 3. If the bot library has no data for it yet, add `"via": "<newest version it speaks>"`.
 4. Run it: `e2e/run.sh --mc <version>`, and `npm test` in `e2e/` (checks the matrix).
 5. Until Warp supports it fully, add `"knownBroken"` (or `"knownBrokenScenarios"`) with the
-   issue; CI then reports it without failing.
+   issue; CI then reports it without failing. Once it passes, give the top-level `README.md` its
+   new newest version (the supported range, and the versions the suite plays).
 
 The harness itself is tested with `npm test` (matrix consistency, failure patterns, downloads, the
 report, protocol data corrections), which CI runs before every end-to-end matrix.

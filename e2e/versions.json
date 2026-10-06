@@ -689,8 +689,7 @@
         "build": 130,
         "url": "https://fill-data.papermc.io/v1/objects/715cd6633db27b2c05ce6efd2d477330ebae8a4f668cf0459fcaf434c4720fba/paper-26.2-130.jar",
         "sha256": "715cd6633db27b2c05ce6efd2d477330ebae8a4f668cf0459fcaf434c4720fba"
-      },
-      "knownBroken": "protocol 776 not registered in Warp yet (#48)"
+      }
     },
     {
       "version": "26.3",
@@ -704,8 +703,7 @@
         "channel": "BETA",
         "url": "https://fill-data.papermc.io/v1/objects/77cdcd758777734b0b64db74974f68e56cb08637f3c36b26734842cb8521cc2e/paper-26.3-157.jar",
         "sha256": "77cdcd758777734b0b64db74974f68e56cb08637f3c36b26734842cb8521cc2e"
-      },
-      "knownBroken": "protocol 777 not registered in Warp yet (#48)"
+      }
     }
   ]
 }
