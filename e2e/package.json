@@ -1,0 +1,18 @@
+{
+  "name": "warp-e2e",
+  "private": true,
+  "description": "End-to-end tests for Warp: real-protocol bots, through Warp, to real Minecraft servers",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "dependencies": {
+    "minecraft-data": "3.117.0",
+    "minecraft-protocol": "1.68.0",
+    "mineflayer": "4.39.0"
+  }
+}
