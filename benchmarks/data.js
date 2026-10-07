@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791331693690,
+  "lastUpdate": 1791338880997,
   "repoUrl": "https://github.com/NeosiaNexus/Warp",
   "entries": {
     "Hot path on AMD EPYC 9V45 96-Core Processor (4 CPUs)": [
@@ -966,6 +966,88 @@ window.BENCHMARK_DATA = {
             "range": "± 7.8",
             "unit": "ns/packet",
             "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          }
+        ]
+      }
+    ],
+    "Hot path on Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz (4 CPUs)": [
+      {
+        "commit": {
+          "author": {
+            "email": "63867369+NeosiaNexus@users.noreply.github.com",
+            "name": "NeosiaNexus",
+            "username": "NeosiaNexus"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ba8fea8f86ab305c357cf4f553c29aebe5dc22ee",
+          "message": "test(e2e): keep ViaProxy from compressing towards the bots, which stalls its logins (#109)\n\nViaProxy 3.4.14 restores the auto-read flag of its connection to the server from the client's event loop once its own Set Compression is written, while the server's event loop saves and clears that flag again for Login Success; when the two interleave, the connection is never read again and the bot waits until Warp times it out. The harness now starts ViaProxy with --compression-threshold -1, so that path never runs; Warp's compression towards ViaProxy is unchanged. Fixes #102.",
+          "timestamp": "2026-10-07T03:53:21+02:00",
+          "tree_id": "078002376cbb21eefaea0a8c98a3375db039a903",
+          "url": "https://github.com/NeosiaNexus/Warp/commit/ba8fea8f86ab305c357cf4f553c29aebe5dc22ee"
+        },
+        "date": 1791338879688,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 2864.7,
+            "range": "± 41.8",
+            "unit": "ns/packet",
+            "extra": "Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 172.7,
+            "range": "± 0.8",
+            "unit": "ns/packet",
+            "extra": "Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 449.9,
+            "range": "± 10.0",
+            "unit": "ns/packet",
+            "extra": "Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 77218.1,
+            "range": "± 87.4",
+            "unit": "ns/packet",
+            "extra": "Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 640,
+            "range": "± 2.1",
+            "unit": "ns/packet",
+            "extra": "Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 5610.6,
+            "range": "± 19.4",
+            "unit": "ns/packet",
+            "extra": "Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=CHUNK]",
+            "value": 1638.7,
+            "range": "± 2.0",
+            "unit": "ns/packet",
+            "extra": "Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=MIXED]",
+            "value": 1323.1,
+            "range": "± 4.8",
+            "unit": "ns/packet",
+            "extra": "Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
           }
         ]
       }
