@@ -35,6 +35,11 @@ export class ViaProxy {
       '--auth-method', 'NONE',
       '--log-ips', 'false',
       '--chat-signing', 'false',
+      // No compression between the bots and ViaProxy (Warp's own compression is untouched). With
+      // it, ViaProxy 3.4.14 races two threads over the auto-read flag of its connection to Warp
+      // when the login completes, and now and then never reads that connection again: the bot
+      // waits for the configuration phase until Warp times it out (#102).
+      '--compression-threshold', '-1',
     ];
     this.process = new ManagedProcess(this.name, this.env.java, args, {
       cwd: dir,
