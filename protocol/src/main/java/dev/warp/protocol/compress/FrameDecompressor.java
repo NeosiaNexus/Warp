@@ -18,6 +18,8 @@ package dev.warp.protocol.compress;
 
 import dev.warp.protocol.codec.VarInt;
 
+import java.util.function.LongSupplier;
+
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.handler.codec.DecoderException;
@@ -118,6 +120,7 @@ public final class FrameDecompressor implements AutoCloseable {
   private volatile long maxDecompressionRate = DEFAULT_MAX_DECOMPRESSION_RATE;
 
   // Rate-limit window — event loop only.
+  private final LongSupplier nanoClock;
   private long windowInflatedBytes;
   private long windowStartNanos;
 
@@ -136,10 +139,33 @@ public final class FrameDecompressor implements AutoCloseable {
       boolean validateThreshold,
       int maxUncompressedSize,
       PacketCompressor compressor) {
+    this(threshold, validateThreshold, maxUncompressedSize, compressor, System::nanoTime);
+  }
+
+  /**
+   * Creates a decompressor whose decompression budget is timed by {@code nanoClock}, for tests.
+   *
+   * @param threshold the compression threshold announced for this connection
+   * @param validateThreshold whether compressed frames declaring fewer bytes than the threshold are
+   *     rejected
+   * @param maxUncompressedSize the maximum declared size accepted (capped at {@value
+   *     #HARD_MAX_UNCOMPRESSED_SIZE})
+   * @param compressor the zlib implementation; closed by {@link #close()}
+   * @param nanoClock a monotonic clock in nanoseconds, like {@link System#nanoTime()}; the first
+   *     one-second window of the budget opens when the decompressor is created
+   */
+  FrameDecompressor(
+      int threshold,
+      boolean validateThreshold,
+      int maxUncompressedSize,
+      PacketCompressor compressor,
+      LongSupplier nanoClock) {
     this.threshold = threshold;
     this.validateThreshold = validateThreshold;
     this.maxUncompressedSize = Math.min(maxUncompressedSize, HARD_MAX_UNCOMPRESSED_SIZE);
     this.compressor = compressor;
+    this.nanoClock = nanoClock;
+    this.windowStartNanos = nanoClock.getAsLong();
   }
 
   // ---------------------------------------------------------------------------
@@ -190,7 +216,7 @@ public final class FrameDecompressor implements AutoCloseable {
     }
     long rate = maxDecompressionRate;
     if (rate > 0) {
-      long now = System.nanoTime();
+      long now = nanoClock.getAsLong();
       if (now - windowStartNanos > RATE_WINDOW_NANOS) {
         windowInflatedBytes = 0;
         windowStartNanos = now;

@@ -97,6 +97,22 @@ public final class SwitchPacketFixtures {
     }
   }
 
+  /** Writes {@code packet} at {@code version} and reads it back, checking every byte is read. */
+  static <T extends Packet> T writeAndRead(
+      PacketCodec<T> codec, T packet, ProtocolVersion version) {
+    ByteBuf buf = Unpooled.wrappedBuffer(encode(codec, packet, version));
+    try {
+      T decoded = codec.decode(buf, version);
+      if (buf.isReadable()) {
+        throw new AssertionError(
+            buf.readableBytes() + " bytes left after reading back at " + version);
+      }
+      return decoded;
+    } finally {
+      buf.release();
+    }
+  }
+
   /**
    * What a watch reported for a fixture, and how far into it the watch read.
    *

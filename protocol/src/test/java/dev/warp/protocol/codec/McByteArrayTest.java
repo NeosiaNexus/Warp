@@ -302,6 +302,33 @@ class McByteArrayTest {
         buf.release();
       }
     }
+
+    @Test
+    @DisplayName("should accept a short-prefixed array at exactly the size limit")
+    void atExactLimit() {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        buf.writeShort(10);
+        buf.writeBytes(new byte[] {1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
+        assertArrayEquals(
+            new byte[] {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, McByteArray.readShortPrefixed(buf, 10));
+      } finally {
+        buf.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should reject a short-prefixed array longer than the buffer")
+    void notEnoughData() {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        buf.writeShort(10);
+        buf.writeZero(9);
+        assertThrows(DecoderException.class, () -> McByteArray.readShortPrefixed(buf, 256));
+      } finally {
+        buf.release();
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------

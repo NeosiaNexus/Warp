@@ -44,7 +44,12 @@ updates:
         patterns: ['net.kyori:*']
         update-types: [minor, patch]
       testing:
-        patterns: ['org.junit:*', 'org.mockito:*', 'com.code-intelligence:*']
+        patterns:
+          - 'org.junit:*'
+          - 'org.mockito:*'
+          - 'org.pitest:*'
+          - 'info.solidsoft.pitest'
+          - 'com.code-intelligence:*'
         update-types: [minor, patch]
       code-quality:
         patterns:

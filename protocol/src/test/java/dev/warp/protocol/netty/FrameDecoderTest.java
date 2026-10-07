@@ -28,7 +28,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.fuzz.InboundRecorder;
 
+import java.io.ByteArrayOutputStream;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.List;
 
 import io.netty.buffer.ByteBuf;
@@ -42,6 +45,8 @@ import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 @DisplayName("FrameDecoder")
 class FrameDecoderTest {
@@ -325,6 +330,22 @@ class FrameDecoderTest {
       assertFalse(ch.finish());
     }
 
+    @ParameterizedTest(name = "{0}: {1} bytes")
+    @CsvSource({"8001, 128", "808001, 16384", "808100, 128"})
+    @DisplayName("should wait for the payload of a length prefix that arrived alone")
+    void prefixAlone(String prefixHex, int length) {
+      byte[] prefix = HexFormat.of().parseHex(prefixHex);
+      EmbeddedChannel ch = new EmbeddedChannel(new FrameDecoder());
+
+      assertFalse(ch.writeInbound(Unpooled.wrappedBuffer(prefix)));
+      assertTrue(ch.writeInbound(Unpooled.buffer().writeZero(length)));
+
+      ByteBuf frame = ch.readInbound();
+      assertEquals(prefix.length + length, frame.readableBytes());
+      frame.release();
+      assertFalse(ch.finish());
+    }
+
     @Test
     @DisplayName("should produce no output on empty input")
     void emptyInput() {
@@ -332,6 +353,136 @@ class FrameDecoderTest {
       assertFalse(ch.writeInbound(Unpooled.EMPTY_BUFFER));
       assertNull(ch.readInbound());
       assertFalse(ch.finish());
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Segmentation: TCP may cut the stream anywhere
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("any segmentation")
+  class Segmentation {
+
+    /**
+     * Length prefixes of every shape the decoder must accept: one to three bytes, canonical or
+     * padded with empty groups (as Minestom and Velocity write them), and empty frames, which are
+     * dropped. The last frame is short enough to be decoded from three readable bytes.
+     */
+    private static final List<byte[]> FRAMES =
+        List.of(
+            frame(0x01),
+            frame(0x00),
+            frame(0x80, 0x01),
+            frame(0x83, 0x00),
+            frame(0x80, 0x00),
+            frame(0x82, 0x80, 0x00),
+            frame(0x80, 0x80, 0x00),
+            frame(0xAC, 0x82, 0x00),
+            frame(0x7F),
+            frame(0x81, 0x00));
+
+    private static final byte[] STREAM = concat(FRAMES);
+
+    @Test
+    @DisplayName("should emit every frame, byte for byte, from a single segment")
+    void singleSegment() {
+      EmbeddedChannel ch = new EmbeddedChannel(new FrameDecoder());
+      List<byte[]> emitted = new ArrayList<>();
+
+      ch.writeInbound(Unpooled.wrappedBuffer(STREAM));
+      readFrames(ch, emitted);
+
+      assertEmitted(STREAM.length, emitted);
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should emit each frame as soon as its last byte arrives, one byte at a time")
+    void byteByByte() {
+      EmbeddedChannel ch = new EmbeddedChannel(new FrameDecoder());
+      List<byte[]> emitted = new ArrayList<>();
+
+      for (int received = 1; received <= STREAM.length; received++) {
+        ch.writeInbound(Unpooled.wrappedBuffer(STREAM, received - 1, 1));
+        readFrames(ch, emitted);
+        assertEmitted(received, emitted);
+      }
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should emit each frame as soon as its last byte arrives, in two segments")
+    void twoSegments() {
+      for (int cut = 0; cut <= STREAM.length; cut++) {
+        EmbeddedChannel ch = new EmbeddedChannel(new FrameDecoder());
+        List<byte[]> emitted = new ArrayList<>();
+
+        ch.writeInbound(Unpooled.wrappedBuffer(STREAM, 0, cut));
+        readFrames(ch, emitted);
+        assertEmitted(cut, emitted);
+
+        ch.writeInbound(Unpooled.wrappedBuffer(STREAM, cut, STREAM.length - cut));
+        readFrames(ch, emitted);
+        assertEmitted(STREAM.length, emitted);
+        assertFalse(ch.finish());
+      }
+    }
+
+    /**
+     * Asserts that exactly the non-empty frames within the first {@code received} bytes came out.
+     */
+    private static void assertEmitted(int received, List<byte[]> emitted) {
+      List<byte[]> expected = new ArrayList<>();
+      int end = 0;
+      for (byte[] frame : FRAMES) {
+        end += frame.length;
+        if (end <= received && declaredLength(frame) > 0) {
+          expected.add(frame);
+        }
+      }
+      assertEquals(expected.size(), emitted.size(), "frames emitted after " + received + " bytes");
+      for (int i = 0; i < expected.size(); i++) {
+        assertArrayEquals(expected.get(i), emitted.get(i), "frame " + i);
+      }
+    }
+
+    private static void readFrames(EmbeddedChannel ch, List<byte[]> emitted) {
+      for (ByteBuf frame; (frame = ch.readInbound()) != null; ) {
+        assertEquals(0, frame.readerIndex());
+        emitted.add(ByteBufUtil.getBytes(frame));
+        frame.release();
+      }
+    }
+
+    /** A frame with the given length prefix, followed by as many payload bytes as it declares. */
+    private static byte[] frame(int... prefix) {
+      byte[] bytes = new byte[prefix.length];
+      for (int i = 0; i < prefix.length; i++) {
+        bytes[i] = (byte) prefix[i];
+      }
+      byte[] frame = Arrays.copyOf(bytes, prefix.length + declaredLength(bytes));
+      for (int i = prefix.length; i < frame.length; i++) {
+        frame[i] = (byte) (31 * i + frame.length);
+      }
+      return frame;
+    }
+
+    /** The value of a frame's length prefix, decoded group by group. */
+    private static int declaredLength(byte[] frame) {
+      int length = 0;
+      for (int i = 0; ; i++) {
+        length |= (frame[i] & 0x7F) << (7 * i);
+        if (frame[i] >= 0) {
+          return length;
+        }
+      }
+    }
+
+    private static byte[] concat(List<byte[]> frames) {
+      ByteArrayOutputStream out = new ByteArrayOutputStream();
+      frames.forEach(out::writeBytes);
+      return out.toByteArray();
     }
   }
 
@@ -354,7 +505,19 @@ class FrameDecoderTest {
       in.writeByte(0x80);
       in.writeByte(0x01);
 
-      assertThrows(DecoderException.class, () -> ch.writeInbound(in));
+      DecoderException e = assertThrows(DecoderException.class, () -> ch.writeInbound(in));
+      assertEquals("Frame-length VarInt exceeds 3 bytes", e.getMessage());
+      ch.finish();
+    }
+
+    @Test
+    @DisplayName("should reject a VarInt exceeding 3 bytes as soon as its third byte arrives")
+    void varIntTooWideOnThirdByte() {
+      EmbeddedChannel ch = new EmbeddedChannel(new FrameDecoder());
+      ByteBuf in = Unpooled.wrappedBuffer(new byte[] {(byte) 0x80, (byte) 0x80, (byte) 0x80});
+
+      DecoderException e = assertThrows(DecoderException.class, () -> ch.writeInbound(in));
+      assertEquals("Frame-length VarInt exceeds 3 bytes", e.getMessage());
       ch.finish();
     }
 

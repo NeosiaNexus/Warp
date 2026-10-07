@@ -2,8 +2,10 @@ name: Detect changes
 description: >-
   What a pull request needs, from the files it changes: the build and the end-to-end tests unless
   it only changes documentation, and the whole end-to-end matrix when it changes Warp's modules or
-  what the end-to-end tests run with. Any other event needs the build and the quick end-to-end
-  tier. The job needs `pull-requests: read` to list the files of a pull request.
+  what the end-to-end tests run with, and the mutation testing of each module whose score it may
+  change. Any other event needs the build and the quick end-to-end tier, and no mutation testing
+  (mutation.yml runs it on main). The job needs `pull-requests: read` to list the files of a pull
+  request.
 
 outputs:
   code:
@@ -12,6 +14,11 @@ outputs:
   e2e-tier:
     description: 'Tier of e2e/versions.json the pull request needs: `full`, or `pr` (the quick one).'
     value: ${{ steps.filter.outputs.e2e-full == 'true' && 'full' || 'pr' }}
+  mutation:
+    description: >-
+      The modules whose mutation score the pull request may change, as a JSON array
+      (`["protocol"]`); `[]` for any other event.
+    value: ${{ steps.mutation.outputs.changes || '[]' }}
 
 runs:
   using: composite
@@ -43,3 +50,33 @@ runs:
             - '!*/src/{test,integrationTest,jmh}/**'
             - '!e2e/{test,tools}/**'
             - '!**/*.md'
+
+    # A module's mutation score moves with its main code and unit tests, and with what runs PIT: the
+    # build logic, the dependencies, the thresholds, the API the module builds on, the workflow and
+    # its summary. Each filter is named after its module, which `changes` lists when it matches.
+    - name: Filter mutation-tested modules
+      id: mutation
+      if: ${{ github.event_name == 'pull_request' }}
+      uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+      with:
+        filters: |
+          protocol:
+            - 'protocol/src/{main,test}/**'
+            - 'protocol/build.gradle.kts'
+            - 'api/src/main/**'
+            - 'build-logic/**'
+            - 'config/pitest/**'
+            - 'gradle/**'
+            - '.github/workflows/_mutation.yml'
+            - '.github/scripts/mutation-summary.py'
+            - '.github/actions/changes/**'
+          proxy:
+            - 'proxy/src/{main,test}/**'
+            - 'proxy/build.gradle.kts'
+            - 'api/src/main/**'
+            - 'build-logic/**'
+            - 'config/pitest/**'
+            - 'gradle/**'
+            - '.github/workflows/_mutation.yml'
+            - '.github/scripts/mutation-summary.py'
+            - '.github/actions/changes/**'

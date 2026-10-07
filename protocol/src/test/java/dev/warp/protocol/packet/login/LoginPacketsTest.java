@@ -474,6 +474,23 @@ class LoginPacketsTest {
     }
 
     @ParameterizedTest(name = "{0}")
+    @ValueSource(ints = {759, 766, 768})
+    @DisplayName("should keep an unsigned property and an unset strict error handling flag")
+    void unsignedPropertyWithoutStrictErrors(int protocol) {
+      ProtocolVersion version = versionOf(protocol);
+      List<LoginSuccess.Property> props =
+          List.of(
+              new LoginSuccess.Property("textures", "base64data", null),
+              new LoginSuccess.Property("signed", "value", "signature"));
+      LoginSuccess original = new LoginSuccess(PLAYER_UUID, "jeb_", props, false, null);
+
+      LoginSuccess decoded = decode(encode(original, version), version);
+
+      assertEquals(props, decoded.properties());
+      assertFalse(decoded.strictErrorHandling());
+    }
+
+    @ParameterizedTest(name = "{0}")
     @MethodSource("fromTheSessionId")
     @DisplayName("should write the exact bytes of Mojang's codec, the play session ID last")
     void writesMojangBytesFrom262(ProtocolVersion version) {
@@ -781,6 +798,25 @@ class LoginPacketsTest {
         buf.release();
       }
     }
+
+    @Test
+    @DisplayName("should write and read back a failed response without data")
+    void responseWithoutData() {
+      LoginPluginResponse original = new LoginPluginResponse(42, false, null);
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        LoginPluginResponse.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_21_4);
+        assertArrayEquals(new byte[] {42, 0}, ByteBufUtil.getBytes(buf));
+
+        LoginPluginResponse decoded =
+            LoginPluginResponse.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_21_4);
+        assertEquals(42, decoded.messageId());
+        assertFalse(decoded.successful());
+        assertNull(decoded.data());
+      } finally {
+        buf.release();
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -808,6 +844,7 @@ class LoginPacketsTest {
         assertArrayEquals(publicKey, decoded.publicKey());
         assertArrayEquals(verifyToken, decoded.verifyToken());
         assertTrue(decoded.shouldAuthenticate());
+        assertFalse(buf.isReadable(), "nothing after the verify token before 1.20.5");
       } finally {
         buf.release();
       }
@@ -826,6 +863,23 @@ class LoginPacketsTest {
         assertEquals("", decoded.serverId());
         assertArrayEquals(new byte[] {1, 2, 3}, decoded.publicKey());
         assertArrayEquals(new byte[] {4, 5, 6, 7}, decoded.verifyToken());
+      } finally {
+        buf.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should keep shouldAuthenticate unset from 1.20.5, for offline-mode servers")
+    void offlineFrom1205() {
+      EncryptionRequest original =
+          new EncryptionRequest("", new byte[] {1, 2, 3}, new byte[] {4, 5, 6, 7}, false);
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        EncryptionRequest.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_20_5);
+        EncryptionRequest decoded =
+            EncryptionRequest.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_5);
+        assertFalse(decoded.shouldAuthenticate());
+        assertFalse(buf.isReadable());
       } finally {
         buf.release();
       }
@@ -1013,12 +1067,59 @@ class LoginPacketsTest {
   }
 
   // ---------------------------------------------------------------------------
+  // LoginAcknowledged
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("LoginAcknowledged")
+  class LoginAcknowledgedCodec {
+
+    @Test
+    @DisplayName("should read and write an empty packet")
+    void empty() {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        LoginAcknowledged.CODEC.encode(
+            new LoginAcknowledged(), buf, ProtocolVersion.MINECRAFT_1_20_2);
+        assertFalse(buf.isReadable());
+        assertEquals(
+            new LoginAcknowledged(),
+            LoginAcknowledged.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_2));
+      } finally {
+        buf.release();
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // LoginSuccess (error cases)
   // ---------------------------------------------------------------------------
 
   @Nested
   @DisplayName("LoginSuccess error handling")
   class LoginSuccessErrors {
+
+    @Test
+    @DisplayName("should reject more than 64 properties, even when all of them are there")
+    void rejectTooManyProperties() {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        McUuid.write(buf, PLAYER_UUID);
+        McString.write(buf, "TestPlayer", 16);
+        VarInt.write(buf, 65);
+        for (int i = 0; i < 65; i++) {
+          McString.write(buf, "p" + i);
+          McString.write(buf, "v");
+          buf.writeBoolean(false);
+        }
+        buf.writeBoolean(false); // strict error handling
+        assertThrows(
+            DecoderException.class,
+            () -> LoginSuccess.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_5));
+      } finally {
+        buf.release();
+      }
+    }
 
     @ParameterizedTest(name = "{0}")
     @ValueSource(ints = {65, -1, Integer.MIN_VALUE})
@@ -1039,6 +1140,30 @@ class LoginPacketsTest {
       }
     }
 
+    @Test
+    @DisplayName("should accept exactly 64 properties")
+    void acceptsSixtyFourProperties() {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        McUuid.write(buf, PLAYER_UUID);
+        McString.write(buf, "TestPlayer", 16);
+        VarInt.write(buf, 64);
+        for (int i = 0; i < 64; i++) {
+          McString.write(buf, "p" + i);
+          McString.write(buf, "v");
+          buf.writeBoolean(false);
+        }
+        buf.writeBoolean(false); // strict error handling
+
+        LoginSuccess decoded = LoginSuccess.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_20_5);
+
+        assertEquals(64, decoded.properties().size());
+        assertFalse(buf.isReadable());
+      } finally {
+        buf.release();
+      }
+    }
+
     @ParameterizedTest(name = "\"{0}\"")
     @ValueSource(
         strings = {
@@ -1049,7 +1174,12 @@ class LoginPacketsTest {
           "f81d4fae-7dec-11d0-a765-00a0c91e6bfg",
           "f81d4fae7-dec-11d0-a765-00a0c91e6bf6",
           "+81d4fae-7dec-11d0-a765-00a0c91e6bf6",
-          "f81d4fae-7dec-11d0-a765-00a0c91e6bf6-"
+          "f81d4fae-7dec-11d0-a765-00a0c91e6bf6-",
+          // A digit in place of each dash: the hex digits around still parse.
+          "f81d4fae07dec-11d0-a765-00a0c91e6bf6",
+          "f81d4fae-7dec011d0-a765-00a0c91e6bf6",
+          "f81d4fae-7dec-11d00a765-00a0c91e6bf6",
+          "f81d4fae-7dec-11d0-a765000a0c91e6bf6"
         })
     @DisplayName("should reject a malformed uuid string before 1.16")
     void rejectMalformedUuidString(String uuid) {

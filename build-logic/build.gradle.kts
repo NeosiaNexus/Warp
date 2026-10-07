@@ -16,4 +16,7 @@ dependencies {
     implementation(libs.plugins.jmh.get().let {
         "${it.pluginId}:${it.pluginId}.gradle.plugin:${it.version}"
     })
+    implementation(libs.plugins.pitest.get().let {
+        "${it.pluginId}:${it.pluginId}.gradle.plugin:${it.version}"
+    })
 }

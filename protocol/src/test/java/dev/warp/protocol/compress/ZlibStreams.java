@@ -55,6 +55,31 @@ public final class ZlibStreams {
   }
 
   /**
+   * Compresses {@code data} with the JDK's zlib, flushing (Z_SYNC_FLUSH) after its first {@code
+   * split} bytes: they end a block of their own, followed by an empty stored block.
+   *
+   * @param data the bytes to compress
+   * @param split how many bytes go before the flush
+   * @param level the zlib level
+   * @return the zlib stream
+   */
+  public static byte[] flushedAfter(byte[] data, int split, int level) {
+    Deflater deflater = new Deflater(level);
+    try {
+      ByteArrayOutputStream out = new ByteArrayOutputStream();
+      byte[] chunk = new byte[data.length + 64];
+      deflater.setInput(data, 0, split);
+      out.write(chunk, 0, deflater.deflate(chunk, 0, chunk.length, Deflater.SYNC_FLUSH));
+      deflater.setInput(data, split, data.length - split);
+      deflater.finish();
+      out.writeBytes(drain(deflater, data.length));
+      return out.toByteArray();
+    } finally {
+      deflater.end();
+    }
+  }
+
+  /**
    * Builds a zlib stream that starts with {@code count} empty stored blocks.
    *
    * @param data the bytes the stream decodes to

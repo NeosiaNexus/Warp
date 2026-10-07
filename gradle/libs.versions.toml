@@ -29,6 +29,9 @@ jacoco = "0.8.15"
 junit = "5.12.2"
 mockito = "5.24.0"
 jazzer = "0.30.0"
+pitest = "1.30.0"
+pitest-junit5 = "1.2.3"
+pitest-plugin = "1.19.0"
 
 # Benchmarking
 jmh = "1.37"
@@ -100,6 +103,10 @@ mockito-core = { group = "org.mockito", name = "mockito-core", version.ref = "mo
 mockito-junit-jupiter = { group = "org.mockito", name = "mockito-junit-jupiter", version.ref = "mockito" }
 jazzer-api = { group = "com.code-intelligence", name = "jazzer-api", version.ref = "jazzer" }
 jazzer-junit = { group = "com.code-intelligence", name = "jazzer-junit", version.ref = "jazzer" }
+# The PIT Gradle plugin resolves these two from `pitestVersion` and `junit5PluginVersion`; declared
+# here so that Dependabot updates them too.
+pitest = { group = "org.pitest", name = "pitest-command-line", version.ref = "pitest" }
+pitest-junit5 = { group = "org.pitest", name = "pitest-junit5-plugin", version.ref = "pitest-junit5" }
 
 # Benchmarking
 jmh-core = { group = "org.openjdk.jmh", name = "jmh-core", version.ref = "jmh" }
@@ -117,3 +124,4 @@ shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
 errorprone = { id = "net.ltgt.errorprone", version.ref = "errorprone-plugin" }
 jmh = { id = "me.champeau.jmh", version.ref = "jmh-plugin" }
+pitest = { id = "info.solidsoft.pitest", version.ref = "pitest-plugin" }

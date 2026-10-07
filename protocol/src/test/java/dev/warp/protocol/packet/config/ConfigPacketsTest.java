@@ -18,11 +18,13 @@ package dev.warp.protocol.packet.config;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.codec.VarInt;
 
 import java.nio.charset.StandardCharsets;
@@ -214,6 +216,7 @@ class ConfigPacketsTest {
         assertEquals(false, decoded.enableTextFiltering());
         assertTrue(decoded.allowServerListings());
         assertEquals(0, decoded.particleStatus());
+        assertFalse(buf.isReadable());
       } finally {
         buf.release();
       }
@@ -238,6 +241,7 @@ class ConfigPacketsTest {
         assertTrue(decoded.enableTextFiltering());
         assertEquals(false, decoded.allowServerListings());
         assertEquals(2, decoded.particleStatus());
+        assertFalse(buf.isReadable());
       } finally {
         buf.release();
       }
@@ -312,6 +316,31 @@ class ConfigPacketsTest {
       }
     }
 
+    @Test
+    @DisplayName("should accept 128 packs, as many as vanilla does")
+    void acceptsMostPacks() {
+      ByteBuf buf = packs(128);
+      try {
+        assertEquals(
+            128, KnownPacks.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_21_4).packs().size());
+      } finally {
+        buf.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should reject more than 128 packs, even when all of them are there")
+    void rejectTooManyPacks() {
+      ByteBuf buf = packs(129);
+      try {
+        assertThrows(
+            DecoderException.class,
+            () -> KnownPacks.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_21_4));
+      } finally {
+        buf.release();
+      }
+    }
+
     @ParameterizedTest(name = "{0}")
     @ValueSource(ints = {129, -1, Integer.MIN_VALUE})
     @DisplayName("should reject a pack count above 128 or below 0")
@@ -327,6 +356,17 @@ class ConfigPacketsTest {
       } finally {
         buf.release();
       }
+    }
+
+    private static ByteBuf packs(int count) {
+      ByteBuf buf = Unpooled.buffer();
+      VarInt.write(buf, count);
+      for (int i = 0; i < count; i++) {
+        McString.write(buf, "minecraft");
+        McString.write(buf, "pack" + i);
+        McString.write(buf, "1.21.4");
+      }
+      return buf;
     }
   }
 

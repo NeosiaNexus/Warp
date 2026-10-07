@@ -1,0 +1,54 @@
+name: Mutation testing
+
+# Reusable: PIT mutation testing (`./gradlew :<module>:pitest`, configured in
+# build-logic/src/main/kotlin/warp.pitest-conventions.gradle.kts) of the given modules, one job per
+# module so that each has a runner's cores to itself. A job fails when its module's mutation score
+# drops below its threshold in config/pitest/thresholds.properties. Its summary has the score and
+# the mutants left alive in each class, and the HTML report is attached.
+on:
+  workflow_call:
+    inputs:
+      modules:
+        description: The modules to analyse, as a JSON array of names (`["protocol", "proxy"]`).
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  pitest:
+    name: ${{ matrix.module }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read # check out the code
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ${{ fromJSON(inputs.modules) }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up build
+        uses: $/.github/actions/setup-build
+
+      - name: Run PIT
+        env:
+          MODULE: ${{ matrix.module }}
+        run: ./gradlew ":$MODULE:pitest"
+
+      - name: Report the mutation score
+        if: ${{ !cancelled() }}
+        run: python3 .github/scripts/mutation-summary.py >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the PIT report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-report-${{ matrix.module }}
+          path: ${{ matrix.module }}/build/reports/pitest/
+          if-no-files-found: warn
+          retention-days: 30

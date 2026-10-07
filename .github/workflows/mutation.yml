@@ -1,0 +1,33 @@
+name: Mutation testing
+
+# PIT mutation testing of every module that has it (_mutation.yml): on every push to main, nightly,
+# and on demand on any branch (gh workflow run mutation.yml --ref <branch>). Pull requests analyse
+# the modules they change, in CI; this run also catches a change to one module that moves the score
+# of another.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
+  schedule:
+    - cron: '41 2 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+# Runs go one at a time per branch; a newer one waiting replaces an older one waiting.
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pitest:
+    name: Mutation testing
+    permissions:
+      contents: read # check out the code
+    uses: $/.github/workflows/_mutation.yml
+    with:
+      modules: '["protocol", "proxy"]'

@@ -122,9 +122,13 @@ class ServerLeftoversTest {
 
       List<PlayPacket> packets = leftovers.clear(ProtocolVersion.MINECRAFT_1_16_4);
 
-      BossBar removal = assertInstanceOf(BossBar.class, packets.getFirst());
-      assertEquals(BAR, removal.uuid());
-      assertEquals(BossBar.REMOVE, removal.action());
+      // Every boss bar packet, not only the first: the bars are kept in a hash set, so a bar
+      // wrongly kept could come out before or after BAR.
+      List<BossBar> removals =
+          packets.stream().filter(BossBar.class::isInstance).map(BossBar.class::cast).toList();
+      assertEquals(1, removals.size(), "one bar left on screen");
+      assertEquals(BAR, removals.getFirst().uuid());
+      assertEquals(BossBar.REMOVE, removals.getFirst().action());
     }
   }
 

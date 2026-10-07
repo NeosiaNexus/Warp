@@ -304,6 +304,8 @@ class MinecraftEncoderTest {
 
       // Switch to 1.21.4
       encoder.setVersion(ProtocolVersion.MINECRAFT_1_21_4);
+      assertEquals(ProtocolVersion.MINECRAFT_1_21_4, encoder.version());
+      assertEquals(PacketDirection.CLIENTBOUND, encoder.direction());
 
       // Encode again — expect packet ID 0x27
       assertTrue(ch.writeOutbound(new KeepAlive(2L)));

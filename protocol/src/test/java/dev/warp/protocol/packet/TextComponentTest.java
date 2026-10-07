@@ -126,6 +126,18 @@ class TextComponentTest {
     }
 
     @Test
+    @DisplayName("should switch from one to two bytes at U+0080 and to three at U+0800")
+    void encodingBoundaries() throws IOException {
+      String text = "\u007F\u0080\u07FF\u0800";
+
+      byte[] encoded = TextComponent.plainText(text, ProtocolVersion.MINECRAFT_1_20_3);
+
+      assertArrayEquals(
+          HexFormat.of().parseHex("080008" + "7f" + "c280" + "dfbf" + "e0a080"), encoded);
+      assertEquals(text, readStringTag(encoded));
+    }
+
+    @Test
     @DisplayName("should accept 65 535 bytes of text and reject one more")
     void lengthLimit() throws IOException {
       String longest = "€".repeat(21_845); // 3 bytes each
