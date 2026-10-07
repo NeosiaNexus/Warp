@@ -232,7 +232,11 @@ One entry per protocol number:
 - `via`: for protocols the bots cannot speak (1.7.2 to 1.7.5, 1.9.1, 1.14.2, versions newer than
   the library), the version they speak to [ViaProxy](https://github.com/ViaVersion/ViaProxy), which
   translates to `version`. ViaProxy cannot authenticate against an online-mode proxy, so these
-  entries run their online variants offline.
+  entries run their online variants offline. It does not compress what it sends the bots
+  (`--compression-threshold -1`; Warp's compression towards ViaProxy is unchanged): when it does,
+  its 3.4.14 release now and then stops reading its connection to Warp as the login completes
+  (two threads race over the connection's auto-read flag), and the bot waits until Warp times it
+  out (#102).
 - `server.type` is `paper`, or `vanilla` for the few versions Paper never released (1.7.2, 1.9 to
   1.9.2, 1.11, 1.16). `server.preseed` lists files an old build expects before its first boot.
 - `server.quirks`: server bugs the harness works around, by name, each with its reason and issue.
