@@ -22,7 +22,7 @@ errorprone-core = "2.50.0"
 errorprone-plugin = "5.1.1"
 nullaway = "0.14.2"
 spotless = "8.10.3"
-checkstyle = "13.11.0"
+checkstyle = "14.3.0"
 jacoco = "0.8.15"
 
 # Testing
