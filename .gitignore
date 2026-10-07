@@ -23,6 +23,8 @@ gradle-app.setting
 
 # Java
 *.class
+# Jazzer's corpus of each fuzz test, grown by fuzzing (cached by CI, never committed)
+.cifuzz-corpus/
 hs_err_pid*
 replay_pid*
 

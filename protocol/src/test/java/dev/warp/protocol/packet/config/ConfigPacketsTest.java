@@ -28,6 +28,7 @@ import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.codec.VarInt;
 
 import java.nio.charset.StandardCharsets;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Stream;
@@ -41,6 +42,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("Config packet codecs")
 class ConfigPacketsTest {
@@ -244,6 +246,42 @@ class ConfigPacketsTest {
         buf.release();
       }
     }
+
+    /**
+     * A 26.x client's packet, packet id excluded: the layout of 1.21.2, which every protocol up to
+     * 26.3 keeps. The 26.1 bytes are node-minecraft-protocol 1.68's (vanilla 26.1 writes the same
+     * fields); the 26.2 and 26.3 ones are Mojang's own codec's, run from the server jars (26.3
+     * encodes its three enums by an id equal to their ordinal). The settings are those of the play
+     * state's captures: locale {@code en_GB}, view distance 12, chat commands only, chat colors on,
+     * all skin parts, left hand, text filtering on, server listing refused, minimal particles.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versions26")
+    @DisplayName("should decode a 26.x client's packet and encode it back to the same bytes")
+    void keepsTheBytesOfA26Client(ProtocolVersion version) {
+      String wireHex = "05656e5f47420c01017f00010002";
+      ByteBuf buf = Unpooled.buffer().writeBytes(HexFormat.of().parseHex(wireHex));
+      try {
+        ClientInformation decoded = ClientInformation.CODEC.decode(buf, version);
+        buf.clear();
+        ClientInformation.CODEC.encode(decoded, buf, version);
+
+        assertEquals(
+            new ClientInformation("en_GB", (byte) 12, 1, true, (byte) 0x7F, 0, true, false, 2),
+            decoded);
+        assertEquals(wireHex, HexFormat.of().formatHex(ByteBufUtil.getBytes(buf)));
+      } finally {
+        buf.release();
+      }
+    }
+
+    /** The 26.x protocols, which all keep the 1.21.2 layout. */
+    static Stream<ProtocolVersion> versions26() {
+      return Stream.of(
+          ProtocolVersion.MINECRAFT_26_1,
+          ProtocolVersion.MINECRAFT_26_2,
+          ProtocolVersion.MINECRAFT_26_3);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -298,6 +336,23 @@ class ConfigPacketsTest {
         assertThrows(
             DecoderException.class,
             () -> KnownPacks.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_21_4));
+      } finally {
+        buf.release();
+      }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(ints = {129, -1, Integer.MIN_VALUE})
+    @DisplayName("should reject a pack count above 128 or below 0")
+    void rejectPackCountOutOfRange(int count) {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        VarInt.write(buf, count);
+        DecoderException rejection =
+            assertThrows(
+                DecoderException.class,
+                () -> KnownPacks.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_21_4));
+        assertNull(rejection.getCause(), "rejected by the codec, not by a failure");
       } finally {
         buf.release();
       }

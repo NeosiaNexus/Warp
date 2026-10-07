@@ -31,7 +31,8 @@ import io.netty.handler.codec.MessageToMessageDecoder;
  *
  * <p>Input: complete frames from {@link FrameDecoder} ({@code [Length][Data Length][payload]}).
  * Output: {@code [Packet ID][Payload]} — a zero-copy slice for uncompressed frames, a new buffer
- * for compressed ones. All checks of {@link FrameDecompressor} apply.
+ * for compressed ones. All checks of {@link FrameDecompressor} apply, and frames still queued once
+ * the channel is closed are dropped.
  *
  * <p>This is the right tool for endpoints that consume every packet: test clients, load generators,
  * traffic recorders. The proxy itself does not use it — its {@link MinecraftDecoder} inflates only
@@ -65,6 +66,11 @@ public final class CompressionDecoder extends MessageToMessageDecoder<ByteBuf> {
 
   @Override
   protected void decode(ChannelHandlerContext ctx, ByteBuf frame, List<Object> out) {
+    // Dead-channel guard, as in MinecraftDecoder: the frames split from the same read as one that
+    // closed the connection are dropped, not inflated.
+    if (!ctx.channel().isActive()) {
+      return;
+    }
     VarInt.skip(frame);
     out.add(decompressor.packetOf(ctx.alloc(), frame));
   }

@@ -43,6 +43,7 @@ import org.jspecify.annotations.Nullable;
  *       ints, which puts the same bytes on the wire as two big-endian longs)
  *   <li><b>1.19+</b>: Added properties array (skin/cape)
  *   <li><b>1.20.5–1.21.1</b>: Added {@code strictErrorHandling} boolean, removed again in 1.21.2
+ *   <li><b>26.2+</b>: Added the play session ID (a UUID) after the properties
  * </ul>
  *
  * <p>Encoding always uses the exact form of the target version. Decoding a string UUID accepts both
@@ -53,10 +54,20 @@ import org.jspecify.annotations.Nullable;
  * @param username the player's username
  * @param properties game profile properties (skin, cape), empty before 1.19
  * @param strictErrorHandling if {@code true}, client disconnects on decode errors (1.20.5–1.21.1)
+ * @param sessionId the server's play session ID, which the client reports in its telemetry (26.2+):
+ *     vanilla shares one among every player connected at the same time. {@code null} when decoded
+ *     before 26.2, required to encode for 26.2+
  */
 public record LoginSuccess(
-    UUID uuid, String username, List<Property> properties, boolean strictErrorHandling)
+    UUID uuid,
+    String username,
+    List<Property> properties,
+    boolean strictErrorHandling,
+    @Nullable UUID sessionId)
     implements LoginPacket {
+
+  /** Most profile properties accepted: vanilla sends a handful (textures). */
+  private static final int MAX_PROPERTIES = 64;
 
   /** Length of a UUID string without dashes, as sent by 1.7.2–1.7.5. */
   private static final int UNDASHED_UUID_LENGTH = 32;
@@ -89,10 +100,8 @@ public record LoginSuccess(
 
           List<Property> properties;
           if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_19)) {
-            int count = VarInt.read(buf);
-            if (count > 64) {
-              throw new DecoderException("Too many properties: " + count + " (max 64)");
-            }
+            // A property takes at least three bytes: two empty strings and its signature flag.
+            int count = VarInt.readCount(buf, MAX_PROPERTIES, 3, "property");
             properties = new ArrayList<>(count);
             for (int i = 0; i < count; i++) {
               String name = McString.read(buf);
@@ -110,7 +119,10 @@ public record LoginSuccess(
                   && version.isOlderThan(ProtocolVersion.MINECRAFT_1_21_2)
                   && buf.readBoolean();
 
-          return new LoginSuccess(uuid, username, properties, strictErrorHandling);
+          @Nullable UUID sessionId =
+              version.isAtLeast(ProtocolVersion.MINECRAFT_26_2) ? McUuid.read(buf) : null;
+
+          return new LoginSuccess(uuid, username, properties, strictErrorHandling, sessionId);
         }
 
         @Override
@@ -140,6 +152,14 @@ public record LoginSuccess(
           if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5)
               && version.isOlderThan(ProtocolVersion.MINECRAFT_1_21_2)) {
             buf.writeBoolean(packet.strictErrorHandling());
+          }
+
+          if (version.isAtLeast(ProtocolVersion.MINECRAFT_26_2)) {
+            @Nullable UUID sessionId = packet.sessionId();
+            if (sessionId == null) {
+              throw new IllegalStateException("sessionId is required for 26.2+");
+            }
+            McUuid.write(buf, sessionId);
           }
         }
       };

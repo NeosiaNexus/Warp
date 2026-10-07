@@ -1,4 +1,5 @@
 // A Warp instance under test: its own directory, generated warp.conf, private copy of the jar.
+import { randomUUID } from 'node:crypto';
 import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
@@ -6,8 +7,10 @@ import { ManagedProcess, run } from './proc.js';
 
 /**
  * Warp output lines that fail a run: anything logged at ERROR or FATAL, Netty buffer leaks,
- * uncaught exceptions printed by the JVM itself, JVM crashes, and keep-alive trouble (bots always
- * echo the keep-alive id they received, at once, so a mismatch or a time-out is a proxy bug).
+ * uncaught exceptions printed by the JVM itself, JVM crashes, keep-alive trouble (bots always echo
+ * the keep-alive id they received, at once, so a mismatch or a time-out is a proxy bug) and read
+ * time-outs (Warp logs them at INFO, as a player who goes quiet is routine; bots and backends here
+ * never do, so one is a hang somewhere between them).
  */
 export const WARP_FAILURES = [
   /^\S+ \S+ \[[^\]]*\] (ERROR|FATAL) /,
@@ -16,7 +19,11 @@ export const WARP_FAILURES = [
   /^# A fatal error has been detected by the Java Runtime Environment/,
   /Invalid KeepAlive ID from player /,
   /timed out \(no KeepAlive response/,
+  /Connection \S+ timed out in \S+: the (client|backend) sent nothing/,
 ];
+
+/** Where the harness's stand-in for Mojang's key goes, in Warp's working directory. */
+const SIGNER_FILE = 'profile-key-signer.pem';
 
 export class Warp {
   /**
@@ -28,11 +35,16 @@ export class Warp {
    * @param {number} options.port
    * @param {boolean} options.online online mode against the mock session server
    * @param {string|null} options.sessionServer `hasJoined` URL of the mock session server
+   * @param {string|null} options.profileKeySigner PEM public key Warp trusts to sign 1.19 to 1.19.2
+   *   profile keys instead of Mojang's (the harness signs its bots' keys)
    * @param {boolean} options.passthrough `compression.passthrough`
    * @param {number} options.threshold `compression.threshold`
    * @param {Record<string, number>} options.servers name → port of each backend
    * @param {string[]} options.fallbackOrder first entry is the default server
+   * @param {{mode: string, secret: string}|null} options.forwarding player info forwarding, with the
+   *   secret the backends share, or null for none
    * @param {string} options.logDir
+   * @param {string[]} [options.jvmArgs] JVM options after the defaults (the last -Xmx wins)
    */
   constructor(options) {
     Object.assign(this, options);
@@ -44,6 +56,7 @@ export class Warp {
     mkdirSync(this.dir, { recursive: true });
     copyFileSync(this.jar, join(this.dir, 'warp.jar'));
     writeFileSync(join(this.dir, 'warp.conf'), this.config());
+    if (this.profileKeySigner) writeFileSync(join(this.dir, SIGNER_FILE), this.profileKeySigner);
   }
 
   config() {
@@ -59,7 +72,7 @@ ${servers}
 default-server = "${this.fallbackOrder[0]}"
 fallback-order = [${this.fallbackOrder.map((s) => `"${s}"`).join(', ')}]
 forwarding {
-  mode = "none"
+  mode = "${this.forwarding?.mode ?? 'none'}"
 }
 compression {
   threshold = ${this.threshold}
@@ -76,12 +89,17 @@ compression {
       '--sun-misc-unsafe-memory-access=allow',
       // Every ByteBuf is tracked: a buffer the proxy forgets to release is reported as an ERROR.
       '-Dio.netty.leakDetection.level=paranoid',
+      ...(this.jvmArgs ?? []),
       ...(this.online ? [`-Dmojang.sessionserver=${this.sessionServer}`] : []),
+      ...(this.profileKeySigner ? [`-Dwarp.profilekeys.signer=${SIGNER_FILE}`] : []),
       '-jar',
       'warp.jar',
     ];
     this.process = new ManagedProcess(this.name, this.java, args, {
       cwd: this.dir,
+      // The secret goes in the variable that overrides `forwarding.secret-file`, so that one set in
+      // the caller's environment cannot replace it.
+      env: this.forwarding ? { WARP_FORWARDING_SECRET: this.forwarding.secret } : undefined,
       logFile: join(this.logDir, `${this.name}.log`),
       failures: WARP_FAILURES,
     }).start();
@@ -94,7 +112,18 @@ compression {
    */
   async collectGarbage() {
     if (!this.process?.alive) return;
-    await run(jcmd(this.java), [String(this.process.pid), 'GC.run']).catch(() => {});
+    await this.jcmd(['GC.run']).catch(() => {});
+  }
+
+  /** Runs diagnostic commands (`GC.heap_info`, `VM.native_memory summary`…) in one jcmd call. */
+  async jcmd(commands) {
+    const file = join(this.dir, `jcmd-${randomUUID()}.txt`);
+    writeFileSync(file, `${commands.join('\n')}\n`);
+    try {
+      return await run(jcmd(this.java), [String(this.process.pid), '-f', file]);
+    } finally {
+      rmSync(file, { force: true });
+    }
   }
 
   /** Stops the instance. A shutdown that hangs is a bug: the thread dump goes to the log. */

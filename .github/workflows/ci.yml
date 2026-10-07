@@ -14,7 +14,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Pull requests that only touch documentation skip the build and the end-to-end tests.
+  # Pull requests that only touch documentation skip the build, the allocation guard and the
+  # end-to-end tests; those that change Warp's modules or the end-to-end harness run the whole
+  # end-to-end matrix (.github/actions/changes says which files count).
   changes:
     name: Detect changes
     runs-on: ubuntu-24.04
@@ -22,22 +24,12 @@ jobs:
     permissions:
       pull-requests: read # list the files of the pull request
     outputs:
-      code: ${{ steps.filter.outputs.code || 'true' }}
+      code: ${{ steps.changes.outputs.code }}
+      e2e-tier: ${{ steps.changes.outputs.e2e-tier }}
     steps:
-      - name: Filter paths
-        id: filter
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
-        with:
-          predicate-quantifier: every
-          filters: |
-            code:
-              - '**'
-              - '!**/*.md'
-              - '!docs/**'
-              - '!LICENSE'
-              - '!.github/ISSUE_TEMPLATE/**'
-              - '!.github/PULL_REQUEST_TEMPLATE.md'
+      - name: Detect changes
+        id: changes
+        uses: $/.github/actions/changes
 
   build:
     name: Build & test
@@ -100,6 +92,43 @@ jobs:
             */build/test-results/
           retention-days: 7
 
+  # Bytes allocated per packet on the hot path, against protocol/src/jmh/alloc-baseline.json, then
+  # one short run of every benchmark (bin/bench-guard.sh). Counted with escape analysis off, the
+  # allocation repeats within 0.3% from one run to the next, so unlike timings it can gate pull
+  # requests. A job of its own: as steps of Build & test it would delay E2E, so CI OK, by 1.5
+  # minutes; apart, it costs 2 runner minutes more (it compiles again) and no wait (measured on #76).
+  allocation-guard:
+    name: Allocation guard
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # check out the code
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test the guard script
+        run: python3 bin/bench-guard-test.py
+
+      - name: Set up build
+        uses: $/.github/actions/setup-build
+
+      - name: Guard allocation per packet
+        run: bin/bench-guard.sh
+
+      - name: Upload JMH results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: allocation-guard
+          path: protocol/build/results/jmh/*.json
+          if-no-files-found: warn
+          retention-days: ${{ github.event_name == 'push' && 30 || 7 }}
+
   # actionlint (syntax, expressions, shellcheck on `run:` scripts) and zizmor (workflow security,
   # strictest persona). Findings show up as annotations on the PR.
   lint-workflows:
@@ -134,23 +163,41 @@ jobs:
           advanced-security: false
           annotations: true
 
-  # One passing version per protocol era, plus the variants on the newest (e2e/versions.json, tier
-  # `pr`). The full matrix runs on main, nightly, and on PRs labelled `e2e: full` (e2e.yml).
+  # One passing version per protocol era and the newest version, plus every variant on the newest
+  # the bots speak natively (e2e/versions.json, tier `pr`); every version (tier `full`) for a pull
+  # request that changes Warp's modules or the harness. The full matrix also runs on main, nightly,
+  # and on PRs labelled `e2e: full` (e2e.yml).
   e2e:
-    name: E2E
-    needs: build
+    name: E2E (${{ needs.changes.outputs.e2e-tier }})
+    needs: [changes, build]
     permissions:
       contents: read # check out the harness
     uses: $/.github/workflows/_e2e.yml
     with:
-      tier: pr
+      tier: ${{ needs.changes.outputs.e2e-tier }}
+
+  # Two minutes of fuzzing per protocol decoder, alongside the build and the end-to-end tests. Not
+  # required by CI OK: random inputs can find a bug the pull request did not add, and a check must
+  # not pass or fail by chance. The checked-in seeds and findings replay in Build & test, which is
+  # required. The nightly run (fuzz.yml) fuzzes for longer.
+  fuzz:
+    name: Fuzz
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    permissions:
+      contents: read # check out the code
+    uses: $/.github/workflows/_fuzz.yml
+    with:
+      duration: 2m
+      # Fuzzing takes 9 minutes on a two-core runner (three rounds and the build), ten more report.
+      timeout-minutes: 30
 
   # The only check to mark as required: it fails if any job above failed or was cancelled, and
   # passes when they succeeded or were skipped on purpose.
   ci-ok:
     name: CI OK
     if: ${{ always() }}
-    needs: [changes, build, lint-workflows, e2e]
+    needs: [changes, build, allocation-guard, lint-workflows, e2e]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}

@@ -39,6 +39,7 @@ import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
+import dev.warp.protocol.packet.play.LegacyPlayerInfo;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
@@ -60,6 +61,7 @@ import java.util.Objects;
 import java.util.UUID;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.channel.local.LocalChannel;
@@ -247,6 +249,7 @@ final class SwitchHarness implements AutoCloseable {
         List.of(
             JoinGame.class,
             Respawn.class,
+            LegacyPlayerInfo.class,
             PlayerInfo.class,
             PlayerInfoUpdate.class,
             PlayerInfoRemove.class,
@@ -295,15 +298,21 @@ final class SwitchHarness implements AutoCloseable {
     PacketCodec<Packet> codec = (PacketCodec<Packet>) encoding.codec();
     ByteBuf body = Unpooled.buffer();
     try {
-      VarInt.write(body, encoding.packetId());
       codec.encode(packet, body, version);
-      ByteBuf frame = Unpooled.buffer();
-      VarInt.write(frame, body.readableBytes());
-      frame.writeBytes(body);
-      return frame;
+      return frame(version, packet.getClass(), ByteBufUtil.getBytes(body));
     } finally {
       body.release();
     }
+  }
+
+  /** Frames the body of a clientbound PLAY packet, which the proxy may never write itself. */
+  static ByteBuf frame(ProtocolVersion version, Class<? extends Packet> type, byte[] body) {
+    int packetId =
+        StateRegistry.get(ProtocolState.PLAY, PacketDirection.CLIENTBOUND).packetId(version, type);
+    ByteBuf frame = Unpooled.buffer();
+    VarInt.write(frame, VarInt.size(packetId) + body.length);
+    VarInt.write(frame, packetId);
+    return frame.writeBytes(body);
   }
 
   /** A Join Game into the overworld, with every field of the version set (before 1.20.2). */

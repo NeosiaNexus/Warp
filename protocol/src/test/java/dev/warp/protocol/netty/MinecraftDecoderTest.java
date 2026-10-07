@@ -27,6 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.compress.FrameDecompressor;
 import dev.warp.protocol.compress.JavaCompressor;
@@ -39,6 +40,7 @@ import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.PlayClientSettings;
+import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.status.StatusRequest;
 
 import java.nio.charset.StandardCharsets;
@@ -46,6 +48,7 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.stream.Stream;
 import java.util.zip.DataFormatException;
 
@@ -561,6 +564,121 @@ class MinecraftDecoderTest {
 
       assertArrayEquals(wire, Frames.drain(ch.readInbound()));
       assertFalse(ch.finish());
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Watched packets
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("watched packets")
+  class WatchedPackets {
+
+    private static final ProtocolVersion VERSION = ProtocolVersion.MINECRAFT_1_12_2;
+    private static final int PLAYER_INFO_ID = 0x2E;
+    private static final int BOSS_BAR_ID = 0x0C;
+    private static final UUID ALICE = UUID.fromString("5c39a8cb-1a3a-4c86-9a47-0f0aaf0e3a01");
+
+    @Test
+    @DisplayName("should emit what a watched packet changes, then its frame byte for byte")
+    void emitsChangeThenFrame() {
+      EmbeddedChannel ch = new EmbeddedChannel(playDecoder());
+      ByteBuf frame = Frames.plain(Frames.packet(PLAYER_INFO_ID, addPlayer(10)));
+      byte[] wire = ByteBufUtil.getBytes(frame);
+
+      assertTrue(ch.writeInbound(frame));
+
+      assertEquals(
+          new PlayerInfo(PlayerInfo.ADD_PLAYER, List.of(ALICE)),
+          assertInstanceOf(PlayerInfo.class, ch.readInbound()));
+      assertArrayEquals(wire, Frames.drain(ch.readInbound()));
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should emit only the frame of a watched packet that changes nothing")
+    void emitsOnlyFrameOfUpdate() {
+      EmbeddedChannel ch = new EmbeddedChannel(playDecoder());
+      ByteBuf frame = Frames.plain(Frames.packet(BOSS_BAR_ID, bossBarHealth()));
+      byte[] wire = ByteBufUtil.getBytes(frame);
+
+      assertTrue(ch.writeInbound(frame));
+
+      assertArrayEquals(wire, Frames.drain(ch.readInbound()));
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should inflate a compressed watched packet once, then forward its original bytes")
+    void compressedFrame() {
+      CountingCompressor compressor = new CountingCompressor();
+      MinecraftDecoder decoder = playDecoder();
+      decoder.enableCompression(
+          new FrameDecompressor(
+              256, false, FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE, compressor),
+          true);
+      EmbeddedChannel ch = new EmbeddedChannel(decoder);
+      byte[] packet = Frames.packet(PLAYER_INFO_ID, addPlayer(1000));
+      ByteBuf frame = Frames.compressed(packet, 6);
+      byte[] wire = ByteBufUtil.getBytes(frame);
+
+      assertTrue(ch.writeInbound(frame));
+
+      assertInstanceOf(PlayerInfo.class, ch.readInbound());
+      ByteBuf forwarded = ch.readInbound();
+      assertArrayEquals(wire, ByteBufUtil.getBytes(forwarded), "the compressed bytes as received");
+      assertEquals(1, compressor.inflations);
+      // A connection that cannot take the frame as it is re-encodes these, without inflating again.
+      assertArrayEquals(
+          packet, Frames.drain(Objects.requireNonNull(decoder.takeInflatedPacket(forwarded))));
+      forwarded.release();
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should reject a malformed watched packet with its packet ID and state")
+    void malformed() {
+      EmbeddedChannel ch = new EmbeddedChannel(playDecoder());
+      // Adds five players, but holds none.
+      byte[] packet = Frames.packet(PLAYER_INFO_ID, new byte[] {PlayerInfo.ADD_PLAYER, 5});
+
+      DecoderException e =
+          assertThrows(DecoderException.class, () -> ch.writeInbound(Frames.plain(packet)));
+
+      String message = String.valueOf(e.getMessage());
+      assertTrue(message.contains("watch packet 0x2e in state PLAY"), message);
+      assertFalse(ch.finish());
+    }
+
+    private static MinecraftDecoder playDecoder() {
+      return new MinecraftDecoder(PacketDirection.CLIENTBOUND, VERSION, ProtocolState.PLAY);
+    }
+
+    /** Adds Alice to the tab list, with a texture property of {@code textureLength} bytes. */
+    private static byte[] addPlayer(int textureLength) {
+      ByteBuf buf = Unpooled.buffer();
+      VarInt.write(buf, PlayerInfo.ADD_PLAYER);
+      VarInt.write(buf, 1);
+      buf.writeLong(ALICE.getMostSignificantBits()).writeLong(ALICE.getLeastSignificantBits());
+      McString.write(buf, "Alice");
+      VarInt.write(buf, 1);
+      McString.write(buf, "textures");
+      McString.write(buf, "x".repeat(textureLength));
+      buf.writeBoolean(false); // signature
+      VarInt.write(buf, 0); // game mode
+      VarInt.write(buf, 5); // latency
+      buf.writeBoolean(false); // display name
+      return Frames.drain(buf);
+    }
+
+    /** Sets the health of Alice's boss bar to a half. */
+    private static byte[] bossBarHealth() {
+      ByteBuf buf = Unpooled.buffer();
+      buf.writeLong(ALICE.getMostSignificantBits()).writeLong(ALICE.getLeastSignificantBits());
+      VarInt.write(buf, 2);
+      buf.writeFloat(0.5f);
+      return Frames.drain(buf);
     }
   }
 

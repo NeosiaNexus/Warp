@@ -26,6 +26,7 @@ import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_19;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_20;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_8;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_9_1;
+import static dev.warp.protocol.ProtocolVersion.MINECRAFT_26_2;
 
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McNbt;
@@ -38,7 +39,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.handler.codec.DecoderException;
 
 /**
  * Server puts the player in a world ({@code S→C}): the first packet of the PLAY state.
@@ -56,6 +56,10 @@ import io.netty.handler.codec.DecoderException;
  * cooldown) and 1.20.2 (configuration phase). Velocity's {@code JoinGamePacket} and
  * minecraft-data's {@code packet_login} describe the same fields.
  *
+ * <p>From 26.2 the packet ends with the online mode flag, then the enforces secure chat flag: the
+ * proxy sets the first one in the verbatim bytes ({@link #withOnlineMode}). 26.3 also widened the
+ * game modes to VarInts, a change the verbatim bytes carry as they are.
+ *
  * @param entityId the player's entity ID on this server
  * @param hardcore whether the world is in hardcore mode
  * @param body everything else: decoded before 1.20.2, verbatim from 1.20.2
@@ -69,6 +73,12 @@ public record JoinGame(int entityId, boolean hardcore, JoinGame.Body body) imple
   private static final int MAX_LEVEL_TYPE_LENGTH = 16;
 
   private static final byte[] EMPTY = new byte[0];
+
+  /**
+   * Position of the online mode flag from the end of a 26.2+ packet: only the enforces secure chat
+   * flag follows it, one boolean byte each.
+   */
+  private static final int ONLINE_MODE_FROM_END = 2;
 
   /** The fields after the entity ID and the hardcore flag. */
   public sealed interface Body permits Decoded, Opaque {}
@@ -187,6 +197,47 @@ public record JoinGame(int entityId, boolean hardcore, JoinGame.Body body) imple
           }
         }
       };
+
+  // ---------------------------------------------------------------------------
+  // 26.2+: online mode
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns this packet telling a 26.2+ client whether the server authenticates its players.
+   *
+   * <p>From 26.2 the client reads this flag from the Join Game to decide whether to show player
+   * heads in the tab list and to prepare its chat signing key, two things 26.1 decided from the
+   * encryption of its own connection. A backend behind a proxy runs in offline mode and sends
+   * {@code false}, even to a player the proxy authenticated. The flag is the next to last byte of
+   * the packet in 26.2 and 26.3 (Mojang's {@code ClientboundLoginPacket} codec), so it is set where
+   * it lies, without decoding anything.
+   *
+   * @param onlineMode whether the proxy authenticates players
+   * @param version the version the packet was decoded for
+   * @return this packet before 26.2, which has no such flag, or when the flag already has this
+   *     value; otherwise a copy with the flag set
+   * @throws IllegalArgumentException if this is not a 26.2+ packet: its body is decoded, or too
+   *     short to end with the two flags
+   */
+  public JoinGame withOnlineMode(boolean onlineMode, ProtocolVersion version) {
+    if (version.isOlderThan(MINECRAFT_26_2)) {
+      return this;
+    }
+    if (!(body instanceof Opaque(byte[] bytes)) || bytes.length < ONLINE_MODE_FROM_END) {
+      throw new IllegalArgumentException(
+          "Not a verbatim "
+              + version.name()
+              + " join game, ending with the online mode and secure chat flags");
+    }
+    int index = bytes.length - ONLINE_MODE_FROM_END;
+    byte flag = (byte) (onlineMode ? 1 : 0);
+    if (bytes[index] == flag) {
+      return this;
+    }
+    byte[] patched = bytes.clone();
+    patched[index] = flag;
+    return new JoinGame(entityId, hardcore, new Opaque(patched));
+  }
 
   // ---------------------------------------------------------------------------
   // Up to 1.15.2: numeric dimension, level type
@@ -341,11 +392,8 @@ public record JoinGame(int entityId, boolean hardcore, JoinGame.Body body) imple
   // ---------------------------------------------------------------------------
 
   private static List<String> readIdentifiers(ByteBuf buf) {
-    int count = VarInt.read(buf);
     // Each identifier takes at least its one-byte length prefix.
-    if (count < 0 || count > buf.readableBytes()) {
-      throw new DecoderException("Invalid world name count: " + count);
-    }
+    int count = VarInt.readCount(buf, Integer.MAX_VALUE, 1, "world name");
     List<String> identifiers = new ArrayList<>(count);
     for (int i = 0; i < count; i++) {
       identifiers.add(McString.read(buf));

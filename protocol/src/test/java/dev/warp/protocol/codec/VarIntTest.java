@@ -427,6 +427,78 @@ class VarIntTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Element count
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("readCount")
+  class ReadCount {
+
+    @Test
+    @DisplayName("should read a count the bytes after it can hold, up to the maximum")
+    void accepts() {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        VarInt.write(buf, 3);
+        buf.writeZero(6);
+        assertEquals(3, VarInt.readCount(buf, 3, 2, "pack"));
+        assertEquals(1, buf.readerIndex());
+        buf.readerIndex(0);
+        assertEquals(3, VarInt.readCount(buf, 3, 0, "pack"));
+      } finally {
+        buf.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should reject a negative count, naming what it counts")
+    void negative() {
+      for (int count : new int[] {-1, Integer.MIN_VALUE}) {
+        ByteBuf buf = Unpooled.buffer();
+        try {
+          VarInt.write(buf, count);
+          DecoderException thrown =
+              assertThrows(DecoderException.class, () -> VarInt.readCount(buf, 64, 0, "property"));
+          assertEquals("Invalid property count: " + count, thrown.getMessage());
+        } finally {
+          buf.release();
+        }
+      }
+    }
+
+    @Test
+    @DisplayName("should reject a count above the maximum")
+    void aboveMaximum() {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        VarInt.write(buf, 4);
+        buf.writeZero(16);
+        assertThrows(DecoderException.class, () -> VarInt.readCount(buf, 3, 1, "pack"));
+      } finally {
+        buf.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should reject a count the remaining bytes cannot hold, however large")
+    void beyondReadableBytes() {
+      for (int count : new int[] {4, Integer.MAX_VALUE}) {
+        ByteBuf buf = Unpooled.buffer();
+        try {
+          VarInt.write(buf, count);
+          buf.writeZero(7);
+          assertThrows(
+              DecoderException.class,
+              () -> VarInt.readCount(buf, Integer.MAX_VALUE, 2, "entry"),
+              () -> "count " + count);
+        } finally {
+          buf.release();
+        }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Roundtrip
   // ---------------------------------------------------------------------------
 

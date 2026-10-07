@@ -8,11 +8,14 @@ compression passthrough. Raw JMH output is in [`results/2026-10-05/`](results/20
 - **Indicative, not publishable.** AMD Ryzen 5 5500 (6C/12T, 10 vCPUs exposed) under **WSL2**, so
   timings carry hypervisor noise. Use the ratios, not the absolute values. Published comparisons
   must come from bare metal; see [`../research/benchmark-methodology.md`](../research/benchmark-methodology.md).
-- **JVM:** Temurin 25.0.2. Each fork runs with `-Xms2g -Xmx2g -XX:+AlwaysPreTouch
-  --sun-misc-unsafe-memory-access=allow -Dio.netty.leakDetection.level=disabled` on Netty-like
-  `FastThreadLocalThread` workers. Netty is 4.2.12.
-- **Statistics:** 3 forks × (5 warm-up + 10 measured) × 2 s per configuration ("before": 3 × 10
-  measured). Errors are 99.9 % confidence intervals.
+- **JVM:** Temurin 25.0.2, Netty 4.2.12. Sections 2 and 3 ran each fork with `-Xms2g -Xmx2g`
+  (`1g` for section 2) `-XX:+AlwaysPreTouch --sun-misc-unsafe-memory-access=allow
+  -Dio.netty.leakDetection.level=disabled` on Netty-like `FastThreadLocalThread` workers. Section 1
+  ran with the same heap and leak detection settings but on JMH's plain threads, and without
+  `--sun-misc-unsafe-memory-access=allow`, so Netty did not use `sun.misc.Unsafe` (see the
+  allocation table in section 1).
+- **Statistics:** 5 warm-up and 10 measured iterations of 2 s per fork; 3 forks per configuration,
+  2 for the passthrough and transcode columns of section 1. Errors are 99.9 % confidence intervals.
 - **Synthetic corpus.** Deterministic packets shaped like vanilla traffic (`PacketCorpus`):
   - chunks modelled on terrain: ~61 KiB raw, ~3.9 KiB compressed;
   - entity movement packets;
@@ -41,7 +44,14 @@ connections (Paper's and Minestom's default); the backend compresses at zlib lev
 | Mixed | yes | 37.4 ± 0.9 µs | **7.0 ± 0.2 µs** | 43.8 ± 1.2 µs | **×5.3** |
 | Entity movement | yes | 828 ± 32 ns | **745 ± 69 ns** | 1003 ± 30 ns | ×1.1 |
 
-Allocation per packet (`gc.alloc.rate.norm`, most of it `EmbeddedChannel` bookkeeping):
+Allocation per packet (`gc.alloc.rate.norm`). Both differences from the proxy's JVM noted above add
+to these figures. On JMH's plain threads Netty's `Recycler` does not reuse objects such as
+`ChannelOutboundBuffer` entries: run again with only the threads changed, the passthrough
+allocates 44.3 B per entity movement packet instead of 104.2 B. Without `sun.misc.Unsafe`, Netty
+copies through extra `ByteBuffer` views: run again with escape analysis off, so that the counts
+repeat exactly, and only Unsafe changed, chunks drop from 102.8 to 16.3 B and the mix from 31.1 to
+20.1 B. The benchmark now runs like the proxy on both counts, and the
+[allocation guard](../../CONTRIBUTING.md#benchmarks) tracks its allocation on every pull request.
 
 | Workload | Before | Passthrough |
 |---|---|---|

@@ -309,6 +309,30 @@ public final class VarInt {
   }
 
   // ---------------------------------------------------------------------------
+  // Element count
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Reads the element count that prefixes a list, rejecting a count that is negative, above {@code
+   * max}, or larger than the readable bytes after it can hold. Callers size a collection by the
+   * count, so it is checked before anything is allocated: a hostile count costs nothing.
+   *
+   * @param buf the buffer to read from
+   * @param max the most elements accepted
+   * @param minElementBytes the fewest bytes one element takes on the wire
+   * @param elements what the elements are, for the error message ("property", "pack")
+   * @return the count, from 0 to {@code max}
+   * @throws DecoderException if the VarInt is malformed or the count out of range
+   */
+  public static int readCount(ByteBuf buf, int max, int minElementBytes, String elements) {
+    int count = read(buf);
+    if (count < 0 || count > max || (long) count * minElementBytes > buf.readableBytes()) {
+      throw new DecoderException("Invalid " + elements + " count: " + count);
+    }
+    return count;
+  }
+
+  // ---------------------------------------------------------------------------
   // Packet-length helper
   // ---------------------------------------------------------------------------
 

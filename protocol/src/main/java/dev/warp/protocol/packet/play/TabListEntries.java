@@ -21,16 +21,16 @@ import dev.warp.protocol.codec.McUuid;
 import dev.warp.protocol.codec.VarInt;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.UUID;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.DecoderException;
 
 /**
  * Field readers shared by the tab list packets ({@link PlayerInfo}, {@link PlayerInfoUpdate},
- * {@link PlayerInfoRemove}). They skip what the proxy carries verbatim, and read and write the UUID
- * lists it keeps.
+ * {@link PlayerInfoRemove}). They skip the fields the proxy never reads, and read and write the
+ * UUID lists it keeps.
  */
 final class TabListEntries {
 
@@ -44,11 +44,7 @@ final class TabListEntries {
 
   /** Reads an entry count, rejecting one the remaining bytes cannot hold. */
   static int readCount(ByteBuf buf, int minEntrySize) {
-    int count = VarInt.read(buf);
-    if (count < 0 || (long) count * minEntrySize > buf.readableBytes()) {
-      throw new DecoderException("Invalid tab list entry count: " + count);
-    }
-    return count;
+    return VarInt.readCount(buf, Integer.MAX_VALUE, minEntrySize, "tab list entry");
   }
 
   /** Skips a game profile's properties: a count, then name, value and optional signature. */
@@ -83,31 +79,21 @@ final class TabListEntries {
     buf.skipBytes(length);
   }
 
+  /** Reads a UUID list: a VarInt count, then each UUID. */
+  static List<UUID> readUuids(ByteBuf buf) {
+    int count = readCount(buf, McUuid.ENCODED_SIZE);
+    UUID[] uuids = new UUID[count];
+    for (int i = 0; i < count; i++) {
+      uuids[i] = McUuid.read(buf);
+    }
+    return List.of(uuids);
+  }
+
   /** Writes a UUID list: a VarInt count, then each UUID. */
   static void writeUuids(ByteBuf buf, Collection<UUID> uuids) {
     VarInt.write(buf, uuids.size());
     for (UUID uuid : uuids) {
       McUuid.write(buf, uuid);
     }
-  }
-
-  /** Encodes a UUID list as {@link #writeUuids} writes it. */
-  static byte[] encodeUuids(Collection<UUID> uuids) {
-    ByteBuf buf = Unpooled.buffer(VarInt.MAX_BYTES + uuids.size() * McUuid.ENCODED_SIZE);
-    try {
-      writeUuids(buf, uuids);
-      byte[] bytes = new byte[buf.readableBytes()];
-      buf.readBytes(bytes);
-      return bytes;
-    } finally {
-      buf.release();
-    }
-  }
-
-  /** Copies the bytes from {@code start} to the reader index. */
-  static byte[] copyFrom(ByteBuf buf, int start) {
-    byte[] bytes = new byte[buf.readerIndex() - start];
-    buf.getBytes(start, bytes);
-    return bytes;
   }
 }

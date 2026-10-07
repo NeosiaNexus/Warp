@@ -23,6 +23,7 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.LegacyPlayerInfo;
 import dev.warp.protocol.packet.play.PlayPacket;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
@@ -43,7 +44,6 @@ class ServerLeftoversTest {
   private static final UUID ALICE = UUID.randomUUID();
   private static final UUID BOB = UUID.randomUUID();
   private static final UUID BAR = UUID.randomUUID();
-  private static final byte[] NO_ENTRIES = new byte[0];
 
   private final ServerLeftovers leftovers = new ServerLeftovers();
 
@@ -52,11 +52,38 @@ class ServerLeftoversTest {
   class TabList {
 
     @Test
+    @DisplayName("should remove the names listed and not removed since, one packet each, on 1.7")
+    void legacyPlayerInfo() {
+      leftovers.track(new LegacyPlayerInfo("Alice", true, (short) 5));
+      leftovers.track(new LegacyPlayerInfo("\u00a7cBob", true, (short) 7));
+      leftovers.track(new LegacyPlayerInfo("Carol", true, (short) 9));
+      leftovers.track(new LegacyPlayerInfo("Alice", true, (short) 40)); // a latency update
+      leftovers.track(new LegacyPlayerInfo("Carol", false, (short) 9999));
+
+      List<PlayPacket> packets = leftovers.clear(ProtocolVersion.MINECRAFT_1_7_6);
+
+      assertEquals(
+          new HashSet<>(
+              List.of(LegacyPlayerInfo.remove("Alice"), LegacyPlayerInfo.remove("\u00a7cBob"))),
+          new HashSet<>(packets));
+      assertEquals(2, packets.size(), "each name removed once, and nothing 1.7 cannot read");
+    }
+
+    @Test
+    @DisplayName("should forget the names it removed: the next server starts clean")
+    void legacyPlayerInfoForgotten() {
+      leftovers.track(new LegacyPlayerInfo("Alice", true, (short) 5));
+      leftovers.clear(ProtocolVersion.MINECRAFT_1_7_2);
+
+      assertEquals(List.of(), leftovers.clear(ProtocolVersion.MINECRAFT_1_7_2));
+    }
+
+    @Test
     @DisplayName("should remove the players added and not removed since, before 1.19.3")
     void playerInfo() {
-      leftovers.track(new PlayerInfo(PlayerInfo.ADD_PLAYER, List.of(ALICE, BOB), NO_ENTRIES));
-      leftovers.track(new PlayerInfo(PlayerInfo.UPDATE_LATENCY, List.of(ALICE), NO_ENTRIES));
-      leftovers.track(new PlayerInfo(PlayerInfo.REMOVE_PLAYER, List.of(BOB), NO_ENTRIES));
+      leftovers.track(new PlayerInfo(PlayerInfo.ADD_PLAYER, List.of(ALICE, BOB)));
+      leftovers.track(new PlayerInfo(PlayerInfo.UPDATE_LATENCY, List.of(ALICE)));
+      leftovers.track(new PlayerInfo(PlayerInfo.REMOVE_PLAYER, List.of(BOB)));
 
       List<PlayPacket> packets = leftovers.clear(ProtocolVersion.MINECRAFT_1_12_2);
 
@@ -68,11 +95,9 @@ class ServerLeftoversTest {
     @Test
     @DisplayName("should remove the players added and not removed since, from 1.19.3")
     void playerInfoUpdate() {
+      leftovers.track(new PlayerInfoUpdate(PlayerInfoUpdate.ADD_PLAYER, List.of(ALICE, BOB)));
       leftovers.track(
-          new PlayerInfoUpdate(PlayerInfoUpdate.ADD_PLAYER, List.of(ALICE, BOB), NO_ENTRIES));
-      leftovers.track(
-          new PlayerInfoUpdate(
-              PlayerInfoUpdate.UPDATE_LATENCY, List.of(UUID.randomUUID()), NO_ENTRIES));
+          new PlayerInfoUpdate(PlayerInfoUpdate.UPDATE_LATENCY, List.of(UUID.randomUUID())));
       leftovers.track(new PlayerInfoRemove(List.of(ALICE)));
 
       List<PlayPacket> packets = leftovers.clear(ProtocolVersion.MINECRAFT_1_19_4);
@@ -90,10 +115,10 @@ class ServerLeftoversTest {
     @DisplayName("should remove the boss bars still shown")
     void removed() {
       UUID gone = UUID.randomUUID();
-      leftovers.track(new BossBar(BAR, BossBar.ADD, NO_ENTRIES));
-      leftovers.track(new BossBar(gone, BossBar.ADD, NO_ENTRIES));
-      leftovers.track(new BossBar(gone, BossBar.REMOVE, NO_ENTRIES));
-      leftovers.track(new BossBar(BAR, 2, NO_ENTRIES));
+      leftovers.track(new BossBar(BAR, BossBar.ADD));
+      leftovers.track(new BossBar(gone, BossBar.ADD));
+      leftovers.track(new BossBar(gone, BossBar.REMOVE));
+      leftovers.track(new BossBar(BAR, 2));
 
       List<PlayPacket> packets = leftovers.clear(ProtocolVersion.MINECRAFT_1_16_4);
 
@@ -151,8 +176,8 @@ class ServerLeftoversTest {
     @Test
     @DisplayName("should forget what it cleared: the next server starts clean")
     void forgets() {
-      leftovers.track(new PlayerInfo(PlayerInfo.ADD_PLAYER, List.of(ALICE), NO_ENTRIES));
-      leftovers.track(new BossBar(BAR, BossBar.ADD, NO_ENTRIES));
+      leftovers.track(new PlayerInfo(PlayerInfo.ADD_PLAYER, List.of(ALICE)));
+      leftovers.track(new BossBar(BAR, BossBar.ADD));
       leftovers.clear(ProtocolVersion.MINECRAFT_1_12_2);
 
       List<PlayPacket> packets = leftovers.clear(ProtocolVersion.MINECRAFT_1_12_2);

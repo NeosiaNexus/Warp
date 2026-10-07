@@ -1,25 +1,30 @@
 // The merged Markdown report (src/report.js), from result.json files like the CI jobs upload.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
 
 const REPORT = join(import.meta.dirname, '..', 'src', 'report.js');
 const dirs = [];
 
-/** Runs the report on one result.json per version, each in its own artifact directory. */
-function report(...results) {
+/**
+ * Runs the report script at `script` on one result.json per version, each in its own artifact
+ * directory; on a failure, `markdown` also has what the script printed on stderr.
+ */
+function runReport(script, results) {
   const dir = mkdtempSync(join(tmpdir(), 'warp-e2e-report-'));
   dirs.push(dir);
   for (const result of results) {
     mkdirSync(join(dir, `e2e-result-${result.version}`, result.version), { recursive: true });
     writeFileSync(join(dir, `e2e-result-${result.version}`, result.version, 'result.json'), JSON.stringify(result));
   }
-  const { status, stdout } = spawnSync(process.execPath, [REPORT, dir, 'E2E'], { encoding: 'utf8' });
-  return { status, markdown: stdout };
+  const { status, stdout, stderr } = spawnSync(process.execPath, [script, dir, 'E2E'], { encoding: 'utf8' });
+  return { status, markdown: status === 0 ? stdout : `${stdout}${stderr}` };
 }
+
+const report = (...results) => runReport(REPORT, results);
 
 /** A result.json with one variant, whose status is the version's. */
 const result = (version, protocol, scenarios, status = 'pass') => ({
@@ -37,6 +42,19 @@ after(() => {
 });
 
 describe('report', () => {
+  it('runs without the npm dependencies, which the Report job of CI does not install', () => {
+    // The harness's sources alone, where no node_modules can be found.
+    const bare = mkdtempSync(join(tmpdir(), 'warp-e2e-bare-'));
+    dirs.push(bare);
+    cpSync(dirname(REPORT), join(bare, 'src'), { recursive: true });
+    writeFileSync(join(bare, 'package.json'), JSON.stringify({ type: 'module' }));
+
+    const { status, markdown } = runReport(join(bare, 'src', 'report.js'), [result('1.21.4', 769, [{ name: 'login', status: 'pass', detail: 'spawned' }])]);
+
+    assert.equal(status, 0, markdown);
+    assert.match(markdown, /✅ \*\*1\*\* passed/);
+  });
+
   it('passes when only known-broken scenarios fail, and says why they do', () => {
     const { status, markdown } = report(
       result('1.20.1', 763, [
@@ -59,6 +77,29 @@ describe('report', () => {
     assert.equal(status, 1);
     assert.match(markdown, /❌ \*\*1\*\* failed/);
     assert.match(markdown, /🎉 `fallback-rejected` passes/);
+  });
+
+  it('shows why a variant was skipped, without failing', () => {
+    const passed = result('1.8.8', 47, [{ name: 'login', status: 'pass', detail: 'spawned' }]);
+    passed.variants.push({ name: 'velocity', settings: 'online', status: 'skip', reason: 'Paper accepts Velocity forwarding from 1.13.1', scenarios: [], failures: [] });
+    const skipped = { ...result('1.16', 735, [], 'skip'), variants: [{ ...passed.variants[1], reason: 'vanilla servers accept no forwarded player info, only Paper does' }] };
+
+    const { status, markdown } = report(passed, skipped);
+
+    assert.equal(status, 0);
+    assert.match(markdown, /✅ \*\*1\*\* passed .* ⏭️ \*\*1\*\* skipped/);
+    assert.match(markdown, /\| velocity \| .*\| ⏭️ Skipped: Paper accepts Velocity forwarding from 1\.13\.1 \|/);
+    assert.doesNotMatch(markdown, /Failures and known issues/);
+  });
+
+  it('lists the backends booted again and the server quirks, without failing', () => {
+    const retried = { ...result('1.16.5', 754, [{ name: 'login', status: 'pass', detail: 'spawned' }]), bootRetries: [{ backend: 'survival', reason: 'no ready line within 240 s', log: 'logs/survival-t256.log' }] };
+    const quirky = { ...result('1.19', 759, [{ name: 'crowd', status: 'pass', detail: '5 switched 50 ms apart' }]), quirks: { concurrentLogins: 'shared random source (#103)' } };
+
+    const { status, markdown } = report(retried, quirky);
+
+    assert.equal(status, 0, markdown);
+    assert.match(markdown, /### Boot retries and server quirks\n\n- \*\*1\.16\.5\*\*: survival hung while booting .*\n- \*\*1\.19\*\*: the crowd's switches go 50 ms apart .*quirk `concurrentLogins`: .*\(#103\)/);
   });
 
   it('keeps log lines from breaking the table', () => {

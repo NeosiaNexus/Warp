@@ -17,6 +17,7 @@
 package dev.warp.proxy.connection;
 
 import dev.warp.proxy.auth.MojangSessionService;
+import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.config.ForwardingMode;
 import dev.warp.proxy.server.ServerRegistry;
 
@@ -53,6 +54,45 @@ final class TestLoginContexts {
    * @return the context
    */
   static ServerLoginContext offline() {
+    return offline(ProfileKeys.mojang());
+  }
+
+  /**
+   * Returns {@link #offline()} with another checker of profile keys.
+   *
+   * @param profileKeys the checker of 1.19 to 1.19.2 profile keys
+   * @return the context
+   */
+  static ServerLoginContext offline(ProfileKeys profileKeys) {
+    return context(false, -1, new MojangSessionService(), profileKeys);
+  }
+
+  /**
+   * Returns {@link #offline()} compressing from {@code compressionThreshold} bytes.
+   *
+   * @param compressionThreshold the configured threshold, or {@code -1} for no compression
+   * @return the context
+   */
+  static ServerLoginContext offline(int compressionThreshold) {
+    return context(false, compressionThreshold, new MojangSessionService(), ProfileKeys.mojang());
+  }
+
+  /**
+   * Returns {@link #offline()} in online mode: players authenticate with {@code sessionService}.
+   *
+   * @param sessionService the session service, usually a mock
+   * @param profileKeys the checker of 1.19 to 1.19.2 profile keys
+   * @return the context
+   */
+  static ServerLoginContext online(MojangSessionService sessionService, ProfileKeys profileKeys) {
+    return context(true, -1, sessionService, profileKeys);
+  }
+
+  private static ServerLoginContext context(
+      boolean onlineMode,
+      int compressionThreshold,
+      MojangSessionService sessionService,
+      ProfileKeys profileKeys) {
     ServerRegistry registry =
         new ServerRegistry(
             Map.of("lobby", new InetSocketAddress(InetAddress.getLoopbackAddress(), 1)),
@@ -60,11 +100,13 @@ final class TestLoginContexts {
             List.of("lobby"));
     return new ServerLoginContext(
         KEY_PAIR,
-        false, // offline mode
-        -1, // compression disabled
+        onlineMode,
+        compressionThreshold,
         Deflater.DEFAULT_COMPRESSION,
         true,
-        new MojangSessionService(),
+        sessionService,
+        profileKeys,
+        new PlaySession(),
         registry,
         ForwardingMode.NONE,
         new byte[0],
