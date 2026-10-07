@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791338880997,
+  "lastUpdate": 1791340733221,
   "repoUrl": "https://github.com/NeosiaNexus/Warp",
   "entries": {
     "Hot path on AMD EPYC 9V45 96-Core Processor (4 CPUs)": [
@@ -964,6 +964,86 @@ window.BENCHMARK_DATA = {
             "name": "PacketIdPeekBenchmark.peek[workload=MIXED]",
             "value": 1426.4,
             "range": "± 7.8",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "63867369+NeosiaNexus@users.noreply.github.com",
+            "name": "NeosiaNexus",
+            "username": "NeosiaNexus"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ed9e29b1a72ae745aac9901dcf21b861a8523a41",
+          "message": "test(protocol): measure test strength with mutation testing and kill surviving mutants (#95)\n\nAdds PIT mutation testing to the protocol and proxy modules, with a ratchet on each module's mutation score that every pull request is held to. New tests kill the surviving mutants that mattered in the codecs Warp relies on, raising the protocol module's score from 81.1% to 94.6%, and fix a proxy boss bar test that passed by luck.",
+          "timestamp": "2026-10-07T04:21:36+02:00",
+          "tree_id": "1870346d7d1e657ca05c2d21b6a8b39ee9c7b6fc",
+          "url": "https://github.com/NeosiaNexus/Warp/commit/ed9e29b1a72ae745aac9901dcf21b861a8523a41"
+        },
+        "date": 1791340731849,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 2843.7,
+            "range": "± 10.5",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 141.5,
+            "range": "± 0.6",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 420.6,
+            "range": "± 2",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 104830,
+            "range": "± 101.1",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 722.7,
+            "range": "± 3.8",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 7502.2,
+            "range": "± 9.8",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=CHUNK]",
+            "value": 1831,
+            "range": "± 11.1",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=MIXED]",
+            "value": 1426.6,
+            "range": "± 5.5",
             "unit": "ns/packet",
             "extra": "AMD EPYC 7763 64-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
           }
