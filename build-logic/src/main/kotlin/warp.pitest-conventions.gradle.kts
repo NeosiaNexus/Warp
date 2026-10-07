@@ -49,8 +49,9 @@ pitest {
 
     val module = project.name
     val thresholds = rootProject.layout.projectDirectory.file("config/pitest/thresholds.properties")
-    // A module never runs without its ratchet: a missing file or entry fails the build. (A fallback
-    // provider that throws cannot tell the two apart: the configuration cache evaluates it.)
+    // A module never runs without its ratchet: a missing file or entry fails the task. One error
+    // covers both: a fallback provider throwing for a missing file would run, and throw, whenever
+    // the configuration cache is stored.
     mutationThreshold = providers.fileContents(thresholds).asText
         .orElse("")
         .map { text ->
