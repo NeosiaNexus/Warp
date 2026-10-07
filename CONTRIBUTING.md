@@ -85,15 +85,19 @@ of its mutants that the tests kill, has a threshold in
 below it. It is a ratchet: when your tests raise a score, raise the threshold to the new score
 rounded down in the same pull request, and never lower one to let a change in.
 
-The [Mutation testing](.github/workflows/mutation.yml) workflow runs on every push to `main`,
-nightly, and on demand on any branch (`gh workflow run mutation.yml --ref <branch>`). Its summary
+CI holds every pull request to it: one that changes a module's code, its tests or how they build
+runs that module's analysis in **CI OK** (see [Continuous Integration](#continuous-integration)).
+The [Mutation testing](.github/workflows/mutation.yml) workflow analyses every module on each push
+to `main`, which also catches a change to one module that moves the score of another, nightly, and
+on demand on any branch (`gh workflow run mutation.yml --ref <branch>`). The summary of each run
 has the scores and, for each class, the mutants still alive with links to their lines; the HTML
 reports are attached to the run.
 
 ## Continuous Integration
 
 Every pull request runs the checks below. **CI OK** aggregates the build, the allocation guard, the
-end-to-end tests and the workflow lint into one check. It must be green before merging, as must
+end-to-end tests, the mutation testing and the workflow lint into one check. It must be green
+before merging, as must
 **Conventional Commits** and the security checks of the [next section](#security-and-dependencies).
 
 | Check | What it verifies |
@@ -101,12 +105,13 @@ end-to-end tests and the workflow lint into one check. It must be green before m
 | **Build & test** | Spotless formatting, compilation with ErrorProne and NullAway, unit and integration tests, Checkstyle, JaCoCo coverage, shadow jar. Failed tests are annotated on the diff; the run summary shows test and coverage tables |
 | **Allocation guard** | Bytes allocated per packet on the hot path, against a committed baseline, then one short run of every benchmark (see [Benchmarks](#benchmarks)) |
 | **E2E** | Real clients through Warp to real servers: one Minecraft version per era, or every version when the pull request changes Warp's modules or the end-to-end harness (see [End-to-end tests](#end-to-end-tests)) |
+| **Mutation testing** | Each module whose code, tests or build the pull request changes keeps its mutation score at or above its threshold (see [Mutation testing](#mutation-testing)); one runner per module, about five minutes for `protocol`. The run summary lists the mutants still alive |
 | **Fuzz** | Two minutes of fuzzing for each protocol decoder (see [Fuzz tests](#fuzz-tests)). Not part of **CI OK**: random inputs can find a bug the pull request did not add. A failing input is annotated on its fuzz test and uploaded; the run summary shows each fuzz test and its corpus |
 | **Lint workflows** | [actionlint](https://github.com/rhysd/actionlint) (with ShellCheck on `run:` scripts) and [zizmor](https://docs.zizmor.sh) at its strictest persona |
 | **Conventional Commits** | The PR title's format (the title becomes the squash commit) |
 
 Pull requests that only touch documentation skip the build, the allocation guard, the end-to-end
-tests and the fuzzing.
+tests, the mutation testing and the fuzzing.
 
 Workflow conventions, enforced in review and by the linters:
 

@@ -106,7 +106,7 @@ Planned, not implemented yet:
 Unit tests check that each piece does what its author meant, and
 [mutation testing](CONTRIBUTING.md#mutation-testing) checks the unit tests: thousands of small bugs
 are planted in the protocol and proxy code, and the share of them the tests catch can only go up,
-which every push to `main` checks. The
+which every pull request that changes that code is checked for. The
 [end-to-end suite](e2e/README.md) checks that a player can actually play: real-protocol bots go
 through Warp to real Paper or vanilla servers for every protocol from 1.7.2 to 26.3. They join,
 receive chunks, switch servers, survive a fallback and stay connected. A run also fails

@@ -16,7 +16,8 @@ concurrency:
 jobs:
   # Pull requests that only touch documentation skip the build, the allocation guard and the
   # end-to-end tests; those that change Warp's modules or the end-to-end harness run the whole
-  # end-to-end matrix (.github/actions/changes says which files count).
+  # end-to-end matrix, and those that change a module's code or tests run its mutation testing
+  # (.github/actions/changes says which files count).
   changes:
     name: Detect changes
     runs-on: ubuntu-24.04
@@ -26,6 +27,7 @@ jobs:
     outputs:
       code: ${{ steps.changes.outputs.code }}
       e2e-tier: ${{ steps.changes.outputs.e2e-tier }}
+      mutation: ${{ steps.changes.outputs.mutation }}
     steps:
       - name: Detect changes
         id: changes
@@ -192,12 +194,25 @@ jobs:
       # Fuzzing takes 9 minutes on a two-core runner (three rounds and the build), ten more report.
       timeout-minutes: 30
 
+  # PIT mutation testing of each module whose score the pull request may change, each on its own
+  # runner, alongside the build and the end-to-end tests. Pushes to main analyse every module, in
+  # mutation.yml.
+  mutation:
+    name: Mutation testing
+    needs: changes
+    if: ${{ needs.changes.outputs.mutation != '[]' }}
+    permissions:
+      contents: read # check out the code
+    uses: $/.github/workflows/_mutation.yml
+    with:
+      modules: ${{ needs.changes.outputs.mutation }}
+
   # The only check to mark as required: it fails if any job above failed or was cancelled, and
   # passes when they succeeded or were skipped on purpose.
   ci-ok:
     name: CI OK
     if: ${{ always() }}
-    needs: [changes, build, allocation-guard, lint-workflows, e2e]
+    needs: [changes, build, allocation-guard, lint-workflows, e2e, mutation]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
