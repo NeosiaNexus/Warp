@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791325315584,
+  "lastUpdate": 1791331693690,
   "repoUrl": "https://github.com/NeosiaNexus/Warp",
   "entries": {
     "Hot path on AMD EPYC 9V45 96-Core Processor (4 CPUs)": [
@@ -722,6 +722,86 @@ window.BENCHMARK_DATA = {
             "name": "PacketIdPeekBenchmark.peek[workload=MIXED]",
             "value": 1478.9,
             "range": "± 2.3",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "63867369+NeosiaNexus@users.noreply.github.com",
+            "name": "NeosiaNexus",
+            "username": "NeosiaNexus"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "833b53f982106b9ad796e96d9633e0aea0d1dbcf",
+          "message": "test(protocol): fuzz the protocol decoders with Jazzer (#94)\n\nFive Jazzer fuzz tests hold VarInt, FrameDecoder, DeflatePeek, CompressionDecoder and MinecraftDecoder to reference implementations, on every state, protocol version and compressed framing, truthful or lying. Their seeds and findings replay in every build; exploratory fuzzing runs on pull requests and nightly without gating CI, and the nightly run minimizes the shared corpus. The fuzzing found and this fixes negative element counts reaching collection sizes, now checked by VarInt.readCount, and frames decoded or rejected after one of the same read closed the connection.",
+          "timestamp": "2026-10-07T01:53:35+02:00",
+          "tree_id": "04290d34f1bdbc93784411792c98ce401b031cb5",
+          "url": "https://github.com/NeosiaNexus/Warp/commit/833b53f982106b9ad796e96d9633e0aea0d1dbcf"
+        },
+        "date": 1791331693062,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 1906,
+            "range": "± 46.9",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 117.5,
+            "range": "± 2.8",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 369.3,
+            "range": "± 41.6",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 81846,
+            "range": "± 59.5",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 558,
+            "range": "± 2.8",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 5785.9,
+            "range": "± 38.4",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=CHUNK]",
+            "value": 1322,
+            "range": "± 0.8",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=MIXED]",
+            "value": 1090.9,
+            "range": "± 3.5",
             "unit": "ns/packet",
             "extra": "AMD EPYC 9V74 80-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
           }
