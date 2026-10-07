@@ -3,7 +3,7 @@
 netty = "4.2.18.Final"
 adventure = "4.26.1"
 log4j = "2.26.1"
-slf4j = "2.0.17"
+slf4j = "2.0.20"
 guice = "7.0.0"
 guava = "33.7.2-jre"
 
