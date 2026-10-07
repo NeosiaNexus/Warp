@@ -159,44 +159,100 @@ class FrameDecompressorTest {
 
       assertArrayEquals(new byte[1024], drain(capped.inflate(ALLOC, payload, 1024)));
     }
+  }
 
-    @Test
-    @DisplayName("should enforce the per-second decompression budget")
-    void enforcesBudget() {
-      FrameDecompressor decompressor = lenient();
-      decompressor.setMaxDecompressionRate(1000);
-      byte[] packet = new byte[600];
+  @Nested
+  @DisplayName("decompression budget")
+  class DecompressionBudget {
 
-      decompressor.inflate(ALLOC, Unpooled.wrappedBuffer(zlib(packet, 6)), 600).release();
-      assertThrows(
-          DecoderException.class,
-          () -> decompressor.inflate(ALLOC, Unpooled.wrappedBuffer(zlib(packet, 6)), 600));
-    }
+    private static final long SECOND = 1_000_000_000L;
+
+    /** The time the decompressor reads, in nanoseconds: it only moves when a test moves it. */
+    private long now = 42 * SECOND;
 
     @Test
     @DisplayName("should spend the whole budget before refusing a single byte")
     void spendsWholeBudget() {
-      FrameDecompressor decompressor = lenient();
-      decompressor.setMaxDecompressionRate(1000);
+      FrameDecompressor decompressor = budgeted(1000);
 
-      decompressor.inflate(ALLOC, Unpooled.wrappedBuffer(zlib(new byte[600], 6)), 600).release();
-      decompressor.inflate(ALLOC, Unpooled.wrappedBuffer(zlib(new byte[400], 6)), 400).release();
-      assertThrows(
-          DecoderException.class,
-          () -> decompressor.inflate(ALLOC, Unpooled.wrappedBuffer(zlib(new byte[1], 6)), 1));
+      inflateZeros(decompressor, 600);
+      inflateZeros(decompressor, 400);
+
+      assertThrows(DecoderException.class, () -> inflateZeros(decompressor, 1));
+    }
+
+    @Test
+    @DisplayName("should refuse a frame larger than what is left, without spending it")
+    void refusesOverBudget() {
+      FrameDecompressor decompressor = budgeted(1000);
+      inflateZeros(decompressor, 600);
+
+      assertThrows(DecoderException.class, () -> inflateZeros(decompressor, 600));
+      inflateZeros(decompressor, 400);
+    }
+
+    @Test
+    @DisplayName("should count a frame that fails to inflate against the budget")
+    void countsFailedInflation() {
+      FrameDecompressor decompressor = budgeted(1000);
+      ByteBuf shortStream = Unpooled.wrappedBuffer(zlib(new byte[500], 6));
+
+      assertThrows(DecoderException.class, () -> decompressor.inflate(ALLOC, shortStream, 600));
+
+      assertThrows(DecoderException.class, () -> inflateZeros(decompressor, 401));
+      inflateZeros(decompressor, 400);
+    }
+
+    @Test
+    @DisplayName("should renew the budget once a full second has passed, and not before")
+    void renewsAfterOneSecond() {
+      FrameDecompressor decompressor = budgeted(1000);
+      inflateZeros(decompressor, 1000);
+
+      now += SECOND;
+      assertThrows(DecoderException.class, () -> inflateZeros(decompressor, 1));
+
+      now += 1;
+      inflateZeros(decompressor, 1000);
+      assertThrows(DecoderException.class, () -> inflateZeros(decompressor, 1));
+    }
+
+    @Test
+    @DisplayName("should time the first window from the decompressor's creation")
+    void firstWindowFromCreation() {
+      FrameDecompressor decompressor = budgeted(1000);
+
+      now += SECOND;
+      inflateZeros(decompressor, 1000);
+      now += 1;
+      inflateZeros(decompressor, 1000);
     }
 
     @Test
     @DisplayName("should not limit the rate when the budget is zero")
     void zeroBudgetDisablesLimit() {
-      FrameDecompressor decompressor = lenient();
-      decompressor.setMaxDecompressionRate(0);
-      byte[] zlib = zlib(new byte[600], 6);
+      FrameDecompressor decompressor = budgeted(0);
 
       for (int i = 0; i < 3; i++) {
-        assertDoesNotThrow(
-            () -> decompressor.inflate(ALLOC, Unpooled.wrappedBuffer(zlib), 600).release());
+        inflateZeros(decompressor, 600);
       }
+    }
+
+    private FrameDecompressor budgeted(long bytesPerSecond) {
+      FrameDecompressor decompressor =
+          new FrameDecompressor(
+              THRESHOLD,
+              false,
+              FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE,
+              new JavaCompressor(6),
+              () -> now);
+      decompressor.setMaxDecompressionRate(bytesPerSecond);
+      return decompressor;
+    }
+
+    private static void inflateZeros(FrameDecompressor decompressor, int length) {
+      ByteBuf payload = Unpooled.wrappedBuffer(zlib(new byte[length], 6));
+      assertArrayEquals(new byte[length], drain(decompressor.inflate(ALLOC, payload, length)));
     }
   }
 
