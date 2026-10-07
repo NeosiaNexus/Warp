@@ -16,7 +16,11 @@ import sys
 import xml.etree.ElementTree as ET
 
 THRESHOLDS = "config/pitest/thresholds.properties"
-ALIVE = ("SURVIVED", "NO_COVERAGE")
+# The mark of each undetected mutant that is not a plain survivor. PIT counts every undetected
+# mutant against the score, and so does this summary: the mutants a crashed minion left unfinished
+# (NOT_STARTED, STARTED) are listed and counted with the survivors.
+UNDETECTED = {"NO_COVERAGE": " _(no coverage)_", "NOT_STARTED": " _(not run)_",
+              "STARTED": " _(not run to the end)_"}
 
 
 def thresholds():
@@ -126,7 +130,7 @@ def main(paths):
     for module, mutations, total, killed, uncovered in modules:
         alive = collections.defaultdict(list)
         for mutation in mutations:
-            if mutation["status"] in ALIVE:
+            if not mutation["detected"]:
                 alive[mutation["class"].split("$")[0]].append(mutation)
         if not alive:
             continue
@@ -134,11 +138,12 @@ def main(paths):
         print(f"<details><summary><b><code>{module}</code></b>: {total - killed} mutants alive"
               f" in {len(alive)} classes</summary>\n")
         for name, entries in sorted(alive.items(), key=lambda item: (-len(item[1]), item[0])):
-            survived = sum(m["status"] == "SURVIVED" for m in entries)
-            print(f"<details><summary><code>{name.removeprefix(root)}</code>: {survived} survived,"
-                  f" {len(entries) - survived} without coverage</summary>\n")
+            no_coverage = sum(m["status"] == "NO_COVERAGE" for m in entries)
+            print(f"<details><summary><code>{name.removeprefix(root)}</code>:"
+                  f" {len(entries) - no_coverage} survived,"
+                  f" {no_coverage} without coverage</summary>\n")
             for m in sorted(entries, key=lambda m: (m["line"], m["description"])):
-                status = "" if m["status"] == "SURVIVED" else " _(no coverage)_"
+                status = UNDETECTED.get(m["status"], "")
                 print(f"- {source_link(module, m, 'line ' + str(m['line']))}:"
                       f" {m['description']} in `{m['method']}`{status}")
             print("\n</details>\n")
