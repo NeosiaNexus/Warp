@@ -38,7 +38,7 @@ tasks.withType<Javadoc>().configureEach {
 
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()
-    jvmArgs(TEST_JVM_ARGS)
+    jvmArgs("-XX:+EnableDynamicAgentLoading")
 }
 
 testing {

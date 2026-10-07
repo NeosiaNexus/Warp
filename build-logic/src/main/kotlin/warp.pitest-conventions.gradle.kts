@@ -10,7 +10,8 @@ import java.util.Properties
 // Reports: build/reports/pitest/index.html (browsable) and mutations.xml (one entry per mutant).
 //
 // Ratchet: the task fails when a module's mutation score (the percentage of mutants killed) drops
-// below the module's threshold in config/pitest/thresholds.properties.
+// below the module's threshold in config/pitest/thresholds.properties. CI runs it for each module
+// a pull request changes (ci.yml), and for every module on each push to main (mutation.yml).
 //
 // Every run is a full analysis. PIT's incremental analysis (the pitest-history plugin) is left out:
 // it tells JUnit 5 tests apart by their top-level class only, whose class file does not change when
@@ -34,18 +35,29 @@ pitest {
     // Overridden only to skip capturing a stack trace in preallocated exceptions. Throwable's
     // constructor ignores the returned value, so no test can tell a mutant of it apart.
     excludedMethods = setOf("fillInStackTrace")
+    // The fuzz tests (warp.fuzz-conventions) replay their whole corpus against every mutant they
+    // reach, which doubles the analysis of protocol, yet kill no mutant the unit tests leave alive.
+    excludedTestClasses = setOf("dev.warp.*FuzzTest")
     threads = Runtime.getRuntime().availableProcessors()
-    jvmArgs = TEST_JVM_ARGS
+    // The minions run the unit tests as the test task does, with its JVM arguments (Mockito's agent,
+    // Jazzer's native access). Read through a plain provider: one mapped from the task would make
+    // this task depend on it, and run every test first.
+    val test = tasks.named<Test>("test")
+    jvmArgs = providers.provider { test.get().jvmArgs.orEmpty() }
     outputFormats = setOf("HTML", "XML")
     timestampedReports = false
 
     val module = project.name
     val thresholds = rootProject.layout.projectDirectory.file("config/pitest/thresholds.properties")
-    // A missing file fails like a missing entry: a module never runs without its ratchet.
+    // A module never runs without its ratchet: a missing file or entry fails the build. (A fallback
+    // provider that throws cannot tell the two apart: the configuration cache evaluates it.)
     mutationThreshold = providers.fileContents(thresholds).asText
         .orElse("")
         .map { text ->
             Properties().apply { load(StringReader(text)) }.getProperty(module)?.toInt()
-                ?: throw GradleException("No mutation threshold for '$module' in ${thresholds.asFile}")
+                ?: throw GradleException(
+                    "No mutation threshold for '$module': ${thresholds.asFile} is missing or has " +
+                        "no '$module' entry"
+                )
         }
 }
