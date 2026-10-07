@@ -24,17 +24,19 @@ UNDETECTED = {"NO_COVERAGE": " _(no coverage)_", "NOT_STARTED": " _(not run)_",
 
 
 def thresholds():
-    """Returns {module: (threshold, line number)} from the thresholds file."""
+    """Returns {module: (threshold, line number)} from the thresholds file, {} when it is missing.
+
+    Without the file the pitest task has already failed, saying so; the scores are still reported.
+    """
+    if not os.path.exists(THRESHOLDS):
+        return {}
     found = {}
-    try:
-        with open(THRESHOLDS, encoding="utf-8") as file:
-            for number, line in enumerate(file, start=1):
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    module, value = (part.strip() for part in line.split("=", 1))
-                    found[module] = (int(value), number)
-    except FileNotFoundError:
-        pass
+    with open(THRESHOLDS, encoding="utf-8") as file:
+        for number, line in enumerate(file, start=1):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                module, value = (part.strip() for part in line.split("=", 1))
+                found[module] = (int(value), number)
     return found
 
 
