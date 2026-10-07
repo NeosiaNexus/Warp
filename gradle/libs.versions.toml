@@ -12,7 +12,7 @@ caffeine = "3.3.0"
 disruptor = "4.0.0"
 gson = "2.14.0"
 configurate = "4.2.0"
-jspecify = "1.0.0"
+jspecify = "1.0.1"
 
 # Native
 netty-tcnative = "2.0.84.Final"
