@@ -1,6 +1,6 @@
 [versions]
 # Core
-netty = "4.2.18.Final"
+netty = "4.2.19.Final"
 adventure = "4.26.1"
 log4j = "2.26.1"
 slf4j = "2.0.17"
