@@ -25,18 +25,23 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
 import dev.warp.api.Warp;
+import dev.warp.api.logging.LogLevel;
+import dev.warp.api.logging.LogRecord;
 import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginState;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.logging.LogSinkRegistry;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -57,11 +62,13 @@ class WarpPluginManagerTest {
   private Path plugins;
   private WarpEventBus events;
   private WarpPluginManager manager;
+  private LogSinkRegistry logSinks;
 
   @BeforeEach
   void setUp() {
     plugins = root.resolve("plugins");
     events = new WarpEventBus();
+    logSinks = new LogSinkRegistry();
     manager =
         new WarpPluginManager(
             mock(Warp.class),
@@ -69,6 +76,7 @@ class WarpPluginManagerTest {
             new ChannelRegistry(),
             new WarpCommandManager(),
             new PermissionRegistry(),
+            logSinks,
             plugins);
   }
 
@@ -76,6 +84,7 @@ class WarpPluginManagerTest {
   void tearDown() {
     manager.disableAll();
     events.close();
+    logSinks.close();
     System.getProperties().keySet().removeIf(key -> key.toString().startsWith(PROBE));
   }
 
@@ -517,6 +526,75 @@ class WarpPluginManagerTest {
 
       assertEquals(PluginState.DISABLED, manager.plugin("angry").orElseThrow().state());
       assertEquals(PluginState.DISABLED, manager.plugin("calm").orElseThrow().state());
+    }
+  }
+
+  @Nested
+  @DisplayName("log sinks")
+  class LogSinksLifecycle {
+
+    @Test
+    @DisplayName("should run a plugin's sink with its class loader and remove it on disable")
+    void removedOnDisable() throws Exception {
+      TestPluginJars.build(
+          plugins,
+          "sentry.jar",
+          Map.of(
+              "sentry/Main.java",
+              """
+              package sentry;
+              import dev.warp.api.logging.*;
+              @dev.warp.api.plugin.Plugin(id = "sentry")
+              public final class Main {
+                public Main(LogSinks sinks) {
+                  sinks.register(LogLevel.ERROR, record -> {
+                    ClassLoader loader = Thread.currentThread().getContextClassLoader();
+                    System.setProperty("warp.test.probe.sink",
+                        record.message() + " " + (loader == Main.class.getClassLoader()));
+                  });
+                }
+              }
+              """));
+      manager.loadAll();
+      assertTrue(logSinks.wants(LogLevel.ERROR));
+
+      logSinks.publish(
+          new LogRecord(Instant.now(), LogLevel.ERROR, "test", "main", "boom", null, Map.of()),
+          Thread.currentThread().threadId());
+
+      long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+      while (System.getProperty(PROBE + "sink") == null && System.nanoTime() < deadline) {
+        Thread.sleep(5);
+      }
+      assertEquals("boom true", System.getProperty(PROBE + "sink"));
+      manager.disableAll();
+      assertFalse(logSinks.wants(LogLevel.ERROR));
+    }
+
+    @Test
+    @DisplayName("should remove the sinks of a plugin that fails after registering them")
+    void removedOnFailure() throws IOException {
+      TestPluginJars.build(
+          plugins,
+          "broken.jar",
+          Map.of(
+              "broken/Main.java",
+              """
+              package broken;
+              import dev.warp.api.logging.*;
+              @dev.warp.api.plugin.Plugin(id = "broken")
+              public final class Main {
+                public Main(dev.warp.api.plugin.PluginContext context) {
+                  context.logSinks().register(LogLevel.INFO, record -> {});
+                  throw new IllegalStateException("cannot start");
+                }
+              }
+              """));
+
+      manager.loadAll();
+
+      assertEquals(PluginState.FAILED, manager.plugin("broken").orElseThrow().state());
+      assertFalse(logSinks.wants(LogLevel.ERROR));
     }
   }
 

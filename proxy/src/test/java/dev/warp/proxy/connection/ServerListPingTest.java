@@ -424,7 +424,13 @@ class ServerListPingTest {
     void configured() {
       StatusSettings settings =
           new StatusSettings(
-              Component.text("Hello", NamedTextColor.GOLD), null, 42, true, 12, "Custom");
+              Component.text("Hello", NamedTextColor.GOLD),
+              null,
+              42,
+              StatusSettings.NO_LIMIT,
+              true,
+              12,
+              "Custom");
       EmbeddedChannel ch =
           createFullPipeline(TestLoginContexts.offline(TestLoginContexts.EVENTS, settings));
 

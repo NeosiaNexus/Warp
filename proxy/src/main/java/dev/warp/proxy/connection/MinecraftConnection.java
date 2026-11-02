@@ -47,6 +47,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelOutboundBuffer;
 import io.netty.channel.ChannelPromise;
+import io.netty.handler.timeout.IdleStateHandler;
 import io.netty.handler.timeout.ReadTimeoutException;
 import io.netty.util.ReferenceCountUtil;
 import org.jspecify.annotations.Nullable;
@@ -259,13 +260,13 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
   }
 
   /**
-   * Describes a connection that received nothing for {@value #READ_TIMEOUT_SECONDS} s, as it
-   * stands: its protocol state, which side went quiet, whether the proxy was reading it, and how
-   * much it still had to send it. Reads paused means the proxy itself kept the peer's packets
-   * unread (back-pressure, or a client that sent too much while waiting for its next server); bytes
-   * piling up mean the peer stopped reading too; neither means the peer went silent while taking
-   * what it was sent. The queued bytes are Netty's count: the packets plus a small overhead per
-   * message.
+   * Describes a connection that received nothing for as long as its read timeout waits ({@value
+   * #READ_TIMEOUT_SECONDS} s before login, {@code timeouts.read} after), as it stands: its protocol
+   * state, which side went quiet, whether the proxy was reading it, and how much it still had to
+   * send it. Reads paused means the proxy itself kept the peer's packets unread (back-pressure, or
+   * a client that sent too much while waiting for its next server); bytes piling up mean the peer
+   * stopped reading too; neither means the peer went silent while taking what it was sent. The
+   * queued bytes are Netty's count: the packets plus a small overhead per message.
    *
    * @param channel the connection that timed out
    * @param decoder the connection's decoder, which knows its state and which side the peer is
@@ -280,12 +281,22 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
         + ": the "
         + (decoder.direction() == PacketDirection.SERVERBOUND ? "client" : "backend")
         + " sent nothing for "
-        + READ_TIMEOUT_SECONDS
-        + " s (reads "
+        + readTimeout(channel)
+        + " (reads "
         + (channel.config().isAutoRead() ? "on" : "paused")
         + ", "
         + queued
         + " bytes queued to send)";
+  }
+
+  /** The read timeout of a connection, such as {@code 30 s} or {@code 1500 ms}. */
+  private static String readTimeout(Channel channel) {
+    long millis =
+        channel.pipeline().get(ServerChannelInitializer.READ_TIMEOUT)
+                instanceof IdleStateHandler idle
+            ? idle.getReaderIdleTimeInMillis()
+            : READ_TIMEOUT_SECONDS * 1000L;
+    return millis % 1000 == 0 ? millis / 1000 + " s" : millis + " ms";
   }
 
   /**

@@ -7,25 +7,29 @@
     </Properties>
 
     <Appenders>
-        <Console name="Console" target="SYSTEM_OUT">
-            <PatternLayout pattern="${log.pattern}"/>
-        </Console>
+        <!--
+          The console format: warp.log.format, which WarpBootstrap sets before Log4j starts from
+          WARP_LOG_FORMAT or logging.format (warp.conf). Chosen once, when the configuration loads:
+          nothing is decided per record.
+        -->
+        <Select>
+            <SystemPropertyArbiter propertyName="warp.log.format" propertyValue="json">
+                <!-- One JSON object per line: timestamp, level, logger, thread, message, exception, context. -->
+                <Console name="Console" target="SYSTEM_OUT">
+                    <JsonTemplateLayout eventTemplateUri="classpath:warp-log-layout.json"/>
+                </Console>
+            </SystemPropertyArbiter>
+            <DefaultArbiter>
+                <Console name="Console" target="SYSTEM_OUT">
+                    <PatternLayout pattern="${log.pattern}"/>
+                </Console>
+            </DefaultArbiter>
+        </Select>
 
         <RollingFile name="File"
                      fileName="${log.dir}/warp.log"
                      filePattern="${log.dir}/warp-%d{yyyy-MM-dd}-%i.log.gz">
             <PatternLayout pattern="${log.pattern}"/>
-            <Policies>
-                <SizeBasedTriggeringPolicy size="50 MB"/>
-                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
-            </Policies>
-            <DefaultRolloverStrategy max="7"/>
-        </RollingFile>
-
-        <RollingFile name="JsonFile"
-                     fileName="${log.dir}/warp-json.log"
-                     filePattern="${log.dir}/warp-json-%d{yyyy-MM-dd}-%i.log.gz">
-            <JsonTemplateLayout eventTemplateUri="classpath:EcsLayout.json"/>
             <Policies>
                 <SizeBasedTriggeringPolicy size="50 MB"/>
                 <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
