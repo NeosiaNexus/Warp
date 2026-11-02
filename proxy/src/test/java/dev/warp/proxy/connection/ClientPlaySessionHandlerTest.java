@@ -430,7 +430,8 @@ class ClientPlaySessionHandlerTest {
             version,
             new GameProfile(UUID.randomUUID(), "Steve", List.of()),
             InetSocketAddress.createUnresolved("player", 50000),
-            loginContext);
+            loginContext,
+            new ClientCookies(connection(client), version, client.eventLoop()));
     player.setBackendConnection(backendConnection(connection(backend)));
     player.setCurrentServerName("lobby");
     return new Session(player, new ClientPlaySessionHandler(player), client, backend);

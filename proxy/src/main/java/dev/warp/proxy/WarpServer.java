@@ -294,7 +294,8 @@ public final class WarpServer implements Warp {
         serverRegistry,
         config.forwardingMode(),
         config.forwardingSecret(),
-        transport.clientChannelClass());
+        transport.clientChannelClass(),
+        config.acceptsTransfers());
   }
 
   /**

@@ -184,7 +184,8 @@ class ClientKeepAliveTest {
             version,
             new GameProfile(UUID.randomUUID(), "KeepAliveTester", List.of()),
             new InetSocketAddress(InetAddress.getLoopbackAddress(), 25565),
-            mock(ServerLoginContext.class));
+            mock(ServerLoginContext.class),
+            new ClientCookies(connection, version, warpSide.eventLoop()));
     // Entering PLAY starts the keep-alive task.
     connection.setSessionHandler(new ClientPlaySessionHandler(player));
   }

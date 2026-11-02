@@ -19,8 +19,12 @@ package dev.warp.proxy.connection;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -38,6 +42,9 @@ import dev.warp.protocol.packet.PacketCodec;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.StateRegistry;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
+import dev.warp.protocol.packet.cookie.CookieRequest;
+import dev.warp.protocol.packet.cookie.CookieResponse;
+import dev.warp.protocol.packet.cookie.StoreCookie;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.login.EncryptionRequest;
 import dev.warp.protocol.packet.login.LoginAcknowledged;
@@ -63,12 +70,15 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.Signature;
 import java.security.spec.X509EncodedKeySpec;
+import java.time.Duration;
 import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -828,6 +838,115 @@ class LoginSessionHandlerTest {
       } finally {
         body.release();
       }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Cookies during login (1.20.5+)
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("cookies during login")
+  class LoginCookies {
+
+    private static final ProtocolVersion VERSION = ProtocolVersion.MINECRAFT_1_21_4;
+
+    static Stream<ProtocolVersion> versionsWithCookies() {
+      return ProtocolVersion.values().stream()
+          .filter(version -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versionsWithCookies")
+    @DisplayName(
+        "should ask for a cookie in the login state, before any server, and take the answer")
+    void requestDuringLogin(ProtocolVersion version) throws Exception {
+      EmbeddedChannel channel = loginChannel(version);
+      try {
+        CompletableFuture<Optional<byte[]>> cookie =
+            loginHandler(channel).cookies().request("primemc:session", Duration.ofSeconds(10));
+        byte[] asked = nextPacket(channel, ProtocolState.LOGIN, CookieRequest.class, version);
+        send(
+            channel,
+            ProtocolState.LOGIN,
+            new CookieResponse("primemc:session", new byte[] {7}),
+            version);
+
+        assertArrayEquals(jsonString("primemc:session"), asked);
+        assertArrayEquals(new byte[] {7}, cookie.get().orElseThrow());
+        sendLoginStart(channel, "Steve", version);
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName(
+        "should refuse a client that answers a cookie request nobody sent, as vanilla does")
+    void refusesUnaskedAnswer() {
+      EmbeddedChannel channel = loginChannel(VERSION);
+      try {
+        send(channel, ProtocolState.LOGIN, new CookieResponse("primemc:session", null), VERSION);
+
+        byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
+        assertArrayEquals(
+            jsonString("{\"translate\":\"multiplayer.disconnect.unexpected_query_response\"}"),
+            reason);
+        assertClosed(channel);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should hold what it sends after Login Success until the client acknowledges")
+    void heldUntilLoginAcknowledged() {
+      EmbeddedChannel channel = loginChannel(VERSION);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+        ClientCookies cookies = loginHandler(channel).cookies();
+
+        CompletableFuture<Optional<byte[]>> cookie =
+            cookies.request("primemc:session", Duration.ofSeconds(10));
+        cookies.store("primemc:session", new byte[] {1});
+        boolean held = channel.outboundMessages().isEmpty();
+        send(channel, ProtocolState.LOGIN, new LoginAcknowledged(), VERSION);
+        channel.runPendingTasks();
+
+        assertTrue(held, "the client reads configuration ids before it acknowledges");
+        nextPacket(channel, ProtocolState.CONFIGURATION, CookieRequest.class, VERSION);
+        nextPacket(channel, ProtocolState.CONFIGURATION, StoreCookie.class, VERSION);
+        // The only server is unreachable: the player is refused, and the request fails with it.
+        nextPacket(channel, ProtocolState.CONFIGURATION, ConfigDisconnect.class, VERSION);
+        assertClosed(channel);
+        assertTrue(cookie.isCompletedExceptionally());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should refuse a cookie request for a client older than 1.20.5")
+    void refusesOldClient() {
+      EmbeddedChannel channel = loginChannel(ProtocolVersion.MINECRAFT_1_20_4);
+      try {
+        ClientCookies cookies = loginHandler(channel).cookies();
+
+        assertThrows(
+            UnsupportedOperationException.class,
+            () -> cookies.request("primemc:session", Duration.ofSeconds(10)));
+        assertNull(channel.readOutbound());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    private LoginSessionHandler loginHandler(EmbeddedChannel channel) {
+      MinecraftConnection connection = channel.pipeline().get(MinecraftConnection.class);
+      assertNotNull(connection);
+      return assertInstanceOf(LoginSessionHandler.class, connection.sessionHandler());
     }
   }
 

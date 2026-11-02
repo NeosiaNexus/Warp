@@ -78,6 +78,17 @@ final class TestLoginContexts {
   }
 
   /**
+   * Returns {@link #offline()}, letting in the players a Transfer packet sends to the proxy if
+   * {@code acceptsTransfers}.
+   *
+   * @param acceptsTransfers the {@code accepts-transfers} setting
+   * @return the context
+   */
+  static ServerLoginContext offlineAcceptingTransfers(boolean acceptsTransfers) {
+    return context(false, -1, new MojangSessionService(), ProfileKeys.mojang(), acceptsTransfers);
+  }
+
+  /**
    * Returns {@link #offline()} in online mode: players authenticate with {@code sessionService}.
    *
    * @param sessionService the session service, usually a mock
@@ -93,6 +104,15 @@ final class TestLoginContexts {
       int compressionThreshold,
       MojangSessionService sessionService,
       ProfileKeys profileKeys) {
+    return context(onlineMode, compressionThreshold, sessionService, profileKeys, false);
+  }
+
+  private static ServerLoginContext context(
+      boolean onlineMode,
+      int compressionThreshold,
+      MojangSessionService sessionService,
+      ProfileKeys profileKeys,
+      boolean acceptsTransfers) {
     ServerRegistry registry =
         new ServerRegistry(
             Map.of("lobby", new InetSocketAddress(InetAddress.getLoopbackAddress(), 1)),
@@ -110,7 +130,8 @@ final class TestLoginContexts {
         registry,
         ForwardingMode.NONE,
         new byte[0],
-        NioSocketChannel.class);
+        NioSocketChannel.class,
+        acceptsTransfers);
   }
 
   private static KeyPair generateKeyPair() {

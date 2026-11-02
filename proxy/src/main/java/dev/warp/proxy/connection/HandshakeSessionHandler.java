@@ -22,7 +22,9 @@ import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.handshake.HandshakePacket;
+import dev.warp.protocol.packet.login.LoginDisconnect;
 
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,26 +32,27 @@ import org.slf4j.LoggerFactory;
  * Handles the initial handshake from a connecting client.
  *
  * <p>The client sends a single {@link Handshake} packet declaring the protocol version and intended
- * next state (status or login). This handler validates the request, updates the decoder/encoder
- * state, and transitions to the appropriate session handler.
+ * next state. This handler validates the request, records the {@link HandshakeIntent} on the
+ * connection, updates the decoder/encoder state, and transitions to the appropriate session
+ * handler.
  *
  * <p>Supported transitions:
  *
  * <ul>
- *   <li>{@code nextState = 1} → {@link StatusSessionHandler} (server list ping)
- *   <li>{@code nextState = 2} → login (not yet implemented — connection is closed)
- *   <li>{@code nextState = 3} → transfer (1.20.5+ — not yet implemented)
+ *   <li>{@code nextState = 1} → {@link StatusSessionHandler} (server list ping), any version
+ *   <li>{@code nextState = 2} → {@link LoginSessionHandler}, supported versions only
+ *   <li>{@code nextState = 3} → {@link LoginSessionHandler} for a player that a server sent here
+ *       with a Transfer packet: from 1.20.5, and only if {@code accepts-transfers} is on. Otherwise
+ *       the client is refused in the login state with vanilla's translated reason, as a vanilla
+ *       server does. A transfer from an older protocol, which has none, closes the connection.
  * </ul>
  */
 final class HandshakeSessionHandler implements SessionHandler {
 
   private static final Logger logger = LoggerFactory.getLogger(HandshakeSessionHandler.class);
 
-  /** Handshake nextState value for status (server list ping). */
-  private static final int STATUS_NEXT_STATE = 1;
-
-  /** Handshake nextState value for login. */
-  private static final int LOGIN_NEXT_STATE = 2;
+  /** Vanilla's reason for refusing a transfer, translated by the client (1.20.5+). */
+  static final String TRANSFERS_DISABLED = "multiplayer.disconnect.transfers_disabled";
 
   private final MinecraftConnection connection;
   private final ServerLoginContext loginContext;
@@ -81,30 +84,66 @@ final class HandshakeSessionHandler implements SessionHandler {
       connection.setVersion(version);
     }
 
-    switch (handshake.nextState()) {
-      case STATUS_NEXT_STATE -> {
+    HandshakeIntent intent = HandshakeIntent.byId(handshake.nextState());
+    if (intent == null) {
+      logger.warn(
+          "Unknown nextState {} from {}",
+          handshake.nextState(),
+          connection.channel().remoteAddress());
+      connection.close();
+      return;
+    }
+    connection.setHandshakeIntent(intent);
+
+    switch (intent) {
+      case STATUS -> {
         connection.setState(ProtocolState.STATUS);
         connection.setSessionHandler(new StatusSessionHandler(connection, version));
       }
-      case LOGIN_NEXT_STATE -> {
-        if (version == null) {
-          logger.warn(
-              "Unsupported protocol version {} from {}",
-              handshake.protocolVersion(),
-              connection.channel().remoteAddress());
-          connection.close();
-          return;
-        }
-        connection.setState(ProtocolState.LOGIN);
-        connection.setSessionHandler(new LoginSessionHandler(connection, loginContext));
-      }
-      default -> {
-        logger.warn(
-            "Unknown nextState {} from {}",
-            handshake.nextState(),
-            connection.channel().remoteAddress());
-        connection.close();
-      }
+      case LOGIN -> login(handshake, version);
+      case TRANSFER -> transfer(handshake, version);
     }
+  }
+
+  private void login(Handshake handshake, @Nullable ProtocolVersion version) {
+    if (version == null) {
+      logger.warn(
+          "Unsupported protocol version {} from {}",
+          handshake.protocolVersion(),
+          connection.channel().remoteAddress());
+      connection.close();
+      return;
+    }
+    connection.setState(ProtocolState.LOGIN);
+    connection.setSessionHandler(new LoginSessionHandler(connection, loginContext));
+  }
+
+  /**
+   * Logs in a player that a Transfer packet sent here, or refuses it. The version is checked first,
+   * as vanilla does: an unsupported client is turned away as such, whether transfers are accepted
+   * or not.
+   */
+  private void transfer(Handshake handshake, @Nullable ProtocolVersion version) {
+    if (version != null && !HandshakeIntent.TRANSFER.existsIn(version)) {
+      // Not a real client: no version before 1.20.5 has a Transfer packet, nor a translation for
+      // the refusal. Close, as for any other handshake no client sends.
+      logger.warn(
+          "Transfer handshake from {} declares {}, which predates transfers (1.20.5)",
+          connection.channel().remoteAddress(),
+          version);
+      connection.close();
+      return;
+    }
+    if (version == null || loginContext.acceptsTransfers()) {
+      login(handshake, version);
+      return;
+    }
+    logger.info(
+        "Refused a transfer from {}: accepts-transfers is off",
+        connection.channel().remoteAddress());
+    // In the login state, whose disconnect packet the client reads: the handshake state has none,
+    // and a disconnect written in it never reaches the player (Velocity, Gate).
+    connection.setState(ProtocolState.LOGIN);
+    connection.writeAndClose(LoginDisconnect.ofTranslation(TRANSFERS_DISABLED));
   }
 }

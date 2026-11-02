@@ -19,6 +19,7 @@ package dev.warp.proxy.connection;
 import dev.warp.api.server.ServerInfo;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.packet.TextComponent;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
@@ -26,12 +27,16 @@ import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.SystemChatMessage;
+import dev.warp.protocol.packet.play.Transfer;
 
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -78,6 +83,9 @@ public final class ConnectedPlayer {
   /** Maximum time for a server switch to complete. */
   private static final long SWITCH_TIMEOUT_MS = 30_000;
 
+  /** How long {@link #requestCookie(String)} waits for the client's answer. */
+  static final long COOKIE_TIMEOUT_SECONDS = 10;
+
   /** Guards against concurrent or duplicate {@link #disconnect()} calls. */
   private final AtomicBoolean disconnected = new AtomicBoolean();
 
@@ -98,6 +106,12 @@ public final class ConnectedPlayer {
 
   /** What the current server leaves on the client (followed before 1.20.2 only). */
   private final ServerLeftovers leftovers = new ServerLeftovers();
+
+  /** Whether the client arrived by a Transfer packet: its handshake declared intent 3. */
+  private final boolean transferred;
+
+  /** The client's cookie traffic, begun during its login (1.20.5+). */
+  private final ClientCookies cookies;
 
   // ---------------------------------------------------------------------------
   // Mutable state
@@ -148,7 +162,8 @@ public final class ConnectedPlayer {
       ProtocolVersion protocolVersion,
       GameProfile profile,
       InetSocketAddress remoteAddress,
-      ServerLoginContext loginContext) {
+      ServerLoginContext loginContext,
+      ClientCookies cookies) {
     this.clientConnection = clientConnection;
     this.protocolVersion = protocolVersion;
     this.uuid = profile.uuid();
@@ -157,6 +172,8 @@ public final class ConnectedPlayer {
     this.remoteAddress = remoteAddress;
     this.loginContext = loginContext;
     this.serverSwitch = ServerSwitch.of(this);
+    this.transferred = clientConnection.handshakeIntent() == HandshakeIntent.TRANSFER;
+    this.cookies = cookies;
   }
 
   // ---------------------------------------------------------------------------
@@ -751,6 +768,151 @@ public final class ConnectedPlayer {
    */
   public long clientLatencyMs() {
     return TimeUnit.NANOSECONDS.toMillis(clientLatencyNanos);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Transfers and cookies (1.20.5+)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns whether the player arrived by a transfer: a server sent its client here with a Transfer
+   * packet, and the client's handshake declared it (intent 3, 1.20.5+). The cookies that server
+   * stored came along, and {@link #requestCookie} reads them.
+   *
+   * @return {@code true} if the player was transferred here
+   */
+  public boolean isTransferred() {
+    return transferred;
+  }
+
+  /**
+   * Sends the player to another server with a Transfer packet: the client disconnects from the
+   * proxy and connects to {@code host:port} with a transfer handshake, taking the cookies stored on
+   * it along. The target must accept transfers. Nothing is resolved here: the client looks the host
+   * up itself.
+   *
+   * <p>Written once the client reads the proxy's state: in configuration or in play, after any
+   * state change in progress. May be called from any thread; off the client event loop, a client
+   * that can no longer receive it is logged rather than thrown at.
+   *
+   * @param host the host name or address the client connects to
+   * @param port the port, 1 to 65535
+   * @throws UnsupportedOperationException if the client predates 1.20.5, which has no transfers
+   * @throws IllegalArgumentException if {@code host} is blank or longer than a protocol string, or
+   *     {@code port} is out of range
+   * @throws IllegalStateException on the client event loop, if the client is neither in
+   *     configuration nor in play
+   */
+  public void transfer(String host, int port) {
+    if (protocolVersion.isOlderThan(ProtocolVersion.MINECRAFT_1_20_5)) {
+      throw new UnsupportedOperationException(
+          "Cannot transfer "
+              + username
+              + ": transfers need Minecraft 1.20.5 or newer, the client plays "
+              + protocolVersion.name());
+    }
+    if (host.isBlank() || host.length() > McString.DEFAULT_MAX_CHARS) {
+      throw new IllegalArgumentException("Transfer host must be a non-blank protocol string");
+    }
+    if (port < 1 || port > 65_535) {
+      throw new IllegalArgumentException("Transfer port must be 1 to 65535, got " + port);
+    }
+    Transfer packet = new Transfer(host, port);
+    EventLoop loop = clientConnection.channel().eventLoop();
+    if (loop.inEventLoop()) {
+      sendTransfer(packet);
+      return;
+    }
+    loop.execute(
+        () -> {
+          try {
+            sendTransfer(packet);
+          } catch (IllegalStateException e) {
+            logger.warn("Could not transfer {}: {}", username, e.getMessage());
+          }
+        });
+  }
+
+  private void sendTransfer(Transfer packet) {
+    if (!clientConnection.channel().isActive()) {
+      return;
+    }
+    ProtocolState state = clientConnection.encoder().state();
+    if (state != ProtocolState.CONFIGURATION && state != ProtocolState.PLAY) {
+      throw new IllegalStateException(
+          "Transfers are sent in the configuration and play states, not in " + state);
+    }
+    if (state == ProtocolState.PLAY && !clientConnection.isStateChangePending()) {
+      // Inside an open bundle, the client would only act on it once the bundle closes.
+      closeBundle();
+    }
+    logger.info("Transferring {} to {}:{}", username, packet.host(), packet.port());
+    clientConnection.writeWhenSettled(packet);
+  }
+
+  /**
+   * Stores a cookie on the player's client for the proxy: the client keeps it under {@code key},
+   * replacing any cookie stored there, and carries it over when a Transfer sends it elsewhere.
+   * Written once the client reads the proxy's state.
+   *
+   * <p>The client hands its cookies to any server it is transferred to, and a client can forge
+   * them: sign a cookie whose content must be trusted.
+   *
+   * @param key the cookie's identifier, such as {@code primemc:session}
+   * @param payload the cookie, at most 5 KiB; copied
+   * @throws UnsupportedOperationException if the client predates 1.20.5
+   * @throws IllegalArgumentException if {@code key} is not a valid identifier, or the payload is
+   *     larger than 5 KiB
+   * @throws IllegalStateException on the client event loop, if the client is neither in
+   *     configuration nor in play
+   */
+  public void storeCookie(String key, byte[] payload) {
+    cookies.store(key, payload);
+  }
+
+  /**
+   * Asks the player's client for the cookie it holds under {@code key}, waiting at most {@value
+   * #COOKIE_TIMEOUT_SECONDS} seconds for the answer.
+   *
+   * @param key the cookie's identifier, such as {@code primemc:session}
+   * @return the cookie, empty if the client holds none; see {@link #requestCookie(String,
+   *     Duration)} for how it fails
+   * @throws UnsupportedOperationException if the client predates 1.20.5
+   * @throws IllegalArgumentException if {@code key} is not a valid identifier
+   */
+  public CompletableFuture<Optional<byte[]>> requestCookie(String key) {
+    return requestCookie(key, ClientCookies.DEFAULT_TIMEOUT);
+  }
+
+  /**
+   * Asks the player's client for the cookie it holds under {@code key}. The answer goes to the
+   * proxy alone, even while backends ask for cookies of their own, the same key included: each
+   * answer goes to whoever asked, in order.
+   *
+   * <p>The future completes on the client event loop: with the cookie, empty if the client holds
+   * none; with a {@link java.util.concurrent.TimeoutException} if the client does not answer within
+   * {@code timeout}; with an {@link IllegalStateException} if the player disconnects first. The
+   * client answers with whatever it holds, which it can forge.
+   *
+   * @param key the cookie's identifier, such as {@code primemc:session}
+   * @param timeout how long to wait for the answer
+   * @return the future cookie
+   * @throws UnsupportedOperationException if the client predates 1.20.5
+   * @throws IllegalArgumentException if {@code key} is not a valid identifier, or {@code timeout}
+   *     is not positive
+   */
+  public CompletableFuture<Optional<byte[]>> requestCookie(String key, Duration timeout) {
+    return cookies.request(key, timeout);
+  }
+
+  /**
+   * Returns the client's cookie traffic, which the session handlers feed with the backends'
+   * requests and the client's answers.
+   *
+   * @return the cookie traffic of the client connection
+   */
+  ClientCookies cookies() {
+    return cookies;
   }
 
   // ---------------------------------------------------------------------------
