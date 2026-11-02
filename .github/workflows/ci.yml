@@ -208,7 +208,8 @@ jobs:
     with:
       modules: ${{ needs.changes.outputs.mutation }}
       since: ${{ github.event.pull_request.base.sha }}
-      timeout-minutes: 20
+      # A few changed classes take minutes; 25 core classes of proxy, half its mutants, took 19.
+      timeout-minutes: 30
 
   # The only check to mark as required: it fails if any job above failed or was cancelled, and
   # passes when they succeeded or were skipped on purpose.

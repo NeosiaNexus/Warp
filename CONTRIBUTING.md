@@ -83,8 +83,11 @@ notices points at a gap in the tests, or at code that no behaviour depends on.
 The report is `<module>/build/reports/pitest/index.html`. Each module's mutation score, the share
 of its mutants that the tests kill, has a threshold in
 [`config/pitest/thresholds.properties`](config/pitest/thresholds.properties), and `pitest` fails
-below it. It is a ratchet: when your tests raise a score, raise the threshold to the new score
-rounded down in a pull request, and never lower one to let a change in.
+below it. It is a ratchet, which only the full analysis moves: when the nightly run on `main`
+reports that a module's score has outgrown its threshold, raise the threshold to that score
+rounded down, in a pull request of its own. Never raise one from a pull request's own run, which
+sees only the classes it changes, nor while a stack of pull requests is still landing, as each of
+them moves the score: raise it once the stack has landed. Never lower one to let a change in.
 
 CI holds every pull request to it, in **CI OK** (see [Continuous Integration](#continuous-integration)):
 it mutates only the main classes the pull request changes (`-Pwarp.pitest.since` with the base of
