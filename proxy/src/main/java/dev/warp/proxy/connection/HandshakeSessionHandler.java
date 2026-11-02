@@ -104,8 +104,7 @@ final class HandshakeSessionHandler implements SessionHandler {
    * shows the reason on its disconnect screen, rather than a lost connection.
    */
   private void refuseLegacyLogin() {
-    logger.debug(
-        "Refusing a Minecraft 1.6 or older client from {}", connection.channel().remoteAddress());
+    logger.debug("Refusing a Minecraft 1.6 or older client from {}", connection.remoteAddress());
     var _ =
         connection
             .channel()
@@ -126,9 +125,7 @@ final class HandshakeSessionHandler implements SessionHandler {
     HandshakeIntent intent = HandshakeIntent.byId(handshake.nextState());
     if (intent == null) {
       logger.warn(
-          "Unknown nextState {} from {}",
-          handshake.nextState(),
-          connection.channel().remoteAddress());
+          "Unknown nextState {} from {}", handshake.nextState(), connection.remoteAddress());
       connection.close();
       return;
     }
@@ -150,7 +147,7 @@ final class HandshakeSessionHandler implements SessionHandler {
       logger.warn(
           "Unsupported protocol version {} from {}",
           handshake.protocolVersion(),
-          connection.channel().remoteAddress());
+          connection.remoteAddress());
       connection.close();
       return;
     }
@@ -169,7 +166,7 @@ final class HandshakeSessionHandler implements SessionHandler {
       // the refusal. Close, as for any other handshake no client sends.
       logger.warn(
           "Transfer handshake from {} declares {}, which predates transfers (1.20.5)",
-          connection.channel().remoteAddress(),
+          connection.remoteAddress(),
           version);
       connection.close();
       return;
@@ -178,9 +175,7 @@ final class HandshakeSessionHandler implements SessionHandler {
       login(handshake, version);
       return;
     }
-    logger.info(
-        "Refused a transfer from {}: accepts-transfers is off",
-        connection.channel().remoteAddress());
+    logger.info("Refused a transfer from {}: accepts-transfers is off", connection.remoteAddress());
     // In the login state, whose disconnect packet the client reads: the handshake state has none,
     // and a disconnect written in it never reaches the player (Velocity, Gate).
     connection.setState(ProtocolState.LOGIN);

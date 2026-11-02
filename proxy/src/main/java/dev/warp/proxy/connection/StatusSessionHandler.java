@@ -55,6 +55,9 @@ import org.slf4j.LoggerFactory;
  * event loop once they are done. A {@link StatusRequest} must come before any {@link PingRequest};
  * duplicate requests are ignored, and a ping that arrives while the handlers still hold the entry
  * is answered right after it.
+ *
+ * <p>A ping counts against its address's server list ping limit, apart from its logins: an address
+ * over the limit is closed without an answer, and can still log in.
  */
 final class StatusSessionHandler implements SessionHandler {
 
@@ -77,8 +80,11 @@ final class StatusSessionHandler implements SessionHandler {
   /** A ping that arrived while the handlers held the entry, answered after it. */
   private @Nullable PingRequest pendingPing;
 
+  /** Whether the ping was over its address's limit: closing, whatever follows is dropped. */
+  private boolean refused;
+
   /**
-   * Creates the handler of one server list ping.
+   * Creates the handler of one server list ping, counted against the proxy's limits.
    *
    * @param connection the client connection
    * @param context the proxy's shared state, whose server list answers
@@ -92,7 +98,19 @@ final class StatusSessionHandler implements SessionHandler {
   }
 
   @Override
+  public void activated() {
+    if (!context.limits().admitStatusPing(connection.remoteAddress())) {
+      // Over the limit: no answer, and no work. Counted by the limits, never logged one by one.
+      refused = true;
+      connection.close();
+    }
+  }
+
+  @Override
   public void handle(Packet packet) {
+    if (refused) {
+      return; // Requests that arrived with the refused handshake.
+    }
     if (!(packet instanceof StatusPacket statusPacket)) {
       logger.warn("Unexpected packet in STATUS state: {}", packet.getClass().getSimpleName());
       connection.close();

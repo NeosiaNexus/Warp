@@ -47,6 +47,9 @@ import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.event.player.GameProfileRequestEventImpl;
 import dev.warp.proxy.event.player.LoginEventImpl;
 import dev.warp.proxy.event.player.PreLoginEventImpl;
+import dev.warp.proxy.limit.ClientLimits;
+import dev.warp.proxy.limit.LoginAdmission;
+import dev.warp.proxy.limit.LoginSlot;
 import dev.warp.proxy.player.PlayerRegistry;
 
 import java.net.InetSocketAddress;
@@ -54,9 +57,11 @@ import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.security.PublicKey;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 import javax.crypto.Cipher;
@@ -64,6 +69,7 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
 import io.netty.channel.ChannelPipeline;
+import io.netty.util.concurrent.ScheduledFuture;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.jspecify.annotations.Nullable;
@@ -87,6 +93,15 @@ import org.slf4j.LoggerFactory;
  *   → (online mode)  AWAITING_ENCRYPTION_RESPONSE → AUTHENTICATING → AWAITING_LOGIN_ACKNOWLEDGED → COMPLETE
  *   → (offline mode) AWAITING_LOGIN_ACKNOWLEDGED → COMPLETE
  * }</pre>
+ *
+ * <h3>Limits</h3>
+ *
+ * <p>The login counts against its address's login limits as soon as this handler is installed,
+ * before anything else is read: an address over its rate, or with too many logins in progress, is
+ * told so and closed. An admitted login holds its place among its address's logins in progress
+ * until the player is logged in or the connection closes, and is closed if that takes longer than
+ * the login timeout. In online mode, the RSA decryption and the session server request count
+ * against the proxy's authentications in flight.
  *
  * <h3>Threading model</h3>
  *
@@ -117,6 +132,17 @@ final class LoginSessionHandler implements SessionHandler {
   /** Why a player beyond the player limit ({@code status.max-players}) is refused. */
   static final String SERVER_FULL = "The server is full.";
 
+  /** Told to a player over the limit of logins in progress from its address. */
+  static final String TOO_MANY_LOGINS_REASON =
+      "Too many logins in progress from your address. Please try again in a moment.";
+
+  /** Told to a player who starts an online login while the proxy authenticates its most. */
+  static final String BUSY_REASON =
+      "The server is busy logging players in. Please try again in a moment.";
+
+  /** Told to a player whose login took longer than the login timeout. */
+  static final String TIMED_OUT_REASON = "Login timed out";
+
   // ---------------------------------------------------------------------------
   // State machine
   // ---------------------------------------------------------------------------
@@ -127,7 +153,11 @@ final class LoginSessionHandler implements SessionHandler {
     AWAITING_ENCRYPTION_RESPONSE,
     AUTHENTICATING,
     AWAITING_LOGIN_ACKNOWLEDGED,
-    COMPLETE
+    COMPLETE,
+    /**
+     * Refused by the limits, or timed out: closing, and whatever the client still sends is dropped.
+     */
+    REFUSED
   }
 
   // ---------------------------------------------------------------------------
@@ -145,6 +175,12 @@ final class LoginSessionHandler implements SessionHandler {
   private final ClientCookies cookies;
 
   private LoginState state = LoginState.AWAITING_LOGIN_START;
+
+  /** This login's place among its address's logins in progress, until logged in or closed. */
+  private @Nullable LoginSlot slot;
+
+  /** Closes the login if it takes longer than the login timeout. */
+  private @Nullable ScheduledFuture<?> timeoutTask;
 
   /** The player once authenticated and registered, until the client enters its first server. */
   private @Nullable ConnectedPlayer player;
@@ -200,7 +236,34 @@ final class LoginSessionHandler implements SessionHandler {
   // ---------------------------------------------------------------------------
 
   @Override
+  public void activated() {
+    ClientLimits limits = loginContext.limits();
+    switch (limits.admitLogin(connection.remoteAddress())) {
+      case LoginAdmission.Admitted(LoginSlot admitted) -> this.slot = admitted;
+      case LoginAdmission.TooFast(Duration retryAfter) -> {
+        refuse(tooFastReason(retryAfter));
+        return;
+      }
+      case LoginAdmission.TooManyInProgress() -> {
+        refuse(TOO_MANY_LOGINS_REASON);
+        return;
+      }
+    }
+    Duration timeout = limits.loginTimeout();
+    if (!timeout.isZero()) {
+      timeoutTask =
+          connection
+              .channel()
+              .eventLoop()
+              .schedule(this::timedOut, timeout.toMillis(), TimeUnit.MILLISECONDS);
+    }
+  }
+
+  @Override
   public void handle(Packet packet) {
+    if (state == LoginState.REFUSED) {
+      return; // Packets that arrived with the refused handshake: closing, nothing to answer.
+    }
     if (packet instanceof CookieResponse response) {
       handleCookieResponse(response);
       return;
@@ -248,7 +311,7 @@ final class LoginSessionHandler implements SessionHandler {
       logger.warn(
           "Disconnecting {} from {}: cookie {} sent unasked",
           username != null ? username : "unknown",
-          connection.channel().remoteAddress(),
+          connection.remoteAddress(),
           response.key());
       connection.writeAndClose(LoginDisconnect.ofTranslation(UNEXPECTED_QUERY_RESPONSE));
     }
@@ -323,6 +386,12 @@ final class LoginSessionHandler implements SessionHandler {
     }
 
     if (onlineMode) {
+      // Told now, while the client can still read it: once it sends its encryption response, it
+      // expects encrypted packets.
+      if (!loginContext.limits().admitOnlineLogin()) {
+        refuse(BUSY_REASON);
+        return;
+      }
       beginOnlineMode();
     } else {
       beginOfflineMode();
@@ -344,6 +413,18 @@ final class LoginSessionHandler implements SessionHandler {
       return;
     }
 
+    // Bounds the RSA work and the session server requests in flight, which a bot attack with
+    // accounts, or a flood of fake responses, would otherwise drive without limit. Full since the
+    // login started: the client now expects encrypted packets, so it cannot be told why.
+    ClientLimits limits = loginContext.limits();
+    if (!limits.tryStartAuthentication()) {
+      state = LoginState.REFUSED;
+      endOfLogin();
+      connection.close();
+      return;
+    }
+    // Ended here, unless the session server request is under way: it ends it.
+    boolean requested = false;
     try {
       Cipher rsaCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
       rsaCipher.init(Cipher.DECRYPT_MODE, loginContext.rsaKeyPair().getPrivate());
@@ -381,12 +462,15 @@ final class LoginSessionHandler implements SessionHandler {
       enableEncryption(sharedSecret);
 
       // Authenticate with Mojang asynchronously on a virtual thread.
-      authenticateAsync(decryptedSharedSecret);
+      requested = authenticateAsync(decryptedSharedSecret);
 
     } catch (GeneralSecurityException e) {
-      logger.warn(
-          "Encryption error for {} from {}", username, connection.channel().remoteAddress(), e);
+      logger.warn("Encryption error for {} from {}", username, connection.remoteAddress(), e);
       disconnect("Encryption error");
+    } finally {
+      if (!requested) {
+        limits.endAuthentication();
+      }
     }
   }
 
@@ -405,10 +489,15 @@ final class LoginSessionHandler implements SessionHandler {
   @Override
   public void deactivated() {
     logger.debug("LoginSessionHandler replaced for: {} (state={})", username, state);
+    endOfLogin();
   }
 
   @Override
   public void disconnected() {
+    endOfLogin();
+    if (state == LoginState.REFUSED) {
+      return; // Counted by the limits: a flood must not write a line per connection.
+    }
     logger.info("Client disconnected during login: {} (state={})", username, state);
     ConnectedPlayer loggedIn = this.player;
     if (loggedIn != null) {
@@ -449,12 +538,19 @@ final class LoginSessionHandler implements SessionHandler {
     completeLogin(profile);
   }
 
-  private void authenticateAsync(byte[] sharedSecret) {
+  /**
+   * Starts the session server request on a virtual thread.
+   *
+   * @return {@code true} once the request is under way: it ends the authentication with the limits
+   *     when it returns
+   */
+  private boolean authenticateAsync(byte[] sharedSecret) {
     String playerName = this.username;
     if (playerName == null) {
       disconnect("Internal error");
-      return;
+      return false;
     }
+    ClientLimits limits = loginContext.limits();
 
     byte[] publicKey = loginContext.rsaKeyPair().getPublic().getEncoded();
     String serverHash = ServerHash.compute("", sharedSecret, publicKey);
@@ -499,15 +595,20 @@ final class LoginSessionHandler implements SessionHandler {
                           logger.info(
                               "Authentication failed for {} from {}: {}",
                               playerName,
-                              connection.channel().remoteAddress(),
+                              connection.remoteAddress(),
                               e.getMessage());
                           disconnect("Authentication failed");
                         });
+              } finally {
+                limits.endAuthentication();
               }
             });
+    return true;
   }
 
   private void completeLogin(GameProfile authenticated) {
+    // Logged in: the login gives its place back, and no longer times out.
+    endOfLogin();
     WarpEventBus events = loginContext.events();
     if (!events.hasHandlers(GameProfileRequestEventImpl.class)) {
       registerPlayer(authenticated);
@@ -538,7 +639,7 @@ final class LoginSessionHandler implements SessionHandler {
             connection,
             clientVersion(),
             profile,
-            (InetSocketAddress) connection.channel().remoteAddress(),
+            (InetSocketAddress) connection.remoteAddress(),
             loginContext,
             cookies);
     joining.setOnlineMode(onlineMode);
@@ -620,7 +721,7 @@ final class LoginSessionHandler implements SessionHandler {
         "Player {} ({}) logged in from {}{}",
         profile.name(),
         profile.uuid(),
-        connection.channel().remoteAddress(),
+        connection.remoteAddress(),
         connection.handshakeIntent() == HandshakeIntent.TRANSFER ? ", transferred" : "");
 
     if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
@@ -702,6 +803,54 @@ final class LoginSessionHandler implements SessionHandler {
   }
 
   // ---------------------------------------------------------------------------
+  // Limits
+  // ---------------------------------------------------------------------------
+
+  /** Releases the login's place among its address's logins in progress, and its timeout. */
+  private void endOfLogin() {
+    LoginSlot held = this.slot;
+    if (held != null) {
+      held.release();
+      this.slot = null;
+    }
+    ScheduledFuture<?> pending = this.timeoutTask;
+    if (pending != null) {
+      pending.cancel(false);
+      this.timeoutTask = null;
+    }
+  }
+
+  private void timedOut() {
+    this.timeoutTask = null;
+    if (!connection.channel().isActive()) {
+      return;
+    }
+    loginContext.limits().loginTimedOut();
+    logger.debug("Login of {} from {} timed out", username, connection.remoteAddress());
+    refuse(TIMED_OUT_REASON);
+  }
+
+  /**
+   * Closes a login the limits refuse, or that timed out, showing the client the reason. The client
+   * is in the LOGIN state: refusals happen right after its handshake, and the timeout is cancelled
+   * once it is logged in. Counted by the limits, not logged one by one, so that a flood cannot fill
+   * the logs.
+   */
+  private void refuse(String reason) {
+    state = LoginState.REFUSED;
+    endOfLogin();
+    connection.writeAndClose(LoginDisconnect.ofPlainText(reason));
+  }
+
+  /** The reason shown to a player who tries to log in too often, with how long to wait. */
+  static String tooFastReason(Duration retryAfter) {
+    long seconds = Math.max(1, (retryAfter.toMillis() + 999) / 1000);
+    return "You are logging in too fast. Please try again in "
+        + seconds
+        + (seconds == 1 ? " second." : " seconds.");
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
@@ -717,7 +866,7 @@ final class LoginSessionHandler implements SessionHandler {
     logger.warn(
         "Disconnecting {} from {}: invalid profile public key, {}",
         username != null ? username : "unknown",
-        connection.channel().remoteAddress(),
+        connection.remoteAddress(),
         problem.description());
     connection.writeAndClose(LoginDisconnect.ofTranslation(ProfileKeys.REFUSAL_REASON));
   }
@@ -726,7 +875,7 @@ final class LoginSessionHandler implements SessionHandler {
     logger.warn(
         "Disconnecting {} from {}: {}",
         username != null ? username : "unknown",
-        connection.channel().remoteAddress(),
+        connection.remoteAddress(),
         PlainTextComponentSerializer.plainText().serialize(reason));
     Packet disconnectPacket =
         switch (connection.encoder().state()) {
@@ -741,7 +890,7 @@ final class LoginSessionHandler implements SessionHandler {
     logger.warn(
         "Disconnecting {} from {}: {}",
         username != null ? username : "unknown",
-        connection.channel().remoteAddress(),
+        connection.remoteAddress(),
         reason);
     // The disconnect packet of the state the client reads: Login Success moves it to CONFIGURATION
     // from 1.20.2, to PLAY before. The login reason is JSON in every version; the configuration and

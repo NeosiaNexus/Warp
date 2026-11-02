@@ -23,6 +23,7 @@ import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.config.DuplicateLoginPolicy;
 import dev.warp.proxy.config.ForwardingMode;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
@@ -64,6 +65,7 @@ import io.netty.channel.Channel;
  * @param channelClass the socket channel class matching the detected transport
  * @param acceptsTransfers whether players a Transfer packet sends here (handshake intent 3,
  *     1.20.5+) may log in; refused with vanilla's reason otherwise
+ * @param limits the limits on what one client address may do, applied to every connection
  */
 @SuppressWarnings("ArrayRecordComponent") // forwardingSecret is treated as immutable
 public record ServerLoginContext(
@@ -86,7 +88,8 @@ public record ServerLoginContext(
     ForwardingMode forwardingMode,
     byte[] forwardingSecret,
     Class<? extends Channel> channelClass,
-    boolean acceptsTransfers) {
+    boolean acceptsTransfers,
+    ClientLimits limits) {
 
   /** Validates configuration invariants. */
   public ServerLoginContext {

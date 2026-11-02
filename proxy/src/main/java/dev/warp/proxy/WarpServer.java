@@ -39,10 +39,12 @@ import dev.warp.proxy.connection.ServerLoginContext;
 import dev.warp.proxy.drain.ExecutorDrainScheduler;
 import dev.warp.proxy.drain.ProxyDrain;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.management.ManagementServer;
 import dev.warp.proxy.management.ProxyHealth;
 import dev.warp.proxy.management.ReadinessHolds;
 import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.network.CidrRanges;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.plugin.WarpPluginManager;
@@ -257,10 +259,22 @@ public final class WarpServer implements Warp {
 
     TransportInfo transport = detectTransport();
     this.transportInfo = transport;
+    // Behind the PROXY protocol, the trusted proxies are never limited: their own connections are
+    // health checks, and every other one is limited under the client address of its header.
+    ClientLimits limits =
+        new ClientLimits(
+            config.limits(),
+            config.proxyProtocol().enabled()
+                ? config.proxyProtocol().trustedProxies()
+                : CidrRanges.none());
     // Before the event loops, so that a configuration error leaves nothing to shut down.
-    ServerLoginContext loginContext = createLoginContext(transport);
+    ServerLoginContext loginContext = createLoginContext(transport, limits);
     this.bossGroup = new MultiThreadIoEventLoopGroup(1, transport.ioFactory());
     this.workerGroup = new MultiThreadIoEventLoopGroup(transport.ioFactory());
+    long reportMillis = limits.reportInterval().toMillis();
+    var _ =
+        workerGroup.scheduleAtFixedRate(
+            limits::report, reportMillis, reportMillis, TimeUnit.MILLISECONDS);
 
     serverRegistry.setPinger(new BackendPinger(workerGroup, transport.clientChannelClass()));
 
@@ -275,7 +289,7 @@ public final class WarpServer implements Warp {
         new ServerBootstrap()
             .group(bossGroup, workerGroup)
             .channel(transport.serverChannelClass())
-            .childHandler(new ServerChannelInitializer(loginContext))
+            .childHandler(new ServerChannelInitializer(loginContext, config.proxyProtocol()))
             // TCP_NODELAY: disable Nagle — critical for game traffic. BungeeCord misses this.
             .childOption(ChannelOption.TCP_NODELAY, true)
             // SO_KEEPALIVE: detect dead connections at the TCP level.
@@ -628,8 +642,9 @@ public final class WarpServer implements Warp {
    * Creates the server-wide login context with RSA keypair and configuration values.
    *
    * @param transport the detected transport for channel class resolution
+   * @param limits the limits on what one client address may do
    */
-  private ServerLoginContext createLoginContext(TransportInfo transport) {
+  private ServerLoginContext createLoginContext(TransportInfo transport, ClientLimits limits) {
     ProfileKeys profileKeys = loadProfileKeys();
 
     KeyPairGenerator gen;
@@ -671,7 +686,8 @@ public final class WarpServer implements Warp {
         config.forwardingMode(),
         config.forwardingSecret(),
         transport.clientChannelClass(),
-        config.acceptsTransfers());
+        config.acceptsTransfers(),
+        limits);
   }
 
   /**

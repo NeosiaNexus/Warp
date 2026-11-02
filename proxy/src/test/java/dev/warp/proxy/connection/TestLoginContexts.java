@@ -23,6 +23,7 @@ import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.config.DuplicateLoginPolicy;
 import dev.warp.proxy.config.ForwardingMode;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
@@ -212,12 +213,41 @@ final class TestLoginContexts {
       WarpEventBus events,
       boolean acceptsTransfers,
       StatusSettings status) {
-    PlayerRegistry players = new PlayerRegistry();
-    ServerRegistry registry =
+    return context(
+        onlineMode,
+        compressionThreshold,
+        sessionService,
+        profileKeys,
+        policy,
+        events,
+        acceptsTransfers,
+        status,
+        ClientLimits.unlimited(),
         new ServerRegistry(
             Map.of("lobby", new InetSocketAddress(InetAddress.getLoopbackAddress(), 1)),
             "lobby",
-            List.of("lobby"));
+            List.of("lobby")),
+        ForwardingMode.NONE,
+        new byte[0],
+        NioSocketChannel.class);
+  }
+
+  @SuppressWarnings("ParameterNumber") // every knob of the context, for the factories above
+  private static ServerLoginContext context(
+      boolean onlineMode,
+      int compressionThreshold,
+      MojangSessionService sessionService,
+      ProfileKeys profileKeys,
+      DuplicateLoginPolicy policy,
+      WarpEventBus events,
+      boolean acceptsTransfers,
+      StatusSettings status,
+      ClientLimits limits,
+      ServerRegistry registry,
+      ForwardingMode forwardingMode,
+      byte[] forwardingSecret,
+      Class<? extends io.netty.channel.Channel> channelClass) {
+    PlayerRegistry players = new PlayerRegistry();
     return new ServerLoginContext(
         KEY_PAIR,
         onlineMode,
@@ -235,10 +265,67 @@ final class TestLoginContexts {
         new ChannelRegistry(),
         commands(registry),
         new PermissionRegistry(),
+        forwardingMode,
+        forwardingSecret,
+        channelClass,
+        acceptsTransfers,
+        limits);
+  }
+
+  /**
+   * Returns an offline-mode context without compression whose only server, {@code lobby}, is at
+   * {@code server} and receives players through Velocity modern forwarding signed with {@code
+   * secret}. Its connections are real NIO sockets.
+   *
+   * @param server the address of the backend server
+   * @param secret the forwarding secret
+   * @return the context
+   */
+  static ServerLoginContext velocityForwarding(InetSocketAddress server, byte[] secret) {
+    return context(
+        false,
+        -1,
+        new MojangSessionService(),
+        ProfileKeys.mojang(),
+        DuplicateLoginPolicy.AUTO,
+        EVENTS,
+        false,
+        StatusSettings.defaults(),
+        ClientLimits.unlimited(),
+        new ServerRegistry(Map.of("lobby", server), "lobby", List.of("lobby")),
+        ForwardingMode.VELOCITY,
+        secret,
+        NioSocketChannel.class);
+  }
+
+  /**
+   * Returns {@link #offline()}, or its online-mode form authenticating with {@code sessionService},
+   * whose connections count against {@code limits}.
+   *
+   * @param onlineMode whether players authenticate
+   * @param sessionService the session service, usually a mock
+   * @param limits the limits on client addresses
+   * @return the context
+   */
+  static ServerLoginContext limited(
+      boolean onlineMode, MojangSessionService sessionService, ClientLimits limits) {
+    return context(
+        onlineMode,
+        -1,
+        sessionService,
+        ProfileKeys.mojang(),
+        DuplicateLoginPolicy.AUTO,
+        EVENTS,
+        false,
+        StatusSettings.defaults(),
+        limits,
+        new ServerRegistry(
+            Map.of("lobby", new InetSocketAddress(InetAddress.getLoopbackAddress(), 1)),
+            "lobby",
+            List.of("lobby")),
         ForwardingMode.NONE,
         new byte[0],
-        NioSocketChannel.class,
-        acceptsTransfers);
+        NioSocketChannel.class);
   }
 
   private static KeyPair generateKeyPair() {

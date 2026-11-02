@@ -59,7 +59,7 @@ final class WarpInboundConnection implements InboundConnection {
 
   @Override
   public InetSocketAddress remoteAddress() {
-    return (InetSocketAddress) connection.channel().remoteAddress();
+    return (InetSocketAddress) connection.remoteAddress();
   }
 
   @Override

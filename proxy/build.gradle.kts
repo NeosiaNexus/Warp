@@ -46,6 +46,9 @@ dependencies {
     implementation(libs.bundles.netty)
     // HTTP for the management server only (probes, drain), on its own event loop
     implementation(libs.netty.codec.http)
+
+    // PROXY protocol v1/v2 decoder, in the pipeline only when proxy-protocol is enabled.
+    implementation(libs.netty.codec.haproxy)
     implementation(libs.netty.transport.native.epoll) {
         artifact { classifier = "linux-x86_64" }
     }
