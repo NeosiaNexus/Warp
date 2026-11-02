@@ -68,6 +68,13 @@ class WarpServerDrainTest {
    */
   private static final Duration ANSWER_TIMEOUT = Duration.ofSeconds(3);
 
+  /**
+   * The event loops' quiet period when the proxy stops: half of Netty's 2 s, so that the test,
+   * which kills more mutants than any other, runs 1 s faster, and still long enough to tell event
+   * loops shut down together (one quiet period) from one after the other (two).
+   */
+  private static final Duration QUIET_PERIOD = Duration.ofSeconds(1);
+
   private final HttpClient client = HttpClient.newBuilder().connectTimeout(ANSWER_TIMEOUT).build();
 
   @Test
@@ -100,7 +107,8 @@ class WarpServerDrainTest {
             .formatted(game, http, agent),
         StandardCharsets.UTF_8);
     CompletableFuture<Integer> exited = new CompletableFuture<>();
-    WarpServer server = new WarpServer(WarpConfig.load(directory), directory, exited::complete);
+    WarpServer server =
+        new WarpServer(WarpConfig.load(directory), directory, exited::complete, QUIET_PERIOD);
 
     assertThrows(IllegalStateException.class, server::drain, "not started yet");
 
@@ -142,10 +150,10 @@ class WarpServerDrainTest {
       assertTrue(drained.body().contains("\"outcome\":\"drained\""), drained.body());
       assertEquals(WarpServer.EXIT_DRAINED, exited.get(5, TimeUnit.SECONDS));
       Duration drainToExit = Duration.ofNanos(System.nanoTime() - drainStarted);
-      // Nobody to drain: the time is the stop's, whose event loops each wait out a quiet period
-      // of 2 s before terminating. Both at once, not one after the other.
+      // Nobody to drain: the time is the stop's, whose event loops each wait out the quiet period
+      // before terminating. Both at once, not one after the other.
       assertTrue(
-          drainToExit.compareTo(Duration.ofMillis(3_500)) < 0,
+          drainToExit.compareTo(QUIET_PERIOD.multipliedBy(9).dividedBy(5)) < 0,
           "drained and stopped in " + drainToExit.toMillis() + " ms");
       assertTrue(server.isDraining());
       assertEquals(DrainPhase.STOPPING, server.drainStatus().phase());
