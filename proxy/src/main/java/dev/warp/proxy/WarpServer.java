@@ -59,6 +59,7 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
 import java.security.spec.InvalidKeySpecException;
+import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -136,6 +137,12 @@ public final class WarpServer implements Warp {
   /** How long shutdown waits for the listener to close. */
   private static final long LISTENER_CLOSE_TIMEOUT_SECONDS = 5;
 
+  /** Netty's default quiet period of an event loop being shut down. */
+  private static final Duration SHUTDOWN_QUIET_PERIOD = Duration.ofSeconds(2);
+
+  /** Netty's default limit to an event loop's shutdown, quiet period included. */
+  private static final long SHUTDOWN_TIMEOUT_MILLIS = 15_000;
+
   /**
    * How long a second shutdown request (the JVM's hook during a drain's shutdown) waits for the one
    * in progress before the JVM goes on exiting.
@@ -193,6 +200,12 @@ public final class WarpServer implements Warp {
   /** Ends the process once a drain stopped the proxy: {@link System#exit} outside tests. */
   private final IntConsumer exit;
 
+  /**
+   * How long an event loop must go without a new task before it terminates, when stopping: Netty's
+   * default, {@link #SHUTDOWN_QUIET_PERIOD}. A test without players takes none.
+   */
+  private final Duration shutdownQuietPeriod;
+
   /** The management server, when enabled. */
   private @Nullable ManagementServer management;
 
@@ -240,8 +253,22 @@ public final class WarpServer implements Warp {
    * @param exit ends the process with an exit code
    */
   WarpServer(WarpConfig config, Path directory, IntConsumer exit) {
+    this(config, directory, exit, SHUTDOWN_QUIET_PERIOD);
+  }
+
+  /**
+   * Creates a server that ends the process with {@code exit} once a drain stopped it, and whose
+   * event loops wait {@code shutdownQuietPeriod} for tasks when stopping.
+   *
+   * @param config the proxy configuration
+   * @param directory the proxy's working directory, which holds the {@code plugins} directory
+   * @param exit ends the process with an exit code
+   * @param shutdownQuietPeriod see {@link #shutdownQuietPeriod}
+   */
+  WarpServer(WarpConfig config, Path directory, IntConsumer exit, Duration shutdownQuietPeriod) {
     this.config = config;
     this.exit = exit;
+    this.shutdownQuietPeriod = shutdownQuietPeriod;
     this.serverRegistry =
         new ServerRegistry(config.servers(), config.defaultServer(), config.fallbackOrder());
     ProxyCommands.register(commands, serverRegistry);
@@ -513,15 +540,22 @@ public final class WarpServer implements Warp {
   }
 
   /**
-   * Shuts down boss and worker event loops, both at once: each waits out its quiet period (2 s)
-   * before it terminates, so shutting them down one after the other made every stop, a drain's exit
-   * included, wait twice as long. Safe to call multiple times.
+   * Shuts down boss and worker event loops, both at once: each waits out its quiet period before it
+   * terminates, so shutting them down one after the other made every stop, a drain's exit included,
+   * wait twice as long. Safe to call multiple times.
    */
   private void shutdownEventLoops() {
     MultiThreadIoEventLoopGroup bosses = bossGroup;
     MultiThreadIoEventLoopGroup workers = workerGroup;
-    Future<?> boss = bosses != null ? bosses.shutdownGracefully() : null;
-    Future<?> worker = workers != null ? workers.shutdownGracefully() : null;
+    long quiet = shutdownQuietPeriod.toMillis();
+    Future<?> boss =
+        bosses != null
+            ? bosses.shutdownGracefully(quiet, SHUTDOWN_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+            : null;
+    Future<?> worker =
+        workers != null
+            ? workers.shutdownGracefully(quiet, SHUTDOWN_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+            : null;
     if (boss != null) {
       boss.awaitUninterruptibly();
     }

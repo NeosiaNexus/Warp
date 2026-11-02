@@ -87,6 +87,16 @@ class DrainControllerTest {
     return Duration.ofMillis(millis);
   }
 
+  /**
+   * The outcome of a drain that is over by now: the clock is fake, so the drain ends while the test
+   * advances it, or never. A mutant that never ends it fails the test here, instead of hanging it
+   * until PIT's time-out.
+   */
+  private static DrainStatus settled(CompletableFuture<DrainStatus> done) {
+    assertTrue(done.isDone(), "the drain is over");
+    return done.join();
+  }
+
   // ---------------------------------------------------------------------------
   // Phase 0
   // ---------------------------------------------------------------------------
@@ -523,7 +533,7 @@ class DrainControllerTest {
       old.leave();
       clock.advance(DrainController.POLL_INTERVAL);
 
-      DrainStatus status = done.join();
+      DrainStatus status = settled(done);
       assertEquals(DrainPhase.STOPPING, status.phase());
       assertEquals(DrainOutcome.DRAINED, status.outcome());
       assertSame(status, host.shutdownStatus());
@@ -545,8 +555,8 @@ class DrainControllerTest {
       CompletableFuture<DrainStatus> done = drain.start(DrainTrigger.HTTP);
       clock.advance(PROPAGATION);
 
-      assertEquals(DrainOutcome.DRAINED, done.join().outcome());
-      assertEquals(PROPAGATION, done.join().elapsed());
+      assertEquals(DrainOutcome.DRAINED, settled(done).outcome());
+      assertEquals(PROPAGATION, settled(done).elapsed());
     }
 
     @Test
@@ -558,7 +568,7 @@ class DrainControllerTest {
       clock.advance(PROPAGATION);
 
       assertTrue(done.isDone());
-      assertEquals(0, done.join().players());
+      assertEquals(0, settled(done).players());
     }
 
     @Test
@@ -575,7 +585,7 @@ class DrainControllerTest {
 
       clock.advance(at(1));
 
-      DrainStatus status = done.join();
+      DrainStatus status = settled(done);
       assertEquals(DrainOutcome.TIMED_OUT, status.outcome());
       assertEquals(1, status.players(), "the proxy disconnects whoever is left");
       assertEquals(1, host.shutdowns());
