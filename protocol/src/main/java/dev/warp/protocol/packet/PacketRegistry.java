@@ -199,6 +199,10 @@ public final class PacketRegistry {
      * Registers a packet the proxy can encode but never decodes on receipt: received copies are
      * forwarded as opaque frames, exactly like unregistered packets.
      *
+     * <p>Several encode-only packets may share an id: the actions of a single wire packet, each
+     * written by its own record, such as the Title packet up to 1.16.5. An id the proxy reads, from
+     * a decoded or watched registration, cannot be shared.
+     *
      * @param type the packet class
      * @param codec the codec for writing this packet
      * @param mappings one or more version-to-ID mappings, in ascending version order
@@ -285,7 +289,11 @@ public final class PacketRegistry {
           Map<Integer, Entry> protocolEntries =
               workingEntries.computeIfAbsent(protocol, k -> new HashMap<>());
           Entry existing = protocolEntries.get(packetId);
-          if (existing != null && !existing.type().equals(reg.type())) {
+          // Encode-only types may share an id: the actions of one wire packet, each written by a
+          // record of its own (the Title packet up to 1.16.5). A packet the proxy reads must have
+          // its id to itself, or reading it would be ambiguous.
+          boolean shared = existing != null && existing.reader() == null && reg.reader() == null;
+          if (existing != null && !existing.type().equals(reg.type()) && !shared) {
             throw new IllegalStateException(
                 "Packet ID 0x"
                     + Integer.toHexString(packetId)

@@ -21,9 +21,11 @@ import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.codec.McUuid;
 import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.packet.PacketCodec;
+import dev.warp.protocol.text.ComponentCodec;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.DecoderException;
+import net.kyori.adventure.text.Component;
 
 /**
  * Server sends a system message to the client ({@code S→C}): shown in the chat box, or above the
@@ -52,7 +54,7 @@ import io.netty.handler.codec.DecoderException;
  * chat type other than game info as a chat-box message.
  *
  * @param rawContent the text component, encoded for the client's version (see {@link
- *     dev.warp.protocol.packet.TextComponent TextComponent})
+ *     ComponentCodec})
  * @param overlay if {@code true}, the message is displayed as an action bar overlay
  */
 public record SystemChatMessage(byte[] rawContent, boolean overlay) implements PlayPacket {
@@ -100,6 +102,18 @@ public record SystemChatMessage(byte[] rawContent, boolean overlay) implements P
           }
         }
       };
+
+  /**
+   * Creates a message shown in the chat box of a client of {@code version}.
+   *
+   * @param message the message
+   * @param version the client's protocol version
+   * @return the packet
+   * @throws IllegalArgumentException if the message is too large for the client
+   */
+  public static SystemChatMessage of(Component message, ProtocolVersion version) {
+    return new SystemChatMessage(ComponentCodec.encode(message, version), false);
+  }
 
   /**
    * Reads the text component as it is on the wire: a self-delimiting VarInt-prefixed JSON string

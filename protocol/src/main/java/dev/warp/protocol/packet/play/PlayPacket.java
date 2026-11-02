@@ -49,4 +49,8 @@ public sealed interface PlayPacket extends Packet
         PlayerInfoUpdate,
         PlayerInfoRemove,
         TabListHeaderFooter,
-        ClearTitles {}
+        ClearTitles,
+        SetTitleText,
+        SetSubtitleText,
+        SetTitleTimes,
+        SetActionBarText {}

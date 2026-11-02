@@ -17,20 +17,22 @@
 package dev.warp.protocol.packet.play;
 
 import dev.warp.protocol.ProtocolVersion;
-import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.packet.PacketCodec;
-import dev.warp.protocol.packet.TextComponent;
+import dev.warp.protocol.text.ComponentCodec;
 
 import io.netty.buffer.ByteBuf;
+import net.kyori.adventure.text.Component;
 
 /**
  * Server sets the text above and below the tab list ({@code S→C}, from 1.8).
  *
+ * <p>Two text components, VarInt-prefixed JSON strings before 1.20.3, NBT from 1.20.3 (Velocity's
+ * {@code HeaderAndFooterPacket}, minecraft-data's {@code packet_playerlist_header}). An empty
+ * component hides its part.
+ *
  * <p>Before 1.20.2 the header and footer survive the Join Game of a server switch; the proxy sends
- * empty ones ({@link #empty(ProtocolVersion)}) when a player switches, as Velocity does. Layout:
- * two text components, VarInt-prefixed JSON strings before 1.20.3 (Velocity's {@code
- * HeaderAndFooterPacket}, minecraft-data's {@code packet_playerlist_header}). The proxy only uses
- * it before 1.20.2.
+ * empty ones ({@link #empty(ProtocolVersion)}) when a player switches, as Velocity does. From
+ * 1.20.2 the configuration phase of a switch clears them on the client.
  *
  * @param header the header component, encoded as on the wire
  * @param footer the footer component, encoded as on the wire
@@ -45,16 +47,32 @@ public record TabListHeaderFooter(byte[] header, byte[] footer) implements PlayP
    * @return the packet
    */
   public static TabListHeaderFooter empty(ProtocolVersion version) {
-    byte[] empty = TextComponent.plainText("", version);
+    byte[] empty = ComponentCodec.encode(Component.empty(), version);
     return new TabListHeaderFooter(empty, empty);
   }
 
-  /** Codec for reading and writing tab list header and footer packets (JSON components). */
+  /**
+   * Creates the packet that sets the header and footer for a client of {@code version}.
+   *
+   * @param header the text above the tab list, empty to hide it
+   * @param footer the text below the tab list, empty to hide it
+   * @param version the client's protocol version, from 1.8
+   * @return the packet
+   * @throws IllegalArgumentException if a component is too large for the client
+   */
+  public static TabListHeaderFooter of(
+      Component header, Component footer, ProtocolVersion version) {
+    return new TabListHeaderFooter(
+        ComponentCodec.encode(header, version), ComponentCodec.encode(footer, version));
+  }
+
+  /** Codec for reading and writing tab list header and footer packets. */
   public static final PacketCodec<TabListHeaderFooter> CODEC =
       new PacketCodec<>() {
         @Override
         public TabListHeaderFooter decode(ByteBuf buf, ProtocolVersion version) {
-          return new TabListHeaderFooter(readComponent(buf), readComponent(buf));
+          byte[] header = ComponentCodec.readRaw(buf, version);
+          return new TabListHeaderFooter(header, ComponentCodec.readRaw(buf, version));
         }
 
         @Override
@@ -63,13 +81,4 @@ public record TabListHeaderFooter(byte[] header, byte[] footer) implements PlayP
           buf.writeBytes(packet.footer());
         }
       };
-
-  /** Reads a JSON component with its length prefix, exactly as on the wire. */
-  private static byte[] readComponent(ByteBuf buf) {
-    int start = buf.readerIndex();
-    McString.skip(buf);
-    byte[] component = new byte[buf.readerIndex() - start];
-    buf.getBytes(start, component);
-    return component;
-  }
 }

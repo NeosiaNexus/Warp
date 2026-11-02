@@ -127,6 +127,52 @@ class PacketRegistryTest {
     }
 
     @Test
+    @DisplayName("should let encode-only packets share an id, but no packet that is read")
+    void sharedEncodeOnlyIds() {
+      PacketRegistry shared =
+          PacketRegistry.builder()
+              .registerEncodeOnly(
+                  StatusRequest.class,
+                  StatusRequest.CODEC,
+                  VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_7_2))
+              .registerEncodeOnly(
+                  PingRequest.class,
+                  PingRequest.CODEC,
+                  VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_7_2))
+              .build();
+
+      assertEquals(0x00, shared.packetId(ProtocolVersion.MINECRAFT_1_8, StatusRequest.class));
+      assertEquals(0x00, shared.packetId(ProtocolVersion.MINECRAFT_1_8, PingRequest.class));
+      assertNull(shared.lookup(ProtocolVersion.MINECRAFT_1_8, 0x00));
+      assertThrows(
+          IllegalStateException.class,
+          () ->
+              PacketRegistry.builder()
+                  .registerEncodeOnly(
+                      StatusRequest.class,
+                      StatusRequest.CODEC,
+                      VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_7_2))
+                  .register(
+                      PingRequest.class,
+                      PingRequest.CODEC,
+                      VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_7_2))
+                  .build());
+      assertThrows(
+          IllegalStateException.class,
+          () ->
+              PacketRegistry.builder()
+                  .register(
+                      PingRequest.class,
+                      PingRequest.CODEC,
+                      VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_7_2))
+                  .registerEncodeOnly(
+                      StatusRequest.class,
+                      StatusRequest.CODEC,
+                      VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_7_2))
+                  .build());
+    }
+
+    @Test
     @DisplayName("should reject conflicting packet ID registrations")
     void conflictingIds() {
       assertThrows(
@@ -422,17 +468,17 @@ class PacketRegistryTest {
               ProtocolVersion.MINECRAFT_1_20_1,
               clientbound.packetId(ProtocolVersion.MINECRAFT_1_20_1, PlayerInfoRemove.class)));
       for (var type :
-          List.of(
-              BossBar.class,
-              PlayerInfoUpdate.class,
-              PlayerInfoRemove.class,
-              TabListHeaderFooter.class,
-              ClearTitles.class,
-              Respawn.class)) {
+          List.of(BossBar.class, PlayerInfoUpdate.class, PlayerInfoRemove.class, Respawn.class)) {
         assertThrows(
             IllegalArgumentException.class,
             () -> clientbound.packetId(ProtocolVersion.MINECRAFT_1_20_2, type),
             type.getSimpleName());
+      }
+      // The header, footer and titles are the proxy's own messages too: written in every
+      // version, never read.
+      for (var type : List.of(TabListHeaderFooter.class, ClearTitles.class)) {
+        int id = clientbound.packetId(ProtocolVersion.MINECRAFT_1_20_2, type);
+        assertNull(clientbound.lookup(ProtocolVersion.MINECRAFT_1_20_2, id), type.getSimpleName());
       }
       assertThrows(
           IllegalArgumentException.class,
