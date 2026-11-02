@@ -8,7 +8,7 @@ plugins {
     id("warp.jacoco-conventions")
 }
 
-description = "Warp JNI — native libraries (libdeflate) bound through the FFM API"
+description = "Warp JNI: native libraries (libdeflate) bound through the FFM API"
 
 dependencies {
     implementation(platform(libs.netty.bom))

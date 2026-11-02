@@ -29,7 +29,7 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# shellcheck source=libdeflate.env
+# shellcheck disable=SC1091 # libdeflate.env, next to this script
 . "$here/libdeflate.env"
 
 # The functions Warp binds (dev.warp.jni.Libdeflate); the library must export each of them.

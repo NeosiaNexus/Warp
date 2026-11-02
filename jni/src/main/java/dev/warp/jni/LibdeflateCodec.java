@@ -16,10 +16,11 @@
  */
 package dev.warp.jni;
 
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
 import java.util.zip.DataFormatException;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufAllocator;
 
 /**
  * zlib compression and decompression of whole buffers with the bundled libdeflate: Minecraft's
@@ -33,8 +34,9 @@ import io.netty.buffer.ByteBufAllocator;
  * <p><b>Buffer ownership.</b> The caller owns both buffers before, during and after each call: the
  * codec neither retains nor releases them, and native code only touches their memory during the
  * call. Buffers with a memory address (direct buffers, as Netty's pooled allocator hands out) are
- * read and written in place. Others (heap, composite of several components) are copied through a
- * temporary direct buffer that is released before the call returns. The source's indices are left
+ * read and written in place. Others (heap, composite of several components, direct buffers without
+ * an address) are copied through native memory of a confined arena closed before the call returns:
+ * a slower path, but one that does not depend on how Netty allocates. The source's indices are left
  * as they were; the destination's writer index advances by the number of bytes produced.
  *
  * <p>Use only once {@link Natives#compression()} reports the library available.
@@ -127,24 +129,14 @@ public final class LibdeflateCodec {
       advance(destination, produced);
       return;
     }
-    boolean copySource = !source.hasMemoryAddress();
-    ByteBuf directSource = copySource ? directCopy(source, length) : source;
-    ByteBuf directDestination = ByteBufAllocator.DEFAULT.directBuffer(bound);
-    try {
-      long produced =
-          Libdeflate.zlibCompress(
-              compressor,
-              directSource.memoryAddress() + directSource.readerIndex(),
-              length,
-              directDestination.memoryAddress(),
-              bound);
-      advance(directDestination, produced);
-      destination.writeBytes(directDestination);
-    } finally {
-      directDestination.release();
-      if (copySource) {
-        directSource.release();
+    try (Arena arena = Arena.ofConfined()) {
+      long in = address(source, length, arena);
+      MemorySegment out = arena.allocate(Math.max(1, bound));
+      long produced = Libdeflate.zlibCompress(compressor, in, length, out.address(), bound);
+      if (produced <= 0) {
+        throw new IllegalStateException("libdeflate produced nothing in its worst-case bound");
       }
+      destination.writeBytes(out.asSlice(0, produced).asByteBuffer());
     }
   }
 
@@ -168,9 +160,8 @@ public final class LibdeflateCodec {
     int length = source.readableBytes();
     long decompressor = ThreadContexts.current().decompressor();
     destination.ensureWritable(uncompressedSize);
-    int result;
     if (source.hasMemoryAddress() && destination.hasMemoryAddress()) {
-      result =
+      int result =
           Libdeflate.zlibDecompress(
               decompressor,
               source.memoryAddress() + source.readerIndex(),
@@ -181,24 +172,11 @@ public final class LibdeflateCodec {
       destination.writerIndex(destination.writerIndex() + uncompressedSize);
       return;
     }
-    boolean copySource = !source.hasMemoryAddress();
-    ByteBuf directSource = copySource ? directCopy(source, length) : source;
-    ByteBuf directDestination = ByteBufAllocator.DEFAULT.directBuffer(uncompressedSize);
-    try {
-      result =
-          Libdeflate.zlibDecompress(
-              decompressor,
-              directSource.memoryAddress() + directSource.readerIndex(),
-              length,
-              directDestination.memoryAddress(),
-              uncompressedSize);
-      check(result);
-      destination.writeBytes(directDestination, 0, uncompressedSize);
-    } finally {
-      directDestination.release();
-      if (copySource) {
-        directSource.release();
-      }
+    try (Arena arena = Arena.ofConfined()) {
+      long in = address(source, length, arena);
+      MemorySegment out = arena.allocate(Math.max(1, uncompressedSize));
+      check(Libdeflate.zlibDecompress(decompressor, in, length, out.address(), uncompressedSize));
+      destination.writeBytes(out.asSlice(0, uncompressedSize).asByteBuffer());
     }
   }
 
@@ -206,11 +184,17 @@ public final class LibdeflateCodec {
   // Internals
   // ---------------------------------------------------------------------------
 
-  /** Copies the readable bytes of {@code buffer} into a new direct buffer, to release. */
-  private static ByteBuf directCopy(ByteBuf buffer, int length) {
-    return ByteBufAllocator.DEFAULT
-        .directBuffer(length)
-        .writeBytes(buffer, buffer.readerIndex(), length);
+  /**
+   * Returns the address of the readable bytes of {@code buffer}: its own memory if it has an
+   * address, else a copy in {@code arena}.
+   */
+  private static long address(ByteBuf buffer, int length, Arena arena) {
+    if (buffer.hasMemoryAddress()) {
+      return buffer.memoryAddress() + buffer.readerIndex();
+    }
+    MemorySegment copy = arena.allocate(Math.max(1, length));
+    buffer.getBytes(buffer.readerIndex(), copy.asSlice(0, length).asByteBuffer());
+    return copy.address();
   }
 
   private static void advance(ByteBuf destination, long produced) {
