@@ -59,6 +59,7 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -96,6 +97,9 @@ import org.slf4j.LoggerFactory;
 public final class AntiBotService implements AntiBot, AutoCloseable {
 
   private static final Logger logger = LoggerFactory.getLogger(AntiBotService.class);
+
+  /** Generates the secret identities are hashed under, when none is configured. */
+  private static final SecureRandom RANDOM = new SecureRandom();
 
   /** The directory of the store's files, under the proxy's. */
   static final String DIRECTORY = "anti-bot";
@@ -403,11 +407,13 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
       return;
     }
     VerificationMethod method = VerificationMethod.JOINED;
-    if (accountKey != null && account != null) {
+    if (accountKey != null) {
       if (accountTrusted) {
         open.seen(accountKey);
       } else {
-        var _ = open.trust(accountKey, method, new Identity.Account(account));
+        // An account key exists only for an account.
+        var _ =
+            open.trust(accountKey, method, new Identity.Account(Objects.requireNonNull(account)));
       }
     }
     if (recognition.trusted()) {
@@ -837,7 +843,7 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
 
   private static byte[] randomSecret() {
     byte[] secret = new byte[IdentityKeys.SECRET_LENGTH];
-    new SecureRandom().nextBytes(secret);
+    RANDOM.nextBytes(secret);
     return secret;
   }
 
