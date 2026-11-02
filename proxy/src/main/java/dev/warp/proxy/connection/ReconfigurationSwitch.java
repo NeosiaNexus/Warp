@@ -102,7 +102,7 @@ final class ReconfigurationSwitch implements ServerSwitch {
    * @param target the server switched to
    */
   void acknowledged(ServerInfo target) {
-    player.clientConnection().setState(ProtocolState.CONFIGURATION);
+    player.clientStateChanged(ProtocolState.CONFIGURATION);
     attachPending(target);
   }
 
@@ -113,9 +113,9 @@ final class ReconfigurationSwitch implements ServerSwitch {
     MinecraftConnection lost = lostBackend;
     lostBackend = null;
     phase = Phase.IDLE;
-    MinecraftConnection client = player.clientConnection();
-    client.setAutoRead(false);
-    client.setSessionHandler(new SwitchWaitSessionHandler(player));
+    // The client waits for the new server's configuration: read for its keep-alive answers, the
+    // rest held for that server.
+    player.clientConnection().setSessionHandler(new SwitchWaitSessionHandler(player));
     BackendConnection previous = player.backendConnection();
     player.setBackendConnection(joining);
     if (previous != null) {
@@ -142,11 +142,10 @@ final class ReconfigurationSwitch implements ServerSwitch {
           player.username(),
           failedServer,
           fallback.name());
-      if (!player.isSwitching()) {
-        // First join: track the fallback as a switch, so the current server is updated and the
-        // watchdog applies once it completes.
-        player.scheduleSwitchTimeout();
-      }
+      // Tracked as a switch, even on the first join, so that the current server is updated once
+      // it completes. The fallback gets the watchdog's whole time: the attempts before it, and the
+      // plugins that chose it, took theirs.
+      player.scheduleSwitchTimeout();
       player.beginSwitch(fallback);
       connectDuringSwitch(fallback);
     } else {
@@ -162,9 +161,7 @@ final class ReconfigurationSwitch implements ServerSwitch {
   private void connectDuringSwitch(ServerInfo target) {
     phase = Phase.IDLE;
     pending = null;
-    MinecraftConnection client = player.clientConnection();
-    client.setAutoRead(false);
-    client.setSessionHandler(new SwitchWaitSessionHandler(player));
+    player.clientConnection().setSessionHandler(new SwitchWaitSessionHandler(player));
     BackendConnection previous = player.backendConnection();
     player.setBackendConnection(null);
     if (previous != null) {
@@ -225,6 +222,8 @@ final class ReconfigurationSwitch implements ServerSwitch {
 
   /** Lets a backend that logged the player in configure the client. */
   private void configure(MinecraftConnection backend) {
+    // The server owns the configuration's pace from here on.
+    player.configurationStarted();
     backend.writeAndFlush(new LoginAcknowledged());
     backend.setState(ProtocolState.CONFIGURATION);
     backend.setSessionHandler(new BackendConfigSessionHandler(player, backend));
@@ -255,6 +254,7 @@ final class ReconfigurationSwitch implements ServerSwitch {
         // order applies instead of keeping the player where it was.
         currentLost = true;
         player.playOn(null);
+        player.readClientWhileWaiting();
       }
       case AWAITING_ACKNOWLEDGEMENT -> {
         // Being left, and cut off already: attachPending drops it.

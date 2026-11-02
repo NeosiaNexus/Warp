@@ -76,6 +76,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 import com.mojang.brigadier.suggestion.Suggestion;
 import com.mojang.brigadier.suggestion.Suggestions;
@@ -106,7 +107,16 @@ import org.slf4j.LoggerFactory;
  * <h3>KeepAlive system</h3>
  *
  * <p>The proxy manages its own KeepAlive cycle with the client, independent of backend KeepAlives.
- * This prevents timeout cascades where backend latency causes client disconnections.
+ * This prevents timeout cascades where backend latency causes client disconnections. It runs from
+ * the moment the player joins until it leaves, in whatever state the client reads (configuration or
+ * play) and whoever it waits for: its next server, or the plugins deciding where it goes. A vanilla
+ * client drops a connection that sends it nothing for 30 s.
+ *
+ * <h3>Holds</h3>
+ *
+ * <p>Plugins may keep the player waiting while they decide which server it joins, whether it may,
+ * or where it goes after losing one ({@link #holdFor}). The switch watchdog does not count that
+ * time, up to the longest the handlers may take.
  *
  * <h3>Thread safety</h3>
  *
@@ -124,8 +134,19 @@ public final class ConnectedPlayer {
   /** Maximum time to wait for a KeepAlive response before disconnecting. */
   private static final long KEEP_ALIVE_TIMEOUT_MS = 30_000;
 
-  /** Maximum time for a server switch to complete. */
+  /**
+   * Maximum time a server switch may take, from its start until the new server configures the
+   * client (1.20.2+) or sends its Join Game (before), not counting the time plugins hold the
+   * player.
+   */
   private static final long SWITCH_TIMEOUT_MS = 30_000;
+
+  /**
+   * Time a plugin hold may last beyond the sum of its handlers' time-outs before the proxy stops
+   * waiting for it and disconnects the player: the delivery of the event, and what the proxy does
+   * around it.
+   */
+  static final long HOLD_GRACE_MS = 5_000;
 
   /** How long {@link #requestCookie(String)} waits for the client's answer. */
   static final long COOKIE_TIMEOUT_SECONDS = 10;
@@ -226,13 +247,44 @@ public final class ConnectedPlayer {
    */
   private volatile boolean bundleInProgress;
 
-  /** Watchdog of the switch in progress. Cancelled on {@link #switchComplete()}. */
+  /**
+   * The watchdog's next check: the switch in progress running out of time, or the plugin holds in
+   * progress overrunning their handlers' time-outs. Cancelled on {@link #switchComplete()}.
+   */
   private volatile @Nullable ScheduledFuture<?> switchTimeoutTask;
+
+  // Switch watchdog and plugin holds (client event loop only)
+
+  /** Whether the switch in progress is watched; a hold pauses its time. */
+  private boolean switchWatched;
+
+  /** The watchdog's time left, counted only while no plugin holds the player. */
+  private long switchTimeLeftNanos;
+
+  /** When the watchdog's time last started running, on the client event loop's clock. */
+  private long switchRunningSince;
+
+  /** Plugin decisions the player waits for ({@link #holdFor}). */
+  private int holds;
+
+  /** When the holds in progress end at the latest, on the client event loop's clock. */
+  private long holdsDeadlineNanos;
 
   // KeepAlive state (accessed from client event loop only)
   private long keepAliveSentTime;
   private long pendingKeepAliveId;
   private boolean keepAliveOutstanding;
+
+  /** Whether the pending keep-alive waits for the client to settle in a new state. */
+  private boolean keepAliveHeld;
+
+  /**
+   * A keep-alive the client was sent in a state it has left since, without answering yet: its
+   * answer is taken, but no longer waited for ({@link #clientStateChanged}).
+   */
+  private long staleKeepAliveId;
+
+  private boolean keepAliveStale;
   private volatile long clientLatencyNanos;
   private volatile @Nullable ScheduledFuture<?> keepAliveTask;
 
@@ -556,21 +608,27 @@ public final class ConnectedPlayer {
    * Starts the player's session right after its login, and connects it to its first server: the one
    * {@link PlayerChooseInitialServerEvent} settles on. A server that cannot be reached or refuses
    * the player sends it down the fallback order.
+   *
+   * <p>Called on the client event loop once the client reads configuration (1.20.2+) or play
+   * packets: the proxy's keep-alives start, and from 1.20.2 the client waits for its first server
+   * in a {@link SwitchWaitSessionHandler}, which keeps what it sends meanwhile (its brand, its
+   * settings) for that server.
    */
   void join() {
     startSession();
+    startKeepAliveTask();
+    if (clientConnection.decoder().state() == ProtocolState.CONFIGURATION) {
+      clientConnection.setSessionHandler(new SwitchWaitSessionHandler(this));
+    }
     BackendServer proposed = loginContext.serverRegistry().initialServer();
     WarpEventBus events = loginContext.events();
     if (!events.hasHandlers(PlayerChooseInitialServerEventImpl.class)) {
       joinServer(proposed);
       return;
     }
-    var _ =
-        events
-            .fire(new PlayerChooseInitialServerEventImpl(api, proposed), uuid)
-            .whenComplete(
-                (event, _) ->
-                    onEventLoop(() -> joinServer(asBackend(event.initialServer().orElse(null)))));
+    holdFor(
+        new PlayerChooseInitialServerEventImpl(api, proposed),
+        event -> joinServer(asBackend(event.initialServer().orElse(null))));
   }
 
   /** Starts the session: fires {@link PostLoginEvent}, after which a disconnect event is owed. */
@@ -626,38 +684,48 @@ public final class ConnectedPlayer {
       return;
     }
     var event = new ServerPreConnectEventImpl(api, target, initial ? null : currentServer);
+    if (initial) {
+      // The player waits for this decision to join any server.
+      holdFor(event, done -> preConnected(done, target, true, result, tell));
+      return;
+    }
+    // The player plays on its server meanwhile: nothing waits for the decision.
     var _ =
         events
             .fire(event, uuid)
             .whenComplete(
-                (done, _) ->
-                    onEventLoop(
-                        () -> {
-                          if (!clientConnection.channel().isActive()) {
-                            complete(result, new ConnectionResult.Disconnected());
-                            return;
-                          }
-                          switch (done.result()) {
-                            case ServerPreConnectEvent.Denied() -> {
-                              if (initial) {
-                                disconnectFor(
-                                    DisconnectEvent.Cause.DISCONNECTED_BY_PROXY,
-                                    "You cannot join this server right now.");
-                              } else {
-                                complete(result, new ConnectionResult.Denied(target));
-                                if (tell) {
-                                  sendSystemMessage(
-                                      "You cannot join " + target.name() + " right now.");
-                                }
-                              }
-                            }
-                            case ServerPreConnectEvent.Allowed(RegisteredServer server) -> {
-                              BackendServer chosen = asBackend(server);
-                              connectAllowed(
-                                  chosen != null ? chosen : target, initial, result, tell);
-                            }
-                          }
-                        }));
+                (done, _) -> onEventLoop(() -> preConnected(done, target, false, result, tell)));
+  }
+
+  /** Connects where {@link ServerPreConnectEvent} allows, if anywhere. Client event loop. */
+  private void preConnected(
+      ServerPreConnectEventImpl done,
+      BackendServer target,
+      boolean initial,
+      @Nullable CompletableFuture<ConnectionResult> result,
+      boolean tell) {
+    if (!clientConnection.channel().isActive()) {
+      complete(result, new ConnectionResult.Disconnected());
+      return;
+    }
+    switch (done.result()) {
+      case ServerPreConnectEvent.Denied() -> {
+        if (initial) {
+          disconnectFor(
+              DisconnectEvent.Cause.DISCONNECTED_BY_PROXY,
+              "You cannot join this server right now.");
+        } else {
+          complete(result, new ConnectionResult.Denied(target));
+          if (tell) {
+            sendSystemMessage("You cannot join " + target.name() + " right now.");
+          }
+        }
+      }
+      case ServerPreConnectEvent.Allowed(RegisteredServer server) -> {
+        BackendServer chosen = asBackend(server);
+        connectAllowed(chosen != null ? chosen : target, initial, result, tell);
+      }
+    }
   }
 
   private void connectAllowed(
@@ -885,33 +953,175 @@ public final class ConnectedPlayer {
   }
 
   /**
-   * Starts the switch watchdog: if the switch has not completed within {@value #SWITCH_TIMEOUT_MS}
-   * ms, the {@link ServerSwitch} gives up on it. Prevents infinite "Reconfiguring..." hangs
-   * (Velocity #1741).
+   * Starts the switch watchdog for an attempt to reach a server: if the server has not taken the
+   * player within {@value #SWITCH_TIMEOUT_MS} ms, the {@link ServerSwitch} gives up on it. Prevents
+   * infinite "Reconfiguring..." hangs (Velocity #1741). Each attempt (a switch, each fallback) gets
+   * the whole time again.
+   *
+   * <p>Time plugins hold the player does not count ({@link #holdFor}), and the watchdog stops once
+   * the new server configures the client ({@link #configurationStarted()}).
    */
   void scheduleSwitchTimeout() {
+    switchWatched = true;
+    switchTimeLeftNanos = TimeUnit.MILLISECONDS.toNanos(SWITCH_TIMEOUT_MS);
+    switchRunningSince = clock();
+    armWatchdog();
+  }
+
+  /**
+   * Stops the switch watchdog once the new server configures the client (1.20.2+). From then on
+   * that server decides how long the configuration lasts: a resource pack to download, a dialog or
+   * a code of conduct to read can keep a player there for minutes, as on a direct connection.
+   * Nothing can hang unseen meanwhile: the proxy's keep-alives watch the client, the server's
+   * keep-alives and the read time-out watch the server.
+   */
+  void configurationStarted() {
     cancelSwitchTimeout();
+  }
+
+  /**
+   * Schedules the watchdog's next check: while plugins hold the player, when their holds overrun
+   * the time-outs their handlers declared; otherwise, while a switch is watched, when its time runs
+   * out. Nothing is scheduled when neither applies.
+   */
+  private void armWatchdog() {
+    cancelWatchdogTask();
+    long delay;
+    if (holds > 0) {
+      delay = holdsDeadlineNanos - clock();
+    } else if (switchWatched) {
+      delay = switchTimeLeftNanos;
+    } else {
+      return;
+    }
     switchTimeoutTask =
         clientConnection
             .channel()
             .eventLoop()
-            .schedule(
-                () -> {
-                  if (switching) {
-                    logger.warn(
-                        "Server switch timed out for {} after {}ms", username, SWITCH_TIMEOUT_MS);
-                    serverSwitch.timedOut();
-                  }
-                },
-                SWITCH_TIMEOUT_MS,
-                TimeUnit.MILLISECONDS);
+            .schedule(this::watchdogExpired, Math.max(0, delay), TimeUnit.NANOSECONDS);
   }
 
+  private void watchdogExpired() {
+    switchTimeoutTask = null;
+    if (disconnected.get() || !clientConnection.channel().isActive()) {
+      return;
+    }
+    if (holds > 0) {
+      // Asynchronous handlers are skipped at their time-out: only a synchronous one blocking past
+      // its own gets here. The player cannot wait for ever.
+      logger.warn(
+          "Plugins held {} longer than their handlers' time-outs allow: disconnecting", username);
+      disconnectFor(DisconnectEvent.Cause.DISCONNECTED_BY_PROXY, HOLD_OVERRUN);
+      return;
+    }
+    if (switchWatched && switching) {
+      switchWatched = false;
+      logger.warn("Server switch timed out for {} after {}ms", username, SWITCH_TIMEOUT_MS);
+      serverSwitch.timedOut();
+    }
+  }
+
+  /** Stops watching the switch; a hold in progress stays bounded, unless the player is gone. */
   private void cancelSwitchTimeout() {
+    switchWatched = false;
+    if (holds == 0 || disconnected.get()) {
+      cancelWatchdogTask();
+    }
+  }
+
+  private void cancelWatchdogTask() {
     ScheduledFuture<?> task = switchTimeoutTask;
     if (task != null) {
       task.cancel(false);
       switchTimeoutTask = null;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Plugin holds
+  // ---------------------------------------------------------------------------
+
+  /** What a player is told when plugins held it past their time-outs. */
+  private static final String HOLD_OVERRUN = "Timed out waiting for a server.";
+
+  /**
+   * Fires an event the player's next move waits for (which server it joins first, whether it may
+   * join one, where it goes after losing one), then runs {@code then} with the event on the client
+   * event loop. Called on the client event loop.
+   *
+   * <p>Plugins may hold such an event as long as their handlers' time-outs allow, and the player is
+   * held meanwhile, in whatever state its client is. The proxy keeps the client alive: its
+   * keep-alives go on in the client's state and their answers are read ({@link
+   * SwitchWaitSessionHandler}, {@link ClientPlaySessionHandler}, before 1.20.2 the login handler
+   * until the first Join Game). The switch watchdog does not count the hold.
+   *
+   * <p>The hold is bounded all the same: by the time-outs of the event's handlers, after those of
+   * the events queued before it on the player's lane ({@link WarpEventBus#fireBounded}), plus
+   * {@value #HOLD_GRACE_MS} ms. Asynchronous handlers are skipped at their time-out, so only a
+   * synchronous handler blocking past its own can overrun it: the player is then disconnected
+   * rather than kept waiting for ever.
+   *
+   * @param event the event
+   * @param then what follows the plugins' decision
+   * @param <E> the event type
+   */
+  private <E> void holdFor(E event, Consumer<E> then) {
+    WarpEventBus.BoundedDelivery<E> delivery = loginContext.events().fireBounded(event, uuid);
+    beginHold(delivery.limit());
+    var _ =
+        delivery
+            .result()
+            .whenComplete(
+                (done, _) ->
+                    onEventLoop(
+                        () -> {
+                          endHold();
+                          then.accept(done);
+                        }));
+  }
+
+  /** Counts a hold that ends within {@code limit}, and pauses the switch watchdog for it. */
+  private void beginHold(Duration limit) {
+    long now = clock();
+    long deadline = now + limit.toNanos() + TimeUnit.MILLISECONDS.toNanos(HOLD_GRACE_MS);
+    if (holds == 0 || deadline - holdsDeadlineNanos > 0) {
+      holdsDeadlineNanos = deadline;
+    }
+    if (holds++ == 0 && switchWatched) {
+      switchTimeLeftNanos -= now - switchRunningSince;
+    }
+    armWatchdog();
+  }
+
+  /** Ends a hold: once none is left, the switch watchdog's time runs again from where it was. */
+  private void endHold() {
+    if (holds == 0 || --holds > 0) {
+      return;
+    }
+    switchRunningSince = clock();
+    armWatchdog();
+  }
+
+  /**
+   * Returns the client event loop's clock: {@link System#nanoTime()} on a real event loop, the
+   * virtual time of an embedded one in tests.
+   */
+  private long clock() {
+    return clientConnection.channel().eventLoop().ticker().nanoTime();
+  }
+
+  /**
+   * Reads the client again once the server it played on is gone. That server may have paused it
+   * (back-pressure, {@link BackendPlaySessionHandler#writabilityChanged}) and no longer resumes it,
+   * while the client must be read for its keep-alive answers as it waits for its next server. A
+   * client waiting in the configuration phase is read as far as {@link SwitchWaitSessionHandler}
+   * allows.
+   */
+  void readClientWhileWaiting() {
+    if (clientConnection.sessionHandler() instanceof SwitchWaitSessionHandler waiting) {
+      waiting.readAnswers();
+    } else {
+      clientConnection.setAutoRead(true);
     }
   }
 
@@ -1072,21 +1282,18 @@ public final class ConnectedPlayer {
                   reason != null ? reason : Component.text(NO_SERVER_LEFT));
     }
 
+    if (!stillOnCurrent) {
+      // No server left to read the client at its pace: it is read for its keep-alive answers.
+      readClientWhileWaiting();
+    }
     WarpEventBus events = loginContext.events();
     if (lost == null || !events.hasHandlers(KickedFromServerEventImpl.class)) {
       applyLoss(lostName, lost, reason, stillOnCurrent, proposed, proposed);
       return;
     }
-    var event = new KickedFromServerEventImpl(api, lost, cause, reason, duringConnect, proposed);
-    var _ =
-        events
-            .fire(event, uuid)
-            .whenComplete(
-                (done, _) ->
-                    onEventLoop(
-                        () ->
-                            applyLoss(
-                                lostName, lost, reason, stillOnCurrent, done.result(), proposed)));
+    holdFor(
+        new KickedFromServerEventImpl(api, lost, cause, reason, duringConnect, proposed),
+        done -> applyLoss(lostName, lost, reason, stillOnCurrent, done.result(), proposed));
   }
 
   private void applyLoss(
@@ -1151,28 +1358,22 @@ public final class ConnectedPlayer {
       serverSwitch.fallBack(lostName, target.info());
       return;
     }
-    var event = new ServerPreConnectEventImpl(api, target, currentServer);
-    var _ =
-        events
-            .fire(event, uuid)
-            .whenComplete(
-                (done, _) ->
-                    onEventLoop(
-                        () -> {
-                          if (!clientConnection.channel().isActive()) {
-                            return;
-                          }
-                          if (done.result()
-                              instanceof ServerPreConnectEvent.Allowed(RegisteredServer server)) {
-                            BackendServer chosen = asBackend(server);
-                            connectingTo = chosen != null ? chosen : target;
-                            serverSwitch.fallBack(lostName, connectingTo.info());
-                          } else {
-                            disconnectFor(
-                                DisconnectEvent.Cause.DISCONNECTED_BY_PROXY,
-                                "You cannot join " + target.name() + " right now.");
-                          }
-                        }));
+    holdFor(
+        new ServerPreConnectEventImpl(api, target, currentServer),
+        done -> {
+          if (!clientConnection.channel().isActive()) {
+            return;
+          }
+          if (done.result() instanceof ServerPreConnectEvent.Allowed(RegisteredServer server)) {
+            BackendServer chosen = asBackend(server);
+            connectingTo = chosen != null ? chosen : target;
+            serverSwitch.fallBack(lostName, connectingTo.info());
+          } else {
+            disconnectFor(
+                DisconnectEvent.Cause.DISCONNECTED_BY_PROXY,
+                "You cannot join " + target.name() + " right now.");
+          }
+        });
   }
 
   private @Nullable BackendServer lostServer(String name) {
@@ -1202,14 +1403,20 @@ public final class ConnectedPlayer {
   // KeepAlive system
   // ---------------------------------------------------------------------------
 
-  /** Starts the periodic KeepAlive task on the client event loop. Idempotent. */
+  /**
+   * Starts the periodic KeepAlive task on the client event loop, for the rest of the session: a
+   * keep-alive every {@value #KEEP_ALIVE_INTERVAL_MS} ms once the previous one was answered, the
+   * client timed out when an answer is more than {@value #KEEP_ALIVE_TIMEOUT_MS} ms late. Called
+   * once the client reads configuration or play packets; does nothing if the task runs already.
+   *
+   * <p>The task runs whoever the client waits for, a server or plugins: a vanilla client drops a
+   * connection that sent it nothing for 30 s ({@code ReadTimeoutHandler(30)} on its channel, in
+   * every state), and no server sends it anything while it waits between two.
+   */
   void startKeepAliveTask() {
-    if (keepAliveTask != null) {
-      keepAliveTask.cancel(false);
+    if (keepAliveTask != null || disconnected.get()) {
+      return;
     }
-    // Reset keepalive state to prevent false timeouts after server switch.
-    // An in-flight keepalive response may have been swallowed during the switch.
-    keepAliveOutstanding = false;
     keepAliveTask =
         clientConnection
             .channel()
@@ -1219,6 +1426,32 @@ public final class ConnectedPlayer {
                 KEEP_ALIVE_INTERVAL_MS,
                 KEEP_ALIVE_INTERVAL_MS,
                 TimeUnit.MILLISECONDS);
+  }
+
+  /**
+   * Moves the client connection to the state the client just acknowledged entering (configuration
+   * or play), the packets held meanwhile going out in it ({@link MinecraftConnection#setState}).
+   *
+   * <p>A keep-alive the client was sent in the state it left, and has not answered yet, is no
+   * longer waited for: a vanilla server starts afresh with each state's listener, and a client that
+   * deferred its answer (while its window was frozen) drops it with the listener it leaves. Its
+   * answer is still taken if it comes. A keep-alive held for the change goes out now, in the new
+   * state, and is timed from now.
+   *
+   * @param state the state the client entered
+   */
+  void clientStateChanged(ProtocolState state) {
+    if (keepAliveOutstanding) {
+      if (keepAliveHeld) {
+        keepAliveSentTime = clock();
+      } else {
+        staleKeepAliveId = pendingKeepAliveId;
+        keepAliveStale = true;
+        keepAliveOutstanding = false;
+      }
+    }
+    keepAliveHeld = false;
+    clientConnection.setState(state);
   }
 
   /** Cancels the KeepAlive task. */
@@ -1235,8 +1468,9 @@ public final class ConnectedPlayer {
       return;
     }
 
+    long now = clock();
     if (keepAliveOutstanding) {
-      long elapsed = System.nanoTime() - keepAliveSentTime;
+      long elapsed = now - keepAliveSentTime;
       if (elapsed > TimeUnit.MILLISECONDS.toNanos(KEEP_ALIVE_TIMEOUT_MS)) {
         setDisconnectCause(DisconnectEvent.Cause.TIMED_OUT);
         logger.info(
@@ -1252,10 +1486,12 @@ public final class ConnectedPlayer {
 
     long id = nextKeepAliveId();
     pendingKeepAliveId = id;
-    keepAliveSentTime = System.nanoTime();
+    keepAliveSentTime = now;
     keepAliveOutstanding = true;
-    // Between Start Configuration and its acknowledgement the client reads configuration packets:
-    // the keep-alive waits, and goes out with the configuration state's id.
+    // Between Start Configuration and its acknowledgement the client reads configuration packets
+    // (play packets after Finish Configuration): the keep-alive waits, and goes out with the id of
+    // the state the client settles in. Otherwise it goes out with the id of the client's state.
+    keepAliveHeld = clientConnection.isStateChangePending();
     clientConnection.writeWhenSettled(new KeepAlive(id));
   }
 
@@ -1275,15 +1511,32 @@ public final class ConnectedPlayer {
    * Validates and processes a KeepAlive response from the client.
    *
    * @param id the KeepAlive ID from the client
-   * @return {@code true} if the ID was valid
+   * @return {@code true} if the ID was valid: that of the pending keep-alive, or of one sent before
+   *     the client last changed state
    */
   boolean handleKeepAliveResponse(long id) {
-    if (!keepAliveOutstanding || id != pendingKeepAliveId) {
-      return false;
+    if (keepAliveOutstanding && id == pendingKeepAliveId) {
+      clientLatencyNanos = clock() - keepAliveSentTime;
+      keepAliveOutstanding = false;
+      return true;
     }
-    clientLatencyNanos = System.nanoTime() - keepAliveSentTime;
-    keepAliveOutstanding = false;
-    return true;
+    if (keepAliveStale && id == staleKeepAliveId) {
+      keepAliveStale = false;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Takes a keep-alive answer from the client, in any state: called by every handler the client
+   * connection has once the player joined. A wrong one is logged and otherwise ignored.
+   *
+   * @param id the KeepAlive ID from the client
+   */
+  void keepAliveAnswered(long id) {
+    if (!handleKeepAliveResponse(id)) {
+      logger.warn("Invalid KeepAlive ID from player {}", username);
+    }
   }
 
   /**

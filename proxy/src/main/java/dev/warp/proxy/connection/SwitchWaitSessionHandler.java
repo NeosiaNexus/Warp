@@ -20,65 +20,105 @@ import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.cookie.CookieResponse;
+import dev.warp.protocol.packet.play.KeepAlive;
 
 import java.util.ArrayDeque;
 import java.util.Queue;
 
 import io.netty.buffer.ByteBuf;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
- * Temporary session handler installed on the client during a server switch.
+ * Session handler of a client that waits in the configuration phase for its next server (1.20.2+):
+ * its first one while it is chosen and logs the player in, or the next one during a switch or a
+ * fallback, plugins holding the player included.
  *
- * <p>Active between the client entering CONFIGURATION state and the new backend reaching
- * CONFIGURATION. During this window, auto-read is paused on the client channel, so this handler
- * rarely sees traffic: what the client sends waits in the socket for the next server.
+ * <p>The client is read all along: the proxy keeps it alive with keep-alives of the configuration
+ * state, and its answers are matched as they come ({@link ConnectedPlayer#keepAliveAnswered}), as
+ * are its answers to cookie requests. Anything else it sends is for the next server: held, in
+ * order, and forwarded when that server's configuration begins ({@link #forwardHeldTo}), as if it
+ * had waited in the socket, so that nothing the client sends overtakes it. Its settings are cached
+ * for that server too.
  *
- * <p>Reads resume early when the client is asked for a cookie meanwhile, by the proxy or by the
- * next server during its login ({@link #readAnswers}): its answer is routed at once. Any other
- * frame is held, in order, and forwarded to the next server when its configuration begins ({@link
- * #forwardHeldTo}), as if it had waited in the socket.
+ * <p>A vanilla client sends two frames here (its brand and its settings, on entering the phase),
+ * then only answers. Reads pause once {@value #MAX_HELD_FRAMES} frames or {@value #MAX_HELD_BYTES}
+ * bytes are held: a client that floods the proxy meanwhile no longer has its answers read, and is
+ * timed out.
  */
 final class SwitchWaitSessionHandler implements SessionHandler {
 
-  /** Frames held before reads pause again; the rest of the read in progress is held too. */
+  private static final Logger logger = LoggerFactory.getLogger(SwitchWaitSessionHandler.class);
+
+  /** Frames held before reads pause; the rest of the read in progress is held too. */
   static final int MAX_HELD_FRAMES = 64;
+
+  /** Bytes held before reads pause; the rest of the read in progress is held too. */
+  static final int MAX_HELD_BYTES = 1 << 20;
 
   private final ConnectedPlayer player;
 
   /** Frames the client sent while waiting, for the next server. */
   private final Queue<ByteBuf> held = new ArrayDeque<>();
 
+  /** Bytes of {@link #held}. */
+  private long heldBytes;
+
   SwitchWaitSessionHandler(ConnectedPlayer player) {
     this.player = player;
   }
 
   @Override
+  public void activated() {
+    // The server the client leaves may have paused it (back-pressure), and the switch must read it
+    // for its keep-alive answers.
+    readAnswers();
+  }
+
+  @Override
   public void handle(Packet packet) {
-    if (packet instanceof ClientInformation clientInfo) {
-      // Client sends settings proactively on CONFIG entry. Cache them for replay
-      // to the new backend — no forwarding here since the backend isn't connected yet.
-      player.cacheClientSettings(clientInfo);
-    } else if (packet instanceof CookieResponse response) {
-      player.cookies().answered(response); // an unasked answer is dropped
+    switch (packet) {
+      case KeepAlive keepAlive -> player.keepAliveAnswered(keepAlive.id());
+      // Sent on entering the configuration phase: cached for the next server, which receives it
+      // when its configuration begins (BackendConfigSessionHandler#activated).
+      case ClientInformation clientInfo -> player.cacheClientSettings(clientInfo);
+      case CookieResponse response -> player.cookies().answered(response); // unasked: dropped
+      default -> {
+        // The other packets decoded in this state are answers to servers, which no server asked.
+      }
     }
   }
 
   @Override
   public void handleBlind(ByteBuf buf) {
     held.add(buf);
-    if (held.size() >= MAX_HELD_FRAMES) {
-      player.clientConnection().setAutoRead(false);
+    heldBytes += buf.readableBytes();
+    if (isFull()) {
+      MinecraftConnection client = player.clientConnection();
+      if (client.channel().config().isAutoRead()) {
+        logger.info(
+            "{} sent {} frames ({} bytes) while waiting for its next server: no longer read",
+            player.username(),
+            held.size(),
+            heldBytes);
+      }
+      client.setAutoRead(false);
     }
   }
 
   /**
-   * Resumes reading the waiting client, so that the answer to a cookie request it was just sent
-   * comes in now rather than once the next server configures it.
+   * Reads the waiting client, unless it already sent as much as the next server can be held: called
+   * when the wait begins, and when the client is asked for a cookie, whose answer must not wait for
+   * the next server.
    */
   void readAnswers() {
-    if (held.size() < MAX_HELD_FRAMES) {
+    if (!isFull()) {
       player.clientConnection().setAutoRead(true);
     }
+  }
+
+  private boolean isFull() {
+    return held.size() >= MAX_HELD_FRAMES || heldBytes >= MAX_HELD_BYTES;
   }
 
   /**
@@ -92,6 +132,7 @@ final class SwitchWaitSessionHandler implements SessionHandler {
     for (ByteBuf frame = held.poll(); frame != null; frame = held.poll()) {
       backend.forward(frame, client);
     }
+    heldBytes = 0;
     backend.flush();
   }
 
@@ -110,5 +151,6 @@ final class SwitchWaitSessionHandler implements SessionHandler {
     for (ByteBuf frame = held.poll(); frame != null; frame = held.poll()) {
       frame.release();
     }
+    heldBytes = 0;
   }
 }

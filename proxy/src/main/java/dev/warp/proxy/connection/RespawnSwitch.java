@@ -189,8 +189,11 @@ final class RespawnSwitch implements ServerSwitch {
       if (joining == null) {
         player.handleBackendFailure(
             current.server().name(), backend, KickedFromServerEvent.Cause.CONNECTION_LOST);
+      } else {
+        // A switch is already taking the player elsewhere; until then, nothing reads the client
+        // at a server's pace.
+        player.readClientWhileWaiting();
       }
-      // Otherwise a switch is already taking the player elsewhere.
     }
   }
 
