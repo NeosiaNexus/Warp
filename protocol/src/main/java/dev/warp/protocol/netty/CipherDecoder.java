@@ -16,13 +16,12 @@
  */
 package dev.warp.protocol.netty;
 
-import java.nio.ByteBuffer;
 import java.security.GeneralSecurityException;
 import java.util.List;
 
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
-import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.ShortBufferException;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
@@ -37,20 +36,18 @@ import io.netty.handler.codec.MessageToMessageDecoder;
  *
  * <h3>Implementation</h3>
  *
- * <p>Uses the {@link ByteBuffer}-based {@link Cipher#update(ByteBuffer, ByteBuffer)} API to work
- * directly with {@link ByteBuf#nioBuffer()}, avoiding intermediate {@code byte[]} copies on direct
- * buffers. This is the same zero-copy pattern used by {@link
- * dev.warp.protocol.compress.JavaCompressor JavaCompressor}.
+ * <p>Decrypts in place: a socket read hands its buffer to the pipeline alone, so the ciphertext is
+ * overwritten with its plaintext and the same buffer is passed on, with no second buffer. A
+ * read-only buffer, which cannot be overwritten, is decrypted into a new one instead. The cipher
+ * runs through {@link AesCfb8}, which allocates nothing per read on any kind of buffer. Velocity's
+ * Java cipher also decrypts in place, but needs a heap buffer, copies a direct read into a new one
+ * first, and hands the JDK the same array as input and output, which the JDK then copies.
  *
- * <h3>Improvement over Velocity</h3>
- *
- * <p>Velocity's {@code MinecraftCipherImpl} uses {@code Cipher.update(byte[], int, int, byte[],
- * int)} with manual array management. Warp uses the NIO {@link ByteBuffer} API for near-zero-copy
- * on direct buffers.
+ * @see CipherEncoder
  */
 public final class CipherDecoder extends MessageToMessageDecoder<ByteBuf> {
 
-  private final Cipher cipher;
+  private final AesCfb8 cipher;
 
   /**
    * Creates a new cipher decoder.
@@ -59,40 +56,30 @@ public final class CipherDecoder extends MessageToMessageDecoder<ByteBuf> {
    * @throws GeneralSecurityException if the cipher cannot be initialised
    */
   public CipherDecoder(SecretKey key) throws GeneralSecurityException {
-    this.cipher = Cipher.getInstance("AES/CFB8/NoPadding");
-    // The protocol fixes the IV to the shared secret itself, and every client does the same. The
-    // secret is random and new for each connection, so no key and IV pair is ever reused.
-    this.cipher.init(Cipher.DECRYPT_MODE, key, new IvParameterSpec(key.getEncoded()));
+    this.cipher = new AesCfb8(Cipher.DECRYPT_MODE, key);
   }
 
   @Override
-  protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) throws Exception {
-    int readable = in.readableBytes();
-    if (readable == 0) {
+  protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out)
+      throws ShortBufferException {
+    int length = in.readableBytes();
+    if (length == 0) {
       return;
     }
-
-    ByteBuf output = ctx.alloc().directBuffer(readable);
+    int readerIndex = in.readerIndex();
+    if (!in.isReadOnly()) {
+      cipher.transform(in, readerIndex, in, readerIndex, length);
+      out.add(in.retain()); // MessageToMessageDecoder releases its own reference after decode()
+      return;
+    }
+    ByteBuf plain = ctx.alloc().buffer(length);
     try {
-      if (in.nioBufferCount() > 0) {
-        // Zero-copy path for NIO-backed buffers (direct and most heap buffers).
-        ByteBuffer source = in.nioBuffer();
-        ByteBuffer dest = output.nioBuffer(0, readable);
-        cipher.update(source, dest);
-        output.writerIndex(dest.position());
-      } else {
-        // Fallback for composite or non-NIO buffers.
-        byte[] sourceBytes = new byte[readable];
-        in.readBytes(sourceBytes);
-        byte[] decrypted = cipher.update(sourceBytes);
-        output.writeBytes(decrypted);
-      }
-      in.skipBytes(in.readableBytes());
-
-      out.add(output);
-    } catch (Exception e) {
-      output.release();
+      cipher.transform(in, readerIndex, plain, 0, length);
+    } catch (ShortBufferException | RuntimeException e) {
+      plain.release();
       throw e;
     }
+    in.skipBytes(length);
+    out.add(plain.writerIndex(length));
   }
 }

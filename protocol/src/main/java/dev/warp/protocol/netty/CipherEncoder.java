@@ -16,12 +16,11 @@
  */
 package dev.warp.protocol.netty;
 
-import java.nio.ByteBuffer;
 import java.security.GeneralSecurityException;
 
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
-import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.ShortBufferException;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
@@ -37,16 +36,17 @@ import io.netty.handler.codec.MessageToByteEncoder;
  *
  * <h3>Implementation</h3>
  *
- * <p>Uses the {@link ByteBuffer}-based {@link Cipher#update(ByteBuffer, ByteBuffer)} API to work
- * directly with {@link ByteBuf#nioBuffer()}, avoiding intermediate {@code byte[]} copies on direct
- * buffers. AES/CFB8 is a streaming cipher — each call to {@code update()} produces exactly the same
- * number of output bytes as input bytes.
+ * <p>Each frame is encrypted into a new buffer of exactly its size from the channel's allocator,
+ * direct as the socket wants it. The frame itself is never written to: a frame forwarded verbatim
+ * can be a slice of a backend's read buffer, or go to several players, each with their own key. The
+ * cipher runs through {@link AesCfb8}, which allocates nothing per frame on any kind of buffer,
+ * where the JDK's {@code ByteBuffer} API allocates about twice the frame's size on direct ones.
  *
  * @see CipherDecoder
  */
 public final class CipherEncoder extends MessageToByteEncoder<ByteBuf> {
 
-  private final Cipher cipher;
+  private final AesCfb8 cipher;
 
   /**
    * Creates a new cipher encoder.
@@ -55,33 +55,27 @@ public final class CipherEncoder extends MessageToByteEncoder<ByteBuf> {
    * @throws GeneralSecurityException if the cipher cannot be initialised
    */
   public CipherEncoder(SecretKey key) throws GeneralSecurityException {
-    this.cipher = Cipher.getInstance("AES/CFB8/NoPadding");
-    // The protocol fixes the IV to the shared secret itself, and every client does the same. The
-    // secret is random and new for each connection, so no key and IV pair is ever reused.
-    this.cipher.init(Cipher.ENCRYPT_MODE, key, new IvParameterSpec(key.getEncoded()));
+    this.cipher = new AesCfb8(Cipher.ENCRYPT_MODE, key);
   }
 
   @Override
-  protected void encode(ChannelHandlerContext ctx, ByteBuf msg, ByteBuf out) throws Exception {
-    int readable = msg.readableBytes();
-    if (readable == 0) {
+  protected ByteBuf allocateBuffer(ChannelHandlerContext ctx, ByteBuf msg, boolean preferDirect) {
+    // AES/CFB8 keeps the length, so the frame's size is exactly what the output needs.
+    int size = msg.readableBytes();
+    return preferDirect ? ctx.alloc().ioBuffer(size) : ctx.alloc().heapBuffer(size);
+  }
+
+  @Override
+  protected void encode(ChannelHandlerContext ctx, ByteBuf msg, ByteBuf out)
+      throws ShortBufferException {
+    int length = msg.readableBytes();
+    if (length == 0) {
       return;
     }
-
-    out.ensureWritable(readable);
-
-    if (msg.nioBufferCount() > 0) {
-      // Zero-copy path for NIO-backed buffers.
-      ByteBuffer source = msg.nioBuffer();
-      ByteBuffer dest = out.nioBuffer(out.writerIndex(), readable);
-      cipher.update(source, dest);
-      out.writerIndex(out.writerIndex() + dest.position());
-    } else {
-      // Fallback for composite or non-NIO buffers.
-      byte[] sourceBytes = new byte[readable];
-      msg.readBytes(sourceBytes);
-      byte[] encrypted = cipher.update(sourceBytes);
-      out.writeBytes(encrypted);
-    }
+    out.ensureWritable(length);
+    int writerIndex = out.writerIndex();
+    cipher.transform(msg, msg.readerIndex(), out, writerIndex, length);
+    msg.skipBytes(length);
+    out.writerIndex(writerIndex + length);
   }
 }
