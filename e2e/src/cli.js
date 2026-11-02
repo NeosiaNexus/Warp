@@ -55,6 +55,8 @@ Soak and network
 
 Environment
   --jar PATH              Warp shadow jar (default: build it with Gradle)
+  --plugin PATH           the audience probe plugin jar Warp loads (default: built with Gradle along
+                          with Warp; with --jar and no --plugin, the audience scenario is skipped)
   --bots N                bots in the crowd scenario and the soak (default 10)
   --port-base N           first of the 8 local ports used (default 26100)
   --out DIR               run directory (default e2e/build)
@@ -79,6 +81,7 @@ async function main() {
       soak: { type: 'string' },
       netem: { type: 'string' },
       jar: { type: 'string' },
+      plugin: { type: 'string' },
       bots: { type: 'string', default: '10' },
       'port-base': { type: 'string', default: '26100' },
       out: { type: 'string', default: join(E2E_DIR, 'build') },
@@ -105,20 +108,23 @@ async function main() {
   const ports = await reservePorts(Number(opts['port-base']));
   // The bots' side of the network: Warp, or the lobby itself in a control run.
   const netem = opts.netem === undefined ? null : new Netem({ spec: opts.netem, ports: opts.direct ? [ports.lobby] : [ports.warp, ports.warpAlt] });
-  const jar = opts.jar ? resolve(opts.jar) : await buildWarp();
+  const { jar, plugin } = opts.jar
+    ? { jar: resolve(opts.jar), plugin: opts.plugin ? resolve(opts.plugin) : null }
+    : await buildWarp(opts.plugin);
   mkdirSync(opts.out, { recursive: true });
   // Up for the whole run: it signs the bots' profile keys, which Warp and the backends trust, and
   // Warp checks online logins against it.
   const mojang = await startMockMojang(ports.mojang);
   const results = [];
-  const packServer = await startPackServer(['lobby', 'survival']);
+  // `proxy`: the pack the audience probe plugin sends through Warp itself.
+  const packServer = await startPackServer(['lobby', 'survival', 'proxy']);
   try {
     if (netem) {
       await netem.start();
       log(`netem on 127.0.0.1:${netem.ports.join(', ')}, both ways: ${netem.spec}`);
     }
     for (const { entry, variants } of runs) {
-      results.push(await runVersion({ matrix, entry, variants: adaptVariants(entry, variants), scenarios, ports, netem, packs: packServer.packs, jar, mojang, opts }));
+      results.push(await runVersion({ matrix, entry, variants: adaptVariants(entry, variants), scenarios, ports, netem, packs: packServer.packs, jar, plugin, mojang, opts }));
     }
   } finally {
     netem?.stop();
@@ -132,7 +138,7 @@ async function main() {
 // One version: backends per threshold and forwarding, Warp per variant
 // ---------------------------------------------------------------------------
 
-async function runVersion({ matrix, entry, variants, scenarios, ports, netem, packs, jar, mojang, opts }) {
+async function runVersion({ matrix, entry, variants, scenarios, ports, netem, packs, jar, plugin, mojang, opts }) {
   const cache = opts.cache;
   const runDir = join(opts.out, entry.version);
   rmSync(runDir, { recursive: true, force: true });
@@ -170,7 +176,7 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, netem, pa
       const backends = await startBackends({ entry, serverJar, serverJava, preseeded, threshold: group.threshold, forwarding, packs, ports, runDir, logDir, cache, mojang, retries: result.bootRetries });
       try {
         for (const variant of group.variants) {
-          result.variants.push(await runVariant({ matrix, entry, variant, scenarios, backends, forwarding, packs, ports, netem, jar, warpJava, runDir, logDir, mojang, opts }));
+          result.variants.push(await runVariant({ matrix, entry, variant, scenarios, backends, forwarding, packs, ports, netem, jar, plugin, warpJava, runDir, logDir, mojang, opts }));
         }
       } finally {
         await stopBackends(backends, result);
@@ -246,7 +252,7 @@ function skipVariant(variant, reason) {
   return { name: variant.name, settings: describeVariant(variant), status: 'skip', reason, scenarios: [], failures: [] };
 }
 
-async function runVariant({ matrix, entry, variant, scenarios, backends, forwarding, packs, ports, netem, jar, warpJava, runDir, logDir, mojang, opts }) {
+async function runVariant({ matrix, entry, variant, scenarios, backends, forwarding, packs, ports, netem, jar, plugin, warpJava, runDir, logDir, mojang, opts }) {
   const label = `${entry.version} ${variant.name}`;
   log(`variant ${variant.name}: ${describeVariant(variant)}`);
   const outcome = { name: variant.name, settings: describeVariant(variant), scenarios: [], failures: [], stacks: [], shutdown: [] };
@@ -261,6 +267,9 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, forward
     threshold: variant.threshold,
     forwarding,
     logDir,
+    plugins: plugin ? [plugin] : [],
+    // The pack the audience probe sends: its own, so that a bot tells it from the backends'.
+    properties: { 'warp.e2e.pack.url': packs.proxy.url, 'warp.e2e.pack.sha1': packs.proxy.sha1, 'warp.e2e.pack.id': packs.proxy.id },
   };
   // --direct: control run without Warp, to tell a proxy bug from a client or server quirk.
   const instances = opts.direct
@@ -291,7 +300,7 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, forward
     entry,
     variant,
     direct: opts.direct,
-    features: features(entry.protocol, { direct: opts.direct, forwarding: variant.forwarding, online: variant.online }),
+    features: features(entry.protocol, { direct: opts.direct, forwarding: variant.forwarding, online: variant.online, plugin: plugin !== null, bridged: Boolean(entry.via) }),
     client: connectClient(entry, { tools: matrix.tools, cache: opts.cache, java: warpJava, ports, targets: Object.values(targets), logDir, runDir }),
     warp: { port: targets.warp, instance: instances[0] ?? null },
     warpAlt: { port: targets.warpAlt },
@@ -471,11 +480,16 @@ async function reservePorts(base) {
   return ports;
 }
 
-async function buildWarp() {
-  log('building Warp (./gradlew :proxy:shadowJar)');
-  await run(join(ROOT, 'gradlew'), ['--quiet', ':proxy:shadowJar'], { cwd: ROOT });
+/** Builds Warp's shadow jar and, unless `plugin` names one, the audience probe plugin. */
+async function buildWarp(plugin) {
+  const tasks = plugin ? [':proxy:shadowJar'] : [':proxy:shadowJar', ':e2e-plugin:jar'];
+  log(`building Warp (./gradlew ${tasks.join(' ')})`);
+  await run(join(ROOT, 'gradlew'), ['--quiet', ...tasks], { cwd: ROOT });
   const version = readFileSync(join(ROOT, 'version.txt'), 'utf8').trim();
-  return join(ROOT, 'proxy', 'build', 'libs', `warp-${version}.jar`);
+  return {
+    jar: join(ROOT, 'proxy', 'build', 'libs', `warp-${version}.jar`),
+    plugin: plugin ? resolve(plugin) : join(E2E_DIR, 'plugin', 'build', 'libs', 'e2e-audience-probe.jar'),
+  };
 }
 
 // ---------------------------------------------------------------------------

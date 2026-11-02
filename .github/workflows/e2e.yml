@@ -72,14 +72,16 @@ jobs:
       - name: Set up build
         uses: $/.github/actions/setup-build
 
-      - name: Build the shadow jar
-        run: ./gradlew :proxy:shadowJar
+      - name: Build the shadow jar and the audience probe plugin
+        run: ./gradlew :proxy:shadowJar :e2e-plugin:jar
 
       - name: Upload Warp jar
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: warp-jar
-          path: proxy/build/libs/warp-*.jar
+          path: |
+            proxy/build/libs/warp-*.jar
+            e2e/plugin/build/libs/e2e-audience-probe.jar
           if-no-files-found: error
           retention-days: 7
 
