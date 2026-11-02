@@ -11,11 +11,6 @@ name: Natives (reusable)
 
 on:
   workflow_call:
-    inputs:
-      ref:
-        description: The commit to build (default the one that triggered the workflow).
-        type: string
-        default: ''
 
 permissions: {}
 
@@ -36,7 +31,6 @@ jobs:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - name: Set up build
@@ -95,7 +89,6 @@ jobs:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       # LLVM's clang, lld and llvm-objdump: preinstalled on Windows runners, not always on PATH.

@@ -328,7 +328,12 @@ public final class NativeMemoryProbe {
   private static long residentSetSize() throws IOException {
     for (String line : Files.readAllLines(Path.of("/proc/self/status"))) {
       if (line.startsWith("VmRSS:")) {
-        return Long.parseLong(line.replaceAll("[^0-9]", "")) * 1024;
+        String kibibytes = line.replaceAll("[^0-9]", "");
+        try {
+          return Long.parseLong(kibibytes) * 1024;
+        } catch (NumberFormatException e) {
+          throw new IOException("Unreadable VmRSS line: " + line, e);
+        }
       }
     }
     throw new IOException("No VmRSS in /proc/self/status");

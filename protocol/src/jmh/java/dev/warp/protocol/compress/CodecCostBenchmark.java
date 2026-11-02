@@ -26,6 +26,7 @@ import dev.warp.protocol.bench.WireStreams;
 
 import java.nio.ByteBuffer;
 import java.security.GeneralSecurityException;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -149,7 +150,10 @@ public class CodecCostBenchmark extends AbstractMicrobenchmark {
     corpus.forEach(ByteBuf::release);
 
     scratch = alloc.directBuffer(256 * 1024);
-    SecretKey key = new SecretKeySpec(new byte[16], "AES");
+    // Minecraft uses the shared secret as the IV as well; a random one, as a real session has.
+    byte[] secret = new byte[16];
+    new SecureRandom().nextBytes(secret);
+    SecretKey key = new SecretKeySpec(secret, "AES");
     codec =
         switch (implementation) {
           case JDK -> new JdkCodec(level, connections, key);

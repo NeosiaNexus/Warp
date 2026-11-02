@@ -47,7 +47,8 @@ jobs:
         with:
           token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
 
-  # libdeflate for every platform Warp bundles, each built and load-tested on its own platform.
+  # libdeflate for every platform Warp bundles, each built and load-tested on its own platform,
+  # from the commit release-please just tagged (the one this run is for).
   natives:
     name: Natives
     needs: release-please
@@ -55,8 +56,6 @@ jobs:
     permissions:
       contents: read # check out the code
     uses: $/.github/workflows/_natives.yml
-    with:
-      ref: ${{ needs.release-please.outputs.tag_name }}
 
   publish:
     name: Publish release

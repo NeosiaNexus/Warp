@@ -197,7 +197,9 @@ class LibraryCacheTest {
       // given: proxies starting together, each about to install the same library
       int installers = 16;
       byte[] library = new byte[256 * 1024];
-      new java.util.Random(42).nextBytes(library);
+      for (int i = 0; i < library.length; i++) {
+        library[i] = (byte) (i * 31 + (i >>> 9));
+      }
       CyclicBarrier start = new CyclicBarrier(installers);
       Set<Path> results = ConcurrentHashMap.newKeySet();
       ExecutorService pool = Executors.newFixedThreadPool(installers);
