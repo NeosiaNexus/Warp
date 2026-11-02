@@ -71,7 +71,8 @@ public interface RegisteredServer {
 
   /**
    * Asks the server for its server list entry, as a client refreshing its server list would, within
-   * the proxy's default ping time-out (5 seconds unless configured otherwise).
+   * the proxy's default ping time-out ({@code timeouts.ping} in {@code warp.conf}, 5 seconds by
+   * default).
    *
    * <p>Never blocks: the answer arrives on a proxy thread. Do not block that thread, or call {@code
    * join()} on a thread the proxy runs players on.

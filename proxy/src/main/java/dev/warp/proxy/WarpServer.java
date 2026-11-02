@@ -243,6 +243,7 @@ public final class WarpServer implements Warp {
     this.serverRegistry =
         new ServerRegistry(config.servers(), config.defaultServer(), config.fallbackOrder());
     serverRegistry.setEventBus(events);
+    serverRegistry.setPingTimeout(config.timeouts().ping());
     ProxyCommands.register(commands, serverRegistry);
     this.pluginManager =
         new WarpPluginManager(

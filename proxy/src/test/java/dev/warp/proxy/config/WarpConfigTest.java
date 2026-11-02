@@ -466,16 +466,19 @@ class WarpConfigTest {
 
       assertEquals(Duration.ofSeconds(5), config.timeouts().connect());
       assertEquals(Duration.ofSeconds(25), config.timeouts().read());
+      assertEquals(Duration.ofSeconds(5), config.timeouts().ping());
       assertFalse(config.tcpFastOpen());
     }
 
     @Test
     @DisplayName("should read the timeouts and TCP Fast Open")
     void values() throws Exception {
-      WarpConfig config = load("timeouts { connect = 2500ms, read = 1m }\ntcp-fast-open = true");
+      WarpConfig config =
+          load("timeouts { connect = 2500ms, read = 1m, ping = 2s }\ntcp-fast-open = true");
 
       assertEquals(Duration.ofMillis(2500), config.timeouts().connect());
       assertEquals(Duration.ofMinutes(1), config.timeouts().read());
+      assertEquals(Duration.ofSeconds(2), config.timeouts().ping());
       assertTrue(config.tcpFastOpen());
     }
 
@@ -489,6 +492,15 @@ class WarpConfigTest {
           String.valueOf(error.getMessage())
               .contains("timeouts.connect needs a unit: write 5000ms"),
           error.getMessage());
+    }
+
+    @Test
+    @DisplayName("should refuse a ping time-out of zero, which would fail every ping")
+    void zeroPing() {
+      ConfigurationException error =
+          assertThrows(ConfigurationException.class, () -> load("timeouts { ping = 0 }"));
+
+      assertTrue(String.valueOf(error.getMessage()).contains("timeouts.ping"), error.getMessage());
     }
 
     @Test
@@ -592,6 +604,7 @@ class WarpConfigTest {
       WarpConfig config = load("timeouts { read = ${?WARP_TEST_SURELY_UNSET_VARIABLE} }");
 
       assertEquals(Duration.ofSeconds(25), config.timeouts().read());
+      assertEquals(Duration.ofSeconds(5), config.timeouts().ping());
     }
 
     @Test

@@ -1157,6 +1157,10 @@ public final class WarpConfig {
           # and its players sent to a fallback server before their clients give up with "Timed out".
           # The deadline before login is limits.logins.timeout.
           read = 25s
+
+          # A plugin's RegisteredServer.ping() without a time-out of its own: connection, handshake
+          # and answer. A server that does not answer in time fails the ping with TIMED_OUT.
+          ping = 5s
         }
 
         # TCP Fast Open, on the listener and on connections to backends: a connection opens one round

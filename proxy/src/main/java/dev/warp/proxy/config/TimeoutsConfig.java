@@ -28,8 +28,10 @@ import org.spongepowered.configurate.CommentedConfigurationNode;
  * @param connect the longest a TCP connection to a backend server may take to open
  * @param read the longest a logged-in player's connection, or its connection to a backend, may stay
  *     silent before it is closed
+ * @param ping the longest {@code RegisteredServer.ping()} waits for a backend's answer, connection
+ *     included, when its caller gives no time-out
  */
-public record TimeoutsConfig(Duration connect, Duration read) {
+public record TimeoutsConfig(Duration connect, Duration read, Duration ping) {
 
   /** Velocity's {@code connection-timeout} and Warp's former fixed value. */
   static final Duration DEFAULT_CONNECT = Duration.ofSeconds(5);
@@ -44,8 +46,12 @@ public record TimeoutsConfig(Duration connect, Duration read) {
   /** The shortest read timeout: below, a backend's 15 s keep-alive rhythm cannot keep it open. */
   static final Duration MIN_READ = Duration.ofSeconds(1);
 
+  /** Velocity's 5 s when a plugin pings a server, and Warp's former fixed value. */
+  static final Duration DEFAULT_PING = Duration.ofSeconds(5);
+
   /** The settings of a {@code warp.conf} without {@code timeouts} section. */
-  public static final TimeoutsConfig DEFAULTS = new TimeoutsConfig(DEFAULT_CONNECT, DEFAULT_READ);
+  public static final TimeoutsConfig DEFAULTS =
+      new TimeoutsConfig(DEFAULT_CONNECT, DEFAULT_READ, DEFAULT_PING);
 
   /**
    * Reads the section.
@@ -71,11 +77,20 @@ public record TimeoutsConfig(Duration connect, Duration read) {
       throw new ConfigurationException(
           "timeouts.read must be at least 1s, got " + Durations.format(read));
     }
-    return new TimeoutsConfig(connect, read);
+    Duration ping = Durations.parse(node.node("ping"), "timeouts.ping", DEFAULT_PING);
+    if (ping.isZero()) {
+      throw new ConfigurationException("timeouts.ping must be more than zero, got 0");
+    }
+    return new TimeoutsConfig(connect, read, ping);
   }
 
   @Override
   public String toString() {
-    return "connect " + Durations.format(connect) + ", read " + Durations.format(read);
+    return "connect "
+        + Durations.format(connect)
+        + ", read "
+        + Durations.format(read)
+        + ", ping "
+        + Durations.format(ping);
   }
 }
