@@ -219,6 +219,81 @@ class ViaTranslationTest {
     assertEquals(new KeepAlive(43), answer);
   }
 
+  @Test
+  @DisplayName("should let ViaBackwards answer the configuration phase an older player lacks")
+  void olderPlayerConfigurationEmulated() {
+    ProtocolVersion older = ProtocolVersion.MINECRAFT_1_20;
+    MinecraftConnection backend = backend(older);
+    EmbeddedChannel channel = (EmbeddedChannel) backend.channel();
+    Recorder received = new Recorder(backend);
+    PIPELINES.initializeBackend(backend, older.protocol(), player, LOBBY_SERVER);
+    backend.setSessionHandler(received);
+
+    backend.setState(ProtocolState.HANDSHAKE);
+    backend.writeAndFlush(new Handshake(older.protocol(), "lobby", 25566, 2));
+    backend.setState(ProtocolState.LOGIN);
+    backend.writeAndFlush(new LoginStart("Alex", UUID.randomUUID()));
+    assertEquals(
+        BACKEND.protocol(),
+        sentToBackend(channel, ProtocolState.HANDSHAKE, Handshake.class, false)
+            .getFirst()
+            .protocolVersion());
+    receive(channel, ProtocolState.LOGIN, new SetCompression(THRESHOLD), false);
+    receive(
+        channel,
+        ProtocolState.LOGIN,
+        new LoginSuccess(UUID.randomUUID(), "Alex", List.of(), false, null),
+        true);
+
+    // The proxy reads a 1.20 login, which goes straight to PLAY; ViaBackwards acknowledges it to
+    // the 1.21.4 backend itself, through the raw packet path that goes past its own encoder.
+    assertEquals("Alex", assertInstanceOf(LoginSuccess.class, received.packets.get(1)).username());
+    assertFalse(
+        sentToBackend(channel, ProtocolState.LOGIN, LoginAcknowledged.class, true).isEmpty());
+  }
+
+  @Test
+  @DisplayName("should give each backend connection of a switch its own translation")
+  void switchTranslatesEachConnection() {
+    MinecraftConnection first = backend(CLIENT);
+    Recorder firstReceived = new Recorder(first);
+    play(first, firstReceived);
+    MinecraftConnection second = backend(CLIENT);
+    Recorder secondReceived = new Recorder(second);
+
+    // The switch opens the second connection while the player still plays on the first.
+    play(second, secondReceived);
+    receive((EmbeddedChannel) first.channel(), ProtocolState.PLAY, new KeepAlive(1), true);
+    first.close();
+    receive((EmbeddedChannel) second.channel(), ProtocolState.PLAY, new KeepAlive(2), true);
+
+    assertEquals(new KeepAlive(1), firstReceived.packets.getLast());
+    assertEquals(new KeepAlive(2), secondReceived.packets.getLast());
+  }
+
+  /** Logs a newer player in on a translated connection and brings it to PLAY. */
+  private void play(MinecraftConnection backend, Recorder received) {
+    EmbeddedChannel channel = (EmbeddedChannel) backend.channel();
+    PIPELINES.initializeBackend(backend, CLIENT.protocol(), player, LOBBY_SERVER);
+    backend.setSessionHandler(received);
+    backend.setState(ProtocolState.HANDSHAKE);
+    backend.writeAndFlush(new Handshake(CLIENT.protocol(), "lobby", 25566, 2));
+    backend.setState(ProtocolState.LOGIN);
+    backend.writeAndFlush(new LoginStart("Steve", UUID.randomUUID()));
+    receive(channel, ProtocolState.LOGIN, new SetCompression(THRESHOLD), false);
+    receive(
+        channel,
+        ProtocolState.LOGIN,
+        new LoginSuccess(UUID.randomUUID(), "Steve", List.of(), false, null),
+        true);
+    backend.writeAndFlush(new LoginAcknowledged());
+    backend.setState(ProtocolState.CONFIGURATION);
+    receive(channel, ProtocolState.CONFIGURATION, new FinishConfiguration(), true);
+    backend.writeAndFlush(new AcknowledgeFinishConfiguration());
+    backend.setState(ProtocolState.PLAY);
+    drain(channel);
+  }
+
   // ---------------------------------------------------------------------------
   // Fixtures
   // ---------------------------------------------------------------------------
