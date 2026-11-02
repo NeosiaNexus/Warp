@@ -911,6 +911,14 @@ public final class WarpConfig {
           "limits.logins.authentication-queue.max-wait must be at least 1s, got "
               + LimitsConfig.format(queueWait));
     }
+    CommentedConfigurationNode attackNode = loginsNode.node("under-attack");
+    LimitsConfig.Rate loginsUnderAttack =
+        parseRate(attackNode, "limits.logins.under-attack", defaults.loginsUnderAttack());
+    int perAddressUnderAttack =
+        parseCount(
+            attackNode.node("max-concurrent-per-address"),
+            "limits.logins.under-attack.max-concurrent-per-address",
+            defaults.maxConcurrentLoginsPerAddressUnderAttack());
     return new LimitsConfig(
         enabled,
         exempt,
@@ -925,7 +933,9 @@ public final class WarpConfig {
         handshakeTimeout,
         statusTimeout,
         queue,
-        queueWait);
+        queueWait,
+        loginsUnderAttack,
+        perAddressUnderAttack);
   }
 
   /** Parses the {@code burst} and {@code interval} of a token bucket section. */
@@ -1254,16 +1264,24 @@ public final class WarpConfig {
             interval = 1s
           }
 
-          # Login attempts. A refused player is told to wait. One every 3s matches Velocity's
-          # login-ratelimit = 3000; the burst of 2 lets two players behind one address (a
-          # household) join together. Set burst = 1 for Velocity's exact behaviour.
+          # Login attempts. A refused player is told to wait. Many players share one address
+          # (households, schools, LAN parties, carrier-grade NAT, a Docker gateway): out of an
+          # attack, ten may join at once from one address, then one a second. While the anti-bot
+          # detects an attack, the strict budget of `under-attack` applies instead (one every 3s
+          # after a burst of 2, Velocity's login-ratelimit = 3000).
           logins {
-            burst = 2
-            interval = 3s
+            burst = 10
+            interval = 1s
 
             # Logins in progress at once from one address, from its handshake until the player is
             # logged in. 0 for no limit.
-            max-concurrent-per-address = 2
+            max-concurrent-per-address = 10
+
+            under-attack {
+              burst = 2
+              interval = 3s
+              max-concurrent-per-address = 2
+            }
 
             # Online mode: logins Warp authenticates at once, for the whole proxy (the RSA
             # decryption and the request to Mojang's session server). Only logins that sent their

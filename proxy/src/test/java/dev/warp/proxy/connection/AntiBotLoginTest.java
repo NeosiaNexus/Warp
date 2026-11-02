@@ -29,6 +29,7 @@ import dev.warp.protocol.codec.VarInt;
 import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.config.AntiBotConfig;
+import dev.warp.proxy.config.LimitsConfig;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.limit.Refusal;
@@ -62,7 +63,7 @@ class AntiBotLoginTest {
   private static final ProtocolVersion VERSION = ProtocolVersion.MINECRAFT_1_21_4;
 
   @TempDir private Path directory;
-  private final ClientLimits limits = ClientLimits.unlimited();
+  private ClientLimits limits = ClientLimits.unlimited();
   private @Nullable AntiBotService antiBot;
 
   AntiBotLoginTest() {}
@@ -141,6 +142,37 @@ class AntiBotLoginTest {
               .check(new Identity.NameAtAddress("Late", address("198.51.100.1")))
               .isPresent(),
           "not learned during an attack");
+    }
+  }
+
+  @Nested
+  @DisplayName("shared addresses")
+  class SharedAddresses {
+
+    @Test
+    @DisplayName(
+        "should let a burst of logins from one address in when calm, and throttle it in attack")
+    void calmThenAttack() throws Exception {
+      limits = new ClientLimits(LimitsConfig.DEFAULTS, CidrRanges.none());
+      start(AntiBotConfig.DEFAULTS.exempt());
+      // A LAN party behind one address, out of an attack: all ten get in.
+      for (int i = 0; i < 10; i++) {
+        assertEquals(0x02, packetId(login("guest" + i, "198.51.100.7")), "calm login " + i);
+      }
+
+      // A wave of unknown logins from many addresses: the detector escalates.
+      for (int second = 0; second < 3; second++) {
+        for (int i = 0; i < 20; i++) {
+          login("bot_" + second + "_" + i, "203.0." + (second + 1) + "." + (i + 1));
+        }
+        bots().tick();
+      }
+      assertEquals(AttackLevel.ATTACK, bots().level());
+      assertEquals(0x02, packetId(login("first", "198.51.100.9")));
+      assertEquals(0x02, packetId(login("second", "198.51.100.9")));
+
+      assertEquals(0x00, packetId(login("third", "198.51.100.9")), "Login Disconnect: too fast");
+      assertTrue(limits.refusals(Refusal.LOGIN_RATE) >= 1);
     }
   }
 

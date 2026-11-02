@@ -227,17 +227,27 @@ class ConnectionLimitsTest {
   class Logins {
 
     @Test
-    @DisplayName("should tell a player who logs in too fast how long to wait")
+    @DisplayName("should let a shared address log ten in at once, but only two during an attack")
     void tooFast() {
-      ServerChannelInitializer initializer = initializer(limits(LimitsConfig.DEFAULTS));
-      for (int i = 0; i < 2; i++) {
+      ClientLimits limits = limits(LimitsConfig.DEFAULTS);
+      ServerChannelInitializer initializer = initializer(limits);
+      for (int i = 0; i < 10; i++) {
         EmbeddedChannel channel = connect(CLIENT, initializer);
-        channel.writeInbound(loginHandshake(), loginStart("Steve"));
+        channel.writeInbound(loginHandshake(), loginStart("Player" + i));
         assertEquals(0x02, packetId(channel), "Login Success " + i);
         channel.finishAndReleaseAll();
       }
+      // The anti-bot detects an attack: another address of the NAT now gets the strict budget.
+      limits.attackMode(() -> true);
+      InetSocketAddress other = socket("203.0.113.8", 40000);
+      for (int i = 0; i < 2; i++) {
+        EmbeddedChannel channel = connect(other, initializer);
+        channel.writeInbound(loginHandshake(), loginStart("Steve"));
+        assertEquals(0x02, packetId(channel), "Login Success under attack " + i);
+        channel.finishAndReleaseAll();
+      }
 
-      EmbeddedChannel refused = connect(CLIENT, initializer);
+      EmbeddedChannel refused = connect(other, initializer);
       refused.writeInbound(loginHandshake(), loginStart("Steve"));
 
       assertEquals(
@@ -580,7 +590,9 @@ class ConnectionLimitsTest {
         d.handshakeTimeout(),
         d.statusTimeout(),
         d.authenticationQueue(),
-        d.authenticationQueueWait());
+        d.authenticationQueueWait(),
+        d.loginsUnderAttack(),
+        d.maxConcurrentLoginsPerAddressUnderAttack());
   }
 
   private static LimitsConfig withLogins(
@@ -599,7 +611,9 @@ class ConnectionLimitsTest {
         LimitsConfig.DEFAULTS.handshakeTimeout(),
         LimitsConfig.DEFAULTS.statusTimeout(),
         LimitsConfig.DEFAULTS.authenticationQueue(),
-        LimitsConfig.DEFAULTS.authenticationQueueWait());
+        LimitsConfig.DEFAULTS.authenticationQueueWait(),
+        LimitsConfig.DEFAULTS.loginsUnderAttack(),
+        LimitsConfig.DEFAULTS.maxConcurrentLoginsPerAddressUnderAttack());
   }
 
   private static List<String> info(LogCapture log) {

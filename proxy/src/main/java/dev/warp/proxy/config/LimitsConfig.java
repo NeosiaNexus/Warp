@@ -47,6 +47,10 @@ import java.util.List;
  *     most, trusted players first; 0 to refuse them at once
  * @param authenticationQueueWait the longest a login waits in that queue before it is told the
  *     server is busy
+ * @param loginsUnderAttack login attempts per address while the anti-bot detects an attack, in
+ *     place of {@code logins}: strict, as calm-mode budgets are generous to shared addresses
+ * @param maxConcurrentLoginsPerAddressUnderAttack logins one address may have in progress at once
+ *     during an attack; 0 for no limit
  */
 public record LimitsConfig(
     boolean enabled,
@@ -62,7 +66,9 @@ public record LimitsConfig(
     Duration handshakeTimeout,
     Duration statusTimeout,
     int authenticationQueue,
-    Duration authenticationQueueWait) {
+    Duration authenticationQueueWait,
+    Rate loginsUnderAttack,
+    int maxConcurrentLoginsPerAddressUnderAttack) {
 
   /** The limits Warp applies when the configuration does not say otherwise. */
   public static final LimitsConfig DEFAULTS =
@@ -71,8 +77,8 @@ public record LimitsConfig(
           CidrRanges.parse(List.of("127.0.0.0/8", "::1/128")),
           new Rate(10, Duration.ofMillis(200)),
           new Rate(10, Duration.ofSeconds(1)),
-          new Rate(2, Duration.ofSeconds(3)),
-          2,
+          new Rate(10, Duration.ofSeconds(1)),
+          10,
           256,
           Duration.ofSeconds(30),
           Duration.ofMinutes(1),
@@ -80,7 +86,9 @@ public record LimitsConfig(
           Duration.ofSeconds(5),
           Duration.ofSeconds(5),
           1024,
-          Duration.ofSeconds(10));
+          Duration.ofSeconds(10),
+          new Rate(2, Duration.ofSeconds(3)),
+          2);
 
   /** No limit at all. */
   public static final LimitsConfig DISABLED =
@@ -98,7 +106,9 @@ public record LimitsConfig(
           Duration.ZERO,
           Duration.ZERO,
           0,
-          Duration.ofSeconds(10));
+          Duration.ofSeconds(10),
+          Rate.UNLIMITED,
+          0);
 
   /**
    * Checks the values.
@@ -108,6 +118,7 @@ public record LimitsConfig(
    */
   public LimitsConfig {
     if (maxConcurrentLoginsPerAddress < 0
+        || maxConcurrentLoginsPerAddressUnderAttack < 0
         || maxConcurrentAuthentications < 0
         || maxPendingConnections < 0
         || authenticationQueue < 0) {

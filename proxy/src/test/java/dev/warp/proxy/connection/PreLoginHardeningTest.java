@@ -337,7 +337,9 @@ class PreLoginHardeningTest {
         handshake,
         status,
         d.authenticationQueue(),
-        d.authenticationQueueWait());
+        d.authenticationQueueWait(),
+        d.loginsUnderAttack(),
+        d.maxConcurrentLoginsPerAddressUnderAttack());
   }
 
   private static LimitsConfig pendingCap(int cap) {
@@ -356,7 +358,9 @@ class PreLoginHardeningTest {
         d.handshakeTimeout(),
         d.statusTimeout(),
         d.authenticationQueue(),
-        d.authenticationQueueWait());
+        d.authenticationQueueWait(),
+        d.loginsUnderAttack(),
+        d.maxConcurrentLoginsPerAddressUnderAttack());
   }
 
   /** Connects from its own address, so that no per-address limit interferes. */

@@ -195,6 +195,7 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
               var _ = events.fire(event);
             },
             IdentityStore.newThread());
+    limits.attackMode(() -> detector.level() == AttackLevel.ATTACK);
     limits.listen(
         new ClientLimits.RefusalListener() {
           @Override

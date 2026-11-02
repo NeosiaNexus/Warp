@@ -29,6 +29,7 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 
 import org.jspecify.annotations.Nullable;
@@ -86,6 +87,13 @@ public final class ClientLimits {
   private final @Nullable RateLimiter statusPings;
   private final @Nullable RateLimiter logins;
   private final @Nullable ConcurrencyLimiter loginsInProgress;
+  private final @Nullable RateLimiter loginsUnderAttack;
+  private final int maxLoginsInProgress;
+  private final int maxLoginsInProgressUnderAttack;
+
+  /** Whether the anti-bot detects an attack: the strict login budgets apply then. */
+  private volatile BooleanSupplier underAttack = () -> false;
+
   private final AuthenticationLane lane;
   private final @Nullable Blocklist blocklist;
   private volatile RefusalListener listener = (reason, address) -> {};
@@ -149,9 +157,13 @@ public final class ClientLimits {
     this.connections = rateLimiter(config.connections(), nanoClock);
     this.statusPings = rateLimiter(config.statusPings(), nanoClock);
     this.logins = rateLimiter(config.logins(), nanoClock);
+    this.loginsUnderAttack = rateLimiter(config.loginsUnderAttack(), nanoClock);
+    this.maxLoginsInProgress = enabled ? config.maxConcurrentLoginsPerAddress() : 0;
+    this.maxLoginsInProgressUnderAttack =
+        enabled ? config.maxConcurrentLoginsPerAddressUnderAttack() : 0;
     this.loginsInProgress =
-        enabled && config.maxConcurrentLoginsPerAddress() > 0
-            ? new ConcurrencyLimiter(config.maxConcurrentLoginsPerAddress())
+        maxLoginsInProgress > 0 || maxLoginsInProgressUnderAttack > 0
+            ? new ConcurrencyLimiter(Math.max(1, maxLoginsInProgress))
             : null;
     this.lane =
         new AuthenticationLane(
@@ -281,13 +293,17 @@ public final class ClientLimits {
       return ADMITTED;
     }
     long key = AddressKey.of(address);
+    // Generous budgets out of an attack (shared addresses), strict ones while the anti-bot detects
+    // one.
+    boolean attack = underAttack.getAsBoolean();
+    int maxInProgress = attack ? maxLoginsInProgressUnderAttack : maxLoginsInProgress;
     // Logins in progress first: that check can be undone, a token of the rate limiter cannot.
-    ConcurrencyLimiter inProgress = loginsInProgress;
-    if (inProgress != null && !inProgress.tryAcquire(key)) {
+    ConcurrencyLimiter inProgress = maxInProgress > 0 ? loginsInProgress : null;
+    if (inProgress != null && !inProgress.tryAcquire(key, maxInProgress)) {
       refused(Refusal.LOGINS_IN_PROGRESS, client);
       return TOO_MANY_IN_PROGRESS;
     }
-    RateLimiter rate = logins;
+    RateLimiter rate = attack ? loginsUnderAttack : logins;
     long wait = rate == null ? 0 : rate.tryAcquire(key);
     if (wait > 0) {
       if (inProgress != null) {
@@ -379,6 +395,17 @@ public final class ClientLimits {
     }
     listener.refused(
         reason, client instanceof InetSocketAddress socket ? socket.getAddress() : null);
+  }
+
+  /**
+   * Tells the limits whether the anti-bot detects an attack: while it does, logins get the strict
+   * {@code limits.logins.under-attack} budgets per address instead of the generous ones of calm
+   * times, which let a household, a school or a carrier-grade NAT join together.
+   *
+   * @param attack read at every login; must be cheap and never block
+   */
+  public void attackMode(BooleanSupplier attack) {
+    this.underAttack = attack;
   }
 
   /**

@@ -31,8 +31,10 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.UnknownHostException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import io.netty.channel.embedded.EmbeddedChannel;
@@ -117,16 +119,42 @@ class ClientLimitsTest {
   class Logins {
 
     @Test
-    @DisplayName("should let a burst of logins in, then say how long to wait")
-    void burstThenWait() {
+    @DisplayName("should let ten players behind one address log in at once out of an attack")
+    void sharedAddressInCalm() {
       ClientLimits limits = limits(LimitsConfig.DEFAULTS);
-      release(limits.admitLogin(CLIENT));
-      release(limits.admitLogin(CLIENT));
+      List<LoginAdmission> household = new ArrayList<>();
+      for (int i = 0; i < 10; i++) {
+        household.add(limits.admitLogin(CLIENT));
+      }
 
-      LoginAdmission third = limits.admitLogin(CLIENT);
+      household.forEach(admission -> assertInstanceOf(LoginAdmission.Admitted.class, admission));
+      // In progress together: none released before the eleventh.
+      LoginAdmission eleventh = limits.admitLogin(CLIENT);
+      assertInstanceOf(LoginAdmission.TooManyInProgress.class, eleventh);
+      household.forEach(ClientLimitsTest::release);
+      LoginAdmission.TooFast tooFast =
+          assertInstanceOf(LoginAdmission.TooFast.class, limits.admitLogin(CLIENT));
+      assertEquals(Duration.ofSeconds(1), tooFast.retryAfter());
+    }
 
-      LoginAdmission.TooFast tooFast = assertInstanceOf(LoginAdmission.TooFast.class, third);
+    @Test
+    @DisplayName("should hold one address to 2 logins, then 1 every 3 s, during an attack")
+    void strictUnderAttack() {
+      ClientLimits limits = limits(LimitsConfig.DEFAULTS);
+      AtomicBoolean attack = new AtomicBoolean(true);
+      limits.attackMode(attack::get);
+      LoginAdmission first = limits.admitLogin(CLIENT);
+      LoginAdmission second = limits.admitLogin(CLIENT);
+
+      assertInstanceOf(LoginAdmission.TooManyInProgress.class, limits.admitLogin(CLIENT));
+      release(first);
+      release(second);
+      LoginAdmission.TooFast tooFast =
+          assertInstanceOf(LoginAdmission.TooFast.class, limits.admitLogin(CLIENT));
       assertEquals(Duration.ofSeconds(3), tooFast.retryAfter());
+
+      attack.set(false);
+      release(limits.admitLogin(CLIENT)); // calm again: the generous budget
     }
 
     @Test
@@ -316,7 +344,9 @@ class ClientLimitsTest {
         d.handshakeTimeout(),
         d.statusTimeout(),
         d.authenticationQueue(),
-        d.authenticationQueueWait());
+        d.authenticationQueueWait(),
+        d.loginsUnderAttack(),
+        d.maxConcurrentLoginsPerAddressUnderAttack());
   }
 
   private static LimitsConfig withLogins(LimitsConfig.Rate logins, int maxInProgress) {
@@ -335,7 +365,9 @@ class ClientLimitsTest {
         d.handshakeTimeout(),
         d.statusTimeout(),
         d.authenticationQueue(),
-        d.authenticationQueueWait());
+        d.authenticationQueueWait(),
+        d.loginsUnderAttack(),
+        d.maxConcurrentLoginsPerAddressUnderAttack());
   }
 
   private static LimitsConfig withAuthentications(int max) {
@@ -354,7 +386,9 @@ class ClientLimitsTest {
         d.handshakeTimeout(),
         d.statusTimeout(),
         d.authenticationQueue(),
-        d.authenticationQueueWait());
+        d.authenticationQueueWait(),
+        d.loginsUnderAttack(),
+        d.maxConcurrentLoginsPerAddressUnderAttack());
   }
 
   private static InetSocketAddress socket(String literal) {

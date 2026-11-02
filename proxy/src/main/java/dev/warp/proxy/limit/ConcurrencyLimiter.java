@@ -51,8 +51,21 @@ final class ConcurrencyLimiter {
    * @return {@code true} if the operation may start
    */
   boolean tryAcquire(long key) {
+    return tryAcquire(key, maxPerKey);
+  }
+
+  /**
+   * Starts an operation of {@code key} if it has fewer than {@code max} in progress: the maximum of
+   * the moment, such as a stricter one during an attack. Every successful call must be followed by
+   * exactly one {@link #release(long)}.
+   *
+   * @param key the key
+   * @param max the most operations the key may have in progress now; at least 1
+   * @return {@code true} if the operation may start
+   */
+  boolean tryAcquire(long key, int max) {
     int count = inProgress.merge(key, 1, Integer::sum);
-    if (count > maxPerKey) {
+    if (count > max) {
       release(key);
       return false;
     }
