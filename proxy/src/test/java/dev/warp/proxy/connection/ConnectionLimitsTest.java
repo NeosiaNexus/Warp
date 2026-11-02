@@ -320,30 +320,58 @@ class ConnectionLimitsTest {
   class Authentications {
 
     @Test
-    @DisplayName("should tell a player the server is busy when it authenticates its most")
+    @DisplayName("should queue a login while the proxy authenticates its most, then say it is busy")
     void busyAtLoginStart() {
       ClientLimits limits = limits(withLogins(LimitsConfig.Rate.UNLIMITED, 0, 1, HOUR));
       ServerChannelInitializer initializer =
           onlineInitializer(limits, mock(MojangSessionService.class));
-      assertTrue(limits.tryStartAuthentication());
+      assertNotNull(limits.lane().tryAcquire());
 
       EmbeddedChannel channel = connect(CLIENT, initializer);
       channel.writeInbound(loginHandshake(), loginStart("Steve"));
+      assertNull(channel.readOutbound(), "waiting in line: no encryption request yet");
+      assertEquals(1, limits.lane().waiting());
+      channel.advanceTimeBy(10, TimeUnit.SECONDS);
+      channel.runScheduledPendingTasks();
 
-      assertEquals(LoginSessionHandler.BUSY_REASON, disconnectReason(channel));
+      assertEquals(
+          LoginSessionHandler.busyReason(Duration.ofSeconds(10)), disconnectReason(channel));
+      assertEquals(0, limits.lane().waiting());
+      assertEquals(1, limits.refusals(Refusal.AUTHENTICATION_BUSY));
     }
 
     @Test
-    @DisplayName("should close quietly an encryption response that finds the proxy at its most")
+    @DisplayName("should send the encryption request once a slot frees for a queued login")
+    void grantedFromLine() {
+      ClientLimits limits = limits(withLogins(LimitsConfig.Rate.UNLIMITED, 0, 1, HOUR));
+      ServerChannelInitializer initializer =
+          onlineInitializer(limits, mock(MojangSessionService.class));
+      var taken = limits.lane().tryAcquire();
+      assertNotNull(taken);
+      EmbeddedChannel channel = connect(CLIENT, initializer);
+      channel.writeInbound(loginHandshake(), loginStart("Steve"));
+
+      taken.release();
+      channel.runPendingTasks();
+
+      assertEquals(0x01, packetId(channel), "Encryption Request");
+      assertTrue(limits.lane().mustWait(), "the slot is held for this login");
+    }
+
+    @Test
+    @DisplayName("should hold quietly an encryption response that finds the proxy at its most")
     void fullAtEncryptionResponse() {
       ClientLimits limits = limits(withLogins(LimitsConfig.Rate.UNLIMITED, 0, 1, HOUR));
       ServerChannelInitializer initializer =
           onlineInitializer(limits, mock(MojangSessionService.class));
       EmbeddedChannel channel = startOnlineLogin(initializer).channel();
-      assertTrue(limits.tryStartAuthentication(), "another player takes the only slot");
+      assertNotNull(limits.lane().tryAcquire(), "another player takes the only slot");
 
-      // Not even decryptable: the proxy must refuse it before any RSA work.
+      // Not even decryptable: no RSA work before a slot, and it waits silently for one.
       channel.writeInbound(encryptionResponse(new byte[128], new byte[128]));
+      assertTrue(channel.isActive(), "waiting in line");
+      channel.advanceTimeBy(10, TimeUnit.SECONDS);
+      channel.runScheduledPendingTasks();
 
       assertFalse(channel.isActive());
       assertNull(
@@ -381,12 +409,12 @@ class ConnectionLimitsTest {
                   rsaEncrypt(request, new byte[16]), rsaEncrypt(request, request.verifyToken())));
       assertTrue(requested.await(10, TimeUnit.SECONDS), "the session server was asked");
 
-      assertFalse(limits.admitOnlineLogin(), "the request in flight holds the only slot");
+      assertTrue(limits.lane().mustWait(), "the request in flight holds the only slot");
       answer.countDown();
       Thread thread = requesting.get();
       assertNotNull(thread);
       thread.join(10_000);
-      assertTrue(limits.admitOnlineLogin(), "released when the session server answered");
+      assertTrue(!limits.lane().mustWait(), "released when the session server answered");
     }
 
     @Test
@@ -406,7 +434,7 @@ class ConnectionLimitsTest {
       assertEquals(20, limits.refusals(Refusal.AUTHENTICATION_FAILED));
       assertTrue(
           warningsAndInfo(loginLog).isEmpty(), () -> String.valueOf(warningsAndInfo(loginLog)));
-      assertTrue(limits.admitOnlineLogin(), "every slot given back");
+      assertTrue(!limits.lane().mustWait(), "every slot given back");
     }
 
     @Test
@@ -434,7 +462,7 @@ class ConnectionLimitsTest {
                     rsaEncrypt(request, new byte[16]), rsaEncrypt(request, request.verifyToken())));
         channels.add(login.channel());
         // One at a time: the only slot comes back once the session server answered.
-        assertTrue(waitFor(() -> limits.admitOnlineLogin()), "the slot came back");
+        assertTrue(waitFor(() -> !limits.lane().mustWait()), "the slot came back");
       }
       assertTrue(denied.await(10, TimeUnit.SECONDS));
       channels.forEach(EmbeddedChannel::runPendingTasks);
@@ -550,7 +578,9 @@ class ConnectionLimitsTest {
         d.reportInterval(),
         d.maxPendingConnections(),
         d.handshakeTimeout(),
-        d.statusTimeout());
+        d.statusTimeout(),
+        d.authenticationQueue(),
+        d.authenticationQueueWait());
   }
 
   private static LimitsConfig withLogins(
@@ -567,7 +597,9 @@ class ConnectionLimitsTest {
         LimitsConfig.DEFAULTS.reportInterval(),
         LimitsConfig.DEFAULTS.maxPendingConnections(),
         LimitsConfig.DEFAULTS.handshakeTimeout(),
-        LimitsConfig.DEFAULTS.statusTimeout());
+        LimitsConfig.DEFAULTS.statusTimeout(),
+        LimitsConfig.DEFAULTS.authenticationQueue(),
+        LimitsConfig.DEFAULTS.authenticationQueueWait());
   }
 
   private static List<String> info(LogCapture log) {

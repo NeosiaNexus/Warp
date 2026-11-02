@@ -185,7 +185,7 @@ final class HandshakeSessionHandler implements SessionHandler {
    * Counted, not logged: any connection can claim any protocol.
    */
   private void refuseVersion(int protocol) {
-    loginContext.limits().refused(Refusal.UNSUPPORTED_VERSION);
+    loginContext.limits().refused(Refusal.UNSUPPORTED_VERSION, connection.remoteAddress());
     logger.debug("Refusing protocol {} from {}", protocol, connection.remoteAddress());
     boolean older = protocol < ProtocolVersion.oldest().protocol();
     Component reason =
@@ -204,7 +204,7 @@ final class HandshakeSessionHandler implements SessionHandler {
    * log line.
    */
   private void refuse(Refusal reason, String what) {
-    loginContext.limits().refused(reason);
+    loginContext.limits().refused(reason, connection.remoteAddress());
     logger.debug("Refused {} in HANDSHAKE: {}", connection.remoteAddress(), what);
     connection.reset();
   }
@@ -226,7 +226,7 @@ final class HandshakeSessionHandler implements SessionHandler {
       return;
     }
     // Counted, not logged: anyone can send a transfer handshake.
-    loginContext.limits().refused(Refusal.TRANSFER_REFUSED);
+    loginContext.limits().refused(Refusal.TRANSFER_REFUSED, connection.remoteAddress());
     logger.debug(
         "Refused a transfer from {}: accepts-transfers is off", connection.remoteAddress());
     // In the login state, whose disconnect packet the client reads: the handshake state has none,

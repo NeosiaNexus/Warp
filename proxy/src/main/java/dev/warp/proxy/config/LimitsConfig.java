@@ -43,6 +43,10 @@ import java.util.List;
  *     header included, counted from the accept whatever it sends meanwhile; zero for none
  * @param statusTimeout the longest a server list ping may take, from its handshake to its pong;
  *     zero for none
+ * @param authenticationQueue online logins that wait for an authentication when the proxy runs its
+ *     most, trusted players first; 0 to refuse them at once
+ * @param authenticationQueueWait the longest a login waits in that queue before it is told the
+ *     server is busy
  */
 public record LimitsConfig(
     boolean enabled,
@@ -56,7 +60,9 @@ public record LimitsConfig(
     Duration reportInterval,
     int maxPendingConnections,
     Duration handshakeTimeout,
-    Duration statusTimeout) {
+    Duration statusTimeout,
+    int authenticationQueue,
+    Duration authenticationQueueWait) {
 
   /** The limits Warp applies when the configuration does not say otherwise. */
   public static final LimitsConfig DEFAULTS =
@@ -72,7 +78,9 @@ public record LimitsConfig(
           Duration.ofMinutes(1),
           8192,
           Duration.ofSeconds(5),
-          Duration.ofSeconds(5));
+          Duration.ofSeconds(5),
+          1024,
+          Duration.ofSeconds(10));
 
   /** No limit at all. */
   public static final LimitsConfig DISABLED =
@@ -88,19 +96,26 @@ public record LimitsConfig(
           Duration.ofMinutes(1),
           0,
           Duration.ZERO,
-          Duration.ZERO);
+          Duration.ZERO,
+          0,
+          Duration.ofSeconds(10));
 
   /**
    * Checks the values.
    *
    * @throws IllegalArgumentException if a count or a duration is negative, or the report interval
-   *     is not positive
+   *     or the queue wait is not positive
    */
   public LimitsConfig {
     if (maxConcurrentLoginsPerAddress < 0
         || maxConcurrentAuthentications < 0
-        || maxPendingConnections < 0) {
+        || maxPendingConnections < 0
+        || authenticationQueue < 0) {
       throw new IllegalArgumentException("concurrency limits must not be negative");
+    }
+    if (authenticationQueueWait.isNegative() || authenticationQueueWait.isZero()) {
+      throw new IllegalArgumentException(
+          "authenticationQueueWait must be positive, got " + authenticationQueueWait);
     }
     if (loginTimeout.isNegative() || handshakeTimeout.isNegative() || statusTimeout.isNegative()) {
       throw new IllegalArgumentException(
@@ -168,6 +183,12 @@ public record LimitsConfig(
   /** Formats a duration as its configuration would: {@code 200ms}, {@code 3s}, {@code 1m}. */
   static String format(Duration duration) {
     long millis = duration.toMillis();
+    if (millis % 86_400_000 == 0 && millis != 0) {
+      return millis / 86_400_000 + "d";
+    }
+    if (millis % 3_600_000 == 0 && millis != 0) {
+      return millis / 3_600_000 + "h";
+    }
     if (millis % 60_000 == 0 && millis != 0) {
       return millis / 60_000 + "m";
     }

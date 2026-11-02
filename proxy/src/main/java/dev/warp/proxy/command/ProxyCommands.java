@@ -21,11 +21,13 @@ import dev.warp.api.player.ConnectionResult;
 import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerRegistry;
+import dev.warp.proxy.antibot.AntiBotService;
 
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.function.Function;
 
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -54,6 +56,20 @@ public final class ProxyCommands {
    */
   public static void register(WarpCommandManager commands, ServerRegistry servers) {
     var _ = commands.register(WarpCommandManager.PROXY, server(servers));
+  }
+
+  /**
+   * Registers {@code /warp antibot}, for staff with {@code warp.command.antibot}.
+   *
+   * @param commands the proxy's commands
+   * @param antiBot the anti-bot
+   * @param players finds a connected player by name
+   */
+  public static void registerAntiBot(
+      WarpCommandManager commands,
+      AntiBotService antiBot,
+      Function<String, Optional<Player>> players) {
+    var _ = commands.register(WarpCommandManager.PROXY, AntiBotCommand.warp(antiBot, players));
   }
 
   /** {@code /server}: lists the servers, or moves the player to one. */

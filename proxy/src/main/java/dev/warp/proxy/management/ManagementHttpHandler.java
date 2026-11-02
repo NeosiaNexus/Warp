@@ -18,6 +18,8 @@ package dev.warp.proxy.management;
 
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
+import dev.warp.proxy.antibot.AntiBotService;
+import dev.warp.proxy.antibot.AntiBotStatus;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -68,6 +70,8 @@ final class ManagementHttpHandler extends SimpleChannelInboundHandler<FullHttpRe
 
   private static final String JSON = "application/json; charset=utf-8";
   private static final String BEARER = "Bearer ";
+  private static final String TEXT = "text/plain; charset=utf-8";
+  private static final String METRICS = "text/plain; version=0.0.4; charset=utf-8";
 
   private final ProxyHealth health;
   private final boolean requireServer;
@@ -123,13 +127,124 @@ final class ManagementHttpHandler extends SimpleChannelInboundHandler<FullHttpRe
           respond(ctx, head, HttpResponseStatus.OK, drainJson(health.drainStatus()));
         }
       }
+      case "/antibot", "/antibot/blocklist", "/metrics" -> {
+        AntiBotService bots = health.antiBot();
+        if (bots == null) {
+          respond(ctx, head, HttpResponseStatus.SERVICE_UNAVAILABLE, error("starting"));
+        } else if (readOnly(ctx, method, head)) {
+          switch (uri.path()) {
+            case "/antibot" ->
+                respond(ctx, head, HttpResponseStatus.OK, AntiBotEndpoints.json(bots.status()));
+            case "/antibot/blocklist" ->
+                respondText(ctx, head, AntiBotStatus.blocklistText(bots.blocklist()), TEXT);
+            default -> respondText(ctx, head, AntiBotEndpoints.metrics(bots.status()), METRICS);
+          }
+        }
+      }
+      case "/antibot/lockdown" -> lockdown(ctx, request, method, uri);
       default ->
           respond(
               ctx,
               head,
               HttpResponseStatus.NOT_FOUND,
-              error("no such endpoint; try /livez, /startupz, /readyz or /drain"));
+              error(
+                  "no such endpoint; try /livez, /startupz, /readyz, /drain, /antibot,"
+                      + " /antibot/blocklist, /antibot/lockdown or /metrics"));
     }
+  }
+
+  /** {@code POST /antibot/lockdown?enabled=true|false}: turns lockdown on or off (bearer token). */
+  private void lockdown(
+      ChannelHandlerContext ctx,
+      FullHttpRequest request,
+      HttpMethod method,
+      QueryStringDecoder uri) {
+    if (!HttpMethod.POST.equals(method)) {
+      FullHttpResponse response =
+          response(false, HttpResponseStatus.METHOD_NOT_ALLOWED, error("use POST"));
+      response.headers().set(HttpHeaderNames.ALLOW, "POST");
+      send(ctx, response);
+      return;
+    }
+    if (!authorize(ctx, request, "/antibot/lockdown")) {
+      return;
+    }
+    AntiBotService bots = health.antiBot();
+    List<String> values = uri.parameters().get("enabled");
+    String value = values == null || values.isEmpty() ? "" : values.getLast();
+    Boolean enabled =
+        switch (value.toLowerCase(Locale.ROOT)) {
+          case "true", "on", "1" -> Boolean.TRUE;
+          case "false", "off", "0" -> Boolean.FALSE;
+          default -> null;
+        };
+    if (bots == null || enabled == null) {
+      respond(
+          ctx,
+          false,
+          bots == null ? HttpResponseStatus.SERVICE_UNAVAILABLE : HttpResponseStatus.BAD_REQUEST,
+          error(bots == null ? "starting" : "add ?enabled=true or ?enabled=false"));
+      return;
+    }
+    try {
+      boolean changed = bots.lockdown(enabled, "management");
+      JsonObject body = new JsonObject();
+      body.addProperty("lockdown", bots.isLockdown());
+      body.addProperty("changed", changed);
+      respond(ctx, false, HttpResponseStatus.OK, body);
+    } catch (IllegalStateException e) {
+      respond(ctx, false, HttpResponseStatus.CONFLICT, error(e.getMessage()));
+    }
+  }
+
+  /**
+   * Checks the bearer token of a mutating request, answering 403 or 401 when it is missing.
+   *
+   * @return {@code true} if the request may go on
+   */
+  private boolean authorize(ChannelHandlerContext ctx, FullHttpRequest request, String endpoint) {
+    byte[] expected = tokenDigest;
+    if (expected == null) {
+      respond(
+          ctx,
+          false,
+          HttpResponseStatus.FORBIDDEN,
+          error(
+              "POST "
+                  + endpoint
+                  + " is disabled: no management token is configured"
+                  + " (management.token-file or WARP_MANAGEMENT_TOKEN)"));
+      return false;
+    }
+    if (!authorized(request, expected)) {
+      logger.warn(
+          "Refused POST {} from {}: missing or wrong bearer token",
+          endpoint,
+          ctx.channel().remoteAddress());
+      FullHttpResponse response =
+          response(false, HttpResponseStatus.UNAUTHORIZED, error("missing or wrong bearer token"));
+      response.headers().set(HttpHeaderNames.WWW_AUTHENTICATE, "Bearer realm=\"warp\"");
+      send(ctx, response);
+      return false;
+    }
+    return true;
+  }
+
+  private static void respondText(
+      ChannelHandlerContext ctx, boolean head, String text, String contentType) {
+    byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+    FullHttpResponse response =
+        new DefaultFullHttpResponse(
+            HttpVersion.HTTP_1_1,
+            HttpResponseStatus.OK,
+            head ? Unpooled.EMPTY_BUFFER : Unpooled.wrappedBuffer(bytes));
+    response
+        .headers()
+        .set(HttpHeaderNames.CONTENT_TYPE, contentType)
+        .setInt(HttpHeaderNames.CONTENT_LENGTH, bytes.length)
+        .set(HttpHeaderNames.CACHE_CONTROL, HttpHeaderValues.NO_STORE)
+        .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+    send(ctx, response);
   }
 
   @Override
@@ -166,25 +281,7 @@ final class ManagementHttpHandler extends SimpleChannelInboundHandler<FullHttpRe
 
   private void startDrain(
       ChannelHandlerContext ctx, FullHttpRequest request, QueryStringDecoder uri) {
-    byte[] expected = tokenDigest;
-    if (expected == null) {
-      respond(
-          ctx,
-          false,
-          HttpResponseStatus.FORBIDDEN,
-          error(
-              "POST /drain is disabled: no management token is configured"
-                  + " (management.token-file or WARP_MANAGEMENT_TOKEN)"));
-      return;
-    }
-    if (!authorized(request, expected)) {
-      logger.warn(
-          "Refused POST /drain from {}: missing or wrong bearer token",
-          ctx.channel().remoteAddress());
-      FullHttpResponse response =
-          response(false, HttpResponseStatus.UNAUTHORIZED, error("missing or wrong bearer token"));
-      response.headers().set(HttpHeaderNames.WWW_AUTHENTICATE, "Bearer realm=\"warp\"");
-      send(ctx, response);
+    if (!authorize(ctx, request, "/drain")) {
       return;
     }
     if (!health.isStarted() || health.isStopping()) {

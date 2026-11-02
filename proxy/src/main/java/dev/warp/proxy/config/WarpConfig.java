@@ -103,7 +103,7 @@ public final class WarpConfig {
   private static final Pattern COUNT = Pattern.compile("\\d{1,10}");
 
   /** A duration: digits and an optional unit, milliseconds without one. */
-  private static final Pattern DURATION = Pattern.compile("(\\d{1,15})\\s*(ms|s|m|h)?");
+  private static final Pattern DURATION = Pattern.compile("(\\d{1,15})\\s*(ms|s|m|h|d)?");
 
   // ---------------------------------------------------------------------------
   // Fields
@@ -126,6 +126,7 @@ public final class WarpConfig {
   private final StatusSettings status;
   private final ProxyProtocolConfig proxyProtocol;
   private final LimitsConfig limits;
+  private final AntiBotConfig antiBot;
 
   // ---------------------------------------------------------------------------
   // Constructor (private — use load())
@@ -148,7 +149,8 @@ public final class WarpConfig {
       DrainConfig drain,
       StatusSettings status,
       ProxyProtocolConfig proxyProtocol,
-      LimitsConfig limits) {
+      LimitsConfig limits,
+      AntiBotConfig antiBot) {
     this.bind = bind;
     this.onlineMode = onlineMode;
     this.servers = Map.copyOf(servers);
@@ -166,6 +168,7 @@ public final class WarpConfig {
     this.status = status;
     this.proxyProtocol = proxyProtocol;
     this.limits = limits;
+    this.antiBot = antiBot;
   }
 
   // ---------------------------------------------------------------------------
@@ -234,6 +237,7 @@ public final class WarpConfig {
     StatusSettings status = parseStatus(root.node("status"), directory);
     ProxyProtocolConfig proxyProtocol = parseProxyProtocol(root);
     LimitsConfig limits = parseLimits(root);
+    AntiBotConfig antiBot = AntiBotConfig.parse(root);
 
     // ---------------------------------------------------------------------------
     // Validate
@@ -266,7 +270,8 @@ public final class WarpConfig {
             drain,
             status,
             proxyProtocol,
-            limits);
+            limits,
+            antiBot);
 
     logConfig(config);
     return config;
@@ -437,6 +442,15 @@ public final class WarpConfig {
    */
   public LimitsConfig limits() {
     return limits;
+  }
+
+  /**
+   * Returns the anti-bot's settings: attack detection, trusted identities, lockdown, blocklist.
+   *
+   * @return the {@code anti-bot} section
+   */
+  public AntiBotConfig antiBot() {
+    return antiBot;
   }
 
   // ---------------------------------------------------------------------------
@@ -806,7 +820,7 @@ public final class WarpConfig {
   }
 
   /** Parses a list of addresses or CIDR ranges; an absent list is empty. */
-  private static CidrRanges parseCidrRanges(CommentedConfigurationNode node, String key)
+  static CidrRanges parseCidrRanges(CommentedConfigurationNode node, String key)
       throws ConfigurationException {
     if (!node.virtual() && !node.isList()) {
       throw new ConfigurationException(
@@ -881,6 +895,22 @@ public final class WarpConfig {
     Duration statusTimeout =
         parseDuration(
             section.node("status-timeout"), "limits.status-timeout", defaults.statusTimeout());
+    CommentedConfigurationNode queueNode = loginsNode.node("authentication-queue");
+    int queue =
+        parseCount(
+            queueNode.node("size"),
+            "limits.logins.authentication-queue.size",
+            defaults.authenticationQueue());
+    Duration queueWait =
+        parseDuration(
+            queueNode.node("max-wait"),
+            "limits.logins.authentication-queue.max-wait",
+            defaults.authenticationQueueWait());
+    if (queueWait.compareTo(Duration.ofSeconds(1)) < 0) {
+      throw new ConfigurationException(
+          "limits.logins.authentication-queue.max-wait must be at least 1s, got "
+              + LimitsConfig.format(queueWait));
+    }
     return new LimitsConfig(
         enabled,
         exempt,
@@ -893,7 +923,9 @@ public final class WarpConfig {
         reportInterval,
         maxPending,
         handshakeTimeout,
-        statusTimeout);
+        statusTimeout,
+        queue,
+        queueWait);
   }
 
   /** Parses the {@code burst} and {@code interval} of a token bucket section. */
@@ -911,7 +943,7 @@ public final class WarpConfig {
   }
 
   /** Parses a whole number, zero or more; an absent key takes {@code defaultValue}. */
-  private static int parseCount(CommentedConfigurationNode node, String key, int defaultValue)
+  static int parseCount(CommentedConfigurationNode node, String key, int defaultValue)
       throws ConfigurationException {
     if (node.virtual()) {
       return defaultValue;
@@ -955,6 +987,7 @@ public final class WarpConfig {
       case "s" -> Duration.ofSeconds(amount);
       case "m" -> Duration.ofMinutes(amount);
       case "h" -> Duration.ofHours(amount);
+      case "d" -> Duration.ofDays(amount);
       default -> Duration.ofMillis(amount);
     };
   }
@@ -1237,6 +1270,14 @@ public final class WarpConfig {
             # encryption response count, so bots that stall earlier take none. 0 for no limit.
             max-concurrent-authentications = 256
 
+            # When those are all taken, online logins wait in line instead of being refused:
+            # players the anti-bot trusts first, then the others in arrival order, at most `size`
+            # of them for at most `max-wait`; beyond, they are told the server is busy.
+            authentication-queue {
+              size = 1024
+              max-wait = 10s
+            }
+
             # A login that takes longer is closed, with its place among its address's logins in
             # progress. 0 for no timeout.
             timeout = 30s
@@ -1246,6 +1287,74 @@ public final class WarpConfig {
           # time-outs, invalid packets, failed authentications), when not zero. Warp never logs
           # these one connection at a time: anyone can cause them, as fast as they like.
           report-interval = 1m
+        }
+
+        # The built-in anti-bot. It learns the identities that play here (the account in online
+        # mode, the name with its network in offline mode), detects attacks from the logins of
+        # identities it does not know, and lets only known ones in during a lockdown
+        # (/warp antibot lockdown on, or POST /antibot/lockdown on the management server).
+        # The limits above apply whether it runs or not.
+        anti-bot {
+          enabled = true
+
+          # Addresses or CIDR ranges never refused by lockdown nor counted as unknown: a staff VPN,
+          # a Geyser host.
+          exempt = []
+
+          verified {
+            # An identity stays trusted this long after it last joined (sliding, not from when it
+            # was first trusted). Durations take ms, s, m, h or d.
+            expire-after-last-join = 30d
+            # The most identities remembered: about 35 bytes each. When full, the least recently
+            # seen of a random sample of 8 makes room.
+            capacity = 250000
+            # In offline mode an identity is a name and the network it connects from: an IPv4 /24
+            # or an IPv6 /48 by default, so that a new address from the same provider pool does
+            # not make a player unknown.
+            prefix {
+              ipv4 = 24
+              ipv6 = 48
+            }
+            # Keep the identities on disk (anti-bot/verified.dat and its journal, flushed every
+            # second), so that a restart does not forget them. No name or address is stored in
+            # clear: only keyed hashes.
+            persist = true
+            # The secret the identities are hashed under, generated on first start; share it (or
+            # set WARP_ANTIBOT_SECRET) between proxies that share a store through a plugin.
+            secret-file = "anti-bot/secret.key"
+            # How long a login waits for a plugin's shared store to answer.
+            shared-store-timeout = 500ms
+          }
+
+          # An attack starts when, for `sustain`, the logins of unknown identities or the failed
+          # authentications per second go over their floor (or `baseline-factor` times their usual
+          # rate, learned outside attacks), or connections not logged in go over `pending-share`
+          # percent of limits.max-pending-connections. It ends once everything stayed under half
+          # its threshold for `calm-for`. Meanwhile, one summary line per `report-interval`.
+          attack {
+            floors {
+              unknown-logins = 10
+              authentication-failures = 5
+            }
+            baseline-factor = 4
+            pending-share = 50
+            sustain = 3s
+            calm-for = 60s
+            report-interval = 10s
+          }
+
+          # Addresses that send what no game client sends (frames over the limits of their state,
+          # invalid handshakes, unexpected packets) `strikes` times within `duration` are refused at
+          # once for `duration`, and listed on GET /antibot/blocklist for nftables. 0 turns it off.
+          blocklist {
+            strikes = 3
+            duration = 10m
+          }
+
+          # How long a login waits for the checks plugins add (VPN detection, say).
+          checks {
+            timeout = 2s
+          }
         }
         """
             .replace("{default-version-name}", StatusSettings.defaultVersionName());
@@ -1329,5 +1438,6 @@ public final class WarpConfig {
     } else {
       logger.info("  limits: disabled");
     }
+    logger.info("  anti-bot: {}", config.antiBot);
   }
 }

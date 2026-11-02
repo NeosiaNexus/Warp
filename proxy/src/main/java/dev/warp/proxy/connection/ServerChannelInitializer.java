@@ -229,7 +229,7 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
 
     MinecraftConnection connection = new MinecraftConnection(ch);
     // From now on the connection gives its place back when it closes, or once logged in.
-    connection.guard(new ConnectionGuard(ch, limits));
+    connection.guard(new ConnectionGuard(connection, limits));
     ChannelPipeline pipeline = ch.pipeline();
 
     if (proxyProtocol.enabled()) {

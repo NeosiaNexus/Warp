@@ -237,7 +237,7 @@ class ManagementServerTest {
     void notFound() throws Exception {
       start();
 
-      HttpResponse<String> response = get("/metrics");
+      HttpResponse<String> response = get("/nothing-here");
 
       assertEquals(404, response.statusCode());
       assertTrue(json(response).has("error"));

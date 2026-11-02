@@ -45,8 +45,20 @@ public enum Refusal {
   /** A login while its address has as many in progress as it may. */
   LOGINS_IN_PROGRESS("logins over the logins in progress per address"),
 
-  /** An online login while the proxy authenticates as many players as it may. */
+  /**
+   * An online login that found the authentication line full, or waited in it longer than its
+   * longest wait.
+   */
   AUTHENTICATION_BUSY("logins refused as too many authenticating"),
+
+  /** A new connection from an address on the blocklist. */
+  BLOCKLISTED("connections from blocklisted addresses"),
+
+  /** A login of an identity the anti-bot does not trust, during a lockdown. */
+  LOCKDOWN("unknown logins refused by the lockdown"),
+
+  /** A login a plugin's check failed. */
+  CHECK_FAILED("logins refused by plugins' checks"),
 
   // ---------------------------------------------------------------------------
   // Deadlines
@@ -120,5 +132,16 @@ public enum Refusal {
    */
   public String label() {
     return name().toLowerCase(Locale.ROOT);
+  }
+
+  /**
+   * Returns whether the reason is a protocol impossibility, which no game client produces however
+   * bad its network: a strike against its address on the blocklist. Time-outs, rate limits and
+   * failed authentications never are.
+   *
+   * @return {@code true} for an invalid frame, handshake or packet
+   */
+  public boolean strikes() {
+    return this == INVALID_FRAME || this == INVALID_HANDSHAKE || this == UNEXPECTED_PACKET;
   }
 }

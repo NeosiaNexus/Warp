@@ -17,6 +17,7 @@
 package dev.warp.proxy.connection;
 
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.command.WarpCommandManager;
@@ -66,6 +67,7 @@ import io.netty.channel.Channel;
  * @param acceptsTransfers whether players a Transfer packet sends here (handshake intent 3,
  *     1.20.5+) may log in; refused with vanilla's reason otherwise
  * @param limits the limits on what one client address may do, applied to every connection
+ * @param antiBot the anti-bot: attack detection, trusted identities, lockdown, plugin checks
  */
 @SuppressWarnings("ArrayRecordComponent") // forwardingSecret is treated as immutable
 public record ServerLoginContext(
@@ -89,7 +91,8 @@ public record ServerLoginContext(
     byte[] forwardingSecret,
     Class<? extends Channel> channelClass,
     boolean acceptsTransfers,
-    ClientLimits limits) {
+    ClientLimits limits,
+    AntiBotService antiBot) {
 
   /** Validates configuration invariants. */
   public ServerLoginContext {

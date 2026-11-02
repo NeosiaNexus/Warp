@@ -16,6 +16,8 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.antibot.LoginAttempt;
+import dev.warp.api.antibot.Verdict;
 import dev.warp.api.event.player.LoginEvent;
 import dev.warp.api.event.player.PreLoginEvent;
 import dev.warp.protocol.ProtocolState;
@@ -40,6 +42,7 @@ import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.login.SetCompression;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.PlayDisconnect;
+import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.auth.AuthenticationException;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
@@ -48,6 +51,7 @@ import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.event.player.GameProfileRequestEventImpl;
 import dev.warp.proxy.event.player.LoginEventImpl;
 import dev.warp.proxy.event.player.PreLoginEventImpl;
+import dev.warp.proxy.limit.AuthenticationLane;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.limit.LoginAdmission;
 import dev.warp.proxy.limit.LoginSlot;
@@ -62,8 +66,10 @@ import java.security.PublicKey;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 import javax.crypto.Cipher;
@@ -142,6 +148,11 @@ final class LoginSessionHandler implements SessionHandler {
   static final String BUSY_REASON =
       "The server is busy logging players in. Please try again in a moment.";
 
+  /** Told to a player the anti-bot does not know, during a lockdown. */
+  static final String LOCKDOWN_REASON =
+      "This server only lets in players who have played here before, for now. Please try again"
+          + " later.";
+
   /** Told to a player whose login took longer than the login timeout. */
   static final String TIMED_OUT_REASON = "Login timed out";
 
@@ -155,6 +166,8 @@ final class LoginSessionHandler implements SessionHandler {
   private enum LoginState {
     AWAITING_LOGIN_START,
     PRE_LOGIN,
+    /** Waiting in line for an authentication slot, before the encryption request. */
+    QUEUED,
     AWAITING_ENCRYPTION_RESPONSE,
     AUTHENTICATING,
     AWAITING_LOGIN_ACKNOWLEDGED,
@@ -210,6 +223,21 @@ final class LoginSessionHandler implements SessionHandler {
    * The UUID the profile key is signed for (1.19.1, 1.19.2); {@code null} before or without one.
    */
   private @Nullable UUID profileKeyHolder;
+
+  /** What the anti-bot knows of this login's name and network, from its Login Start on. */
+  private AntiBotService.@Nullable Recognition recognition;
+
+  /** Whether a plugin's check escalated this login: its identity is not learned from it. */
+  private boolean escalated;
+
+  /** The login's place in the authentication line, while it waits. */
+  private AuthenticationLane.@Nullable Waiter waiter;
+
+  /** The authentication slot this login holds, until its session server request takes it over. */
+  private AuthenticationLane.@Nullable Slot authSlot;
+
+  /** Gives back a slot granted from the line if the encryption response does not come in time. */
+  private @Nullable ScheduledFuture<?> slotDeadline;
 
   // ---------------------------------------------------------------------------
   // Constructor
@@ -287,7 +315,7 @@ final class LoginSessionHandler implements SessionHandler {
         // (SwitchWaitSessionHandler), which keeps the client's brand and settings for its server.
         return;
       }
-      loginContext.limits().refused(Refusal.UNEXPECTED_PACKET);
+      loginContext.limits().refused(Refusal.UNEXPECTED_PACKET, connection.remoteAddress());
       logger.debug(
           "Unexpected {} in LOGIN from {}",
           packet.getClass().getSimpleName(),
@@ -326,7 +354,7 @@ final class LoginSessionHandler implements SessionHandler {
    */
   private void handleCookieResponse(CookieResponse response) {
     if (!cookies.answered(response) && state != LoginState.COMPLETE) {
-      loginContext.limits().refused(Refusal.UNEXPECTED_PACKET);
+      loginContext.limits().refused(Refusal.UNEXPECTED_PACKET, connection.remoteAddress());
       logger.debug(
           "Disconnecting {} from {}: cookie {} sent unasked",
           username != null ? username : "unknown",
@@ -350,40 +378,109 @@ final class LoginSessionHandler implements SessionHandler {
     }
 
     this.username = name;
+    state = LoginState.PRE_LOGIN;
 
+    // The anti-bot first: no plugin hears of a login before the stages that apply to it.
+    AntiBotService antiBot = loginContext.antiBot();
+    InetSocketAddress address = (InetSocketAddress) connection.remoteAddress();
+    whenOnLoop(
+        antiBot.recognizeEverywhere(name, address),
+        recognized -> {
+          this.recognition = recognized;
+          if (!loginContext.onlineMode() && antiBot.lockdownRefuses(recognized)) {
+            deny(Refusal.LOCKDOWN, LOCKDOWN_REASON);
+            return;
+          }
+          if (recognized.known() || !antiBot.hasChecks()) {
+            preLogin(packet);
+            return;
+          }
+          LoginAttempt attempt =
+              new LoginAttempt(
+                  name,
+                  address,
+                  clientVersion().protocol(),
+                  connection.virtualHost(),
+                  loginContext.onlineMode());
+          whenOnLoop(
+              antiBot.check(attempt),
+              verdict -> {
+                switch (verdict) {
+                  case Verdict.Fail(Component reason) -> {
+                    deny(Refusal.CHECK_FAILED, reason);
+                    return;
+                  }
+                  case Verdict.Escalate() -> escalated = true;
+                  case Verdict.Pass(), Verdict.Abstain() -> {
+                    // No objection.
+                  }
+                }
+                preLogin(packet);
+              });
+        });
+  }
+
+  /** Lets the pre-login handlers decide on a login the anti-bot let through. */
+  private void preLogin(LoginStart packet) {
     WarpEventBus events = loginContext.events();
     if (!events.hasHandlers(PreLoginEventImpl.class)) {
+      state = LoginState.AWAITING_LOGIN_START;
       continueLogin(packet);
       return;
     }
-    state = LoginState.PRE_LOGIN;
+    whenOnLoop(
+        events.fire(new PreLoginEventImpl(inbound, packet.name())),
+        event -> {
+          switch (event.result()) {
+            case PreLoginEvent.Denied(Component reason) -> {
+              deny(Refusal.DENIED_BY_PLUGIN, reason);
+              return;
+            }
+            case PreLoginEvent.ForceOnlineMode() -> onlineMode = true;
+            case PreLoginEvent.ForceOfflineMode() -> onlineMode = false;
+            case PreLoginEvent.Allowed() -> {
+              // The proxy's mode.
+            }
+          }
+          state = LoginState.AWAITING_LOGIN_START;
+          continueLogin(packet);
+        });
+  }
+
+  /**
+   * Runs {@code next} on the event loop with the result of a step of the pre-login, unless the
+   * client left or the login moved on meanwhile: at once if the step is already done, as it is when
+   * no plugin is involved.
+   */
+  private <T> void whenOnLoop(CompletableFuture<T> step, Consumer<T> next) {
+    if (step.isDone() && connection.channel().eventLoop().inEventLoop()) {
+      if (connection.channel().isActive() && state == LoginState.PRE_LOGIN) {
+        next.accept(step.join());
+      }
+      return;
+    }
     var _ =
-        events
-            .fire(new PreLoginEventImpl(inbound, name))
-            .whenCompleteAsync(
-                (event, _) -> {
-                  if (!connection.channel().isActive() || state != LoginState.PRE_LOGIN) {
-                    return;
-                  }
-                  switch (event.result()) {
-                    case PreLoginEvent.Denied(Component reason) -> {
-                      deny(Refusal.DENIED_BY_PLUGIN, reason);
-                      return;
-                    }
-                    case PreLoginEvent.ForceOnlineMode() -> onlineMode = true;
-                    case PreLoginEvent.ForceOfflineMode() -> onlineMode = false;
-                    case PreLoginEvent.Allowed() -> {
-                      // The proxy's mode.
-                    }
-                  }
-                  state = LoginState.AWAITING_LOGIN_START;
-                  continueLogin(packet);
-                },
-                connection.channel().eventLoop());
+        step.whenCompleteAsync(
+            (result, failure) -> {
+              if (failure != null
+                  || result == null
+                  || !connection.channel().isActive()
+                  || state != LoginState.PRE_LOGIN) {
+                return;
+              }
+              next.accept(result);
+            },
+            connection.channel().eventLoop());
   }
 
   /** Goes on with a login the pre-login handlers let through. */
   private void continueLogin(LoginStart packet) {
+    AntiBotService.Recognition recognized = recognition();
+    if (!onlineMode && loginContext.antiBot().lockdownRefuses(recognized)) {
+      // An online proxy a plugin made offline for this login: lockdown has no account to check.
+      deny(Refusal.LOCKDOWN, LOCKDOWN_REASON);
+      return;
+    }
     // 1.19 to 1.19.2, online mode: the client will sign the verify token with its profile key, so
     // the key is checked on arrival, as Velocity's InitialLoginSessionHandler does. A client
     // without a key is accepted (Velocity's force-key-authentication off): Warp forwards no key, so
@@ -406,16 +503,85 @@ final class LoginSessionHandler implements SessionHandler {
     }
 
     if (onlineMode) {
-      // Told now, while the client can still read it: once it sends its encryption response, it
-      // expects encrypted packets.
-      if (!loginContext.limits().admitOnlineLogin()) {
-        refuse(BUSY_REASON);
+      AuthenticationLane lane = loginContext.limits().lane();
+      if (lane.mustWait()) {
+        queue(lane, recognized.known());
         return;
       }
       beginOnlineMode();
     } else {
       beginOfflineMode();
     }
+  }
+
+  /**
+   * Puts an online login in line for an authentication slot, while the client can still be told why
+   * it waits too long: once it sends its encryption response, it expects encrypted packets. Trusted
+   * players go first.
+   */
+  private void queue(AuthenticationLane lane, boolean trusted) {
+    state = LoginState.QUEUED;
+    AuthenticationLane.Waiter placed =
+        lane.enqueue(
+            trusted,
+            connection.channel().eventLoop(),
+            granted -> {
+              if (!connection.channel().isActive() || state != LoginState.QUEUED) {
+                granted.release();
+                return;
+              }
+              this.waiter = null;
+              this.authSlot = granted;
+              // Held from now on: given back unless the encryption response comes in time.
+              slotDeadline =
+                  connection
+                      .channel()
+                      .eventLoop()
+                      .schedule(
+                          this::slotTimedOut, lane.maxWait().toMillis(), TimeUnit.MILLISECONDS);
+              beginOnlineMode();
+            },
+            () -> {
+              this.waiter = null;
+              if (connection.channel().isActive() && state == LoginState.QUEUED) {
+                refuseBusy(lane);
+              }
+            });
+    if (placed == null) {
+      refuseBusy(lane);
+      return;
+    }
+    this.waiter = placed;
+  }
+
+  private void refuseBusy(AuthenticationLane lane) {
+    loginContext.limits().refused(Refusal.AUTHENTICATION_BUSY, connection.remoteAddress());
+    refuse(busyReason(lane.maxWait()));
+  }
+
+  /** A slot granted from the line, whose client did not answer the encryption request in time. */
+  private void slotTimedOut() {
+    slotDeadline = null;
+    if (connection.channel().isActive() && state == LoginState.AWAITING_ENCRYPTION_RESPONSE) {
+      loginContext.limits().refused(Refusal.LOGIN_TIMEOUT, connection.remoteAddress());
+      refuse(TIMED_OUT_REASON);
+    }
+  }
+
+  /** The reason shown to a player who waited in line too long, with when to try again. */
+  static String busyReason(Duration retryAfter) {
+    long seconds = Math.max(1, retryAfter.toSeconds());
+    return "The server is busy logging players in. Please try again in "
+        + seconds
+        + (seconds == 1 ? " second." : " seconds.");
+  }
+
+  private AntiBotService.Recognition recognition() {
+    AntiBotService.Recognition recognized = recognition;
+    if (recognized == null) {
+      throw new IllegalStateException("the login was not recognized before it went on");
+    }
+    return recognized;
   }
 
   private void handleEncryptionResponse(EncryptionResponse packet) {
@@ -426,24 +592,71 @@ final class LoginSessionHandler implements SessionHandler {
 
     // Prevent duplicate processing.
     state = LoginState.AUTHENTICATING;
+    ScheduledFuture<?> deadline = this.slotDeadline;
+    if (deadline != null) {
+      deadline.cancel(false);
+      this.slotDeadline = null;
+    }
 
+    // Bounds the RSA work and the session server requests in flight, which a bot attack with
+    // accounts, or a flood of fake responses, would otherwise drive without limit. A login that
+    // waited in line holds its slot already; another takes one now, or waits in line silently:
+    // the client expects encrypted packets from now on, so it cannot be told why it waits.
+    if (authSlot == null) {
+      AuthenticationLane lane = loginContext.limits().lane();
+      AuthenticationLane.Slot free = lane.tryAcquire();
+      if (free == null) {
+        waitForSlot(lane, packet);
+        return;
+      }
+      authSlot = free;
+    }
+    authenticate(packet);
+  }
+
+  /** Waits silently in line for a slot to authenticate an encryption response with. */
+  private void waitForSlot(AuthenticationLane lane, EncryptionResponse packet) {
+    AuthenticationLane.Waiter placed =
+        lane.enqueue(
+            recognition().known(),
+            connection.channel().eventLoop(),
+            granted -> {
+              this.waiter = null;
+              if (!connection.channel().isActive() || state != LoginState.AUTHENTICATING) {
+                granted.release();
+                return;
+              }
+              this.authSlot = granted;
+              authenticate(packet);
+            },
+            () -> {
+              this.waiter = null;
+              if (connection.channel().isActive() && state == LoginState.AUTHENTICATING) {
+                closeBusy();
+              }
+            });
+    if (placed == null) {
+      closeBusy();
+      return;
+    }
+    this.waiter = placed;
+  }
+
+  private void closeBusy() {
+    loginContext.limits().refused(Refusal.AUTHENTICATION_BUSY, connection.remoteAddress());
+    state = LoginState.REFUSED;
+    endOfLogin();
+    connection.close();
+  }
+
+  /** Decrypts an encryption response with a slot held, then asks the session server. */
+  private void authenticate(EncryptionResponse packet) {
     byte[] token = this.verifyToken;
     if (token == null) {
       disconnect("Internal error");
       return;
     }
-
-    // Bounds the RSA work and the session server requests in flight, which a bot attack with
-    // accounts, or a flood of fake responses, would otherwise drive without limit. Full since the
-    // login started: the client now expects encrypted packets, so it cannot be told why.
-    ClientLimits limits = loginContext.limits();
-    if (!limits.tryStartAuthentication()) {
-      state = LoginState.REFUSED;
-      endOfLogin();
-      connection.close();
-      return;
-    }
-    // Ended here, unless the session server request is under way: it ends it.
+    // The slot is given back here, unless the session server request is under way: it does.
     boolean requested = false;
     try {
       Cipher rsaCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
@@ -489,8 +702,16 @@ final class LoginSessionHandler implements SessionHandler {
       deny(Refusal.AUTHENTICATION_FAILED, "Encryption error: " + e);
     } finally {
       if (!requested) {
-        limits.endAuthentication();
+        releaseAuthSlot();
       }
+    }
+  }
+
+  private void releaseAuthSlot() {
+    AuthenticationLane.Slot held = authSlot;
+    if (held != null) {
+      authSlot = null;
+      held.release();
     }
   }
 
@@ -573,7 +794,10 @@ final class LoginSessionHandler implements SessionHandler {
       disconnect("Internal error");
       return false;
     }
-    ClientLimits limits = loginContext.limits();
+    // The request owns the slot from now on, and gives it back when the session server answers,
+    // even if the client left meanwhile.
+    AuthenticationLane.Slot requestSlot = this.authSlot;
+    this.authSlot = null;
 
     byte[] publicKey = loginContext.rsaKeyPair().getPublic().getEncoded();
     String serverHash = ServerHash.compute("", sharedSecret, publicKey);
@@ -603,6 +827,13 @@ final class LoginSessionHandler implements SessionHandler {
                             refuseProfileKey(ProfileKeys.Problem.OTHER_HOLDER);
                             return;
                           }
+                          // Lockdown, online: an account trusted from another network gets in.
+                          if (loginContext
+                              .antiBot()
+                              .lockdownRefuses(recognition(), profile.uuid())) {
+                            deny(Refusal.LOCKDOWN, LOCKDOWN_REASON);
+                            return;
+                          }
                           completeLogin(profile);
                         });
 
@@ -630,7 +861,9 @@ final class LoginSessionHandler implements SessionHandler {
                           deny(Refusal.AUTHENTICATION_FAILED, "Authentication failed");
                         });
               } finally {
-                limits.endAuthentication();
+                if (requestSlot != null) {
+                  requestSlot.release();
+                }
               }
             });
     return true;
@@ -760,6 +993,8 @@ final class LoginSessionHandler implements SessionHandler {
         connection.handshakeIntent() == HandshakeIntent.TRANSFER ? ", transferred" : "");
     // No longer among the connections not logged in, nor under their deadlines.
     connection.loggedIn();
+    // Refreshes what the anti-bot knows of the player, or learns it outside attacks.
+    loginContext.antiBot().joined(recognition(), onlineMode ? profile.uuid() : null, escalated);
 
     if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
       // The client reads configuration packets from Login Success on, though it is still read in
@@ -843,7 +1078,10 @@ final class LoginSessionHandler implements SessionHandler {
   // Limits
   // ---------------------------------------------------------------------------
 
-  /** Releases the login's place among its address's logins in progress, and its timeout. */
+  /**
+   * Releases the login's place among its address's logins in progress, its timeout, its place in
+   * the authentication line and the slot it holds (unless its session server request took it).
+   */
   private void endOfLogin() {
     LoginSlot held = this.slot;
     if (held != null) {
@@ -855,6 +1093,17 @@ final class LoginSessionHandler implements SessionHandler {
       pending.cancel(false);
       this.timeoutTask = null;
     }
+    AuthenticationLane.Waiter waiting = this.waiter;
+    if (waiting != null) {
+      this.waiter = null;
+      waiting.cancel();
+    }
+    ScheduledFuture<?> deadline = this.slotDeadline;
+    if (deadline != null) {
+      deadline.cancel(false);
+      this.slotDeadline = null;
+    }
+    releaseAuthSlot();
   }
 
   private void timedOut() {
@@ -862,7 +1111,7 @@ final class LoginSessionHandler implements SessionHandler {
     if (!connection.channel().isActive()) {
       return;
     }
-    loginContext.limits().refused(Refusal.LOGIN_TIMEOUT);
+    loginContext.limits().refused(Refusal.LOGIN_TIMEOUT, connection.remoteAddress());
     logger.debug("Login of {} from {} timed out", username, connection.remoteAddress());
     refuse(TIMED_OUT_REASON);
   }
@@ -900,7 +1149,7 @@ final class LoginSessionHandler implements SessionHandler {
    * translated, and the log says what is wrong. Only called in the login state.
    */
   private void refuseProfileKey(ProfileKeys.Problem problem) {
-    loginContext.limits().refused(Refusal.INVALID_LOGIN);
+    loginContext.limits().refused(Refusal.INVALID_LOGIN, connection.remoteAddress());
     logger.debug(
         "Disconnecting {} from {}: invalid profile public key, {}",
         username != null ? username : "unknown",
@@ -933,7 +1182,7 @@ final class LoginSessionHandler implements SessionHandler {
   }
 
   private void countDenial(Refusal reason, String message) {
-    loginContext.limits().refused(reason);
+    loginContext.limits().refused(reason, connection.remoteAddress());
     logger.debug(
         "Disconnecting {} from {} ({}): {}",
         username != null ? username : "unknown",

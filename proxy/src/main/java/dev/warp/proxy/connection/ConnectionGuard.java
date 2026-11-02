@@ -51,6 +51,7 @@ import org.jspecify.annotations.Nullable;
  */
 final class ConnectionGuard {
 
+  private final MinecraftConnection connection;
   private final Channel channel;
   private final ClientLimits limits;
 
@@ -64,12 +65,13 @@ final class ConnectionGuard {
    * Creates the guard of a connection that holds a place among the connections not logged in, and
    * starts its handshake deadline.
    *
-   * @param channel the client connection
+   * @param connection the client connection
    * @param limits the proxy's limits, which counted the connection with {@link
    *     ClientLimits#tryStartPending()}
    */
-  ConnectionGuard(Channel channel, ClientLimits limits) {
-    this.channel = channel;
+  ConnectionGuard(MinecraftConnection connection, ClientLimits limits) {
+    this.connection = connection;
+    this.channel = connection.channel();
     this.limits = limits;
     schedule(limits.handshakeTimeout(), Refusal.HANDSHAKE_TIMEOUT);
   }
@@ -119,7 +121,7 @@ final class ConnectionGuard {
     } else {
       return null;
     }
-    limits.refused(reason);
+    limits.refused(reason, connection.remoteAddress());
     return reason;
   }
 
@@ -143,7 +145,7 @@ final class ConnectionGuard {
     if (ended || !channel.isActive()) {
       return;
     }
-    limits.refused(reason);
+    limits.refused(reason, connection.remoteAddress());
     ServerChannelInitializer.reset(channel);
   }
 

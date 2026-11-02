@@ -18,9 +18,12 @@ package dev.warp.proxy.management;
 
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
+import dev.warp.proxy.antibot.AntiBotService;
 
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * What the management server reads from the proxy. Every method returns at once and runs no plugin
@@ -78,4 +81,13 @@ public interface ProxyHealth {
    * @throws IllegalStateException if the proxy is not running
    */
   CompletableFuture<DrainStatus> drain(DrainTrigger trigger);
+
+  /**
+   * Returns the anti-bot, for its status, blocklist and lockdown endpoints.
+   *
+   * @return the anti-bot, or {@code null} before it loads
+   */
+  default @Nullable AntiBotService antiBot() {
+    return null;
+  }
 }

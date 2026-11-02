@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.command.ProxyCommands;
@@ -247,6 +248,39 @@ final class TestLoginContexts {
       ForwardingMode forwardingMode,
       byte[] forwardingSecret,
       Class<? extends io.netty.channel.Channel> channelClass) {
+    return context(
+        onlineMode,
+        compressionThreshold,
+        sessionService,
+        profileKeys,
+        policy,
+        events,
+        acceptsTransfers,
+        status,
+        limits,
+        registry,
+        forwardingMode,
+        forwardingSecret,
+        channelClass,
+        AntiBotService.disabled(limits, events));
+  }
+
+  @SuppressWarnings("ParameterNumber") // every knob of the context, for the factories above
+  private static ServerLoginContext context(
+      boolean onlineMode,
+      int compressionThreshold,
+      MojangSessionService sessionService,
+      ProfileKeys profileKeys,
+      DuplicateLoginPolicy policy,
+      WarpEventBus events,
+      boolean acceptsTransfers,
+      StatusSettings status,
+      ClientLimits limits,
+      ServerRegistry registry,
+      ForwardingMode forwardingMode,
+      byte[] forwardingSecret,
+      Class<? extends io.netty.channel.Channel> channelClass,
+      AntiBotService antiBot) {
     PlayerRegistry players = new PlayerRegistry();
     return new ServerLoginContext(
         KEY_PAIR,
@@ -269,7 +303,8 @@ final class TestLoginContexts {
         forwardingSecret,
         channelClass,
         acceptsTransfers,
-        limits);
+        limits,
+        antiBot);
   }
 
   /**
@@ -307,6 +342,40 @@ final class TestLoginContexts {
    * @param limits the limits on client addresses
    * @return the context
    */
+  /**
+   * A context whose anti-bot is {@code antiBot}, built on {@code limits}.
+   *
+   * @param onlineMode whether players authenticate
+   * @param sessionService the session server
+   * @param limits the limits the anti-bot listens to
+   * @param antiBot the anti-bot
+   * @return the context
+   */
+  static ServerLoginContext withAntiBot(
+      boolean onlineMode,
+      MojangSessionService sessionService,
+      ClientLimits limits,
+      AntiBotService antiBot) {
+    return context(
+        onlineMode,
+        -1,
+        sessionService,
+        ProfileKeys.mojang(),
+        DuplicateLoginPolicy.AUTO,
+        EVENTS,
+        false,
+        StatusSettings.defaults(),
+        limits,
+        new ServerRegistry(
+            Map.of("lobby", new InetSocketAddress(InetAddress.getLoopbackAddress(), 1)),
+            "lobby",
+            List.of("lobby")),
+        ForwardingMode.NONE,
+        new byte[0],
+        NioSocketChannel.class,
+        antiBot);
+  }
+
   static ServerLoginContext limited(
       boolean onlineMode, MojangSessionService sessionService, ClientLimits limits) {
     return context(

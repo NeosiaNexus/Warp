@@ -129,7 +129,7 @@ final class StatusSessionHandler implements SessionHandler {
   /** Closes a ping that sent what no client sends: counted, never logged one by one. */
   private void unexpected(Packet packet) {
     refused = true;
-    context.limits().refused(Refusal.UNEXPECTED_PACKET);
+    context.limits().refused(Refusal.UNEXPECTED_PACKET, connection.remoteAddress());
     logger.debug(
         "Unexpected {} in STATUS from {}",
         packet.getClass().getSimpleName(),

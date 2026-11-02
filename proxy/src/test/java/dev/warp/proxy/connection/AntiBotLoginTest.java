@@ -1,0 +1,250 @@
+/*
+ * Copyright (C) 2026 Warp Contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+package dev.warp.proxy.connection;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import dev.warp.api.antibot.AttackLevel;
+import dev.warp.api.antibot.Identity;
+import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.codec.McString;
+import dev.warp.protocol.codec.VarInt;
+import dev.warp.proxy.antibot.AntiBotService;
+import dev.warp.proxy.auth.MojangSessionService;
+import dev.warp.proxy.config.AntiBotConfig;
+import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.limit.ClientLimits;
+import dev.warp.proxy.limit.Refusal;
+import dev.warp.proxy.network.CidrRanges;
+
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
+
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.embedded.EmbeddedChannel;
+import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+/** Logins through Warp's pipeline with a live anti-bot: lockdown, learning, attacks. */
+@DisplayName("anti-bot at login")
+class AntiBotLoginTest {
+
+  private static final ProtocolVersion VERSION = ProtocolVersion.MINECRAFT_1_21_4;
+
+  @TempDir private Path directory;
+  private final ClientLimits limits = ClientLimits.unlimited();
+  private @Nullable AntiBotService antiBot;
+
+  AntiBotLoginTest() {}
+
+  @AfterEach
+  void close() {
+    if (antiBot != null) {
+      bots().close();
+    }
+  }
+
+  @Nested
+  @DisplayName("lockdown, offline")
+  class Lockdown {
+
+    @Test
+    @DisplayName("should refuse an unknown name and network, and let a trusted one in")
+    void onlyTrusted() throws Exception {
+      start(AntiBotConfig.DEFAULTS.exempt());
+      bots()
+          .trustByCommand(new Identity.NameAtAddress("Alex", address("203.0.113.9")))
+          .get(5, TimeUnit.SECONDS);
+      bots().lockdown(true, "test");
+
+      EmbeddedChannel unknown = login("Steve", "203.0.113.9");
+      EmbeddedChannel trusted = login("Alex", "203.0.113.200");
+
+      assertEquals(0x00, packetId(unknown), "Login Disconnect");
+      assertEquals(0x02, packetId(trusted), "Login Success: the same name on its /24");
+      assertEquals(1, limits.refusals(Refusal.LOCKDOWN));
+    }
+
+    @Test
+    @DisplayName("should let exempt addresses in during a lockdown")
+    void exempt() throws Exception {
+      start(CidrRanges.parse(List.of("198.51.100.0/24")));
+      bots().lockdown(true, "test");
+
+      assertEquals(0x02, packetId(login("Steve", "198.51.100.7")));
+    }
+  }
+
+  @Nested
+  @DisplayName("learning")
+  class Learning {
+
+    @Test
+    @DisplayName("should learn a player that joins outside attacks, and not during a lockdown")
+    void learnsOutsideAttacks() throws Exception {
+      start(AntiBotConfig.DEFAULTS.exempt());
+      Identity steve = new Identity.NameAtAddress("Steve", address("203.0.113.9"));
+
+      assertEquals(0x02, packetId(login("Steve", "203.0.113.9")));
+
+      assertTrue(waitFor(() -> bots().verified().check(steve).isPresent()), "learned");
+    }
+
+    @Test
+    @DisplayName("should detect a wave of unknown logins and stop learning during it")
+    void attack() throws Exception {
+      start(AntiBotConfig.DEFAULTS.exempt());
+      for (int second = 0; second < 3; second++) {
+        for (int i = 0; i < 20; i++) {
+          login("bot_" + second + "_" + i, "203.0.113." + (i + 1));
+        }
+        bots().tick();
+      }
+      assertEquals(AttackLevel.ATTACK, bots().level());
+
+      assertEquals(0x02, packetId(login("Late", "198.51.100.1")));
+      Thread.sleep(200);
+
+      assertFalse(
+          bots()
+              .verified()
+              .check(new Identity.NameAtAddress("Late", address("198.51.100.1")))
+              .isPresent(),
+          "not learned during an attack");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  private void start(CidrRanges exempt) throws IOException {
+    AntiBotConfig d = AntiBotConfig.DEFAULTS;
+    AntiBotConfig.Verified v = d.verified();
+    AntiBotConfig config =
+        new AntiBotConfig(
+            true,
+            exempt,
+            new AntiBotConfig.Verified(
+                v.expireAfterLastJoin(),
+                1_000,
+                24,
+                48,
+                false,
+                v.secretFile(),
+                v.sharedStoreTimeout()),
+            d.attack(),
+            d.blocklist(),
+            d.checkTimeout());
+    antiBot =
+        new AntiBotService(
+            config,
+            false,
+            limits,
+            new WarpEventBus(Runnable::run),
+            directory,
+            _ -> null,
+            System::currentTimeMillis);
+  }
+
+  private AntiBotService bots() {
+    return Objects.requireNonNull(antiBot, "start() first");
+  }
+
+  private EmbeddedChannel login(String name, String address) {
+    ServerLoginContext context =
+        TestLoginContexts.withAntiBot(false, new MojangSessionService(), limits, bots());
+    EmbeddedChannel channel =
+        new ProxyProtocolTest.PeerChannel(new InetSocketAddress(address(address), 40000));
+    channel.pipeline().addLast(new ServerChannelInitializer(context));
+    channel.writeInbound(handshake(), loginStart(name));
+    channel.runPendingTasks();
+    return channel;
+  }
+
+  private static int packetId(EmbeddedChannel channel) {
+    ByteBuf frame = channel.readOutbound();
+    assertNotNull(frame, "expected a packet");
+    try {
+      VarInt.read(frame);
+      return VarInt.read(frame);
+    } finally {
+      frame.release();
+    }
+  }
+
+  private static ByteBuf handshake() {
+    ByteBuf body = Unpooled.buffer();
+    VarInt.write(body, 0x00);
+    VarInt.write(body, VERSION.protocol());
+    McString.write(body, "play.warp.dev");
+    body.writeShort(25565);
+    VarInt.write(body, 2);
+    return frame(body);
+  }
+
+  private static ByteBuf loginStart(String name) {
+    ByteBuf body = Unpooled.buffer();
+    VarInt.write(body, 0x00);
+    McString.write(body, name);
+    body.writeLong(0).writeLong(0);
+    return frame(body);
+  }
+
+  private static ByteBuf frame(ByteBuf body) {
+    ByteBuf frame = Unpooled.buffer();
+    VarInt.write(frame, body.readableBytes());
+    frame.writeBytes(body);
+    body.release();
+    return frame;
+  }
+
+  private static boolean waitFor(BooleanSupplier condition) throws InterruptedException {
+    long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+    while (!condition.getAsBoolean()) {
+      if (System.nanoTime() - deadline > 0) {
+        return false;
+      }
+      Thread.sleep(10);
+    }
+    return true;
+  }
+
+  private static InetAddress address(String literal) {
+    try {
+      return InetAddress.getByName(literal);
+    } catch (UnknownHostException e) {
+      throw new AssertionError(e);
+    }
+  }
+}
