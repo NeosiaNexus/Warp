@@ -420,6 +420,68 @@ class CompressionEncoderTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Allocation
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("allocation")
+  class Allocation {
+
+    @Test
+    @DisplayName("should allocate an uncompressed frame at its exact size")
+    void uncompressedFrame() {
+      // given
+      EmbeddedChannel ch = encoderChannel();
+
+      // when
+      ch.writeOutbound(Unpooled.wrappedBuffer(new byte[THRESHOLD - 1]));
+
+      // then: never grown, so its capacity is the one asked for
+      ByteBuf out = ch.readOutbound();
+      assertEquals(3 + 1 + THRESHOLD - 1, out.readableBytes());
+      assertEquals(out.readableBytes(), out.capacity());
+      out.release();
+      ch.finish();
+    }
+
+    @Test
+    @DisplayName("should allocate a compressed frame at the compressor's worst case")
+    void compressedFrame() {
+      // given: a packet of exactly the threshold, compressed into fewer bytes than the bound
+      EmbeddedChannel ch =
+          new EmbeddedChannel(new CompressionEncoder(THRESHOLD, new FixedOutputCompressor(200)));
+      PacketCompressor reference = new FixedOutputCompressor(0);
+
+      // when
+      ch.writeOutbound(Unpooled.wrappedBuffer(new byte[THRESHOLD]));
+
+      // then
+      ByteBuf out = ch.readOutbound();
+      assertEquals(3 + VarInt.size(THRESHOLD) + 200, out.readableBytes());
+      assertEquals(3 + VarInt.size(THRESHOLD) + reference.deflateBound(THRESHOLD), out.capacity());
+      out.release();
+      ch.finish();
+    }
+
+    @Test
+    @DisplayName("should size every packet as compressed when the threshold is zero")
+    void thresholdZero() {
+      // given
+      EmbeddedChannel ch =
+          new EmbeddedChannel(new CompressionEncoder(0, new FixedOutputCompressor(5)));
+
+      // when
+      ch.writeOutbound(Unpooled.wrappedBuffer(new byte[10]));
+
+      // then
+      ByteBuf out = ch.readOutbound();
+      assertEquals(3 + 1 + new FixedOutputCompressor(0).deflateBound(10), out.capacity());
+      out.release();
+      ch.finish();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
