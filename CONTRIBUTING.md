@@ -75,23 +75,27 @@ call or a constant return value, and runs the tests against each one. A mutant t
 notices points at a gap in the tests, or at code that no behaviour depends on.
 
 ```bash
-./gradlew pitest              # both modules, a few minutes
-./gradlew :protocol:pitest    # one module
+./gradlew pitest                                    # both modules, every class
+./gradlew :protocol:pitest                          # one module
+./gradlew :proxy:pitest -Pwarp.pitest.since=main    # the classes your branch changes, as CI does
 ```
 
 The report is `<module>/build/reports/pitest/index.html`. Each module's mutation score, the share
 of its mutants that the tests kill, has a threshold in
 [`config/pitest/thresholds.properties`](config/pitest/thresholds.properties), and `pitest` fails
 below it. It is a ratchet: when your tests raise a score, raise the threshold to the new score
-rounded down in the same pull request, and never lower one to let a change in.
+rounded down in a pull request, and never lower one to let a change in.
 
-CI holds every pull request to it: one that changes a module's code, its tests or how they build
-runs that module's analysis in **CI OK** (see [Continuous Integration](#continuous-integration)).
-The [Mutation testing](.github/workflows/mutation.yml) workflow analyses every module on each push
-to `main`, which also catches a change to one module that moves the score of another, nightly, and
-on demand on any branch (`gh workflow run mutation.yml --ref <branch>`). The summary of each run
-has the scores and, for each class, the mutants still alive with links to their lines; the HTML
-reports are attached to the run.
+CI holds every pull request to it, in **CI OK** (see [Continuous Integration](#continuous-integration)):
+it mutates only the main classes the pull request changes (`-Pwarp.pitest.since` with the base of
+the pull request, nested classes included), and their mutants must reach the module's threshold.
+Its time follows the size of the change, not of the module. A pull request that changes no main
+class of a module, such as one that changes only tests or the build, skips that module. The
+[Mutation testing](.github/workflows/mutation.yml) workflow analyses every class of every module
+nightly on `main`, which also catches a change to tests or to one class that moves the score of
+another, and on demand on any branch (`gh workflow run mutation.yml --ref <branch>`, with
+`-f since=<revision>` to scope it). The summary of each run has the scores and, for each class, the
+mutants still alive with links to their lines; the HTML reports are attached to the run.
 
 ## Continuous Integration
 
@@ -105,7 +109,7 @@ before merging, as must
 | **Build & test** | Spotless formatting, compilation with ErrorProne and NullAway, unit and integration tests, Checkstyle, JaCoCo coverage, shadow jar. Failed tests are annotated on the diff; the run summary shows test and coverage tables |
 | **Allocation guard** | Bytes allocated per packet on the hot path, against a committed baseline, then one short run of every benchmark (see [Benchmarks](#benchmarks)) |
 | **E2E** | Real clients through Warp to real servers: one Minecraft version per era, or every version when the pull request changes Warp's modules or the end-to-end harness (see [End-to-end tests](#end-to-end-tests)) |
-| **Mutation testing** | Each module whose code, tests or build the pull request changes keeps its mutation score at or above its threshold (see [Mutation testing](#mutation-testing)); one runner per module, about five minutes for `protocol`. The run summary lists the mutants still alive |
+| **Mutation testing** | The main classes the pull request changes reach their module's mutation score threshold (see [Mutation testing](#mutation-testing)); one runner per module with a changed class, for as long as the change needs. The run summary lists the mutants still alive |
 | **Fuzz** | Two minutes of fuzzing for each protocol decoder (see [Fuzz tests](#fuzz-tests)). Not part of **CI OK**: random inputs can find a bug the pull request did not add. A failing input is annotated on its fuzz test and uploaded; the run summary shows each fuzz test and its corpus |
 | **Lint workflows** | [actionlint](https://github.com/rhysd/actionlint) (with ShellCheck on `run:` scripts) and [zizmor](https://docs.zizmor.sh) at its strictest persona |
 | **Conventional Commits** | The PR title's format (the title becomes the squash commit) |
