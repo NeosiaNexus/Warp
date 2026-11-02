@@ -22,6 +22,8 @@ import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.config.FinishConfiguration;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.ResourcePackPop;
+import dev.warp.protocol.packet.play.ResourcePackPush;
 
 import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
@@ -68,6 +70,9 @@ final class BackendConfigSessionHandler implements SessionHandler {
       backendConnection.writeAndFlush(cached);
     }
 
+    // A new server: the packs of the one the player left become stale (1.20.3+).
+    player.resourcePacks().configurationStarted(backendConnection);
+
     // Install client config handler immediately so the client can respond to KnownPacks,
     // PluginMessages, etc. as soon as the backend starts sending configuration data.
     // Without this, the client would still have the LoginSessionHandler active and would
@@ -109,6 +114,10 @@ final class BackendConfigSessionHandler implements SessionHandler {
     } else if (packet instanceof ConfigDisconnect disconnect) {
       player.recordKick(backendConnection, disconnect.decodedReason(player.protocolVersion()));
       handleDisconnect();
+    } else if (packet instanceof ResourcePackPush push) {
+      player.resourcePacks().serverSent(push, backendConnection);
+    } else if (packet instanceof ResourcePackPop pop) {
+      player.resourcePacks().serverRemoved(pop);
     }
   }
 
@@ -134,6 +143,8 @@ final class BackendConfigSessionHandler implements SessionHandler {
               if (!clientConn.channel().isActive()) {
                 return;
               }
+              // 1.20.2 unloaded the proxy's pack when it entered configuration: applied again here.
+              player.resourcePacks().configurationFinishing();
               clientConn.writeAndFlush(new FinishConfiguration());
             });
   }

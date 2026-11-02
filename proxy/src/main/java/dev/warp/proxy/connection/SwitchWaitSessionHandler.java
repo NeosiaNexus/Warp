@@ -19,6 +19,7 @@ package dev.warp.proxy.connection;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.config.ClientInformation;
+import dev.warp.protocol.packet.play.ResourcePackResponse;
 
 import io.netty.buffer.ByteBuf;
 
@@ -43,6 +44,9 @@ final class SwitchWaitSessionHandler implements SessionHandler {
       // Client sends settings proactively on CONFIG entry. Cache them for replay
       // to the new backend — no forwarding here since the backend isn't connected yet.
       player.cacheClientSettings(clientInfo);
+    } else if (packet instanceof ResourcePackResponse response) {
+      // An answer about a pack the proxy sent: never lost, even between two servers.
+      player.resourcePacks().clientAnswered(response);
     }
   }
 

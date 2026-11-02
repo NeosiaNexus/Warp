@@ -71,7 +71,6 @@ import java.util.Objects;
 import java.util.UUID;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelOutboundHandlerAdapter;
@@ -285,6 +284,29 @@ final class SwitchHarness implements AutoCloseable {
     return packets;
   }
 
+  /**
+   * Drains what a backend received and decodes the packets the proxy decodes, in the backend's
+   * current state; any other packet is left out.
+   */
+  List<Packet> packetsSentToBackend(MinecraftConnection backend) {
+    EmbeddedChannel channel = (EmbeddedChannel) backend.channel();
+    ProtocolState state = backend.encoder().state();
+    PacketRegistry registry = StateRegistry.get(state, PacketDirection.SERVERBOUND);
+    List<Packet> packets = new ArrayList<>();
+    for (ByteBuf frame = channel.readOutbound(); frame != null; frame = channel.readOutbound()) {
+      try {
+        VarInt.read(frame);
+        int packetId = VarInt.read(frame);
+        if (registry.lookup(version, packetId) instanceof PacketCodec<?> codec) {
+          packets.add(codec.decode(frame, version));
+        }
+      } finally {
+        frame.release();
+      }
+    }
+    return packets;
+  }
+
   static List<Class<? extends Packet>> types(List<Sent> sent) {
     return sent.stream().<Class<? extends Packet>>map(Sent::type).toList();
   }
@@ -312,7 +334,14 @@ final class SwitchHarness implements AutoCloseable {
             ConfigDisconnect.class,
             PlayPluginMessage.class,
             dev.warp.protocol.packet.play.DeclareCommands.class,
-            dev.warp.protocol.packet.play.TabCompleteResponse.class)) {
+            dev.warp.protocol.packet.play.TabCompleteResponse.class,
+            dev.warp.protocol.packet.play.SoundEffect.class,
+            dev.warp.protocol.packet.play.EntitySoundEffect.class,
+            dev.warp.protocol.packet.play.StopSound.class,
+            dev.warp.protocol.packet.play.ResourcePackPush.class,
+            dev.warp.protocol.packet.play.ResourcePackPop.class,
+            dev.warp.protocol.packet.play.DeleteChat.class,
+            dev.warp.protocol.packet.play.ClearDialog.class)) {
       try {
         if (registry.packetId(version, type) == packetId) {
           return type;
@@ -343,15 +372,22 @@ final class SwitchHarness implements AutoCloseable {
 
   /** Frames a clientbound PLAY packet: length, packet ID, body. */
   static ByteBuf frame(ProtocolVersion version, Packet packet) {
+    return frame(version, ProtocolState.PLAY, packet);
+  }
+
+  /** Frames a clientbound packet of {@code state}: length, packet ID, body. */
+  static ByteBuf frame(ProtocolVersion version, ProtocolState state, Packet packet) {
     PacketRegistry.Encoding encoding =
-        StateRegistry.get(ProtocolState.PLAY, PacketDirection.CLIENTBOUND)
-            .encoding(version, packet.getClass());
+        StateRegistry.get(state, PacketDirection.CLIENTBOUND).encoding(version, packet.getClass());
     @SuppressWarnings("unchecked")
     PacketCodec<Packet> codec = (PacketCodec<Packet>) encoding.codec();
     ByteBuf body = Unpooled.buffer();
     try {
       codec.encode(packet, body, version);
-      return frame(version, packet.getClass(), ByteBufUtil.getBytes(body));
+      ByteBuf frame = Unpooled.buffer();
+      VarInt.write(frame, VarInt.size(encoding.packetId()) + body.readableBytes());
+      VarInt.write(frame, encoding.packetId());
+      return frame.writeBytes(body);
     } finally {
       body.release();
     }

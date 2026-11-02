@@ -38,6 +38,7 @@ import dev.warp.protocol.packet.login.LoginStart;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.login.SetCompression;
 import dev.warp.protocol.packet.play.PlayDisconnect;
+import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.proxy.auth.AuthenticationException;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
@@ -171,6 +172,12 @@ final class LoginSessionHandler implements SessionHandler {
   public void handle(Packet packet) {
     if (!(packet instanceof LoginPacket loginPacket)) {
       if (state == LoginState.COMPLETE) {
+        ConnectedPlayer joining = this.player;
+        if (packet instanceof ResourcePackResponse response && joining != null) {
+          // A pack a plugin sent at PostLoginEvent, answered before the first backend is up.
+          joining.resourcePacks().clientAnswered(response);
+          return;
+        }
         // Client may send CONFIG packets (e.g., brand) before the backend handler is installed.
         // Silently drop them — the backend will request them during configuration.
         return;

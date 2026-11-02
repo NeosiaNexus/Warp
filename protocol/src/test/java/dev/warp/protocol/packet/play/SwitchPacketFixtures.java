@@ -45,7 +45,7 @@ import org.jspecify.annotations.Nullable;
  */
 public final class SwitchPacketFixtures {
 
-  private static final Map<Integer, Map<String, byte[]>> FIXTURES = load();
+  private static final Map<Integer, Map<String, byte[]>> FIXTURES = load("switch-packets.txt");
 
   private SwitchPacketFixtures() {}
 
@@ -147,11 +147,16 @@ public final class SwitchPacketFixtures {
     }
   }
 
-  private static Map<Integer, Map<String, byte[]>> load() {
+  /**
+   * Loads a fixture file next to this class: {@code "<protocol> <packet> <hex>"} lines.
+   *
+   * @param resource the file's name
+   * @return the bodies, by protocol then packet name
+   */
+  static Map<Integer, Map<String, byte[]>> load(String resource) {
     Map<Integer, Map<String, byte[]>> fixtures = new TreeMap<>();
     try (InputStream in =
-            Objects.requireNonNull(
-                SwitchPacketFixtures.class.getResourceAsStream("switch-packets.txt"));
+            Objects.requireNonNull(SwitchPacketFixtures.class.getResourceAsStream(resource));
         BufferedReader reader =
             new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
       for (String line = reader.readLine(); line != null; line = reader.readLine()) {
@@ -160,7 +165,7 @@ public final class SwitchPacketFixtures {
         }
         String[] fields = line.split(" ", -1);
         if (fields.length != 3) {
-          throw malformed(line, null);
+          throw malformed(resource, line, null);
         }
         int protocol;
         byte[] body;
@@ -168,9 +173,9 @@ public final class SwitchPacketFixtures {
           protocol = Integer.parseInt(fields[0]);
           body = HexFormat.of().parseHex(fields[2]);
         } catch (NumberFormatException e) {
-          throw malformed(line, e);
+          throw malformed(resource, line, e);
         } catch (IllegalArgumentException e) { // not hexadecimal
-          throw malformed(line, e);
+          throw malformed(resource, line, e);
         }
         fixtures.computeIfAbsent(protocol, k -> new HashMap<>()).put(fields[1], body);
       }
@@ -180,7 +185,8 @@ public final class SwitchPacketFixtures {
     return fixtures;
   }
 
-  private static IllegalStateException malformed(String line, @Nullable Throwable cause) {
-    return new IllegalStateException("switch-packets.txt: malformed line: " + line, cause);
+  private static IllegalStateException malformed(
+      String resource, String line, @Nullable Throwable cause) {
+    return new IllegalStateException(resource + ": malformed line: " + line, cause);
   }
 }

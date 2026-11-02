@@ -82,6 +82,9 @@ import dev.warp.protocol.packet.play.PlayPluginMessage;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
+import dev.warp.protocol.packet.play.ResourcePackPop;
+import dev.warp.protocol.packet.play.ResourcePackPush;
+import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SwitchPacketFixtures;
 import dev.warp.protocol.packet.status.PingRequest;
@@ -111,6 +114,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.DecoderException;
+import net.kyori.adventure.text.Component;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -639,6 +643,20 @@ class MinecraftDecoderFuzzTest {
           sample(BundleDelimiter.CODEC, v -> new BundleDelimiter()),
           sample(PlayDisconnect.CODEC, v -> new PlayDisconnect(REASON)),
           sample(StartConfiguration.CODEC, v -> new StartConfiguration()),
+          sample(
+              ResourcePackPush.CODEC,
+              v ->
+                  ResourcePackPush.of(
+                      ALICE,
+                      "https://warp.dev/pack.zip",
+                      "0123456789abcdef0123456789abcdef01234567",
+                      true,
+                      Component.text("Please"),
+                      v)),
+          sample(ResourcePackPop.CODEC, v -> new ResourcePackPop(ALICE)),
+          sample(
+              ResourcePackResponse.CODEC,
+              v -> new ResourcePackResponse(ALICE, "0123456789abcdef0123456789abcdef01234567", 3)),
           Map.entry(
               PlayPluginMessage.WATCH,
               v ->

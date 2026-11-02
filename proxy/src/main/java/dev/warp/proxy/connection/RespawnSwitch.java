@@ -117,6 +117,7 @@ final class RespawnSwitch implements ServerSwitch {
     }
     player.setCurrentServerName(joining.server().name());
     player.setEntityId(joinGame.entityId());
+    player.resourcePacks().serverChanged(backend);
 
     MinecraftConnection client = player.clientConnection();
     if (spawned) {

@@ -22,6 +22,7 @@ import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.config.AcknowledgeFinishConfiguration;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.ResourcePackResponse;
 
 import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
@@ -61,6 +62,9 @@ final class ClientConfigSessionHandler implements SessionHandler {
       backendConnection.write(clientInfo);
     } else if (packet instanceof AcknowledgeFinishConfiguration) {
       handleAcknowledgeFinish();
+    } else if (packet instanceof ResourcePackResponse response) {
+      // Kept for the proxy's packs; a server's go on to it, which may wait for them (Gate #1305).
+      player.resourcePacks().clientAnswered(response);
     }
   }
 

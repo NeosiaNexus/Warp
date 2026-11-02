@@ -54,4 +54,11 @@ public sealed interface PlayPacket extends Packet
         SetTitleText,
         SetSubtitleText,
         SetTitleTimes,
-        SetActionBarText {}
+        SetActionBarText,
+        SoundEffect,
+        EntitySoundEffect,
+        StopSound,
+        ResourcePackPush,
+        ResourcePackPop,
+        DeleteChat,
+        ClearDialog {}

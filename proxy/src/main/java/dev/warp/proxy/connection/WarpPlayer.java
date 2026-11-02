@@ -17,14 +17,19 @@
 package dev.warp.proxy.connection;
 
 import dev.warp.api.messaging.ChannelIdentifier;
+import dev.warp.api.player.AudienceFeature;
 import dev.warp.api.player.ConnectionResult;
 import dev.warp.api.player.GameProfile;
 import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerConnection;
+import dev.warp.protocol.ProtocolVersion;
 import dev.warp.proxy.server.BackendServer;
 
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -36,6 +41,7 @@ import net.kyori.adventure.dialog.DialogLike;
 import net.kyori.adventure.identity.Identity;
 import net.kyori.adventure.inventory.Book;
 import net.kyori.adventure.pointer.Pointers;
+import net.kyori.adventure.resource.ResourcePackInfo;
 import net.kyori.adventure.resource.ResourcePackRequest;
 import net.kyori.adventure.sound.Sound;
 import net.kyori.adventure.sound.SoundStop;
@@ -153,7 +159,19 @@ public final class WarpPlayer implements Player {
 
   @Override
   public void sendMessage(SignedMessage signedMessage, ChatType.Bound boundChatType) {
-    throw unsupported("signed messages (only a backend can write them)");
+    if (!signedMessage.isSystem()) {
+      throw new UnsupportedOperationException(
+          "Warp cannot write a player's signed chat message: the client verifies each against the"
+              + " chain of its sender's messages, which only the backend holds. Relay it from the"
+              + " backend, or send a system message");
+    }
+    Component content = signedMessage.unsignedContent();
+    player.sendMessage(content != null ? content : Component.text(signedMessage.message()));
+  }
+
+  @Override
+  public void deleteMessage(SignedMessage.Signature signature) {
+    player.deleteMessage(signature.bytes());
   }
 
   @Override
@@ -196,80 +214,110 @@ public final class WarpPlayer implements Player {
     player.sendPlayerListHeaderAndFooter(player.playerListHeader(), footer);
   }
 
-  // Not supported yet: refused explicitly rather than silently ignored.
-
   @Override
-  public void deleteMessage(SignedMessage.Signature signature) {
-    throw unsupported("deleting signed messages");
+  public boolean supports(AudienceFeature feature) {
+    return supports(feature, player.protocolVersion());
+  }
+
+  /**
+   * Returns whether a client of {@code version} has a feature.
+   *
+   * @param feature the feature
+   * @param version the client's protocol version
+   * @return {@code true} if it has it
+   */
+  static boolean supports(AudienceFeature feature, ProtocolVersion version) {
+    return switch (feature) {
+      case ACTION_BAR, TITLE, PLAYER_LIST_HEADER_AND_FOOTER, RESOURCE_PACK_STATUS ->
+          version.isAtLeast(ProtocolVersion.MINECRAFT_1_8);
+      case POSITIONED_SOUND, RESOURCE_PACK -> true;
+      case EMITTED_SOUND -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_19_3);
+      case STOP_SOUND -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_9_4);
+      case BOSS_BAR -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_9);
+      case MULTIPLE_RESOURCE_PACKS -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_3);
+      case DELETE_MESSAGE -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_19_1);
+      case CLOSE_DIALOG -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_21_6);
+    };
   }
 
   @Override
   public void playSound(Sound sound) {
-    throw unsupported("sounds");
+    player.playSound(sound, (ConnectedPlayer) null);
   }
 
   @Override
   public void playSound(Sound sound, double x, double y, double z) {
-    throw unsupported("sounds");
+    player.playSound(sound, x, y, z);
   }
 
   @Override
   public void playSound(Sound sound, Sound.Emitter emitter) {
-    throw unsupported("sounds");
+    if (Sound.Emitter.self().equals(emitter)) {
+      player.playSound(sound, (ConnectedPlayer) null);
+    } else if (emitter instanceof WarpPlayer other) {
+      player.playSound(sound, other.connectedPlayer());
+    } else {
+      throw new IllegalArgumentException(
+          "A sound emitter on a proxy is Sound.Emitter.self() or a player, not " + emitter);
+    }
   }
 
   @Override
   public void stopSound(SoundStop stop) {
-    throw unsupported("sounds");
+    player.stopSound(stop);
   }
 
   @Override
   public void openBook(Book book) {
-    throw unsupported("books");
+    throw new UnsupportedOperationException(
+        "Warp cannot open a book: a client opens the book in the player's hand, and the proxy"
+            + " neither reads the inventory nor can give the item back. Open it from the backend");
   }
 
   @Override
   public void showBossBar(BossBar bar) {
-    throw unsupported("boss bars");
+    player.showBossBar(bar);
   }
 
   @Override
   public void hideBossBar(BossBar bar) {
-    throw unsupported("boss bars");
+    player.hideBossBar(bar);
   }
 
   @Override
   public void sendResourcePacks(ResourcePackRequest request) {
-    throw unsupported("resource packs");
+    player.sendResourcePacks(request);
   }
 
+  // Adventure 5.2's default sends a single pack's removal twice.
   @Override
   public void removeResourcePacks(ResourcePackRequest request) {
-    throw unsupported("resource packs");
+    player.removeResourcePacks(request.packs().stream().map(ResourcePackInfo::id).toList());
   }
 
   @Override
   public void removeResourcePacks(UUID id, UUID... others) {
-    throw unsupported("resource packs");
+    List<UUID> ids = new ArrayList<>(others.length + 1);
+    ids.add(id);
+    ids.addAll(Arrays.asList(others));
+    player.removeResourcePacks(ids);
   }
 
   @Override
   public void clearResourcePacks() {
-    throw unsupported("resource packs");
+    player.clearResourcePacks();
   }
 
   @Override
   public void showDialog(DialogLike dialog) {
-    throw unsupported("dialogs");
+    throw new UnsupportedOperationException(
+        "Warp cannot show a dialog: Adventure defines no dialog, only DialogLike, which server"
+            + " platforms implement with their own model. Show it from the backend");
   }
 
   @Override
   public void closeDialog() {
-    throw unsupported("dialogs");
-  }
-
-  private static UnsupportedOperationException unsupported(String what) {
-    return new UnsupportedOperationException("Warp does not send " + what + " to players yet");
+    player.closeDialog();
   }
 
   @Override

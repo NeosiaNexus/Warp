@@ -20,6 +20,7 @@ import dev.warp.api.command.CommandExecuteEvent;
 import dev.warp.api.event.player.DisconnectEvent;
 import dev.warp.api.event.player.KickedFromServerEvent;
 import dev.warp.api.event.player.PlayerChooseInitialServerEvent;
+import dev.warp.api.event.player.PlayerResourcePackStatusEvent;
 import dev.warp.api.event.player.PostLoginEvent;
 import dev.warp.api.event.player.ServerConnectedEvent;
 import dev.warp.api.event.player.ServerPostConnectEvent;
@@ -42,11 +43,16 @@ import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigPluginMessage;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatAcknowledgement;
+import dev.warp.protocol.packet.play.ClearDialog;
 import dev.warp.protocol.packet.play.DeclareCommands;
+import dev.warp.protocol.packet.play.DeleteChat;
+import dev.warp.protocol.packet.play.EntitySoundEffect;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.PlayPacket;
 import dev.warp.protocol.packet.play.PlayPluginMessage;
+import dev.warp.protocol.packet.play.SoundEffect;
 import dev.warp.protocol.packet.play.StartConfiguration;
+import dev.warp.protocol.packet.play.StopSound;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
 import dev.warp.proxy.command.CommandExecuteEventImpl;
@@ -62,6 +68,7 @@ import dev.warp.proxy.server.BackendServer;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayDeque;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -80,6 +87,12 @@ import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.EventLoop;
 import io.netty.util.AttributeKey;
+import net.kyori.adventure.bossbar.BossBar;
+import net.kyori.adventure.key.Key;
+import net.kyori.adventure.resource.ResourcePackCallback;
+import net.kyori.adventure.resource.ResourcePackRequest;
+import net.kyori.adventure.sound.Sound;
+import net.kyori.adventure.sound.SoundStop;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.title.Title;
@@ -143,6 +156,12 @@ public final class ConnectedPlayer {
 
   /** How this client is moved between servers, chosen from its version. */
   private final ServerSwitch serverSwitch;
+
+  /** The boss bars plugins show the player. */
+  private final ProxyBossBars bossBars;
+
+  /** The resource packs the client holds, the proxy's and its servers'. */
+  private final ResourcePacks resourcePacks;
 
   // ---------------------------------------------------------------------------
   // API and session state
@@ -245,6 +264,8 @@ public final class ConnectedPlayer {
     this.loginContext = loginContext;
     this.serverSwitch = ServerSwitch.of(this);
     this.onlineMode = loginContext.onlineMode();
+    this.bossBars = new ProxyBossBars(this);
+    this.resourcePacks = new ResourcePacks(this);
   }
 
   // ---------------------------------------------------------------------------
@@ -828,7 +849,7 @@ public final class ConnectedPlayer {
    * Runs {@code task} on the client event loop: right away when already on it, so that a backend is
    * taken by the switch before any of its packets is read.
    */
-  private void onEventLoop(Runnable task) {
+  void onEventLoop(Runnable task) {
     EventLoop loop = clientConnection.channel().eventLoop();
     if (loop.inEventLoop()) {
       task.run();
@@ -1095,6 +1116,8 @@ public final class ConnectedPlayer {
         clientConnection.write(packet);
       }
     }
+    bossBars.joinedGame();
+    resourcePacks.joinedGame();
     clientConnection.flush();
   }
 
@@ -1107,12 +1130,20 @@ public final class ConnectedPlayer {
   void startConfiguration() {
     closeBundle();
     inGame = false;
+    // The client clears its boss bars there, and 1.20.2 unloads its server resource pack.
+    bossBars.leftGame();
+    resourcePacks.clientReconfiguring();
     clientConnection.writeAndFlush(new StartConfiguration());
     clientConnection.encoder().setState(ProtocolState.CONFIGURATION);
   }
 
-  /** Renders the translations plugins registered, in the player's language. */
-  private Component render(Component component) {
+  /**
+   * Renders the translations plugins registered, in the player's language.
+   *
+   * @param component the component
+   * @return it rendered
+   */
+  Component render(Component component) {
     ClientInformation settings = cachedClientSettings;
     Locale locale = settings == null ? null : Translator.parseLocale(settings.locale());
     return GlobalTranslator.render(component, locale != null ? locale : Locale.US);
@@ -1182,6 +1213,266 @@ public final class ConnectedPlayer {
       closeBundle();
     }
     closeAfter(packet);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sounds, boss bars, resource packs, chat deletion and dialogs: the rest of what the plugin API's
+  // Player delegates to. Thread-safe. What the client's version lacks does nothing (see
+  // dev.warp.api.player.AudienceFeature); sounds are dropped while the client is not in a game.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Plays a sound at a position, in every version: named by its key, so that any sound plays,
+   * whatever the client's sound registry (see {@link SoundEffect}).
+   *
+   * @param sound the sound
+   * @param x the x coordinate
+   * @param y the y coordinate
+   * @param z the z coordinate
+   * @throws IllegalArgumentException if the sound's key is longer than 256 characters
+   */
+  public void playSound(Sound sound, double x, double y, double z) {
+    SoundEffect packet =
+        new SoundEffect(
+            soundKey(sound.name()),
+            AdventureIds.source(sound.source(), protocolVersion),
+            SoundEffect.fixed(x),
+            SoundEffect.fixed(y),
+            SoundEffect.fixed(z),
+            sound.volume(),
+            sound.pitch(),
+            seed(sound));
+    sendPlay(List.of(packet), true);
+  }
+
+  /**
+   * Plays a sound that follows the player, or another player on the same server, from 1.19.3.
+   * Nothing happens before 1.19.3, nor when {@code emitter} plays on another server or is
+   * switching.
+   *
+   * @param sound the sound
+   * @param emitter the player the sound follows, or {@code null} for this player
+   * @throws IllegalArgumentException if the sound's key is longer than 256 characters
+   */
+  public void playSound(Sound sound, @Nullable ConnectedPlayer emitter) {
+    String key = soundKey(sound.name());
+    if (protocolVersion.isOlderThan(ProtocolVersion.MINECRAFT_1_19_3)) {
+      return;
+    }
+    int source = AdventureIds.source(sound.source(), protocolVersion);
+    long seed = seed(sound);
+    onEventLoop(
+        () -> {
+          if (!inGame || disconnected.get()) {
+            return;
+          }
+          int entity;
+          if (emitter == null || emitter == this) {
+            entity = entityId;
+          } else {
+            BackendServer server = currentServer;
+            if (server == null || emitter.currentServer() != server || emitter.isSwitching()) {
+              return; // its entity id means nothing on this player's server
+            }
+            entity = emitter.entityId();
+          }
+          clientConnection.writeAndFlush(
+              new EntitySoundEffect(key, source, entity, sound.volume(), sound.pitch(), seed));
+        });
+  }
+
+  /**
+   * Stops sounds: a packet from 1.13, the {@code MC|StopSound} plugin message from 1.9.4 to 1.12.2,
+   * nothing before.
+   *
+   * @param stop the sounds to stop
+   */
+  public void stopSound(SoundStop stop) {
+    Key sound = stop.sound();
+    Sound.Source source = stop.source();
+    StopSound packet =
+        new StopSound(
+            source == null ? -1 : AdventureIds.source(source, protocolVersion),
+            sound == null ? null : soundKey(sound));
+    if (protocolVersion.isAtLeast(ProtocolVersion.MINECRAFT_1_13)) {
+      sendPlay(List.of(packet), true);
+    } else if (protocolVersion.isAtLeast(ProtocolVersion.MINECRAFT_1_9_4)) {
+      sendPlay(List.of(packet.legacyPluginMessage()), true);
+    }
+  }
+
+  private static String soundKey(Key key) {
+    String sound = key.asString();
+    if (sound.length() > SoundEffect.MAX_SOUND_LENGTH) {
+      throw new IllegalArgumentException("A sound key has at most 256 characters: " + sound);
+    }
+    return sound;
+  }
+
+  private static long seed(Sound sound) {
+    return sound.seed().orElseGet(() -> ThreadLocalRandom.current().nextLong());
+  }
+
+  /**
+   * Shows a boss bar, from 1.9, kept on screen across server switches and updated as it changes
+   * (see {@link ProxyBossBars}).
+   *
+   * @param bar the bar
+   */
+  public void showBossBar(BossBar bar) {
+    if (ProxyBossBars.supported(protocolVersion)) {
+      onEventLoop(
+          () -> {
+            if (!disconnected.get()) {
+              bossBars.show(bar);
+            }
+          });
+    }
+  }
+
+  /**
+   * Hides a boss bar shown with {@link #showBossBar}.
+   *
+   * @param bar the bar
+   */
+  public void hideBossBar(BossBar bar) {
+    if (ProxyBossBars.supported(protocolVersion)) {
+      onEventLoop(() -> bossBars.hide(bar));
+    }
+  }
+
+  /**
+   * Applies resource packs on the client (see {@link ResourcePacks}).
+   *
+   * @param request the packs
+   * @throws IllegalArgumentException if a hash is longer than 40 characters, or the prompt too
+   *     large for the client
+   */
+  public void sendResourcePacks(ResourcePackRequest request) {
+    resourcePacks.send(request);
+  }
+
+  /**
+   * Removes resource packs from the client, from 1.20.3.
+   *
+   * @param ids the packs
+   */
+  public void removeResourcePacks(Collection<UUID> ids) {
+    List<UUID> copy = List.copyOf(ids);
+    onEventLoop(() -> resourcePacks.remove(copy));
+  }
+
+  /** Removes the resource packs the proxy sent, from 1.20.3. */
+  public void clearResourcePacks() {
+    onEventLoop(resourcePacks::clear);
+  }
+
+  /**
+   * Deletes a signed chat message from the client's chat, from 1.19.1, by its signature. Kept for
+   * the next game while the player switches servers, like a chat message.
+   *
+   * @param signature the message's signature
+   * @throws IllegalArgumentException if the signature is not 256 bytes
+   */
+  public void deleteMessage(byte[] signature) {
+    DeleteChat packet = new DeleteChat(signature.clone());
+    if (protocolVersion.isAtLeast(ProtocolVersion.MINECRAFT_1_19_1)) {
+      sendPlay(List.of(packet), false);
+    }
+  }
+
+  /** Closes the dialog on the client's screen, from 1.21.6, in the play or configuration phase. */
+  public void closeDialog() {
+    if (protocolVersion.isOlderThan(ProtocolVersion.MINECRAFT_1_21_6)) {
+      return;
+    }
+    onEventLoop(
+        () -> {
+          ProtocolState state = clientConnection.encoder().state();
+          if (!disconnected.get()
+              && (state == ProtocolState.CONFIGURATION
+                  || (state == ProtocolState.PLAY && inGame))) {
+            clientConnection.writeAndFlush(new ClearDialog());
+          }
+        });
+  }
+
+  /**
+   * Reports what became of a resource pack: fires the event on the player's lane, then runs the
+   * pack's callback, off the event loop and in the order the answers came.
+   *
+   * @param event the event
+   * @param callback the callback of the request that sent the pack, or {@code null}
+   */
+  void resourcePackStatus(
+      PlayerResourcePackStatusEvent event, @Nullable ResourcePackCallback callback) {
+    WarpEventBus events = loginContext.events();
+    boolean listened = events.hasHandlers(PlayerResourcePackStatusEvent.class);
+    if (callback == null && !listened) {
+      return;
+    }
+    // Each answer waits for the previous one's callback: completions of separate deliveries race,
+    // and a callback must see ACCEPTED before SUCCESSFULLY_LOADED (Velocity #1892).
+    packStatuses =
+        packStatuses
+            .handle((_, _) -> event) // a failure never stops the answers that follow
+            .thenCompose(done -> listened ? events.fire(done, uuid) : completedFuture(done))
+            .thenAcceptAsync(
+                done -> {
+                  if (callback == null) {
+                    return;
+                  }
+                  try {
+                    callback.packEventReceived(done.packId(), done.status(), api);
+                  } catch (RuntimeException e) {
+                    logger.error("A resource pack callback failed for {}", username, e);
+                  }
+                },
+                events.executor());
+  }
+
+  /** The last answer about a resource pack reported, which the next one waits for. */
+  private CompletableFuture<?> packStatuses = CompletableFuture.completedFuture(null);
+
+  private static <T> CompletableFuture<T> completedFuture(T value) {
+    return CompletableFuture.completedFuture(value);
+  }
+
+  /**
+   * Returns the boss bars plugins show the player.
+   *
+   * @return the boss bars
+   */
+  ProxyBossBars bossBars() {
+    return bossBars;
+  }
+
+  /**
+   * Returns the resource packs the client holds.
+   *
+   * @return the resource packs
+   */
+  ResourcePacks resourcePacks() {
+    return resourcePacks;
+  }
+
+  /**
+   * Returns whether the client is in a game: it received a Join Game, and no Start Configuration
+   * since. Client event loop only.
+   *
+   * @return {@code true} in a game
+   */
+  boolean isInGame() {
+    return inGame;
+  }
+
+  /**
+   * Returns whether the player disconnected.
+   *
+   * @return {@code true} once it is gone
+   */
+  boolean isGone() {
+    return disconnected.get();
   }
 
   // ---------------------------------------------------------------------------
@@ -1569,6 +1860,8 @@ public final class ConnectedPlayer {
     onEventLoop(
         () -> {
           serverSwitch.close();
+          bossBars.clear();
+          resourcePacks.close();
           leaveServer();
           CompletableFuture<ConnectionResult> requested = pendingResult;
           pendingResult = null;
@@ -1772,8 +2065,13 @@ public final class ConnectedPlayer {
     }
   }
 
-  /** The registered server a backend connection of this player belongs to. */
-  private @Nullable BackendServer serverOf(MinecraftConnection backend) {
+  /**
+   * Returns the registered server a backend connection of this player belongs to.
+   *
+   * @param backend a backend connection
+   * @return its server, or {@code null} if it is not the player's backend or not registered
+   */
+  @Nullable BackendServer serverOf(MinecraftConnection backend) {
     BackendConnection current = backendConnection;
     if (current == null || current.connection() != backend) {
       return null;
