@@ -163,10 +163,11 @@ case "$platform" in
     ;;
   windows-*)
     cc=${CC:-clang}
-    # LIBDEFLATE_DLL exports the API with __declspec(dllexport); /Brepro makes the build
-    # reproducible (no timestamp); the static C runtime spares users the VC++ redistributable.
+    # LIBDEFLATE_DLL exports the API with __declspec(dllexport); -Brepro makes the build
+    # reproducible (no timestamp), spelled with a dash because Git Bash turns /Brepro into a
+    # path; the static C runtime spares users the VC++ redistributable.
     "$cc" "${common[@]}" -DLIBDEFLATE_DLL -fms-runtime-lib=static -fuse-ld=lld -shared \
-      -o "$out" "${sources[@]}" -Wl,/Brepro
+      -o "$out" "${sources[@]}" -Wl,-Brepro
     rm -f "$out_dir"/*.lib "$out_dir"/*.exp "$out_dir"/*.pdb
     ;;
 esac
@@ -184,7 +185,9 @@ check_exports() {
 
 case "$platform" in
   linux-*)
-    needed=$(readelf -dW "$out" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
+    # The dynamic loader may be needed too (glibc on aarch64: the stack protector guard lives in
+    # ld.so); it is part of the C library everywhere.
+    needed=$(readelf -dW "$out" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | grep -v '^ld-linux-' || true)
     case "$platform" in
       *-musl) [[ "$needed" =~ ^libc\.musl-[a-z0-9_]+\.so\.1$ ]] || die "$out needs: $needed (expected musl's libc only)" ;;
       *) [ "$needed" = libc.so.6 ] || die "$out needs: $needed (expected libc.so.6 only)" ;;
