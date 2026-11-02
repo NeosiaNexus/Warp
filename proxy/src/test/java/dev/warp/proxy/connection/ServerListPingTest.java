@@ -49,6 +49,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 import com.google.gson.JsonObject;
@@ -619,6 +620,7 @@ class ServerListPingTest {
       EmbeddedChannel ch = createFullPipeline();
 
       ch.writeInbound(Unpooled.wrappedBuffer(new byte[] {(byte) 0xFE}));
+      waitForPingFragment(ch);
 
       assertEquals("A Warp Proxy§0§500", readLegacyKick(ch));
       ch.runPendingTasks();
@@ -631,6 +633,7 @@ class ServerListPingTest {
       EmbeddedChannel ch = createFullPipeline();
 
       ch.writeInbound(Unpooled.wrappedBuffer(new byte[] {(byte) 0xFE, 0x01}));
+      waitForPingFragment(ch);
 
       assertEquals(
           "§1\u0000127\u0000"
@@ -731,6 +734,12 @@ class ServerListPingTest {
     // After initChannel runs, the initializer removes itself. Flush pending tasks.
     ch.runPendingTasks();
     return ch;
+  }
+
+  /** Lets the wait for the rest of a ping of one or two bytes elapse, as if nothing followed. */
+  private static void waitForPingFragment(EmbeddedChannel ch) {
+    ch.advanceTimeBy(100, TimeUnit.MILLISECONDS);
+    ch.runScheduledPendingTasks();
   }
 
   /** Sends a handshake to play.example.net and a status request, and returns the answer. */

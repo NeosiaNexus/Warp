@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
 import java.util.HexFormat;
+import java.util.concurrent.TimeUnit;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
@@ -44,21 +45,55 @@ class LegacyPingDecoderTest {
   class Pings {
 
     @Test
-    @DisplayName("should read a lone 0xFE as a Minecraft 1.3 ping")
+    @DisplayName("should read a lone 0xFE as a Minecraft 1.3 ping once nothing followed it")
     void minecraft13() {
       EmbeddedChannel channel = channel();
 
       channel.writeInbound(bytes("fe"));
+      assertNull(channel.readInbound(), "the rest may still come");
+      waitForFragment(channel);
 
       assertEquals(new LegacyPing(LegacyPing.Format.MINECRAFT_1_3, null, 0), channel.readInbound());
     }
 
     @Test
-    @DisplayName("should read 0xFE 0x01 as a Minecraft 1.4 ping")
+    @DisplayName("should read 0xFE 0x01 as a Minecraft 1.4 ping once nothing followed it")
     void minecraft14() {
       EmbeddedChannel channel = channel();
 
       channel.writeInbound(bytes("fe01"));
+      assertNull(channel.readInbound(), "the rest may still come");
+      waitForFragment(channel);
+
+      assertEquals(new LegacyPing(LegacyPing.Format.MINECRAFT_1_4, null, 0), channel.readInbound());
+    }
+
+    @Test
+    @DisplayName("should read a 1.6 ping whose first byte came alone as a 1.6 ping")
+    void splitAfterFirstByte() {
+      EmbeddedChannel channel = channel();
+      byte[] ping = pingHost("MC|PingHost", "mc.example.net", 25565);
+
+      channel.writeInbound(Unpooled.wrappedBuffer(ping, 0, 1));
+      channel.advanceTimeBy(LegacyPingDecoder.FRAGMENT_WAIT_MILLIS - 1, TimeUnit.MILLISECONDS);
+      channel.runScheduledPendingTasks();
+      channel.writeInbound(Unpooled.wrappedBuffer(ping, 1, ping.length - 1));
+      waitForFragment(channel);
+
+      assertEquals(
+          new LegacyPing(LegacyPing.Format.MINECRAFT_1_6, "mc.example.net", 25565),
+          channel.readInbound());
+      assertNull(channel.readInbound(), "one ping only");
+    }
+
+    @Test
+    @DisplayName("should read 0xFE 0x01 split after its first byte as a Minecraft 1.4 ping")
+    void minecraft14Split() {
+      EmbeddedChannel channel = channel();
+
+      channel.writeInbound(bytes("fe"));
+      channel.writeInbound(bytes("01"));
+      waitForFragment(channel);
 
       assertEquals(new LegacyPing(LegacyPing.Format.MINECRAFT_1_4, null, 0), channel.readInbound());
     }
@@ -120,6 +155,7 @@ class LegacyPingDecoderTest {
     void discardsAfter() {
       EmbeddedChannel channel = channel();
       channel.writeInbound(bytes("fe"));
+      waitForFragment(channel);
       channel.readInbound();
 
       channel.writeInbound(bytes("01fa0000"));
@@ -162,6 +198,25 @@ class LegacyPingDecoderTest {
       passed.release();
       assertNull(channel.pipeline().get(LegacyPingDecoder.class));
       assertNull(channel.pipeline().get(LegacyDisconnectEncoder.class));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"fe", "fe01"})
+    @DisplayName("should hand a 254-byte frame split after its first bytes to the next handler")
+    void fragmentedFrame(String firstFragment) {
+      EmbeddedChannel channel = channel();
+      byte[] frame = HexFormat.of().parseHex("fe0100fd05");
+      int first = firstFragment.length() / 2;
+
+      channel.writeInbound(Unpooled.wrappedBuffer(frame, 0, first));
+      channel.writeInbound(Unpooled.wrappedBuffer(frame, first, frame.length - first));
+      waitForFragment(channel);
+
+      ByteBuf passed = channel.readInbound();
+      assertArrayEquals(frame, ByteBufUtil.getBytes(passed));
+      passed.release();
+      assertNull(channel.readInbound(), "no ping answered after it");
+      assertNull(channel.pipeline().get(LegacyPingDecoder.class));
     }
 
     @Test
@@ -210,7 +265,16 @@ class LegacyPingDecoderTest {
   }
 
   private static EmbeddedChannel channel() {
-    return new EmbeddedChannel(LegacyDisconnectEncoder.INSTANCE, new LegacyPingDecoder());
+    EmbeddedChannel channel =
+        new EmbeddedChannel(LegacyDisconnectEncoder.INSTANCE, new LegacyPingDecoder());
+    channel.freezeTime();
+    return channel;
+  }
+
+  /** Lets the fragment wait elapse, as if nothing more came. */
+  private static void waitForFragment(EmbeddedChannel channel) {
+    channel.advanceTimeBy(LegacyPingDecoder.FRAGMENT_WAIT_MILLIS, TimeUnit.MILLISECONDS);
+    channel.runScheduledPendingTasks();
   }
 
   private static ByteBuf bytes(String hex) {
