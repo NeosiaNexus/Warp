@@ -50,8 +50,14 @@ import org.slf4j.LoggerFactory;
  * for it the same way. Before 1.9 the client has no boss bar packet ({@code 0x0C} is another packet
  * in 1.8, BungeeCord #1769): nothing is tracked or sent.
  *
- * <p>Every method but the listener's runs on the player's event loop. The listener runs on whatever
- * thread changed the bar, and only hands the change over to the event loop.
+ * <p>The bars shown are also what {@link net.kyori.adventure.bossbar.BossBar#viewers()} and the
+ * player's {@code activeBossBars()} list ({@link WarpBossBarImplementation}): from the moment a bar
+ * is tracked here until it is hidden or the player is gone, whether the client has it on screen at
+ * that instant or not (it may be in a configuration phase).
+ *
+ * <p>Every method but the listener's and {@link #active()} runs on the player's event loop. The
+ * listener runs on whatever thread changed the bar, and only hands the change over to the event
+ * loop.
  */
 final class ProxyBossBars {
 
@@ -67,6 +73,9 @@ final class ProxyBossBars {
 
   /** The bars shown, in the order they were shown: a client lists them in that order. */
   private final List<Shown> bars = new ArrayList<>();
+
+  /** The bars shown, as {@link #active()} gives them to any thread. */
+  private volatile List<net.kyori.adventure.bossbar.BossBar> active = List.of();
 
   /** Whether the client shows the bars: it is in a game and has not entered configuration since. */
   private boolean onClient;
@@ -99,6 +108,8 @@ final class ProxyBossBars {
     Shown shown = new Shown(bar);
     bars.add(shown);
     bar.addListener(shown);
+    WarpBossBarImplementation.shown(bar, player.api());
+    refresh();
     if (onClient) {
       write(shown.add());
       player.clientConnection().flush();
@@ -117,6 +128,8 @@ final class ProxyBossBars {
     }
     bars.remove(shown);
     bar.removeListener(shown);
+    WarpBossBarImplementation.hidden(bar, player.api());
+    refresh();
     if (onClient) {
       write(BossBar.remove(shown.uuid));
       player.clientConnection().flush();
@@ -146,7 +159,22 @@ final class ProxyBossBars {
     bars.clear();
     for (Shown each : shown) {
       each.bar.removeListener(each);
+      WarpBossBarImplementation.hidden(each.bar, player.api());
     }
+    refresh();
+  }
+
+  /**
+   * Returns the bars shown, in the order they were shown. Safe from any thread.
+   *
+   * @return an unmodifiable snapshot
+   */
+  List<net.kyori.adventure.bossbar.BossBar> active() {
+    return active;
+  }
+
+  private void refresh() {
+    active = bars.stream().map(shown -> shown.bar).toList();
   }
 
   /**

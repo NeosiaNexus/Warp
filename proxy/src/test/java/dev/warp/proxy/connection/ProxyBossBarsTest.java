@@ -21,6 +21,7 @@ import static dev.warp.proxy.connection.SwitchHarness.SURVIVAL;
 import static dev.warp.proxy.connection.SwitchHarness.frame;
 import static dev.warp.proxy.connection.SwitchHarness.types;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -32,9 +33,11 @@ import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.StartConfiguration;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 
 import net.kyori.adventure.text.Component;
 import org.junit.jupiter.api.AfterEach;
@@ -81,6 +84,129 @@ class ProxyBossBarsTest {
     setup.player.joinedGame();
     setup.sentToClient();
     return setup;
+  }
+
+  @Nested
+  @DisplayName("viewers")
+  class Viewers {
+
+    @Test
+    @DisplayName("should list the players a bar is shown to, and the bars shown to a player")
+    void shown() {
+      SwitchHarness first = inGame(MODERN);
+      SwitchHarness second = inGame(LEGACY);
+      net.kyori.adventure.bossbar.BossBar bar = bar();
+      net.kyori.adventure.bossbar.BossBar other = bar();
+
+      first.player.api().showBossBar(bar);
+      first.player.api().showBossBar(other);
+      second.player.api().showBossBar(bar);
+
+      assertEquals(Set.of(first.player.api(), second.player.api()), Set.copyOf(viewers(bar)));
+      assertEquals(List.of(first.player.api()), viewers(other));
+      assertEquals(List.of(bar, other), first.player.api().activeBossBars());
+    }
+
+    @Test
+    @DisplayName("should forget a player once the bar is hidden, and the bar with its last viewer")
+    void hidden() {
+      SwitchHarness first = inGame(MODERN);
+      SwitchHarness second = inGame(MODERN);
+      net.kyori.adventure.bossbar.BossBar bar = bar();
+      first.player.api().showBossBar(bar);
+      second.player.api().showBossBar(bar);
+
+      first.player.api().hideBossBar(bar);
+      List<?> afterFirst = viewers(bar);
+      second.player.api().hideBossBar(bar);
+
+      assertEquals(List.of(second.player.api()), afterFirst);
+      assertEquals(List.of(), viewers(bar));
+      assertEquals(List.of(), first.player.api().activeBossBars());
+      assertFalse(WarpBossBarImplementation.held(bar));
+    }
+
+    @Test
+    @DisplayName("should forget a player that is gone")
+    void gone() {
+      SwitchHarness setup = inGame(MODERN);
+      net.kyori.adventure.bossbar.BossBar bar = bar();
+      setup.player.api().showBossBar(bar);
+
+      setup.player.disconnect();
+      setup.runPendingTasks();
+
+      assertEquals(List.of(), viewers(bar));
+      assertEquals(List.of(), setup.player.api().activeBossBars());
+      assertFalse(WarpBossBarImplementation.held(bar));
+    }
+
+    @Test
+    @DisplayName("should list no player before 1.9, which shows no boss bar")
+    void beforeBossBars() {
+      SwitchHarness setup = inGame(ProtocolVersion.MINECRAFT_1_8);
+      net.kyori.adventure.bossbar.BossBar bar = bar();
+
+      setup.player.api().showBossBar(bar);
+
+      assertEquals(List.of(), viewers(bar));
+      assertEquals(List.of(), setup.player.api().activeBossBars());
+    }
+
+    @Test
+    @DisplayName("should keep every viewer when players show and hide a bar at once")
+    void concurrently() throws Exception {
+      int players = 8;
+      List<SwitchHarness> setups = new ArrayList<>();
+      for (int i = 0; i < players; i++) {
+        setups.add(inGame(MODERN));
+      }
+      net.kyori.adventure.bossbar.BossBar bar = bar();
+      CountDownLatch start = new CountDownLatch(1);
+      List<Thread> threads = new ArrayList<>();
+      for (int i = 0; i < players; i++) {
+        SwitchHarness setup = setups.get(i);
+        boolean keep = i % 2 == 0;
+        threads.add(
+            Thread.ofPlatform()
+                .start(
+                    () -> {
+                      awaitQuietly(start);
+                      for (int round = 0; round < 500; round++) {
+                        setup.player.api().showBossBar(bar);
+                        setup.player.api().hideBossBar(bar);
+                      }
+                      if (keep) {
+                        setup.player.api().showBossBar(bar);
+                      }
+                    }));
+      }
+
+      start.countDown();
+      for (Thread thread : threads) {
+        thread.join();
+      }
+
+      Set<Object> expected = new HashSet<>();
+      for (int i = 0; i < players; i += 2) {
+        expected.add(setups.get(i).player.api());
+      }
+      assertEquals(expected, Set.copyOf(viewers(bar)));
+    }
+
+    private static List<?> viewers(net.kyori.adventure.bossbar.BossBar bar) {
+      List<Object> viewers = new ArrayList<>();
+      bar.viewers().forEach(viewers::add);
+      return viewers;
+    }
+
+    private static void awaitQuietly(CountDownLatch latch) {
+      try {
+        latch.await();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }
   }
 
   @Nested

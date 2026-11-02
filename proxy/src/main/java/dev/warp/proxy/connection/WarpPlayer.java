@@ -285,6 +285,11 @@ public final class WarpPlayer implements Player {
   }
 
   @Override
+  public Iterable<? extends BossBar> activeBossBars() {
+    return player.activeBossBars();
+  }
+
+  @Override
   public void sendResourcePacks(ResourcePackRequest request) {
     player.sendResourcePacks(request);
   }

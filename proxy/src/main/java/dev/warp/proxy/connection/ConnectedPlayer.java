@@ -1332,6 +1332,8 @@ public final class ConnectedPlayer {
    */
   public void showBossBar(BossBar bar) {
     if (ProxyBossBars.supported(protocolVersion)) {
+      // On the caller's thread, which is the one likely to ask the bar for its viewers next.
+      WarpBossBarImplementation.attach(bar);
       onEventLoop(
           () -> {
             if (!disconnected.get()) {
@@ -1339,6 +1341,15 @@ public final class ConnectedPlayer {
             }
           });
     }
+  }
+
+  /**
+   * Returns the boss bars shown to the player (see {@link ProxyBossBars#active()}).
+   *
+   * @return an unmodifiable snapshot, in the order they were shown
+   */
+  public List<BossBar> activeBossBars() {
+    return bossBars.active();
   }
 
   /**

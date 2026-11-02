@@ -25,6 +25,8 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
+import net.kyori.adventure.bossbar.BossBar;
+import net.kyori.adventure.bossbar.BossBarViewer;
 import net.kyori.adventure.chat.ChatType;
 import net.kyori.adventure.chat.SignedMessage;
 import net.kyori.adventure.dialog.DialogLike;
@@ -71,7 +73,8 @@ import net.kyori.adventure.text.Component;
  *
  * <p>Implemented by the proxy; plugins must not implement it.
  */
-public interface Player extends InboundConnection, CommandSource, Identified, Sound.Emitter {
+public interface Player
+    extends InboundConnection, CommandSource, Identified, Sound.Emitter, BossBarViewer {
 
   /**
    * Returns the player's UUID: Mojang's in online mode, derived from the name in offline mode, or
@@ -171,6 +174,21 @@ public interface Player extends InboundConnection, CommandSource, Identified, So
    * @return {@code true} if the client has it
    */
   boolean supports(AudienceFeature feature);
+
+  /**
+   * Returns the boss bars shown to this player with {@link #showBossBar(BossBar)} and not hidden
+   * since, in the order they were shown. Each bar's {@link BossBar#viewers()} lists the players the
+   * other way round.
+   *
+   * <p>A bar is listed once the player's network thread took the call to show it (at once when the
+   * call is made from that thread), and for as long as the proxy keeps it on the player's client,
+   * across server switches, until it is hidden or the player disconnects. A client before 1.9 has
+   * no boss bar: nothing is listed.
+   *
+   * @return an unmodifiable snapshot
+   */
+  @Override
+  Iterable<? extends BossBar> activeBossBars();
 
   /**
    * Applies resource packs on the player's client.
