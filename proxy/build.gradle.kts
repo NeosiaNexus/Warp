@@ -44,6 +44,8 @@ dependencies {
     // Netty transport
     implementation(platform(libs.netty.bom))
     implementation(libs.bundles.netty)
+    // HTTP for the management server only (probes, drain), on its own event loop
+    implementation(libs.netty.codec.http)
     implementation(libs.netty.transport.native.epoll) {
         artifact { classifier = "linux-x86_64" }
     }

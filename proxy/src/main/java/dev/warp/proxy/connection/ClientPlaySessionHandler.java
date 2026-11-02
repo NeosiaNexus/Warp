@@ -21,6 +21,7 @@ import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.config.ClientInformation;
+import dev.warp.protocol.packet.cookie.CookieResponse;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
@@ -107,6 +108,10 @@ final class ClientPlaySessionHandler implements SessionHandler {
 
   @Override
   public void handle(Packet packet) {
+    if (packet instanceof CookieResponse response) {
+      player.cookies().answered(response); // to whoever asked; an unasked answer is dropped
+      return;
+    }
     if (!(packet instanceof PlayPacket playPacket)) {
       logger.warn(
           "Unexpected packet in client PLAY handler: {}", packet.getClass().getSimpleName());

@@ -273,6 +273,8 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, forward
           port: ports.warp,
           servers: { lobby: ports.lobby, survival: ports.survival },
           fallbackOrder: ['lobby', 'survival'],
+          // The transfer scenario comes back through this one, and is refused by warp-alt.
+          acceptsTransfers: true,
           // The JVM resolves the recording against its own directory: the path must be absolute.
           jvmArgs: opts.soak === undefined ? [] : soakJvmArgs(resolve(logDir, `warp-${variant.name}.jfr`)),
         }),
@@ -291,10 +293,16 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, forward
     entry,
     variant,
     direct: opts.direct,
-    features: features(entry.protocol, { direct: opts.direct, forwarding: variant.forwarding, online: variant.online }),
+    features: features(entry.protocol, {
+      direct: opts.direct,
+      forwarding: variant.forwarding,
+      online: variant.online,
+      bridged: entry.via !== undefined,
+    }),
     client: connectClient(entry, { tools: matrix.tools, cache: opts.cache, java: warpJava, ports, targets: Object.values(targets), logDir, runDir }),
     warp: { port: targets.warp, instance: instances[0] ?? null },
     warpAlt: { port: targets.warpAlt },
+    ports,
     lobby: backends.lobby,
     survival: backends.survival,
     packs,
@@ -461,7 +469,20 @@ function selectScenarios(list) {
 
 /** Fixed ports from `base`; fails early if one is taken (a dev testbed, another run…). */
 async function reservePorts(base) {
-  const ports = { lobby: base, survival: base + 1, warp: base + 2, warpAlt: base + 3, mojang: base + 4, closed: base + 5, via: base + 6, viaAlt: base + 7 };
+  const ports = {
+    lobby: base,
+    survival: base + 1,
+    warp: base + 2,
+    warpAlt: base + 3,
+    mojang: base + 4,
+    closed: base + 5,
+    via: base + 6,
+    viaAlt: base + 7,
+    // The drain scenario's own Warp, its management server and its HAProxy agent check.
+    drain: base + 8,
+    drainHttp: base + 9,
+    drainAgent: base + 10,
+  };
   for (const [name, port] of Object.entries(ports)) {
     const free = await new Promise((done) => {
       const probe = createServer().once('error', () => done(false)).listen(port, '127.0.0.1', () => probe.close(() => done(true)));

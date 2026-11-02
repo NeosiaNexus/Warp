@@ -21,7 +21,7 @@ e2e/run.sh --help
 Requirements: Node.js 22+ and a JDK that runs Gradle. Everything else (Paper or vanilla servers,
 the JDK each server needs, ViaProxy) is downloaded on first use, checked against a pinned checksum
 and cached in `~/.cache/warp-e2e` (override with `WARP_E2E_CACHE`). Without `--jar`, Warp's shadow
-jar is built with Gradle. The harness uses 8 local ports from 26100 (`--port-base` to move them),
+jar is built with Gradle. The harness uses 11 local ports from 26100 (`--port-base` to move them),
 and serves the resource packs on one the system picks.
 
 The bots are [mineflayer](https://github.com/PrismarineJS/mineflayer) bots from 1.8.8, the oldest
@@ -59,11 +59,14 @@ a closed port) and run the scenarios:
 | `fallback-unreachable` | Default server down: the player lands on the next one |
 | `fallback-rejected` | Lobby refuses the login (whitelist): the player lands on survival |
 | `switch-refused` | Survival refuses a `/server survival` (whitelist): the player stays on the lobby, told why, never disconnected |
+| `transfer` | From 1.20.5, bots speaking the version natively: the lobby sends the player away with its own Transfer packet (`/transfer` to Warp's address), which reaches it through Warp exactly as sent; the player comes back with a transfer handshake (intent 3), which Warp lets in onto the lobby (`accepts-transfers` on). warp-alt, where it is off, refuses one with vanilla's `multiplayer.disconnect.transfers_disabled` |
+| `drain` | A Warp of its own, warp-drain, with its management server and HAProxy agent check, drains towards warp. From 1.20.5, by SIGTERM (`drain.on-sigterm`, as under Kubernetes): `/readyz` answers 503 and the agent `drain` at once, the player gets a Transfer packet to warp and comes back there by transfer, and warp-drain, empty, exits with 0. Before 1.20.5, by `POST /drain?wait=true` (a wrong token gets 401): the player, whose client cannot be transferred, is kept, never kicked; once it leaves, the request answers `drained` and warp-drain exits with 0 |
 
 A scenario a run cannot hold is skipped and says why: `forwarding` without forwarding or offline
 (Warp then forwards the UUID a backend derives itself, so nothing tells them apart), `switching`
 and the fallbacks in a `--direct` run, `resource-pack` before 1.8 (offers were a plugin message,
-without the SHA-1). The features are in `features()` in `src/scenarios.js`.
+without the SHA-1), `transfer` before 1.20.5 and through ViaProxy (Warp would see the bridge's
+handshake, not the bot's), `drain` through ViaProxy (no bridge leads to warp-drain). The features are in `features()` in `src/scenarios.js`.
 
 A run fails if a scenario fails, and also if:
 

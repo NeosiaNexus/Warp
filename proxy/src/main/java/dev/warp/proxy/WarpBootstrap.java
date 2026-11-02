@@ -21,6 +21,7 @@ import dev.warp.proxy.config.WarpConfig;
 
 import java.nio.file.Path;
 
+import org.apache.logging.log4j.LogManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -48,10 +49,24 @@ public final class WarpBootstrap {
       config = WarpConfig.load(directory);
     } catch (ConfigurationException e) {
       logger.error("Failed to load configuration: {}", e.getMessage());
-      System.exit(1);
+      exit(1);
       return; // unreachable, but keeps the compiler happy
     }
 
-    new WarpServer(config, directory).start();
+    try {
+      new WarpServer(config, directory).start();
+    } catch (RuntimeException e) {
+      logger.error("Failed to start Warp", e);
+      exit(1);
+    }
+  }
+
+  /**
+   * Exits once the logs are written: Log4j's own shutdown hook is off (see {@code log4j2.xml}), so
+   * that the proxy's shutdown is logged, and asynchronous loggers would lose these last lines.
+   */
+  private static void exit(int status) {
+    LogManager.shutdown();
+    System.exit(status);
   }
 }

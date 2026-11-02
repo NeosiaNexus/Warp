@@ -55,4 +55,13 @@ public interface InboundConnection {
    * @return {@code true} while connected
    */
   boolean isActive();
+
+  /**
+   * Returns whether the client arrived by a transfer: a server sent it here with a Transfer packet,
+   * and its handshake said so (Minecraft 1.20.5 and newer). Such a client may carry cookies the
+   * server that sent it stored; a client can also forge them.
+   *
+   * @return {@code true} if the client was transferred here
+   */
+  boolean isTransferred();
 }

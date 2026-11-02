@@ -127,7 +127,9 @@ class SessionHandlerLifecycleTest {
             ProtocolVersion.MINECRAFT_1_21_4,
             profile,
             new InetSocketAddress("127.0.0.1", 25565),
-            loginContext);
+            loginContext,
+            new ClientCookies(
+                clientConn, ProtocolVersion.MINECRAFT_1_21_4, clientChannel.eventLoop()));
 
     BackendConnection backend = createTestBackendConnection(backendConn);
     player.setBackendConnection(backend);

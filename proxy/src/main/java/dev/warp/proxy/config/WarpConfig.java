@@ -64,6 +64,7 @@ public final class WarpConfig {
   private static final int DEFAULT_COMPRESSION_LEVEL = -1;
   private static final boolean DEFAULT_COMPRESSION_PASSTHROUGH = true;
   private static final String DEFAULT_DUPLICATE_LOGIN = "auto";
+  private static final boolean DEFAULT_ACCEPTS_TRANSFERS = false;
 
   /** Characters used for auto-generated forwarding secret. */
   private static final String SECRET_CHARS =
@@ -86,6 +87,9 @@ public final class WarpConfig {
   private final int compressionThreshold;
   private final int compressionLevel;
   private final boolean compressionPassthrough;
+  private final boolean acceptsTransfers;
+  private final ManagementConfig management;
+  private final DrainConfig drain;
 
   // ---------------------------------------------------------------------------
   // Constructor (private — use load())
@@ -102,7 +106,10 @@ public final class WarpConfig {
       byte[] forwardingSecret,
       int compressionThreshold,
       int compressionLevel,
-      boolean compressionPassthrough) {
+      boolean compressionPassthrough,
+      boolean acceptsTransfers,
+      ManagementConfig management,
+      DrainConfig drain) {
     this.bind = bind;
     this.onlineMode = onlineMode;
     this.servers = Map.copyOf(servers);
@@ -114,6 +121,9 @@ public final class WarpConfig {
     this.compressionThreshold = compressionThreshold;
     this.compressionLevel = compressionLevel;
     this.compressionPassthrough = compressionPassthrough;
+    this.acceptsTransfers = acceptsTransfers;
+    this.management = management;
+    this.drain = drain;
   }
 
   // ---------------------------------------------------------------------------
@@ -175,6 +185,11 @@ public final class WarpConfig {
     boolean compressionPassthrough =
         root.node("compression", "passthrough").getBoolean(DEFAULT_COMPRESSION_PASSTHROUGH);
 
+    boolean acceptsTransfers = root.node("accepts-transfers").getBoolean(DEFAULT_ACCEPTS_TRANSFERS);
+
+    ManagementConfig management = ManagementConfig.parse(root, directory, System::getenv);
+    DrainConfig drain = DrainConfig.parse(root);
+
     // ---------------------------------------------------------------------------
     // Validate
     // ---------------------------------------------------------------------------
@@ -200,7 +215,10 @@ public final class WarpConfig {
             forwardingSecret,
             compressionThreshold,
             compressionLevel,
-            compressionPassthrough);
+            compressionPassthrough,
+            acceptsTransfers,
+            management,
+            drain);
 
     logConfig(config);
     return config;
@@ -314,12 +332,41 @@ public final class WarpConfig {
     return compressionPassthrough;
   }
 
+  /**
+   * Returns whether players that a Transfer packet sends to the proxy (handshake intent 3, clients
+   * 1.20.5 and newer) may log in. Off by default, as on vanilla servers and Velocity: a client is
+   * then refused with vanilla's translated "transfers disabled" reason.
+   *
+   * @return {@code true} if transferred players may log in
+   */
+  public boolean acceptsTransfers() {
+    return acceptsTransfers;
+  }
+
+  /**
+   * Returns the management server's settings: Kubernetes probes, the HAProxy agent check and the
+   * drain endpoint.
+   *
+   * @return the {@code management} section
+   */
+  public ManagementConfig management() {
+    return management;
+  }
+
+  /**
+   * Returns how the proxy drains before it stops.
+   *
+   * @return the {@code drain} section
+   */
+  public DrainConfig drain() {
+    return drain;
+  }
+
   // ---------------------------------------------------------------------------
   // Internals
   // ---------------------------------------------------------------------------
 
-  private static InetSocketAddress parseAddress(String value, String field)
-      throws ConfigurationException {
+  static InetSocketAddress parseAddress(String value, String field) throws ConfigurationException {
     int lastColon = value.lastIndexOf(':');
     if (lastColon <= 0 || lastColon == value.length() - 1) {
       throw new ConfigurationException(field + " must be host:port, got '" + value + "'");
@@ -541,6 +588,11 @@ public final class WarpConfig {
         # The server players are sent to when they first connect.
         default-server = "lobby"
 
+        # Let in the players a server sends here with a Transfer packet (Minecraft 1.20.5+):
+        # another proxy draining for a restart, or a server of another network. Off, they are
+        # refused with the game's own "transfers disabled" message, as on a vanilla server.
+        accepts-transfers = false
+
         # Servers tried in order when a player is kicked from their current server.
         # The failed server is skipped. If all fail, the player is disconnected.
         # Defaults to [default-server] if omitted.
@@ -579,6 +631,58 @@ public final class WarpConfig {
           # 256) rather than -1. Disable only to troubleshoot.
           passthrough = true
         }
+
+        # Management HTTP server: Kubernetes probes, load balancer health checks and the drain.
+        #   GET /livez     200 while the process runs
+        #   GET /startupz  200 once the proxy listens and its plugins are enabled
+        #   GET /readyz    200 while players can be sent here: started, not draining, at least one
+        #                  server registered (see below), and no plugin holding readiness
+        #   GET /drain     where the drain stands
+        #   POST /drain    starts the drain (Authorization: Bearer <token>); add ?wait=true to
+        #                  answer only once every player left
+        management {
+          enabled = false
+          # Keep it off the internet. In Kubernetes, bind 0.0.0.0 so that the kubelet reaches it.
+          bind = "127.0.0.1:9901"
+          # HAProxy agent check: answers "up ready", "drain" or "down" on this TCP port. Empty: off.
+          agent-check = ""
+          # The token POST /drain requires, read from this file (relative to this directory) or
+          # from the WARP_MANAGEMENT_TOKEN variable. Without one, POST /drain is refused.
+          token-file = ""
+          # Ready only once at least one backend server is registered.
+          ready-requires-server = true
+        }
+
+        # Draining: empty the proxy before it stops, for restarts without kicking anyone.
+        #   phase 0  readiness and the agent check say drain; wait propagation-delay
+        #   phase 1  players are transferred to transfer-to (1.20.5+), one every transfer-interval;
+        #            plugins may keep some (a match in progress) until they reach another server
+        #   phase 2  wait for the players kept to leave, at most timeout
+        #   phase 3  disconnect whoever is left, disable plugins and exit
+        #            (exit code 0 once empty, 2 when the time-out expired)
+        drain {
+          # Where players go: your public address (the load balancer), never this proxy or a
+          # backend. Empty: nobody is transferred, the drain waits for players to leave.
+          transfer-to = ""
+          # Drain on SIGTERM instead of stopping at once (a second SIGTERM stops at once). Turn it
+          # on under Kubernetes, with a terminationGracePeriodSeconds longer than the drain.
+          on-sigterm = false
+          # How long load balancers get to stop sending players here before the transfers start
+          # (HAProxy checks the agent every agent-inter; Kubernetes updates its endpoints).
+          propagation-delay = 5s
+          # Time between two transfers, so that the other proxies are not hit all at once.
+          transfer-interval = 100ms
+          # Players that cannot be transferred (clients older than 1.20.5, or no transfer-to):
+          # keep (until they leave) or kick.
+          cannot-transfer = keep
+          # Players who log in while draining: accept (transferred with the others once on a
+          # server, once the load balancers had time to stop sending players here) or refuse.
+          new-players = accept
+          # Longest wait for the players kept, once the transfers are done.
+          timeout = 30m
+          # Shown to the players the drain disconnects and to the logins it refuses.
+          message = "This proxy is restarting. Please reconnect."
+        }
         """;
 
     try {
@@ -605,6 +709,9 @@ public final class WarpConfig {
     logger.info(
         "  duplicate-login: {}",
         config.duplicateLoginPolicy.name().toLowerCase(Locale.ROOT).replace('_', '-'));
+    logger.info("  accepts-transfers: {}", config.acceptsTransfers);
+    logger.info("  management: {}", config.management);
+    logger.info("  drain: {}", config.drain);
     logger.info("  forwarding: {}", config.forwardingMode.name().toLowerCase(Locale.ROOT));
     logger.info(
         "  compression: threshold={}, level={}, passthrough={}",

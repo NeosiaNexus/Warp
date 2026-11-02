@@ -60,6 +60,8 @@ import io.netty.channel.Channel;
  * @param forwardingMode the player info forwarding mode
  * @param forwardingSecret the shared HMAC secret for Velocity modern forwarding
  * @param channelClass the socket channel class matching the detected transport
+ * @param acceptsTransfers whether players a Transfer packet sends here (handshake intent 3,
+ *     1.20.5+) may log in; refused with vanilla's reason otherwise
  */
 @SuppressWarnings("ArrayRecordComponent") // forwardingSecret is treated as immutable
 public record ServerLoginContext(
@@ -80,7 +82,8 @@ public record ServerLoginContext(
     PermissionRegistry permissions,
     ForwardingMode forwardingMode,
     byte[] forwardingSecret,
-    Class<? extends Channel> channelClass) {
+    Class<? extends Channel> channelClass,
+    boolean acceptsTransfers) {
 
   /** Validates configuration invariants. */
   public ServerLoginContext {

@@ -16,6 +16,9 @@
  */
 package dev.warp.api;
 
+import dev.warp.api.lifecycle.DrainPhase;
+import dev.warp.api.lifecycle.DrainStatus;
+import dev.warp.api.lifecycle.ReadinessHold;
 import dev.warp.api.player.Player;
 import dev.warp.api.plugin.PluginManager;
 import dev.warp.api.server.ServerRegistry;
@@ -23,6 +26,7 @@ import dev.warp.api.server.ServerRegistry;
 import java.util.Collection;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Entry point to the Warp API: the proxy itself.
@@ -84,4 +88,49 @@ public interface Warp {
    * @return the server registry
    */
   ServerRegistry servers();
+
+  // ---------------------------------------------------------------------------
+  // Readiness and drain
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Holds the proxy's readiness until the hold is released: the readiness probe and the HAProxy
+   * agent check report the proxy as not ready, so that no new player is sent here. Take one while
+   * the proxy cannot serve players as the plugin sees it, such as until it discovered a lobby.
+   *
+   * @param reason why, as the readiness probe reports it
+   * @return the hold, to release once the plugin is ready
+   * @throws IllegalArgumentException if {@code reason} is blank
+   */
+  ReadinessHold holdReadiness(String reason);
+
+  /**
+   * Starts draining the proxy, as {@code POST /drain} or SIGTERM would: load balancers are told to
+   * stop sending players here, the players are moved to {@code drain.transfer-to} at the configured
+   * rate (a {@link dev.warp.api.event.player.PlayerDrainEvent} lets plugins keep some), the proxy
+   * waits for those kept to leave, then shuts down. Logins are refused or accepted as {@code
+   * drain.new-players} says. Each phase fires a {@link dev.warp.api.event.proxy.ProxyDrainEvent}.
+   *
+   * <p>The drain cannot be cancelled. Calling this again while draining returns the same future.
+   *
+   * @return completed with the final status, its outcome set, once every player left or the
+   *     time-out expired, just before the proxy shuts down; never completes exceptionally
+   * @throws IllegalStateException if the proxy has not finished starting
+   */
+  CompletableFuture<DrainStatus> drain();
+
+  /**
+   * Returns whether the proxy is draining, from the moment the drain is asked for.
+   *
+   * @return {@code true} once a drain started
+   */
+  boolean isDraining();
+
+  /**
+   * Returns where the drain stands, or a status in {@link DrainPhase#NONE} when the proxy is not
+   * draining.
+   *
+   * @return a snapshot of the drain's status
+   */
+  DrainStatus drainStatus();
 }

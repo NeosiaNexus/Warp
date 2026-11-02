@@ -25,6 +25,7 @@ import dev.warp.protocol.netty.CipherEncoder;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
+import dev.warp.protocol.packet.cookie.CookieResponse;
 import dev.warp.protocol.packet.login.EncryptionRequest;
 import dev.warp.protocol.packet.login.EncryptionResponse;
 import dev.warp.protocol.packet.login.EncryptionResponse.EncryptedToken;
@@ -106,6 +107,13 @@ final class LoginSessionHandler implements SessionHandler {
   /** Verify token length in bytes. */
   private static final int VERIFY_TOKEN_LENGTH = 4;
 
+  /**
+   * Vanilla's reason for refusing a client that answers a query it was not sent, such as a cookie
+   * the proxy never requested, translated by the client.
+   */
+  static final String UNEXPECTED_QUERY_RESPONSE =
+      "multiplayer.disconnect.unexpected_query_response";
+
   // ---------------------------------------------------------------------------
   // State machine
   // ---------------------------------------------------------------------------
@@ -125,6 +133,13 @@ final class LoginSessionHandler implements SessionHandler {
 
   private final MinecraftConnection connection;
   private final ServerLoginContext loginContext;
+
+  /**
+   * The client's cookie traffic from the start of its login, before any backend exists: the proxy
+   * may ask for a cookie here (the session a transferred player carries, say), and the player it
+   * logs in keeps it.
+   */
+  private final ClientCookies cookies;
 
   private LoginState state = LoginState.AWAITING_LOGIN_START;
 
@@ -161,6 +176,20 @@ final class LoginSessionHandler implements SessionHandler {
     this.loginContext = loginContext;
     this.onlineMode = loginContext.onlineMode();
     this.inbound = new WarpInboundConnection(connection);
+    this.cookies =
+        new ClientCookies(
+            connection, connection.decoder().version(), connection.channel().eventLoop());
+  }
+
+  /**
+   * Returns the client's cookie traffic, through which the proxy asks the client for cookies during
+   * its login (1.20.5+): {@link ClientCookies#request} works from the handshake on. In online mode,
+   * asking once encryption is on keeps the cookie off the wire in clear.
+   *
+   * @return the cookie traffic of the client connection
+   */
+  ClientCookies cookies() {
+    return cookies;
   }
 
   // ---------------------------------------------------------------------------
@@ -169,6 +198,10 @@ final class LoginSessionHandler implements SessionHandler {
 
   @Override
   public void handle(Packet packet) {
+    if (packet instanceof CookieResponse response) {
+      handleCookieResponse(response);
+      return;
+    }
     if (!(packet instanceof LoginPacket loginPacket)) {
       if (state == LoginState.COMPLETE) {
         // Client may send CONFIG packets (e.g., brand) before the backend handler is installed.
@@ -200,6 +233,23 @@ final class LoginSessionHandler implements SessionHandler {
   // ---------------------------------------------------------------------------
   // Packet handlers
   // ---------------------------------------------------------------------------
+
+  /**
+   * Routes the client's answer to a cookie request: one of the proxy's own in the login state, or,
+   * once the client is past its login and waits for its first server, possibly one of that
+   * server's. In the login state the proxy is the server, and refuses an answer to nothing as
+   * vanilla does.
+   */
+  private void handleCookieResponse(CookieResponse response) {
+    if (!cookies.answered(response) && state != LoginState.COMPLETE) {
+      logger.warn(
+          "Disconnecting {} from {}: cookie {} sent unasked",
+          username != null ? username : "unknown",
+          connection.channel().remoteAddress(),
+          response.key());
+      connection.writeAndClose(LoginDisconnect.ofTranslation(UNEXPECTED_QUERY_RESPONSE));
+    }
+  }
 
   private void handleLoginStart(LoginStart packet) {
     if (state != LoginState.AWAITING_LOGIN_START) {
@@ -486,7 +536,8 @@ final class LoginSessionHandler implements SessionHandler {
             clientVersion(),
             profile,
             (InetSocketAddress) connection.channel().remoteAddress(),
-            loginContext);
+            loginContext,
+            cookies);
     joining.setOnlineMode(onlineMode);
     boolean kickExisting = loginContext.duplicateLoginPolicy().kicksExisting(onlineMode);
     if (loginContext.playerRegistry().register(joining, kickExisting)
@@ -536,13 +587,20 @@ final class LoginSessionHandler implements SessionHandler {
             profile.properties(),
             strictErrorHandling,
             joinPlaySession());
-    connection.writeAndFlush(loginSuccess);
+    if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
+      // The client reads what follows in the configuration state, before it acknowledges: what the
+      // proxy sends of its own (a cookie request) waits for the acknowledgement.
+      connection.writeTerminal(loginSuccess);
+    } else {
+      connection.writeAndFlush(loginSuccess);
+    }
 
     logger.info(
-        "Player {} ({}) logged in from {}",
+        "Player {} ({}) logged in from {}{}",
         profile.name(),
         profile.uuid(),
-        connection.channel().remoteAddress());
+        connection.channel().remoteAddress(),
+        connection.handshakeIntent() == HandshakeIntent.TRANSFER ? ", transferred" : "");
 
     if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
       // The client reads configuration packets from Login Success on, though it is still read in
