@@ -169,7 +169,8 @@ class HeldPlayerTest {
           Client.ROUND_TRIP_MS, client.player().measuredLatencyMs(), "its answers were matched");
       // The plugins settle on the only server, which cannot be reached: the player is told.
       hold.complete(null);
-      client.channel.runPendingTasks();
+      // The reason may be given time to reach the client before the connection closes.
+      client.waitFor(Duration.ofSeconds(1), Client.Behaviour.SILENT);
       assertFalse(client.channel.isOpen(), "the decision is applied once the hold ends");
     }
 
