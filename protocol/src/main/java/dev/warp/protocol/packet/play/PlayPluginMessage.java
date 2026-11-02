@@ -21,9 +21,6 @@ import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.packet.PacketCodec;
 import dev.warp.protocol.packet.PacketWatch;
 
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-
 import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.DecoderException;
 import io.netty.handler.codec.EncoderException;
@@ -56,23 +53,21 @@ public record PlayPluginMessage(String channel, byte[] data) implements PlayPack
   private static final int EXTENDED = 0x8000;
 
   /**
-   * Channels whose clientbound messages the proxy wants to see: plugins own them. The proxy keeps
-   * the set; the watch only reads it.
+   * Channels whose clientbound messages the proxy wants to see: those plugins own, and those the
+   * proxy speaks itself (the BungeeCord channel). The proxy keeps the set; the watch only reads it.
    */
-  public static final Set<String> WATCHED_CHANNELS = ConcurrentHashMap.newKeySet();
+  public static final WatchedChannels WATCHED_CHANNELS = new WatchedChannels();
 
   /**
-   * Watch of clientbound plugin messages: reads the channel in place, and reports the message (its
-   * payload copied) only when a plugin owns the channel. Every other message is forwarded
-   * untouched, compressed or not, without a single allocation beyond the channel name.
+   * Watch of clientbound plugin messages: matches the channel in place, and reports the message
+   * (its payload copied) only when the channel is watched. Every other message is forwarded
+   * untouched, compressed or not, without a single allocation: its channel is compared byte for
+   * byte, never decoded.
    */
   public static final PacketWatch<PlayPluginMessage> WATCH =
       (buf, version) -> {
-        if (WATCHED_CHANNELS.isEmpty()) {
-          return null;
-        }
-        String channel = McString.read(buf);
-        if (!WATCHED_CHANNELS.contains(channel)) {
+        String channel = WATCHED_CHANNELS.read(buf);
+        if (channel == null) {
           return null;
         }
         int length =
