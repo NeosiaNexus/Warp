@@ -144,7 +144,7 @@ public final class WarpServer implements Warp {
         new ServerBootstrap()
             .group(bossGroup, workerGroup)
             .channel(transport.serverChannelClass())
-            .childHandler(new ServerChannelInitializer(loginContext))
+            .childHandler(new ServerChannelInitializer(loginContext, config.proxyProtocol()))
             // TCP_NODELAY: disable Nagle — critical for game traffic. BungeeCord misses this.
             .childOption(ChannelOption.TCP_NODELAY, true)
             // SO_KEEPALIVE: detect dead connections at the TCP level.

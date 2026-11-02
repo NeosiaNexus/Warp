@@ -44,6 +44,8 @@ dependencies {
     // Netty transport
     implementation(platform(libs.netty.bom))
     implementation(libs.bundles.netty)
+    // PROXY protocol v1/v2 decoder, in the pipeline only when proxy-protocol is enabled.
+    implementation(libs.netty.codec.haproxy)
     implementation(libs.netty.transport.native.epoll) {
         artifact { classifier = "linux-x86_64" }
     }

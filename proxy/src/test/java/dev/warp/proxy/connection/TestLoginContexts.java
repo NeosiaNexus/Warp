@@ -88,6 +88,31 @@ final class TestLoginContexts {
     return context(true, -1, sessionService, profileKeys);
   }
 
+  /**
+   * Returns an offline-mode context without compression whose only server, {@code lobby}, is at
+   * {@code server} and receives players through Velocity modern forwarding signed with {@code
+   * secret}. Its connections are real NIO sockets.
+   *
+   * @param server the address of the backend server
+   * @param secret the forwarding secret
+   * @return the context
+   */
+  static ServerLoginContext velocityForwarding(InetSocketAddress server, byte[] secret) {
+    return new ServerLoginContext(
+        KEY_PAIR,
+        false,
+        -1,
+        Deflater.DEFAULT_COMPRESSION,
+        true,
+        new MojangSessionService(),
+        ProfileKeys.mojang(),
+        new PlaySession(),
+        new ServerRegistry(Map.of("lobby", server), "lobby", List.of("lobby")),
+        ForwardingMode.VELOCITY,
+        secret,
+        NioSocketChannel.class);
+  }
+
   private static ServerLoginContext context(
       boolean onlineMode,
       int compressionThreshold,

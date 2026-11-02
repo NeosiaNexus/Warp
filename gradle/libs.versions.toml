@@ -46,6 +46,7 @@ shadow = "9.6.1"
 netty-bom = { group = "io.netty", name = "netty-bom", version.ref = "netty" }
 netty-buffer = { group = "io.netty", name = "netty-buffer" }
 netty-codec = { group = "io.netty", name = "netty-codec" }
+netty-codec-haproxy = { group = "io.netty", name = "netty-codec-haproxy" }
 netty-handler = { group = "io.netty", name = "netty-handler" }
 netty-transport = { group = "io.netty", name = "netty-transport" }
 netty-transport-native-epoll = { group = "io.netty", name = "netty-transport-native-epoll" }

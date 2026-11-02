@@ -16,6 +16,9 @@
  */
 package dev.warp.proxy.config;
 
+import dev.warp.proxy.network.CidrRange;
+import dev.warp.proxy.network.CidrRanges;
+
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -84,6 +87,7 @@ public final class WarpConfig {
   private final int compressionThreshold;
   private final int compressionLevel;
   private final boolean compressionPassthrough;
+  private final ProxyProtocolConfig proxyProtocol;
 
   // ---------------------------------------------------------------------------
   // Constructor (private — use load())
@@ -99,7 +103,8 @@ public final class WarpConfig {
       byte[] forwardingSecret,
       int compressionThreshold,
       int compressionLevel,
-      boolean compressionPassthrough) {
+      boolean compressionPassthrough,
+      ProxyProtocolConfig proxyProtocol) {
     this.bind = bind;
     this.onlineMode = onlineMode;
     this.servers = Map.copyOf(servers);
@@ -110,6 +115,7 @@ public final class WarpConfig {
     this.compressionThreshold = compressionThreshold;
     this.compressionLevel = compressionLevel;
     this.compressionPassthrough = compressionPassthrough;
+    this.proxyProtocol = proxyProtocol;
   }
 
   // ---------------------------------------------------------------------------
@@ -175,6 +181,8 @@ public final class WarpConfig {
     boolean compressionPassthrough =
         root.node("compression", "passthrough").getBoolean(DEFAULT_COMPRESSION_PASSTHROUGH);
 
+    ProxyProtocolConfig proxyProtocol = parseProxyProtocol(root);
+
     // ---------------------------------------------------------------------------
     // Validate
     // ---------------------------------------------------------------------------
@@ -199,7 +207,8 @@ public final class WarpConfig {
             forwardingSecret,
             compressionThreshold,
             compressionLevel,
-            compressionPassthrough);
+            compressionPassthrough,
+            proxyProtocol);
 
     logConfig(config);
     return config;
@@ -303,6 +312,16 @@ public final class WarpConfig {
     return compressionPassthrough;
   }
 
+  /**
+   * Returns whether connections arrive through a load balancer that sends the PROXY protocol, and
+   * which load balancers are trusted to send it.
+   *
+   * @return the PROXY protocol settings
+   */
+  public ProxyProtocolConfig proxyProtocol() {
+    return proxyProtocol;
+  }
+
   // ---------------------------------------------------------------------------
   // Internals
   // ---------------------------------------------------------------------------
@@ -401,6 +420,61 @@ public final class WarpConfig {
       throw new ConfigurationException(
           "forwarding.mode must be one of: none, velocity — got '" + value + "'");
     }
+  }
+
+  /**
+   * Parses the {@code proxy-protocol} section. An enabled PROXY protocol must name the peers it
+   * trusts: trusting every peer, as Velocity's {@code haproxy-protocol} does, lets anyone who
+   * reaches the port choose the address Warp sees.
+   */
+  private static ProxyProtocolConfig parseProxyProtocol(CommentedConfigurationNode root)
+      throws ConfigurationException {
+    CommentedConfigurationNode section = root.node("proxy-protocol");
+    boolean enabled = section.node("enabled").getBoolean(false);
+
+    CommentedConfigurationNode trustedNode = section.node("trusted-proxies");
+    if (!trustedNode.virtual() && !trustedNode.isList()) {
+      throw new ConfigurationException(
+          "proxy-protocol.trusted-proxies must be a list of addresses or CIDR ranges, such as"
+              + " [\"10.0.0.0/8\", \"2001:db8::/32\"]");
+    }
+    List<String> values = new ArrayList<>();
+    for (CommentedConfigurationNode child : trustedNode.childrenList()) {
+      String value = child.getString();
+      if (value == null || value.isBlank()) {
+        throw new ConfigurationException(
+            "proxy-protocol.trusted-proxies holds an empty entry: list addresses or CIDR ranges");
+      }
+      values.add(value.strip());
+    }
+    CidrRanges trusted;
+    try {
+      trusted = CidrRanges.parse(values);
+    } catch (IllegalArgumentException e) {
+      throw new ConfigurationException("proxy-protocol.trusted-proxies: " + e.getMessage(), e);
+    }
+
+    if (!enabled) {
+      return new ProxyProtocolConfig(false, trusted);
+    }
+    if (trusted.isEmpty()) {
+      throw new ConfigurationException(
+          "proxy-protocol.enabled is true but proxy-protocol.trusted-proxies is empty. List the"
+              + " addresses or CIDR ranges of the load balancers that send the PROXY protocol"
+              + " header, such as [\"10.0.0.0/8\"]: Warp refuses to accept the header from any"
+              + " peer, as whoever sends it chooses the address Warp sees.");
+    }
+    for (CidrRange range : trusted.ranges()) {
+      if (range.prefixLength() == 0) {
+        logger.warn(
+            "proxy-protocol.trusted-proxies contains {}, which trusts every {} address: anyone"
+                + " who can reach Warp's port directly can spoof their address. List only your"
+                + " load balancers.",
+            range,
+            range.isIpv4() ? "IPv4" : "IPv6");
+      }
+    }
+    return new ProxyProtocolConfig(true, trusted);
   }
 
   private static byte[] loadForwardingSecret(Path directory, String secretPath, ForwardingMode mode)
@@ -508,6 +582,23 @@ public final class WarpConfig {
           # 256) rather than -1. Disable only to troubleshoot.
           passthrough = true
         }
+
+        # PROXY protocol (v1 and v2), for a load balancer in front of Warp that sends it: HAProxy
+        # (send-proxy, send-proxy-v2), AWS NLB, Cloudflare Spectrum, TCPShield, or a Kubernetes
+        # LoadBalancer Service with the PROXY protocol on. The header carries each player's real
+        # address, which Warp then uses everywhere: logs, and the address forwarded to backends.
+        proxy-protocol {
+          # When enabled, every connection must come from a trusted proxy below and start with a
+          # PROXY protocol header (Warp detects v1 and v2). Connections from any other address are
+          # refused, and so are connections from a trusted proxy without a valid header. Health
+          # checks may send a v2 LOCAL header (HAProxy's check-send-proxy).
+          enabled = false
+
+          # Addresses or CIDR ranges, IPv4 or IPv6, of the load balancers that send the header,
+          # e.g. ["10.0.0.0/8", "2001:db8::/32"]. Required when enabled. Never list an address
+          # players can connect from: whoever sends the header chooses the address Warp sees.
+          trusted-proxies = []
+        }
         """;
 
     try {
@@ -533,5 +624,12 @@ public final class WarpConfig {
         config.compressionThreshold,
         config.compressionLevel,
         config.compressionPassthrough);
+    if (config.proxyProtocol.enabled()) {
+      logger.info(
+          "  proxy-protocol: required from trusted proxies {}",
+          config.proxyProtocol.trustedProxies());
+    } else {
+      logger.info("  proxy-protocol: disabled");
+    }
   }
 }
