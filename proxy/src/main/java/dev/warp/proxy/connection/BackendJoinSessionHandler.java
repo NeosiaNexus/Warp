@@ -21,6 +21,7 @@ import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.PlayDisconnect;
+import dev.warp.proxy.text.Reasons;
 
 import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
@@ -55,8 +56,10 @@ final class BackendJoinSessionHandler implements SessionHandler {
     switch (packet) {
       case JoinGame joinGame -> serverSwitch.joined(backendConnection, joinGame);
       case KeepAlive keepAlive -> backendConnection.writeAndFlush(keepAlive);
-      case PlayDisconnect _ -> {
+      case PlayDisconnect disconnect -> {
         logger.info("Backend kicked {} before its Join Game", player.username());
+        player.recordKick(
+            backendConnection, Reasons.fromWire(disconnect.rawReason(), player.protocolVersion()));
         player.scheduleBackendFailure(backendConnection);
       }
       default ->

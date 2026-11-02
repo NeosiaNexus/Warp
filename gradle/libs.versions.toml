@@ -55,6 +55,7 @@ adventure-api = { group = "net.kyori", name = "adventure-api" }
 adventure-text-minimessage = { group = "net.kyori", name = "adventure-text-minimessage" }
 adventure-text-serializer-gson = { group = "net.kyori", name = "adventure-text-serializer-gson" }
 adventure-text-serializer-plain = { group = "net.kyori", name = "adventure-text-serializer-plain" }
+adventure-text-serializer-legacy = { group = "net.kyori", name = "adventure-text-serializer-legacy" }
 
 # Logging
 log4j-api = { group = "org.apache.logging.log4j", name = "log4j-api", version.ref = "log4j" }

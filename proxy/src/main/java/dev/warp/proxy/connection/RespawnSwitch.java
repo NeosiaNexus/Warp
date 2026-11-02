@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.event.player.KickedFromServerEvent;
 import dev.warp.api.server.ServerInfo;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
@@ -163,7 +164,7 @@ final class RespawnSwitch implements ServerSwitch {
 
   @Override
   public void connectFailed(ServerInfo target) {
-    pendingFailed(target);
+    pendingFailed(target, null, KickedFromServerEvent.Cause.UNREACHABLE);
   }
 
   @Override
@@ -179,14 +180,15 @@ final class RespawnSwitch implements ServerSwitch {
     if (joining != null && joining.connection() == backend) {
       pending = null;
       joining.disconnect();
-      pendingFailed(joining.server());
+      pendingFailed(joining.server(), backend, KickedFromServerEvent.Cause.CONNECTION_LOST);
       return;
     }
     BackendConnection current = player.backendConnection();
     if (current != null && current.connection() == backend) {
       player.setBackendConnection(null);
       if (joining == null) {
-        player.handleBackendFailure(current.server().name());
+        player.handleBackendFailure(
+            current.server().name(), backend, KickedFromServerEvent.Cause.CONNECTION_LOST);
       }
       // Otherwise a switch is already taking the player elsewhere.
     }
@@ -202,7 +204,7 @@ final class RespawnSwitch implements ServerSwitch {
     }
     pending = null;
     joining.disconnect();
-    pendingFailed(joining.server());
+    pendingFailed(joining.server(), null, KickedFromServerEvent.Cause.TIMED_OUT);
   }
 
   @Override
@@ -218,12 +220,13 @@ final class RespawnSwitch implements ServerSwitch {
    * The server the player was being moved to failed: the player stays on its server if it still has
    * one, otherwise the fallback order applies.
    */
-  private void pendingFailed(ServerInfo target) {
+  private void pendingFailed(
+      ServerInfo target, @Nullable MinecraftConnection backend, KickedFromServerEvent.Cause cause) {
     BackendConnection current = player.backendConnection();
     if (current != null && current.isActive()) {
-      player.switchFailed(target);
+      player.switchFailed(target, backend, cause);
       return;
     }
-    player.handleBackendFailure(target.name());
+    player.handleBackendFailure(target.name(), backend, cause);
   }
 }

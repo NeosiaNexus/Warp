@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerInfo;
 
 import java.net.InetSocketAddress;
@@ -249,7 +250,7 @@ class ServerRegistryTest {
       ServerRegistry registry = registry(List.of("lobby"));
       BackendServer survival = registry.getServer("survival");
 
-      BackendServer removed = registry.unregister("SURVIVAL");
+      RegisteredServer removed = registry.unregister("SURVIVAL").orElseThrow();
 
       assertSame(survival, removed);
       assertNull(registry.getServer("survival"));
@@ -274,7 +275,7 @@ class ServerRegistryTest {
     void unknownName() {
       ServerRegistry registry = new ServerRegistry(Map.of(), null, List.of());
 
-      assertNull(registry.unregister("nope"));
+      assertTrue(registry.unregister("nope").isEmpty());
     }
   }
 

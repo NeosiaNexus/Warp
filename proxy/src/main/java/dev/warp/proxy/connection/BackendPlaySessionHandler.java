@@ -43,6 +43,7 @@ import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
 import dev.warp.protocol.packet.play.TabListHeaderFooter;
 import dev.warp.protocol.packet.play.Transfer;
+import dev.warp.proxy.text.Reasons;
 
 import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
@@ -120,7 +121,7 @@ final class BackendPlaySessionHandler implements SessionHandler {
       case KeepAlive keepAlive -> handleKeepAlive(keepAlive);
       case JoinGame joinGame -> handleJoinGame(joinGame);
       case Respawn respawn -> forwardToClient(respawn);
-      case PlayDisconnect _ -> handleDisconnect();
+      case PlayDisconnect disconnect -> handleDisconnect(disconnect);
       case SystemChatMessage chatMessage -> forwardToClient(chatMessage);
       case StartConfiguration _ -> handleStartConfiguration();
       case Transfer transfer -> forwardToClient(transfer);
@@ -203,8 +204,10 @@ final class BackendPlaySessionHandler implements SessionHandler {
         joinGame.withOnlineMode(player.loginContext().onlineMode(), player.protocolVersion()));
   }
 
-  private void handleDisconnect() {
+  private void handleDisconnect(PlayDisconnect disconnect) {
     logger.info("Backend kicked player {} during play", player.username());
+    player.recordKick(
+        backendConnection, Reasons.fromWire(disconnect.rawReason(), player.protocolVersion()));
     player.scheduleBackendFailure(backendConnection);
   }
 

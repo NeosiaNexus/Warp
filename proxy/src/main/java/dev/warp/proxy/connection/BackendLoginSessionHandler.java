@@ -31,6 +31,7 @@ import dev.warp.protocol.packet.login.LoginPluginResponse;
 import dev.warp.protocol.packet.login.LoginStart;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.login.SetCompression;
+import dev.warp.proxy.text.Reasons;
 
 import java.net.InetSocketAddress;
 import java.util.Set;
@@ -199,6 +200,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
     adviseIfBackendUncompressed();
     // The configuration phase from 1.20.2, straight to PLAY before: the server switch strategy
     // knows which, and installs the next handler.
+    player.backendAccepted(backendConnection);
     player.serverSwitch().loggedIn(backendConnection);
   }
 
@@ -208,6 +210,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
         serverAddress,
         player.username(),
         packet.reason());
+    player.recordKick(backendConnection, Reasons.fromJson(packet.reason()));
     player.scheduleBackendFailure(backendConnection);
   }
 }

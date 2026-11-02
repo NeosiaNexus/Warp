@@ -40,6 +40,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -83,7 +84,7 @@ public final class WarpEventBus implements AutoCloseable {
   private static final CompletableFuture<@Nullable Void> DONE =
       CompletableFuture.completedFuture(null);
 
-  private final ExecutorService executor;
+  private final Executor executor;
   private final ScheduledExecutorService timer;
   private final Map<Class<?>, List<Handler>> registered = new ConcurrentHashMap<>();
   private final Map<Class<?>, Handler[]> resolved = new ConcurrentHashMap<>();
@@ -93,8 +94,17 @@ public final class WarpEventBus implements AutoCloseable {
 
   /** Creates a bus delivering events on virtual threads. */
   public WarpEventBus() {
-    this.executor =
-        Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("warp-event-", 0).factory());
+    this(Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("warp-event-", 0).factory()));
+  }
+
+  /**
+   * Creates a bus delivering events with the given executor. Tests pass {@code Runnable::run} to
+   * deliver on the thread that fires, deterministically.
+   *
+   * @param executor runs deliveries; shut down by {@link #close()} if it is an executor service
+   */
+  public WarpEventBus(Executor executor) {
+    this.executor = executor;
     this.timer =
         Executors.newSingleThreadScheduledExecutor(
             Thread.ofPlatform().name("warp-event-timer").daemon().factory());
@@ -486,15 +496,17 @@ public final class WarpEventBus implements AutoCloseable {
   /** Waits a bounded time for events being delivered, then stops the bus. */
   @Override
   public void close() {
-    executor.shutdown();
-    try {
-      if (!executor.awaitTermination(SHUTDOWN_GRACE_SECONDS, TimeUnit.SECONDS)) {
-        logger.warn("Events were still being delivered after {} s", SHUTDOWN_GRACE_SECONDS);
-        executor.shutdownNow();
+    if (executor instanceof ExecutorService service) {
+      service.shutdown();
+      try {
+        if (!service.awaitTermination(SHUTDOWN_GRACE_SECONDS, TimeUnit.SECONDS)) {
+          logger.warn("Events were still being delivered after {} s", SHUTDOWN_GRACE_SECONDS);
+          service.shutdownNow();
+        }
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        service.shutdownNow();
       }
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      executor.shutdownNow();
     }
     timer.shutdownNow();
   }

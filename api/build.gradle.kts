@@ -13,6 +13,8 @@ dependencies {
     api(platform(libs.adventure.bom))
     api(libs.adventure.api)
     api(libs.adventure.text.minimessage)
+    api(libs.adventure.text.serializer.plain)
+    api(libs.adventure.text.serializer.legacy)
 
     // SLF4J: plugins log through this facade
     api(libs.slf4j.api)

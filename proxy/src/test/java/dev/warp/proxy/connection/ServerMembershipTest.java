@@ -58,7 +58,8 @@ class ServerMembershipTest {
 
     BackendServer lobby = server(setup, "lobby");
     assertEquals(1, lobby.playerCount());
-    assertTrue(lobby.players().contains(setup.player));
+    assertTrue(lobby.connectedPlayers().contains(setup.player));
+    assertTrue(lobby.players().contains(setup.player.api()));
     assertSame(lobby, setup.player.currentServer());
   }
 

@@ -42,6 +42,15 @@ final class ApiClassLoader extends ClassLoader {
   static final List<String> EXPOSED_PACKAGES =
       List.of("dev.warp.api.", "net.kyori.", "org.slf4j.", "org.jspecify.");
 
+  /**
+   * Packages of the exposed prefixes that stay hidden: Adventure's Gson serializers, which the
+   * proxy uses internally against its relocated Gson. A plugin that needs them ships its own copy,
+   * with its own Gson.
+   */
+  static final List<String> HIDDEN_PACKAGES =
+      List.of(
+          "net.kyori.adventure.text.serializer.gson.", "net.kyori.adventure.text.serializer.json.");
+
   private final ClassLoader proxyLoader;
 
   /**
@@ -86,6 +95,11 @@ final class ApiClassLoader extends ClassLoader {
    * @return {@code true} for the API and the libraries it exposes
    */
   static boolean isExposed(String className) {
+    for (String prefix : HIDDEN_PACKAGES) {
+      if (className.startsWith(prefix)) {
+        return false;
+      }
+    }
     for (String prefix : EXPOSED_PACKAGES) {
       if (className.startsWith(prefix)) {
         return true;

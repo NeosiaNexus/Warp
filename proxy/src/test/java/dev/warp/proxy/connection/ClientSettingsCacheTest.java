@@ -80,6 +80,7 @@ class ClientSettingsCacheTest {
     GameProfile profile = new GameProfile(UUID.randomUUID(), "TestPlayer", List.of());
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
+    when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
     ServerRegistry registry =
         new ServerRegistry(
             Map.of("lobby", new InetSocketAddress("localhost", 25565)), "lobby", List.of());

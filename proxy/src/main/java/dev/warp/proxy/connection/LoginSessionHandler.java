@@ -16,6 +16,8 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.event.player.LoginEvent;
+import dev.warp.api.event.player.PreLoginEvent;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.netty.CipherDecoder;
@@ -40,7 +42,12 @@ import dev.warp.proxy.auth.AuthenticationException;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.auth.ServerHash;
+import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.event.player.GameProfileRequestEventImpl;
+import dev.warp.proxy.event.player.LoginEventImpl;
+import dev.warp.proxy.event.player.PreLoginEventImpl;
 import dev.warp.proxy.player.PlayerRegistry;
+import dev.warp.proxy.text.Reasons;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -57,6 +64,7 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
 import io.netty.channel.ChannelPipeline;
+import net.kyori.adventure.text.Component;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -104,6 +112,7 @@ final class LoginSessionHandler implements SessionHandler {
 
   private enum LoginState {
     AWAITING_LOGIN_START,
+    PRE_LOGIN,
     AWAITING_ENCRYPTION_RESPONSE,
     AUTHENTICATING,
     AWAITING_LOGIN_ACKNOWLEDGED,
@@ -123,6 +132,13 @@ final class LoginSessionHandler implements SessionHandler {
   private @Nullable ConnectedPlayer player;
 
   private @Nullable String username;
+
+  /** Whether this login authenticates with Mojang: the proxy's mode, unless a plugin forced it. */
+  private boolean onlineMode;
+
+  /** The connection as plugins see it before it becomes a player. */
+  private final WarpInboundConnection inbound;
+
   private byte @Nullable [] verifyToken;
 
   /**
@@ -143,6 +159,8 @@ final class LoginSessionHandler implements SessionHandler {
   LoginSessionHandler(MinecraftConnection connection, ServerLoginContext loginContext) {
     this.connection = connection;
     this.loginContext = loginContext;
+    this.onlineMode = loginContext.onlineMode();
+    this.inbound = new WarpInboundConnection(connection);
   }
 
   // ---------------------------------------------------------------------------
@@ -197,6 +215,39 @@ final class LoginSessionHandler implements SessionHandler {
 
     this.username = name;
 
+    WarpEventBus events = loginContext.events();
+    if (!events.hasHandlers(PreLoginEventImpl.class)) {
+      continueLogin(packet);
+      return;
+    }
+    state = LoginState.PRE_LOGIN;
+    var _ =
+        events
+            .fire(new PreLoginEventImpl(inbound, name))
+            .whenCompleteAsync(
+                (event, _) -> {
+                  if (!connection.channel().isActive() || state != LoginState.PRE_LOGIN) {
+                    return;
+                  }
+                  switch (event.result()) {
+                    case PreLoginEvent.Denied(Component reason) -> {
+                      disconnect(Reasons.plain(reason));
+                      return;
+                    }
+                    case PreLoginEvent.ForceOnlineMode() -> onlineMode = true;
+                    case PreLoginEvent.ForceOfflineMode() -> onlineMode = false;
+                    case PreLoginEvent.Allowed() -> {
+                      // The proxy's mode.
+                    }
+                  }
+                  state = LoginState.AWAITING_LOGIN_START;
+                  continueLogin(packet);
+                },
+                connection.channel().eventLoop());
+  }
+
+  /** Goes on with a login the pre-login handlers let through. */
+  private void continueLogin(LoginStart packet) {
     // 1.19 to 1.19.2, online mode: the client will sign the verify token with its profile key, so
     // the key is checked on arrival, as Velocity's InitialLoginSessionHandler does. A client
     // without a key is accepted (Velocity's force-key-authentication off): Warp forwards no key, so
@@ -204,7 +255,7 @@ final class LoginSessionHandler implements SessionHandler {
     // ignores it: Warp authenticates nobody and uses the key for nothing, so a check would only
     // refuse players whose key another authority signed (authlib-injector accounts).
     LoginStart.ProfilePublicKey key = packet.profileKey();
-    if (key != null && loginContext.onlineMode()) {
+    if (key != null && onlineMode) {
       switch (loginContext.profileKeys().check(key, packet.playerUuid(), clientVersion())) {
         case ProfileKeys.Verdict.Refused(ProfileKeys.Problem problem) -> {
           refuseProfileKey(problem);
@@ -218,7 +269,7 @@ final class LoginSessionHandler implements SessionHandler {
       }
     }
 
-    if (loginContext.onlineMode()) {
+    if (onlineMode) {
       beginOnlineMode();
     } else {
       beginOfflineMode();
@@ -403,7 +454,30 @@ final class LoginSessionHandler implements SessionHandler {
             });
   }
 
-  private void completeLogin(GameProfile profile) {
+  private void completeLogin(GameProfile authenticated) {
+    WarpEventBus events = loginContext.events();
+    if (!events.hasHandlers(GameProfileRequestEventImpl.class)) {
+      registerPlayer(authenticated);
+      return;
+    }
+    state = LoginState.AUTHENTICATING;
+    var _ =
+        events
+            .fire(new GameProfileRequestEventImpl(inbound, onlineMode, authenticated.toApi()))
+            .whenCompleteAsync(
+                (event, _) -> {
+                  if (connection.channel().isActive()) {
+                    registerPlayer(GameProfile.fromApi(event.profile()));
+                  }
+                },
+                connection.channel().eventLoop());
+  }
+
+  /**
+   * Registers the player, settling a login of an account already connected, then asks the login
+   * handlers whether it may join.
+   */
+  private void registerPlayer(GameProfile profile) {
     // Register before the client hears its login succeeded, so that a refused duplicate still gets
     // a login disconnect it can show.
     ConnectedPlayer joining =
@@ -413,8 +487,8 @@ final class LoginSessionHandler implements SessionHandler {
             profile,
             (InetSocketAddress) connection.channel().remoteAddress(),
             loginContext);
-    boolean kickExisting =
-        loginContext.duplicateLoginPolicy().kicksExisting(loginContext.onlineMode());
+    joining.setOnlineMode(onlineMode);
+    boolean kickExisting = loginContext.duplicateLoginPolicy().kicksExisting(onlineMode);
     if (loginContext.playerRegistry().register(joining, kickExisting)
         == PlayerRegistry.Registration.REFUSED) {
       disconnect("You are already connected to this proxy.");
@@ -422,6 +496,35 @@ final class LoginSessionHandler implements SessionHandler {
     }
     this.player = joining;
 
+    WarpEventBus events = loginContext.events();
+    if (!events.hasHandlers(LoginEventImpl.class)) {
+      succeedLogin(profile);
+      return;
+    }
+    // On the account's lane: an old session kicked above has its disconnect handled first.
+    var _ =
+        events
+            .fire(new LoginEventImpl(joining.api()), profile.uuid())
+            .whenCompleteAsync(
+                (event, _) -> {
+                  if (!connection.channel().isActive()) {
+                    joining.disconnect();
+                    return;
+                  }
+                  if (event.result() instanceof LoginEvent.Denied(Component reason)) {
+                    // No session started: no disconnect event for this player.
+                    this.player = null;
+                    loginContext.playerRegistry().unregister(joining);
+                    disconnect(Reasons.plain(reason));
+                    return;
+                  }
+                  succeedLogin(profile);
+                },
+                connection.channel().eventLoop());
+  }
+
+  /** Tells the client its login succeeded. */
+  private void succeedLogin(GameProfile profile) {
     // Enable compression (must send SetCompression BEFORE installing handlers).
     enableCompression();
 

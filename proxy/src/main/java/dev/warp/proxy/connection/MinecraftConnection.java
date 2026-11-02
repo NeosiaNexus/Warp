@@ -86,6 +86,10 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
   private final FrameForwarder forwarder;
 
   private @Nullable SessionHandler sessionHandler;
+
+  /** The host name the client connected to, from its handshake; {@code null} until known. */
+  private volatile @Nullable String virtualHost;
+
   private @Nullable MinecraftDecoder decoder;
   private @Nullable MinecraftEncoder encoder;
 
@@ -387,6 +391,33 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
   // ---------------------------------------------------------------------------
   // Pipeline accessors
   // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the host name the client typed to connect, cleaned of the suffixes some platforms
+   * append (Forge's {@code \0FML\0} markers, a trailing dot).
+   *
+   * @return the host name, or {@code null} before the handshake or if it was empty
+   */
+  public @Nullable String virtualHost() {
+    return virtualHost;
+  }
+
+  /**
+   * Records the host name of the client's handshake.
+   *
+   * @param serverAddress the address field of the handshake, as sent
+   */
+  public void setVirtualHost(String serverAddress) {
+    String host = serverAddress;
+    int nul = host.indexOf('\0');
+    if (nul >= 0) {
+      host = host.substring(0, nul);
+    }
+    while (host.endsWith(".")) {
+      host = host.substring(0, host.length() - 1);
+    }
+    this.virtualHost = host.isEmpty() ? null : host;
+  }
 
   /**
    * Returns the underlying Netty channel.

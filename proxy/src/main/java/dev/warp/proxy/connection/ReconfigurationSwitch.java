@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.event.player.KickedFromServerEvent;
 import dev.warp.api.server.ServerInfo;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.packet.login.LoginAcknowledged;
@@ -64,6 +65,9 @@ final class ReconfigurationSwitch implements ServerSwitch {
   /** Whether the server the player is leaving went down while the new one was logging it in. */
   private boolean currentLost;
 
+  /** The new server's backend that went down while awaiting the acknowledgement. */
+  private @Nullable MinecraftConnection lostBackend;
+
   ReconfigurationSwitch(ConnectedPlayer player) {
     this.player = player;
   }
@@ -106,6 +110,8 @@ final class ReconfigurationSwitch implements ServerSwitch {
   private void attachPending(ServerInfo target) {
     BackendConnection joining = pending;
     pending = null;
+    MinecraftConnection lost = lostBackend;
+    lostBackend = null;
     phase = Phase.IDLE;
     MinecraftConnection client = player.clientConnection();
     client.setAutoRead(false);
@@ -118,7 +124,7 @@ final class ReconfigurationSwitch implements ServerSwitch {
     if (joining == null) {
       // The new server went down after accepting the player: the client waits in the
       // configuration phase, so the fallback order applies.
-      player.handleBackendFailure(target.name());
+      player.handleBackendFailure(target.name(), lost, KickedFromServerEvent.Cause.CONNECTION_LOST);
       return;
     }
     configure(joining.connection());
@@ -186,10 +192,10 @@ final class ReconfigurationSwitch implements ServerSwitch {
   @Override
   public void connectFailed(ServerInfo target) {
     if (phase == Phase.CONNECTING) {
-      abandon(target);
+      abandon(target, null, KickedFromServerEvent.Cause.UNREACHABLE);
       return;
     }
-    player.handleBackendFailure(target.name());
+    player.handleBackendFailure(target.name(), null, KickedFromServerEvent.Cause.UNREACHABLE);
   }
 
   @Override
@@ -228,12 +234,13 @@ final class ReconfigurationSwitch implements ServerSwitch {
     BackendConnection joining = pending;
     if (joining != null && joining.connection() == backend) {
       if (phase == Phase.CONNECTING) {
-        abandon(joining.server());
+        abandon(joining.server(), backend, KickedFromServerEvent.Cause.CONNECTION_LOST);
         return;
       }
       // Awaiting the acknowledgement: the client is on its way to the configuration phase, where
       // attachPending applies the fallback order.
       pending = null;
+      lostBackend = backend;
       joining.disconnect();
       return;
     }
@@ -253,7 +260,8 @@ final class ReconfigurationSwitch implements ServerSwitch {
       }
       case IDLE -> {
         player.setBackendConnection(null);
-        player.handleBackendFailure(current.server().name());
+        player.handleBackendFailure(
+            current.server().name(), backend, KickedFromServerEvent.Cause.CONNECTION_LOST);
       }
     }
   }
@@ -262,7 +270,8 @@ final class ReconfigurationSwitch implements ServerSwitch {
    * Gives up a switch whose new server could not be reached or refused the player before it left
    * its current server.
    */
-  private void abandon(ServerInfo target) {
+  private void abandon(
+      ServerInfo target, @Nullable MinecraftConnection backend, KickedFromServerEvent.Cause cause) {
     phase = Phase.IDLE;
     BackendConnection joining = pending;
     pending = null;
@@ -275,10 +284,10 @@ final class ReconfigurationSwitch implements ServerSwitch {
       if (current != null) {
         current.disconnect();
       }
-      player.handleBackendFailure(target.name());
+      player.handleBackendFailure(target.name(), backend, cause);
       return;
     }
-    player.switchFailed(target);
+    player.switchFailed(target, backend, cause);
   }
 
   @Override
@@ -286,7 +295,7 @@ final class ReconfigurationSwitch implements ServerSwitch {
     if (phase == Phase.CONNECTING) {
       ServerInfo target = player.pendingSwitchTarget();
       if (target != null) {
-        abandon(target);
+        abandon(target, null, KickedFromServerEvent.Cause.TIMED_OUT);
         return;
       }
     }

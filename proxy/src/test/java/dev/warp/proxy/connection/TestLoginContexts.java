@@ -20,6 +20,7 @@ import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.config.DuplicateLoginPolicy;
 import dev.warp.proxy.config.ForwardingMode;
+import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 
@@ -36,6 +37,9 @@ import io.netty.channel.socket.nio.NioSocketChannel;
 
 /** {@link ServerLoginContext}s for tests that drive a client pipeline built by Warp. */
 final class TestLoginContexts {
+
+  /** An event bus nobody subscribes to, shared by the tests. */
+  static final WarpEventBus EVENTS = new WarpEventBus();
 
   /**
    * One key pair for every test, as generating RSA keys is slow. The tests do not depend on its
@@ -90,6 +94,22 @@ final class TestLoginContexts {
   }
 
   /**
+   * An offline-mode context whose events go to {@code events}.
+   *
+   * @param events the event bus
+   * @return the context
+   */
+  static ServerLoginContext offline(WarpEventBus events) {
+    return context(
+        false,
+        -1,
+        new MojangSessionService(),
+        ProfileKeys.mojang(),
+        DuplicateLoginPolicy.AUTO,
+        events);
+  }
+
+  /**
    * Returns {@link #offline()} in online mode: players authenticate with {@code sessionService}.
    *
    * @param sessionService the session service, usually a mock
@@ -115,6 +135,16 @@ final class TestLoginContexts {
       MojangSessionService sessionService,
       ProfileKeys profileKeys,
       DuplicateLoginPolicy policy) {
+    return context(onlineMode, compressionThreshold, sessionService, profileKeys, policy, EVENTS);
+  }
+
+  private static ServerLoginContext context(
+      boolean onlineMode,
+      int compressionThreshold,
+      MojangSessionService sessionService,
+      ProfileKeys profileKeys,
+      DuplicateLoginPolicy policy,
+      WarpEventBus events) {
     ServerRegistry registry =
         new ServerRegistry(
             Map.of("lobby", new InetSocketAddress(InetAddress.getLoopbackAddress(), 1)),
@@ -132,6 +162,7 @@ final class TestLoginContexts {
         registry,
         new PlayerRegistry(),
         policy,
+        events,
         ForwardingMode.NONE,
         new byte[0],
         NioSocketChannel.class);

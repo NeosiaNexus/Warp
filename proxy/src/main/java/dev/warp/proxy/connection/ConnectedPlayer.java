@@ -16,6 +16,15 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.event.player.DisconnectEvent;
+import dev.warp.api.event.player.KickedFromServerEvent;
+import dev.warp.api.event.player.PlayerChooseInitialServerEvent;
+import dev.warp.api.event.player.PostLoginEvent;
+import dev.warp.api.event.player.ServerConnectedEvent;
+import dev.warp.api.event.player.ServerPostConnectEvent;
+import dev.warp.api.event.player.ServerPreConnectEvent;
+import dev.warp.api.player.ConnectionResult;
+import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerInfo;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
@@ -26,7 +35,12 @@ import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.SystemChatMessage;
+import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.event.player.KickedFromServerEventImpl;
+import dev.warp.proxy.event.player.PlayerChooseInitialServerEventImpl;
+import dev.warp.proxy.event.player.ServerPreConnectEventImpl;
 import dev.warp.proxy.server.BackendServer;
+import dev.warp.proxy.text.Reasons;
 
 import java.net.InetSocketAddress;
 import java.util.HashSet;
@@ -40,6 +54,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.netty.channel.EventLoop;
+import io.netty.util.AttributeKey;
+import net.kyori.adventure.text.Component;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -98,6 +114,38 @@ public final class ConnectedPlayer {
   /** How this client is moved between servers, chosen from its version. */
   private final ServerSwitch serverSwitch;
 
+  // ---------------------------------------------------------------------------
+  // API and session state
+  // ---------------------------------------------------------------------------
+
+  /** The reason a backend gave when it disconnected the player, kept on its channel. */
+  static final AttributeKey<Component> KICK_REASON = AttributeKey.valueOf("warp-kick-reason");
+
+  /** The player as plugins see it. */
+  private final WarpPlayer api = new WarpPlayer(this);
+
+  /** Distinct for every login, so that data keyed by session never mixes two logins. */
+  private final UUID sessionId = UUID.randomUUID();
+
+  /** Whether this player was authenticated with Mojang. */
+  private volatile boolean onlineMode;
+
+  /** Whether {@link PostLoginEvent} was fired: a {@link DisconnectEvent} must follow. */
+  private volatile boolean sessionStarted;
+
+  /** Set once the {@link DisconnectEvent} was fired, so that it fires exactly once. */
+  private final AtomicBoolean sessionEnded = new AtomicBoolean();
+
+  /** Why the session ends; the first cause set wins. */
+  private volatile DisconnectEvent.Cause disconnectCause =
+      DisconnectEvent.Cause.CLIENT_DISCONNECTED;
+
+  /** The registered server the player is being connected to. */
+  private volatile @Nullable BackendServer connectingTo;
+
+  /** The outcome of the connection a plugin or command requested; client event loop only. */
+  private @Nullable CompletableFuture<ConnectionResult> pendingResult;
+
   /** What the current server leaves on the client (followed before 1.20.2 only). */
   private final ServerLeftovers leftovers = new ServerLeftovers();
 
@@ -145,7 +193,7 @@ public final class ConnectedPlayer {
   private long keepAliveSentTime;
   private long pendingKeepAliveId;
   private boolean keepAliveOutstanding;
-  private long clientLatencyNanos;
+  private volatile long clientLatencyNanos;
   private volatile @Nullable ScheduledFuture<?> keepAliveTask;
 
   // ---------------------------------------------------------------------------
@@ -166,6 +214,7 @@ public final class ConnectedPlayer {
     this.remoteAddress = remoteAddress;
     this.loginContext = loginContext;
     this.serverSwitch = ServerSwitch.of(this);
+    this.onlineMode = loginContext.onlineMode();
   }
 
   // ---------------------------------------------------------------------------
@@ -272,7 +321,11 @@ public final class ConnectedPlayer {
     if (disconnected.get()) {
       return;
     }
-    BackendServer next = loginContext.serverRegistry().registered(server);
+    BackendServer target = this.connectingTo;
+    BackendServer next =
+        target != null && target.info().equals(server)
+            ? target
+            : loginContext.serverRegistry().registered(server);
     BackendServer previous = this.currentServer;
     if (previous == next) {
       return;
@@ -284,6 +337,9 @@ public final class ConnectedPlayer {
       next.addPlayer(this);
     }
     this.currentServer = next;
+    if (next != null) {
+      notify(new ServerPostConnectEvent(api, next, previous));
+    }
   }
 
   /**
@@ -454,20 +510,169 @@ public final class ConnectedPlayer {
   // ---------------------------------------------------------------------------
 
   /**
-   * Connects the player to the default server, right after its login. A server that cannot be
-   * reached or refuses the player sends it down the fallback order.
+   * Starts the player's session right after its login, and connects it to its first server: the one
+   * {@link PlayerChooseInitialServerEvent} settles on. A server that cannot be reached or refuses
+   * the player sends it down the fallback order.
    */
   void join() {
-    BackendServer initial = loginContext.serverRegistry().initialServer();
-    if (initial == null) {
-      logger.warn("No server available for {}, disconnecting", username);
-      disconnectWithReason("No server is available right now. Try again later.");
+    startSession();
+    BackendServer proposed = loginContext.serverRegistry().initialServer();
+    WarpEventBus events = loginContext.events();
+    if (!events.hasHandlers(PlayerChooseInitialServerEventImpl.class)) {
+      joinServer(proposed);
       return;
     }
-    ServerInfo server = initial.info();
-    currentServerName = server.name();
-    logger.info("Connecting {} to server '{}'", username, server.name());
-    connect(server);
+    var _ =
+        events
+            .fire(new PlayerChooseInitialServerEventImpl(api, proposed), uuid)
+            .whenComplete(
+                (event, _) ->
+                    onEventLoop(() -> joinServer(asBackend(event.initialServer().orElse(null)))));
+  }
+
+  /** Starts the session: fires {@link PostLoginEvent}, after which a disconnect event is owed. */
+  void startSession() {
+    sessionStarted = true;
+    notify(new PostLoginEvent(api));
+  }
+
+  private void joinServer(@Nullable BackendServer initial) {
+    if (!clientConnection.channel().isActive()) {
+      return;
+    }
+    if (initial == null) {
+      logger.warn("No server available for {}, disconnecting", username);
+      disconnectFor(
+          DisconnectEvent.Cause.NO_SERVER_AVAILABLE,
+          "No server is available right now. Try again later.");
+      return;
+    }
+    preConnect(initial, true, null, false);
+  }
+
+  /**
+   * Moves the player to a server at a plugin's or a command's request, through {@link
+   * ServerPreConnectEvent}. Thread-safe.
+   *
+   * @param target the server
+   * @param tell whether the player is told when nothing happens (a command it typed)
+   * @return completed with the outcome
+   */
+  CompletableFuture<ConnectionResult> requestConnection(BackendServer target, boolean tell) {
+    CompletableFuture<ConnectionResult> result = new CompletableFuture<>();
+    onEventLoop(
+        () -> {
+          if (!clientConnection.channel().isActive()) {
+            result.complete(new ConnectionResult.Disconnected());
+            return;
+          }
+          preConnect(target, false, result, tell);
+        });
+    return result;
+  }
+
+  /** Fires {@link ServerPreConnectEvent} if anyone listens, then connects where it allows. */
+  private void preConnect(
+      BackendServer target,
+      boolean initial,
+      @Nullable CompletableFuture<ConnectionResult> result,
+      boolean tell) {
+    WarpEventBus events = loginContext.events();
+    if (!events.hasHandlers(ServerPreConnectEventImpl.class)) {
+      connectAllowed(target, initial, result, tell);
+      return;
+    }
+    var event = new ServerPreConnectEventImpl(api, target, initial ? null : currentServer);
+    var _ =
+        events
+            .fire(event, uuid)
+            .whenComplete(
+                (done, _) ->
+                    onEventLoop(
+                        () -> {
+                          if (!clientConnection.channel().isActive()) {
+                            complete(result, new ConnectionResult.Disconnected());
+                            return;
+                          }
+                          switch (done.result()) {
+                            case ServerPreConnectEvent.Denied() -> {
+                              if (initial) {
+                                disconnectFor(
+                                    DisconnectEvent.Cause.DISCONNECTED_BY_PROXY,
+                                    "You cannot join this server right now.");
+                              } else {
+                                complete(result, new ConnectionResult.Denied(target));
+                                if (tell) {
+                                  sendSystemMessage(
+                                      "You cannot join " + target.name() + " right now.");
+                                }
+                              }
+                            }
+                            case ServerPreConnectEvent.Allowed(RegisteredServer server) -> {
+                              BackendServer chosen = asBackend(server);
+                              connectAllowed(
+                                  chosen != null ? chosen : target, initial, result, tell);
+                            }
+                          }
+                        }));
+  }
+
+  private void connectAllowed(
+      BackendServer target,
+      boolean initial,
+      @Nullable CompletableFuture<ConnectionResult> result,
+      boolean tell) {
+    if (initial) {
+      connectingTo = target;
+      currentServerName = target.name();
+      logger.info("Connecting {} to server '{}'", username, target.name());
+      connect(target.info());
+      return;
+    }
+    if (switching) {
+      BackendServer pending = connectingTo;
+      complete(result, new ConnectionResult.InProgress(pending != null ? pending : target));
+      if (tell) {
+        sendSystemMessage("Already switching servers.");
+      }
+      return;
+    }
+    if (target.name().equals(currentServerName)) {
+      complete(result, new ConnectionResult.AlreadyConnected(target));
+      if (tell) {
+        sendSystemMessage("Already connected to " + target.name() + ".");
+      }
+      return;
+    }
+    pendingResult = result;
+    connectingTo = target;
+    beginSwitch(target.info());
+    logger.info("Switching {} from '{}' to '{}'", username, currentServerName, target.name());
+    serverSwitch.start(target.info());
+  }
+
+  private static @Nullable BackendServer asBackend(@Nullable RegisteredServer server) {
+    return server instanceof BackendServer backend ? backend : null;
+  }
+
+  private static void complete(
+      @Nullable CompletableFuture<ConnectionResult> result, ConnectionResult outcome) {
+    if (result != null) {
+      result.complete(outcome);
+    }
+  }
+
+  /**
+   * Fires {@link ServerConnectedEvent} once a backend accepted the player. Called by the backend's
+   * login handler, on the client event loop.
+   *
+   * @param backend the backend that logged the player in
+   */
+  void backendAccepted(MinecraftConnection backend) {
+    BackendServer target = connectingTo;
+    if (target != null) {
+      notify(new ServerConnectedEvent(api, target, currentServer));
+    }
   }
 
   /**
@@ -549,11 +754,22 @@ public final class ConnectedPlayer {
    *
    * @param target the server it could not switch to
    */
-  void switchFailed(ServerInfo target) {
+  void switchFailed(
+      ServerInfo target, @Nullable MinecraftConnection backend, KickedFromServerEvent.Cause cause) {
     logger.info(
-        "Could not switch {} to '{}', staying on '{}'", username, target.name(), currentServerName);
-    cancelSwitch();
-    sendSystemMessage("Could not connect to " + target.name() + ".");
+        "Could not switch {} to '{}' ({}), staying on '{}'",
+        username,
+        target.name(),
+        cause,
+        currentServerName);
+    serverLost(target.name(), backend, cause, true, true);
+  }
+
+  /**
+   * Same as {@link #switchFailed(ServerInfo, MinecraftConnection, KickedFromServerEvent.Cause)}.
+   */
+  void switchFailed(ServerInfo target) {
+    switchFailed(target, null, KickedFromServerEvent.Cause.CONNECTION_LOST);
   }
 
   private void connectionAttempted(
@@ -609,6 +825,11 @@ public final class ConnectedPlayer {
       switching = false;
       pendingSwitchTarget = null;
       failedFallbackServers = null;
+      BackendServer reached = connectingTo;
+      if (reached != null) {
+        complete(pendingResult, new ConnectionResult.Connected(reached));
+      }
+      pendingResult = null;
     }
   }
 
@@ -725,39 +946,210 @@ public final class ConnectedPlayer {
   }
 
   /**
-   * Moves the player to the next fallback server after {@code failedServerName} failed, or
-   * disconnects it when every fallback server has failed.
-   *
-   * <p>The servers that failed since the last completed switch, and the server the player was on,
-   * are skipped. The {@link ServerSwitch} moves the client to the fallback.
+   * Handles the loss of a server the player was playing on or being connected to, while it has no
+   * other server to stay on: {@link KickedFromServerEvent} decides between the next fallback and a
+   * disconnection.
    *
    * <p>Must be called on the client event loop.
    *
    * @param failedServerName the name of the server that failed
+   * @param backend its connection, which carries the reason it gave, or {@code null}
+   * @param cause how it was lost, when it gave no reason
+   */
+  void handleBackendFailure(
+      String failedServerName,
+      @Nullable MinecraftConnection backend,
+      KickedFromServerEvent.Cause cause) {
+    BackendServer playing = currentServer;
+    boolean duringConnect = playing == null || !playing.name().equals(failedServerName);
+    serverLost(failedServerName, backend, cause, duringConnect, false);
+  }
+
+  /**
+   * Same as {@link #handleBackendFailure(String, MinecraftConnection,
+   * KickedFromServerEvent.Cause)}.
    */
   void handleBackendFailure(String failedServerName) {
+    handleBackendFailure(failedServerName, null, KickedFromServerEvent.Cause.CONNECTION_LOST);
+  }
+
+  /**
+   * Records the reason a backend gave when it disconnected or refused the player.
+   *
+   * @param backend the backend
+   * @param reason its reason
+   */
+  void recordKick(MinecraftConnection backend, Component reason) {
+    backend.channel().attr(KICK_REASON).set(reason);
+  }
+
+  /**
+   * Decides, through {@link KickedFromServerEvent}, what happens to a player that lost a server.
+   *
+   * <p>The proxy proposes: stay and be told, when the player was being moved and still has its
+   * server; otherwise the next registered fallback not tried yet in this chain of failures;
+   * otherwise a disconnection. Redirects to a server that already failed in this chain are refused,
+   * so that two failing servers never bounce a player forever.
+   */
+  private void serverLost(
+      String lostName,
+      @Nullable MinecraftConnection backend,
+      KickedFromServerEvent.Cause baseCause,
+      boolean duringConnect,
+      boolean stillOnCurrent) {
     if (failedFallbackServers == null) {
       failedFallbackServers = new HashSet<>();
     }
-    failedFallbackServers.add(failedServerName);
+    Set<String> excluded = failedFallbackServers;
+    excluded.add(lostName);
     // Also exclude the server the player was on before any switch started.
-    if (currentServerName != null) {
-      failedFallbackServers.add(currentServerName);
+    if (!stillOnCurrent && currentServerName != null) {
+      excluded.add(currentServerName);
     }
 
-    BackendServer fallbackServer =
-        loginContext.serverRegistry().nextFallback(failedFallbackServers);
-    ServerInfo fallback = fallbackServer == null ? null : fallbackServer.info();
+    Component reason = backend == null ? null : backend.channel().attr(KICK_REASON).get();
+    KickedFromServerEvent.Cause cause =
+        reason != null ? KickedFromServerEvent.Cause.KICKED : baseCause;
+    BackendServer lost = lostServer(lostName);
 
-    if (fallback == null) {
-      logger.info("No fallback server available for {}, disconnecting", username);
-      failedFallbackServers = null;
-      switching = false;
-      disconnectWithReason("Could not connect to any available server.");
+    KickedFromServerEvent.Result proposed;
+    BackendServer fallback = null;
+    if (stillOnCurrent) {
+      proposed = new KickedFromServerEvent.Notify(couldNotConnect(lostName, reason));
+    } else {
+      fallback = loginContext.serverRegistry().nextFallback(excluded);
+      proposed =
+          fallback != null
+              ? new KickedFromServerEvent.Redirect(fallback, null)
+              : new KickedFromServerEvent.DisconnectPlayer(
+                  reason != null ? reason : Component.text(NO_SERVER_LEFT));
+    }
+
+    WarpEventBus events = loginContext.events();
+    if (lost == null || !events.hasHandlers(KickedFromServerEventImpl.class)) {
+      applyLoss(lostName, lost, reason, stillOnCurrent, proposed, proposed);
       return;
     }
-    serverSwitch.fallBack(failedServerName, fallback);
+    var event = new KickedFromServerEventImpl(api, lost, cause, reason, duringConnect, proposed);
+    var _ =
+        events
+            .fire(event, uuid)
+            .whenComplete(
+                (done, _) ->
+                    onEventLoop(
+                        () ->
+                            applyLoss(
+                                lostName, lost, reason, stillOnCurrent, done.result(), proposed)));
   }
+
+  private void applyLoss(
+      String lostName,
+      @Nullable BackendServer lost,
+      @Nullable Component reason,
+      boolean stillOnCurrent,
+      KickedFromServerEvent.Result result,
+      KickedFromServerEvent.Result proposed) {
+    if (disconnected.get() || !clientConnection.channel().isActive()) {
+      return;
+    }
+    CompletableFuture<ConnectionResult> requested = pendingResult;
+    if (requested != null && lost != null && lost == connectingTo) {
+      pendingResult = null;
+      requested.complete(new ConnectionResult.Failed(lost, reason));
+    }
+    switch (result) {
+      case KickedFromServerEvent.Notify(Component message) -> {
+        if (stillOnCurrent) {
+          cancelSwitch();
+          sendSystemMessage(Reasons.plain(message));
+        } else {
+          disconnectFor(DisconnectEvent.Cause.DISCONNECTED_BY_PROXY, Reasons.plain(message));
+        }
+      }
+      case KickedFromServerEvent.DisconnectPlayer(Component message) -> {
+        failedFallbackServers = null;
+        switching = false;
+        disconnectFor(
+            result.equals(proposed)
+                ? DisconnectEvent.Cause.NO_SERVER_AVAILABLE
+                : DisconnectEvent.Cause.DISCONNECTED_BY_PROXY,
+            Reasons.plain(message));
+      }
+      case KickedFromServerEvent.Redirect(RegisteredServer server, Component message) -> {
+        BackendServer target = asBackend(server);
+        Set<String> excluded = failedFallbackServers;
+        if (target == null
+            || target.name().equals(lostName)
+            || (excluded != null && excluded.contains(target.name()))) {
+          logger.info(
+              "Refusing to redirect {} to '{}', which already failed: disconnecting",
+              username,
+              server.name());
+          disconnectFor(DisconnectEvent.Cause.NO_SERVER_AVAILABLE, NO_SERVER_LEFT);
+          return;
+        }
+        if (message != null) {
+          sendSystemMessage(Reasons.plain(message));
+        }
+        redirect(lostName, target);
+      }
+    }
+  }
+
+  /** Connects the player to a fallback, through {@link ServerPreConnectEvent}. */
+  private void redirect(String lostName, BackendServer target) {
+    WarpEventBus events = loginContext.events();
+    if (!events.hasHandlers(ServerPreConnectEventImpl.class)) {
+      connectingTo = target;
+      serverSwitch.fallBack(lostName, target.info());
+      return;
+    }
+    var event = new ServerPreConnectEventImpl(api, target, currentServer);
+    var _ =
+        events
+            .fire(event, uuid)
+            .whenComplete(
+                (done, _) ->
+                    onEventLoop(
+                        () -> {
+                          if (!clientConnection.channel().isActive()) {
+                            return;
+                          }
+                          if (done.result()
+                              instanceof ServerPreConnectEvent.Allowed(RegisteredServer server)) {
+                            BackendServer chosen = asBackend(server);
+                            connectingTo = chosen != null ? chosen : target;
+                            serverSwitch.fallBack(lostName, connectingTo.info());
+                          } else {
+                            disconnectFor(
+                                DisconnectEvent.Cause.DISCONNECTED_BY_PROXY,
+                                "You cannot join " + target.name() + " right now.");
+                          }
+                        }));
+  }
+
+  private @Nullable BackendServer lostServer(String name) {
+    BackendServer target = connectingTo;
+    if (target != null && target.name().equals(name)) {
+      return target;
+    }
+    BackendServer playing = currentServer;
+    if (playing != null && playing.name().equals(name)) {
+      return playing;
+    }
+    return loginContext.serverRegistry().getServer(name);
+  }
+
+  private static Component couldNotConnect(String server, @Nullable Component reason) {
+    String text = "Could not connect to " + server;
+    if (reason == null || Reasons.plain(reason).isBlank()) {
+      return Component.text(text + ".");
+    }
+    return Component.text(text + ": " + Reasons.plain(reason));
+  }
+
+  /** What a player is told when no server can take it. */
+  private static final String NO_SERVER_LEFT = "Could not connect to any available server.";
 
   // ---------------------------------------------------------------------------
   // KeepAlive system
@@ -799,6 +1191,7 @@ public final class ConnectedPlayer {
     if (keepAliveOutstanding) {
       long elapsed = System.nanoTime() - keepAliveSentTime;
       if (elapsed > TimeUnit.MILLISECONDS.toNanos(KEEP_ALIVE_TIMEOUT_MS)) {
+        setDisconnectCause(DisconnectEvent.Cause.TIMED_OUT);
         logger.info(
             "Player {} timed out (no KeepAlive response in {}ms)",
             username,
@@ -866,6 +1259,7 @@ public final class ConnectedPlayer {
       return;
     }
     loginContext.playerRegistry().unregister(this);
+    endSession();
     cancelKeepAliveTask();
     cancelSwitchTimeout();
     clientConnection.close();
@@ -877,7 +1271,43 @@ public final class ConnectedPlayer {
         () -> {
           serverSwitch.close();
           leaveServer();
+          CompletableFuture<ConnectionResult> requested = pendingResult;
+          pendingResult = null;
+          complete(requested, new ConnectionResult.Disconnected());
         });
+  }
+
+  /**
+   * Fires the session's {@link DisconnectEvent}, once, if the session started. Fired as soon as the
+   * session ends, before the connection finishes closing, so that it is queued before the events of
+   * the account's next session.
+   */
+  private void endSession() {
+    if (sessionStarted && sessionEnded.compareAndSet(false, true)) {
+      notify(new DisconnectEvent(api, disconnectCause));
+    }
+  }
+
+  private void setDisconnectCause(DisconnectEvent.Cause cause) {
+    if (disconnectCause == DisconnectEvent.Cause.CLIENT_DISCONNECTED) {
+      disconnectCause = cause;
+    }
+  }
+
+  /** Disconnects the player with a reason, recording why the session ends. */
+  void disconnectFor(DisconnectEvent.Cause cause, String reason) {
+    setDisconnectCause(cause);
+    disconnectWithReason(reason);
+  }
+
+  /**
+   * Disconnects the player at a plugin's request. Thread-safe.
+   *
+   * @param reason shown to the player
+   */
+  void disconnectByPlugin(Component reason) {
+    onEventLoop(
+        () -> disconnectFor(DisconnectEvent.Cause.DISCONNECTED_BY_PROXY, Reasons.plain(reason)));
   }
 
   /**
@@ -886,13 +1316,16 @@ public final class ConnectedPlayer {
    * on its own event loop. Thread-safe.
    */
   public void disconnectDuplicate() {
+    setDisconnectCause(DisconnectEvent.Cause.CONFLICTING_LOGIN);
     loginContext.playerRegistry().unregister(this);
+    endSession();
     logger.info("Disconnecting {}: the same account logged in again", username);
     onEventLoop(() -> disconnectWithReason("You logged in from another location"));
   }
 
   /** Disconnects the player because the proxy is shutting down. Thread-safe. */
   public void disconnectShutdown() {
+    setDisconnectCause(DisconnectEvent.Cause.PROXY_SHUTDOWN);
     onEventLoop(() -> disconnectWithReason("The proxy is shutting down."));
   }
 
@@ -902,6 +1335,81 @@ public final class ConnectedPlayer {
     if (previous != null) {
       previous.removePlayer(this);
       this.currentServer = null;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // API views
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the player as plugins see it.
+   *
+   * @return the API view
+   */
+  public WarpPlayer api() {
+    return api;
+  }
+
+  /**
+   * Returns the identifier of this session.
+   *
+   * @return the session identifier
+   */
+  public UUID sessionId() {
+    return sessionId;
+  }
+
+  /**
+   * Returns whether this player was authenticated with Mojang.
+   *
+   * @return {@code true} in online mode
+   */
+  public boolean isOnlineMode() {
+    return onlineMode;
+  }
+
+  /**
+   * Records whether this player was authenticated with Mojang (a plugin may force either mode).
+   *
+   * @param onlineMode {@code true} if authenticated
+   */
+  void setOnlineMode(boolean onlineMode) {
+    this.onlineMode = onlineMode;
+  }
+
+  /**
+   * Returns the player's profile as the API shows it.
+   *
+   * @return the profile
+   */
+  public dev.warp.api.player.GameProfile apiProfile() {
+    return new GameProfile(uuid, username, profileProperties).toApi();
+  }
+
+  /**
+   * Returns the server a switch moves the player to.
+   *
+   * @return the server, or {@code null} when not switching
+   */
+  public @Nullable BackendServer pendingServer() {
+    return switching ? connectingTo : null;
+  }
+
+  /**
+   * Returns the latency measured with keep-alives.
+   *
+   * @return milliseconds, or {@code -1} before the first measure
+   */
+  public long measuredLatencyMs() {
+    return clientLatencyNanos == 0 ? -1 : TimeUnit.NANOSECONDS.toMillis(clientLatencyNanos);
+  }
+
+  /** Fires a notification event on the player's lane, if anyone listens. */
+  private void notify(Object event) {
+    WarpEventBus events = loginContext.events();
+    if (events.hasHandlers(event.getClass())) {
+      var _ = events.fire(event, uuid);
     }
   }
 }

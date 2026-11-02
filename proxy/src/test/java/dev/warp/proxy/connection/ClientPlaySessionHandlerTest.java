@@ -428,6 +428,7 @@ class ClientPlaySessionHandlerTest {
 
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
+    when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
     when(loginContext.serverRegistry()).thenReturn(new ServerRegistry(servers, "lobby", List.of()));
     ConnectedPlayer player =
         new ConnectedPlayer(

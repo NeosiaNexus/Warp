@@ -20,10 +20,12 @@ import dev.warp.api.Warp;
 import dev.warp.api.WarpProvider;
 import dev.warp.api.event.proxy.ProxyReadyEvent;
 import dev.warp.api.event.proxy.ProxyShutdownEvent;
+import dev.warp.api.player.Player;
 import dev.warp.api.plugin.PluginManager;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.config.WarpConfig;
+import dev.warp.proxy.connection.BackendPinger;
 import dev.warp.proxy.connection.ConnectedPlayer;
 import dev.warp.proxy.connection.PlaySession;
 import dev.warp.proxy.connection.ServerChannelInitializer;
@@ -39,7 +41,10 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
 import java.security.spec.InvalidKeySpecException;
+import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -107,6 +112,9 @@ public final class WarpServer implements Warp {
   /** The players connected to the proxy. */
   private final PlayerRegistry playerRegistry = new PlayerRegistry();
 
+  /** The backend servers, static and registered at runtime. */
+  private final ServerRegistry serverRegistry;
+
   /** The event bus plugins subscribe to. */
   private final WarpEventBus events = new WarpEventBus();
 
@@ -138,6 +146,8 @@ public final class WarpServer implements Warp {
    */
   public WarpServer(WarpConfig config, Path directory) {
     this.config = config;
+    this.serverRegistry =
+        new ServerRegistry(config.servers(), config.defaultServer(), config.fallbackOrder());
     this.pluginManager = new WarpPluginManager(this, events, directory.resolve("plugins"));
   }
 
@@ -165,6 +175,8 @@ public final class WarpServer implements Warp {
     ServerLoginContext loginContext = createLoginContext(transport);
     this.bossGroup = new MultiThreadIoEventLoopGroup(1, transport.ioFactory());
     this.workerGroup = new MultiThreadIoEventLoopGroup(transport.ioFactory());
+
+    serverRegistry.setPinger(new BackendPinger(workerGroup, transport.clientChannelClass()));
 
     // Plugins find the API published, and load before the first player can connect.
     registerProvider();
@@ -282,6 +294,31 @@ public final class WarpServer implements Warp {
     return pluginManager;
   }
 
+  @Override
+  public Collection<Player> players() {
+    return playerRegistry.all().stream().<Player>map(ConnectedPlayer::api).toList();
+  }
+
+  @Override
+  public Optional<Player> player(UUID uniqueId) {
+    return Optional.ofNullable(playerRegistry.get(uniqueId)).map(ConnectedPlayer::api);
+  }
+
+  @Override
+  public Optional<Player> player(String username) {
+    return Optional.ofNullable(playerRegistry.get(username)).map(ConnectedPlayer::api);
+  }
+
+  @Override
+  public int playerCount() {
+    return playerRegistry.count();
+  }
+
+  @Override
+  public dev.warp.api.server.ServerRegistry servers() {
+    return serverRegistry;
+  }
+
   // ---------------------------------------------------------------------------
   // Internals
   // ---------------------------------------------------------------------------
@@ -339,9 +376,6 @@ public final class WarpServer implements Warp {
           MojangSessionService.SESSION_SERVER_PROPERTY);
     }
 
-    ServerRegistry serverRegistry =
-        new ServerRegistry(config.servers(), config.defaultServer(), config.fallbackOrder());
-
     return new ServerLoginContext(
         rsaKeyPair,
         config.onlineMode(),
@@ -354,6 +388,7 @@ public final class WarpServer implements Warp {
         serverRegistry,
         playerRegistry,
         config.duplicateLoginPolicy(),
+        events,
         config.forwardingMode(),
         config.forwardingSecret(),
         transport.clientChannelClass());

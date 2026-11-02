@@ -16,11 +16,17 @@
  */
 package dev.warp.proxy.server;
 
+import dev.warp.api.player.Player;
+import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerInfo;
+import dev.warp.api.server.ServerPing;
 import dev.warp.proxy.connection.ConnectedPlayer;
 
 import java.net.InetSocketAddress;
+import java.util.Collection;
+import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -35,34 +41,29 @@ import java.util.concurrent.ConcurrentHashMap;
  * counting them, but {@link ServerRegistry} no longer returns it. Registering the same name again
  * creates a new instance with its own players.
  */
-public final class BackendServer {
+public final class BackendServer implements RegisteredServer {
 
   private final ServerInfo info;
+  private final ServerRegistry registry;
   private final Set<ConnectedPlayer> players = ConcurrentHashMap.newKeySet();
 
   /**
    * Creates a server with no players.
    *
    * @param info the server's name and address
+   * @param registry the registry that knows whether it is registered, and pings it
    */
-  BackendServer(ServerInfo info) {
+  BackendServer(ServerInfo info, ServerRegistry registry) {
     this.info = info;
+    this.registry = registry;
   }
 
-  /**
-   * Returns the server's name and address.
-   *
-   * @return the server info
-   */
+  @Override
   public ServerInfo info() {
     return info;
   }
 
-  /**
-   * Returns the server's name, in lowercase.
-   *
-   * @return the name
-   */
+  @Override
   public String name() {
     return info.name();
   }
@@ -77,21 +78,33 @@ public final class BackendServer {
   }
 
   /**
-   * Returns a snapshot of the players playing on this server.
+   * Returns a snapshot of the players playing on this server, as the proxy sees them.
    *
    * @return the players, unmodifiable
    */
-  public Set<ConnectedPlayer> players() {
+  public Set<ConnectedPlayer> connectedPlayers() {
     return Set.copyOf(players);
   }
 
-  /**
-   * Returns how many players play on this server, without copying them.
-   *
-   * @return the player count
-   */
+  @Override
+  public Collection<Player> players() {
+    List<Player> snapshot = players.stream().<Player>map(ConnectedPlayer::api).toList();
+    return snapshot;
+  }
+
+  @Override
   public int playerCount() {
     return players.size();
+  }
+
+  @Override
+  public boolean isRegistered() {
+    return registry.getServer(info.name()) == this;
+  }
+
+  @Override
+  public CompletableFuture<ServerPing> ping() {
+    return registry.pinger().ping(info);
   }
 
   /**

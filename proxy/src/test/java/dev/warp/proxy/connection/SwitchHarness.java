@@ -109,6 +109,7 @@ final class SwitchHarness implements AutoCloseable {
     }
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
+    when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
     when(loginContext.serverRegistry())
         .thenReturn(new ServerRegistry(servers, "lobby", fallbackOrder));
     // Cannot be registered on an embedded event loop: every connection fails at once.

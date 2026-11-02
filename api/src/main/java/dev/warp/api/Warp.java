@@ -16,7 +16,13 @@
  */
 package dev.warp.api;
 
+import dev.warp.api.player.Player;
 import dev.warp.api.plugin.PluginManager;
+import dev.warp.api.server.ServerRegistry;
+
+import java.util.Collection;
+import java.util.Optional;
+import java.util.UUID;
 
 /**
  * Entry point to the Warp API: the proxy itself.
@@ -41,4 +47,41 @@ public interface Warp {
    * @return the plugin manager
    */
   PluginManager plugins();
+
+  /**
+   * Returns a snapshot of the connected players.
+   *
+   * @return the players, unmodifiable
+   */
+  Collection<Player> players();
+
+  /**
+   * Returns the player connected with a UUID.
+   *
+   * @param uniqueId the UUID
+   * @return the player, or empty if none is connected with it
+   */
+  Optional<Player> player(UUID uniqueId);
+
+  /**
+   * Returns the player connected with a name, ignoring case.
+   *
+   * @param username the name
+   * @return the player, or empty if none is connected with it
+   */
+  Optional<Player> player(String username);
+
+  /**
+   * Returns how many players are connected, without building a snapshot.
+   *
+   * @return the player count
+   */
+  int playerCount();
+
+  /**
+   * Returns the backend servers.
+   *
+   * @return the server registry
+   */
+  ServerRegistry servers();
 }

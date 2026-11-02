@@ -16,14 +16,18 @@
  */
 package dev.warp.proxy.server;
 
+import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerInfo;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.jspecify.annotations.Nullable;
@@ -41,9 +45,13 @@ import org.jspecify.annotations.Nullable;
  * the fallback order are kept as names and resolved on each use, so they follow servers that come
  * and go.
  */
-public final class ServerRegistry {
+public final class ServerRegistry implements dev.warp.api.server.ServerRegistry {
 
   private final Map<String, BackendServer> servers = new ConcurrentHashMap<>();
+  private volatile ServerPinger pinger =
+      server ->
+          CompletableFuture.failedFuture(
+              new IllegalStateException("The proxy is not started: it cannot ping " + server));
   private final @Nullable String defaultServerName;
   private final List<String> fallbackOrder;
 
@@ -91,13 +99,14 @@ public final class ServerRegistry {
    * @return the registered server
    * @throws IllegalArgumentException if another address is registered under the same name
    */
+  @Override
   public BackendServer register(ServerInfo info) {
     ServerInfo normalized =
         info.name().equals(normalize(info.name()))
             ? info
             : new ServerInfo(normalize(info.name()), info.address());
     BackendServer server =
-        servers.computeIfAbsent(normalized.name(), _ -> new BackendServer(normalized));
+        servers.computeIfAbsent(normalized.name(), _ -> new BackendServer(normalized, this));
     if (!server.address().equals(normalized.address())) {
       throw new IllegalArgumentException(
           "Server '"
@@ -110,31 +119,29 @@ public final class ServerRegistry {
     return server;
   }
 
-  /**
-   * Unregisters a server. Its players keep playing on it; new connections can no longer reach it
-   * through the registry.
-   *
-   * @param name the server's name, in any case
-   * @return the server that was registered, or {@code null} if none was
-   */
-  public @Nullable BackendServer unregister(String name) {
-    return servers.remove(normalize(name));
+  @Override
+  public Optional<RegisteredServer> unregister(String name) {
+    return Optional.ofNullable(servers.remove(normalize(name)));
   }
 
-  /**
-   * Unregisters a server only if it is still the given instance, so that a stale unregistration
-   * cannot remove a server registered again since.
-   *
-   * @param server the server to unregister
-   * @return {@code true} if it was registered and is no longer
-   */
-  public boolean unregister(BackendServer server) {
-    return servers.remove(server.name(), server);
+  @Override
+  public boolean unregister(RegisteredServer server) {
+    return server instanceof BackendServer backend && servers.remove(backend.name(), backend);
   }
 
   // ---------------------------------------------------------------------------
   // Lookup
   // ---------------------------------------------------------------------------
+
+  @Override
+  public Optional<RegisteredServer> server(String name) {
+    return Optional.ofNullable(getServer(name));
+  }
+
+  @Override
+  public Collection<RegisteredServer> servers() {
+    return List.copyOf(allServers());
+  }
 
   /**
    * Returns the server registered under a name.
@@ -202,6 +209,24 @@ public final class ServerRegistry {
       }
     }
     return null;
+  }
+
+  /**
+   * Returns how servers are pinged.
+   *
+   * @return the pinger
+   */
+  ServerPinger pinger() {
+    return pinger;
+  }
+
+  /**
+   * Sets how servers are pinged, once the proxy can open connections.
+   *
+   * @param pinger the pinger
+   */
+  public void setPinger(ServerPinger pinger) {
+    this.pinger = pinger;
   }
 
   private static String normalize(String name) {

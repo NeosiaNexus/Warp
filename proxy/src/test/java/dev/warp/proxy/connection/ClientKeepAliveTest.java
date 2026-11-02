@@ -182,6 +182,7 @@ class ClientKeepAliveTest {
     warpSide.pipeline().addLast(ServerChannelInitializer.CONNECTION_HANDLER, connection);
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
+    when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
     ConnectedPlayer player =
         new ConnectedPlayer(
             connection,

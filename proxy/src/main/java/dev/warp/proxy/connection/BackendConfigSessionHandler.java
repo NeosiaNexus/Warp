@@ -22,6 +22,7 @@ import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.config.FinishConfiguration;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.proxy.text.Reasons;
 
 import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
@@ -106,7 +107,9 @@ final class BackendConfigSessionHandler implements SessionHandler {
       backendConnection.writeAndFlush(keepAlive);
     } else if (packet instanceof FinishConfiguration) {
       handleFinishConfiguration();
-    } else if (packet instanceof ConfigDisconnect) {
+    } else if (packet instanceof ConfigDisconnect disconnect) {
+      player.recordKick(
+          backendConnection, Reasons.fromWire(disconnect.rawReason(), player.protocolVersion()));
       handleDisconnect();
     }
   }

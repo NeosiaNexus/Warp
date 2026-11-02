@@ -29,6 +29,12 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import dev.warp.api.event.EventBus;
+import dev.warp.api.event.player.DisconnectEvent;
+import dev.warp.api.event.player.GameProfileRequestEvent;
+import dev.warp.api.event.player.LoginEvent;
+import dev.warp.api.event.player.PostLoginEvent;
+import dev.warp.api.event.player.PreLoginEvent;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McString;
@@ -49,6 +55,8 @@ import dev.warp.proxy.auth.AuthenticationException;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.config.DuplicateLoginPolicy;
+import dev.warp.proxy.event.PluginEventBus;
+import dev.warp.proxy.event.WarpEventBus;
 
 import java.math.BigInteger;
 import java.net.InetAddress;
@@ -84,7 +92,9 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
+import net.kyori.adventure.text.Component;
 import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -905,6 +915,116 @@ class LoginSessionHandlerTest {
         assertEquals(1, context.playerRegistry().count());
       } finally {
         second.finishAndReleaseAll();
+      }
+    }
+  }
+
+  @Nested
+  @DisplayName("login events")
+  class LoginEvents {
+
+    private static final ProtocolVersion VERSION = ProtocolVersion.MINECRAFT_1_21_4;
+
+    private final WarpEventBus bus = new WarpEventBus(Runnable::run);
+    private final EventBus events = new PluginEventBus(bus, "test", null, s -> {});
+    private final ServerLoginContext context = TestLoginContexts.offline(bus);
+
+    @AfterEach
+    void closeBus() {
+      bus.close();
+    }
+
+    @Test
+    @DisplayName("should refuse a login a pre-login handler denies, with its reason")
+    void preLoginDenied() {
+      List<PreLoginEvent> fired = new ArrayList<>();
+      events.subscribe(
+          PreLoginEvent.class,
+          event -> {
+            fired.add(event);
+            event.setResult(new PreLoginEvent.Denied(Component.text("Maintenance")));
+          });
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
+        assertArrayEquals(jsonString("{\"text\":\"Maintenance\"}"), reason);
+        assertEquals("Steve", fired.getFirst().username());
+        assertEquals(0, context.playerRegistry().count());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should authenticate a player a pre-login handler forces into online mode")
+    void forceOnline() {
+      events.subscribe(
+          PreLoginEvent.class, event -> event.setResult(new PreLoginEvent.ForceOnlineMode()));
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        nextPacket(channel, ProtocolState.LOGIN, EncryptionRequest.class, VERSION);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should log the player in with the profile a handler set")
+    void replacedProfile() {
+      UUID replaced = UUID.randomUUID();
+      events.subscribe(
+          GameProfileRequestEvent.class,
+          event ->
+              event.setProfile(
+                  new dev.warp.api.player.GameProfile(
+                      replaced,
+                      "Alex",
+                      List.of(
+                          new dev.warp.api.player.GameProfile.Property(
+                              "textures", "skin", null)))));
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+        ConnectedPlayer player = context.playerRegistry().get(replaced);
+        assertNotNull(player);
+        assertEquals("Alex", player.username());
+        assertEquals("textures", player.apiProfile().properties().getFirst().name());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should refuse a login a login handler denies, starting no session")
+    void loginDenied() {
+      List<Object> sessionEvents = new ArrayList<>();
+      events.subscribe(PostLoginEvent.class, sessionEvents::add);
+      events.subscribe(DisconnectEvent.class, sessionEvents::add);
+      events.subscribe(
+          LoginEvent.class,
+          event -> event.setResult(new LoginEvent.Denied(Component.text("Banned"))));
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
+        assertArrayEquals(jsonString("{\"text\":\"Banned\"}"), reason);
+        assertClosed(channel);
+        channel.runPendingTasks();
+        assertEquals(0, context.playerRegistry().count());
+        assertTrue(sessionEvents.isEmpty());
+      } finally {
+        channel.finishAndReleaseAll();
       }
     }
   }

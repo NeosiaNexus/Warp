@@ -64,6 +64,7 @@ dependencies {
     // Utilities
     implementation(libs.caffeine)
     implementation(libs.gson)
+    implementation(libs.adventure.text.serializer.gson)
     implementation(libs.configurate.hocon)
 
     // Native crypto

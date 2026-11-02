@@ -107,6 +107,7 @@ class SessionHandlerLifecycleTest {
     GameProfile profile = new GameProfile(UUID.randomUUID(), "TestPlayer", List.of());
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
+    when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
     // Provide a real ServerRegistry with empty fallback so handleBackendFailure disconnects.
     ServerRegistry registry =
         new ServerRegistry(

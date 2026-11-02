@@ -259,7 +259,7 @@ final class ClientPlaySessionHandler implements SessionHandler {
       return;
     }
 
-    player.switchServer(target.info());
+    var _ = player.requestConnection(target, true);
   }
 
   private void handleClientSettings(PlayClientSettings settings) {

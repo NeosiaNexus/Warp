@@ -81,6 +81,8 @@ final class HandshakeSessionHandler implements SessionHandler {
       connection.setVersion(version);
     }
 
+    connection.setVirtualHost(handshake.serverAddress());
+
     switch (handshake.nextState()) {
       case STATUS_NEXT_STATE -> {
         connection.setState(ProtocolState.STATUS);
