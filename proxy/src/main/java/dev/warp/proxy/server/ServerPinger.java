@@ -19,6 +19,7 @@ package dev.warp.proxy.server;
 import dev.warp.api.server.ServerInfo;
 import dev.warp.api.server.ServerPing;
 
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 
 /** Asks a backend server for its server list entry. */
@@ -29,8 +30,9 @@ public interface ServerPinger {
    * Pings a server.
    *
    * @param server the server
-   * @return completed with its answer, or exceptionally if it cannot be reached or does not answer
-   *     in time
+   * @param timeout the longest the whole ping may take, connection included; positive
+   * @return completed with its answer, or exceptionally with a {@link
+   *     dev.warp.api.server.ServerPingException} saying why it failed
    */
-  CompletableFuture<ServerPing> ping(ServerInfo server);
+  CompletableFuture<ServerPing> ping(ServerInfo server, Duration timeout);
 }

@@ -230,6 +230,7 @@ public final class WarpServer implements Warp {
     this.exit = exit;
     this.serverRegistry =
         new ServerRegistry(config.servers(), config.defaultServer(), config.fallbackOrder());
+    serverRegistry.setEventBus(events);
     ProxyCommands.register(commands, serverRegistry);
     this.pluginManager =
         new WarpPluginManager(

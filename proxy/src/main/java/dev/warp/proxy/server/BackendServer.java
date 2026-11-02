@@ -23,6 +23,7 @@ import dev.warp.api.server.ServerPing;
 import dev.warp.proxy.connection.ConnectedPlayer;
 
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
@@ -104,7 +105,26 @@ public final class BackendServer implements RegisteredServer {
 
   @Override
   public CompletableFuture<ServerPing> ping() {
-    return registry.pinger().ping(info);
+    return registry.pinger().ping(info, registry.pingTimeout());
+  }
+
+  @Override
+  public CompletableFuture<ServerPing> ping(Duration timeout) {
+    return registry.pinger().ping(info, checkTimeout(timeout));
+  }
+
+  /**
+   * Checks a ping time-out.
+   *
+   * @param timeout the time-out
+   * @return the time-out
+   * @throws IllegalArgumentException if it is zero or negative
+   */
+  static Duration checkTimeout(Duration timeout) {
+    if (timeout.isZero() || timeout.isNegative()) {
+      throw new IllegalArgumentException("A ping time-out must be positive, got " + timeout);
+    }
+    return timeout;
   }
 
   /**

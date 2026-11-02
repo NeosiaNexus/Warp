@@ -18,6 +18,7 @@ package dev.warp.api.server;
 
 import dev.warp.api.player.Player;
 
+import java.time.Duration;
 import java.util.Collection;
 import java.util.concurrent.CompletableFuture;
 
@@ -69,10 +70,28 @@ public interface RegisteredServer {
   boolean isRegistered();
 
   /**
-   * Asks the server for its server list entry, as a client refreshing its server list would.
+   * Asks the server for its server list entry, as a client refreshing its server list would, within
+   * the proxy's default ping time-out (5 seconds unless configured otherwise).
    *
-   * @return completed with the answer, or exceptionally if the server cannot be reached or does not
-   *     answer in time
+   * <p>Never blocks: the answer arrives on a proxy thread. Do not block that thread, or call {@code
+   * join()} on a thread the proxy runs players on.
+   *
+   * @return completed with the answer, or exceptionally with a {@link ServerPingException} saying
+   *     why: {@link ServerPingException.Reason#TIMED_OUT} when no answer came in time, connection
+   *     included, {@link ServerPingException.Reason#UNREACHABLE} when the connection was refused or
+   *     the host is unknown, and so on
    */
   CompletableFuture<ServerPing> ping();
+
+  /**
+   * Asks the server for its server list entry within {@code timeout}, which covers the whole ping:
+   * the connection, the handshake and the answer. A server that accepts the connection and then
+   * sends nothing, or trickles bytes, still fails once it expires.
+   *
+   * @param timeout the longest the ping may take, positive
+   * @return completed with the answer, or exceptionally with a {@link ServerPingException}, as
+   *     {@link #ping()}
+   * @throws IllegalArgumentException if {@code timeout} is zero or negative
+   */
+  CompletableFuture<ServerPing> ping(Duration timeout);
 }

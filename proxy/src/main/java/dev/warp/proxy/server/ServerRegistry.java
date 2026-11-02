@@ -16,10 +16,16 @@
  */
 package dev.warp.proxy.server;
 
+import dev.warp.api.event.server.ServerRegisteredEvent;
+import dev.warp.api.event.server.ServerUnregisteredEvent;
 import dev.warp.api.server.RegisteredServer;
+import dev.warp.api.server.RegistrationResult;
 import dev.warp.api.server.ServerInfo;
+import dev.warp.api.server.ServerPingException;
+import dev.warp.proxy.event.WarpEventBus;
 
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -29,6 +35,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 import org.jspecify.annotations.Nullable;
 
@@ -37,9 +44,15 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>The configuration seeds the registry with its static servers; plugins and service discovery
  * register and unregister servers at runtime (a Kubernetes or Agones network starts game servers on
- * demand). Every operation is atomic and lock-free: registering a server that is already registered
- * with the same address is a no-op that returns the existing server, so two discovery paths racing
- * on the same server (a pub/sub event and a periodic poll) cannot fail each other.
+ * demand). Registering is an upsert: a server already registered with the same address is kept
+ * ({@link RegistrationResult.Unchanged}), so two discovery paths racing on the same server (a
+ * pub/sub event and a periodic poll) cannot fail each other; a name registered at another address
+ * is replaced ({@link RegistrationResult.Replaced}), new connections going to the new address while
+ * the players of the old one stay on their connections.
+ *
+ * <p>Lookups are lock-free. Changes take a lock, held only to update the map and queue their event
+ * on the registry's own lane of the event bus, so that events are delivered in the order of the
+ * changes; registrations are rare and never made on a packet path.
  *
  * <p>Server names are case-insensitive (stored and looked up in lowercase). The default server and
  * the fallback order are kept as names and resolved on each use, so they follow servers that come
@@ -47,11 +60,24 @@ import org.jspecify.annotations.Nullable;
  */
 public final class ServerRegistry implements dev.warp.api.server.ServerRegistry {
 
+  /** How long a ping waits for its answer, unless the caller gives its own time-out. */
+  public static final Duration DEFAULT_PING_TIMEOUT = Duration.ofSeconds(5);
+
   private final Map<String, BackendServer> servers = new ConcurrentHashMap<>();
+
+  /** Serializes changes, so that their events are queued in the order they happened. */
+  private final ReentrantLock changes = new ReentrantLock();
+
   private volatile ServerPinger pinger =
-      server ->
+      (server, timeout) ->
           CompletableFuture.failedFuture(
-              new IllegalStateException("The proxy is not started: it cannot ping " + server));
+              new ServerPingException(
+                  server,
+                  ServerPingException.Reason.UNREACHABLE,
+                  "the proxy is not started: it cannot ping " + server.name(),
+                  null));
+  private volatile Duration pingTimeout = DEFAULT_PING_TIMEOUT;
+  private volatile @Nullable WarpEventBus events;
   private final @Nullable String defaultServerName;
   private final List<String> fallbackOrder;
 
@@ -93,40 +119,82 @@ public final class ServerRegistry implements dev.warp.api.server.ServerRegistry 
   // ---------------------------------------------------------------------------
 
   /**
-   * Registers a server, or returns the one already registered under its name at the same address.
+   * Registers a server, keeps the one already registered under its name at the same address, or
+   * replaces the one registered under its name at another address.
    *
    * @param info the server; its name is stored in lowercase
-   * @return the registered server
-   * @throws IllegalArgumentException if another address is registered under the same name
+   * @return what happened, and the server now registered under the name
    */
   @Override
-  public BackendServer register(ServerInfo info) {
+  public RegistrationResult register(ServerInfo info) {
     ServerInfo normalized =
         info.name().equals(normalize(info.name()))
             ? info
             : new ServerInfo(normalize(info.name()), info.address());
-    BackendServer server =
-        servers.computeIfAbsent(normalized.name(), _ -> new BackendServer(normalized, this));
-    if (!server.address().equals(normalized.address())) {
-      throw new IllegalArgumentException(
-          "Server '"
-              + normalized.name()
-              + "' is already registered at "
-              + server.address()
-              + ", not "
-              + normalized.address());
+    changes.lock();
+    try {
+      BackendServer existing = servers.get(normalized.name());
+      if (existing != null && existing.address().equals(normalized.address())) {
+        return new RegistrationResult.Unchanged(existing);
+      }
+      BackendServer server = new BackendServer(normalized, this);
+      servers.put(normalized.name(), server);
+      notify(new ServerRegisteredEvent(server, existing));
+      return existing == null
+          ? new RegistrationResult.Added(server)
+          : new RegistrationResult.Replaced(server, existing);
+    } finally {
+      changes.unlock();
     }
-    return server;
   }
 
   @Override
   public Optional<RegisteredServer> unregister(String name) {
-    return Optional.ofNullable(servers.remove(normalize(name)));
+    changes.lock();
+    try {
+      BackendServer removed = servers.remove(normalize(name));
+      if (removed != null) {
+        notify(new ServerUnregisteredEvent(removed));
+      }
+      return Optional.ofNullable(removed);
+    } finally {
+      changes.unlock();
+    }
   }
 
   @Override
   public boolean unregister(RegisteredServer server) {
-    return server instanceof BackendServer backend && servers.remove(backend.name(), backend);
+    if (!(server instanceof BackendServer backend)) {
+      return false;
+    }
+    changes.lock();
+    try {
+      boolean removed = servers.remove(backend.name(), backend);
+      if (removed) {
+        notify(new ServerUnregisteredEvent(backend));
+      }
+      return removed;
+    } finally {
+      changes.unlock();
+    }
+  }
+
+  /** Queues an event on the registry's lane, if plugins can hear it yet. Under {@link #changes}. */
+  private void notify(Object event) {
+    WarpEventBus bus = events;
+    if (bus != null && bus.hasHandlers(event.getClass())) {
+      var _ = bus.fire(event, this);
+    }
+  }
+
+  /**
+   * Sets the event bus the registry's changes are announced on, once plugins can listen. The
+   * servers registered before (those of the configuration) fire nothing.
+   *
+   * @param events the event bus
+   */
+  public void setEventBus(WarpEventBus events) {
+    this.events = events;
   }
 
   // ---------------------------------------------------------------------------
@@ -221,12 +289,31 @@ public final class ServerRegistry implements dev.warp.api.server.ServerRegistry 
   }
 
   /**
+   * Returns how long a ping waits when its caller gives no time-out.
+   *
+   * @return the default ping time-out
+   */
+  Duration pingTimeout() {
+    return pingTimeout;
+  }
+
+  /**
    * Sets how servers are pinged, once the proxy can open connections.
    *
    * @param pinger the pinger
    */
   public void setPinger(ServerPinger pinger) {
     this.pinger = pinger;
+  }
+
+  /**
+   * Sets how long {@link RegisteredServer#ping()} waits for an answer.
+   *
+   * @param timeout the default time-out, positive
+   * @throws IllegalArgumentException if {@code timeout} is zero or negative
+   */
+  public void setPingTimeout(Duration timeout) {
+    this.pingTimeout = BackendServer.checkTimeout(timeout);
   }
 
   private static String normalize(String name) {
