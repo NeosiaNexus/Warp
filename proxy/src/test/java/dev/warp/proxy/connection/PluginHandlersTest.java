@@ -383,7 +383,7 @@ class PluginHandlersTest {
       if (msg instanceof ByteBuf buf) {
         outbound.add(ByteBufUtil.getBytes(buf));
       }
-      ctx.write(msg, promise);
+      var _ = ctx.write(msg, promise);
     }
   }
 

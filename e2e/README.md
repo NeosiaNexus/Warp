@@ -14,6 +14,7 @@ e2e/run.sh --mc 1.21.4 --passthrough off --scenarios login,switching
 e2e/run.sh --mc 26.3 --strict                            # known-broken flags ignored: fails for real
 e2e/run.sh --mc 1.21.1 --direct                          # control run without Warp
 e2e/run.sh --mc 1.21.4 --soak 30 --bots 20               # half an hour under load (see Soak)
+e2e/run.sh --mc 1.21.4 --client 1.20.1 --variants offline # 1.20.1 bots, translated (see Translation)
 e2e/run.sh --list                                        # the whole matrix
 e2e/run.sh --help
 ```
@@ -132,6 +133,20 @@ support is turned on (`paper.yml` up to 1.18.2, `config/paper-global.yml` from 1
 generated for each boot and given to Warp in `WARP_FORWARDING_SECRET`. The identity travels in a
 login plugin message, which 1.13 introduced; Paper reads it from 1.13.1, vanilla servers never do.
 Those versions, and a `--direct` run, skip the variant and say why in the report.
+
+## Translation
+
+`--client VERSION` boots the backends of `--mc` and bots of another version of the matrix, and
+installs the via plugin (`via/`, ViaVersion and ViaBackwards on Warp, built with Gradle) in every
+Warp instance: the scenarios then run on connections Warp translates. The scenarios only use what
+both versions support (the older one's features). `--via-plugin` installs the plugin with bots of
+the backends' own version, the control run of translation: their connections must keep blind
+forwarding and compression passthrough.
+
+The plugin logs `Translating players of <version> for <server>` once per version and server. A run
+fails if bots of another version were never translated, or if bots of the backends' own version
+were. A bridged client version (`via` in `versions.json`) still goes through ViaProxy, which then
+speaks the client version to Warp.
 
 ## Soak
 
