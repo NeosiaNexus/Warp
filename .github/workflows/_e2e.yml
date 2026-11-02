@@ -73,11 +73,15 @@ jobs:
     permissions:
       contents: read # check out the harness
     steps:
+      # The harness, and the sound event ids Mojang's reports give, which the audience scenario
+      # expects (sound-event-samples.txt, written with the table by e2e/tools/sound-events.js).
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: e2e
+          sparse-checkout: |
+            e2e
+            protocol/src/test/resources/dev/warp/protocol/packet/play
 
       - name: Set up Java
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -120,7 +124,10 @@ jobs:
         env:
           RUNS: ${{ matrix.runs }}
           WARP_DIR: ${{ runner.temp }}/warp
-        run: e2e/run.sh --runs "$RUNS" --jar "$(find "$WARP_DIR" -name 'warp-*.jar' | head -1)"
+        run: >-
+          e2e/run.sh --runs "$RUNS"
+          --jar "$(find "$WARP_DIR" -name 'warp-*.jar' | head -1)"
+          --plugin "$(find "$WARP_DIR" -name 'e2e-audience-probe.jar' | head -1)"
 
       - name: Save ${{ matrix.server }}
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.server-cache.outputs.cache-hit != 'true' }}

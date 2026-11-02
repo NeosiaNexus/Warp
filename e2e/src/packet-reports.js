@@ -38,6 +38,26 @@ export async function fetchRelease(id) {
  * @returns {Promise<{version: string, protocol: number, packets: object}>} its packet fixture
  */
 export async function generateFixture(release, cacheDir) {
+  return generateReports(release, cacheDir, (reports, protocol) => {
+    const report = join(reports, 'packets.json');
+    if (!existsSync(report)) {
+      throw new Error(`Minecraft ${release.id} writes no packets report (the first one that does is ${FIRST_REPORTED_RELEASE})`);
+    }
+    return packetFixture(release.id, protocol, JSON.parse(readFileSync(report, 'utf8')));
+  });
+}
+
+/**
+ * Runs the data generator of a release's server jar (downloaded into the cache, checked against
+ * Mojang's sha1) on the Java major version Mojang lists for it, and hands its reports directory to
+ * `read`, with the protocol the jar declares, before deleting it.
+ * @template T
+ * @param {object} release Mojang's metadata of the release ({@link fetchRelease})
+ * @param {string} cacheDir download cache
+ * @param {(reports: string, protocol: number) => T} read
+ * @returns {Promise<T>}
+ */
+export async function generateReports(release, cacheDir, read) {
   const server = release.downloads?.server;
   if (!server) throw new Error(`Minecraft ${release.id} has no server jar`);
   const jar = await download(server.url, join(cacheDir, 'downloads', `minecraft-server-${release.id}.jar`), {
@@ -46,21 +66,21 @@ export async function generateFixture(release, cacheDir) {
   // A number, never a string: it picks the JDK, whose path is the command run below.
   const javaMajor = Number(release.javaVersion?.majorVersion);
   if (!Number.isInteger(javaMajor) || javaMajor < 8) throw new Error(`Minecraft ${release.id} lists no Java version`);
-  const java = await findJava(javaMajor, cacheDir);
+  // Adoptium has no Java 16 runtime (1.17's): 17 runs it, as the E2E matrix does.
+  const java = await findJava(javaMajor === 16 ? 17 : javaMajor, cacheDir);
   const workDir = mkdtempSync(join(tmpdir(), 'warp-packet-report-'));
   try {
     // Since 1.18 the server jar is a bundler: it unpacks the server and its libraries into the
-    // working directory, then runs `bundlerMainClass` (here the data generator) instead.
-    await run(java, ['-DbundlerMainClass=net.minecraft.data.Main', '-jar', jar, '--reports', '--output', 'generated'], {
-      cwd: workDir,
-    });
-    const report = join(workDir, 'generated', 'reports', 'packets.json');
-    if (!existsSync(report)) {
-      throw new Error(`Minecraft ${release.id} writes no packets report (the first one that does is ${FIRST_REPORTED_RELEASE})`);
-    }
+    // working directory, then runs `bundlerMainClass` (here the data generator) instead. Before,
+    // the jar holds the generator and every library itself.
+    const bundler = await run('unzip', ['-l', jar, 'net/minecraft/bundler/Main.class']).then(() => true, () => false);
+    const launch = bundler ? ['-DbundlerMainClass=net.minecraft.data.Main', '-jar', jar] : ['-cp', jar, 'net.minecraft.data.Main'];
+    await run(java, [...launch, '--reports', '--output', 'generated'], { cwd: workDir });
     const info = JSON.parse(await run('unzip', ['-p', jar, 'version.json']));
-    if (info.id !== release.id) throw new Error(`the ${release.id} server jar says it is ${info.id}`);
-    return packetFixture(release.id, info.protocol_version, JSON.parse(readFileSync(report, 'utf8')));
+    // Up to 1.15.2 the id also carries the build hash: "1.14 / 5dac5567...".
+    if (String(info.id).split(' / ')[0] !== release.id) throw new Error(`the ${release.id} server jar says it is ${info.id}`);
+    if (!Number.isInteger(info.protocol_version)) throw new Error(`${release.id}: protocol ${info.protocol_version} is not a number`);
+    return read(join(workDir, 'generated', 'reports'), info.protocol_version);
   } finally {
     rmSync(workDir, { recursive: true, force: true });
   }

@@ -21,6 +21,7 @@ import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.cookie.CookieResponse;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.ResourcePackResponse;
 
 import java.util.ArrayDeque;
 import java.util.Queue;
@@ -83,6 +84,8 @@ final class SwitchWaitSessionHandler implements SessionHandler {
       // when its configuration begins (BackendConfigSessionHandler#activated).
       case ClientInformation clientInfo -> player.cacheClientSettings(clientInfo);
       case CookieResponse response -> player.cookies().answered(response); // unasked: dropped
+      // An answer about a pack the proxy sent: never lost, even between two servers.
+      case ResourcePackResponse response -> player.resourcePacks().clientAnswered(response);
       default -> {
         // The other packets decoded in this state are answers to servers, which no server asked.
       }

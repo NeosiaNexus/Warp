@@ -58,8 +58,11 @@ import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatAcknowledgement;
 import dev.warp.protocol.packet.play.ChatCommand;
+import dev.warp.protocol.packet.play.ClearDialog;
 import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.DeclareCommands;
+import dev.warp.protocol.packet.play.DeleteChat;
+import dev.warp.protocol.packet.play.EntitySoundEffect;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
@@ -71,13 +74,17 @@ import dev.warp.protocol.packet.play.PlayPluginMessage;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
+import dev.warp.protocol.packet.play.ResourcePackPop;
+import dev.warp.protocol.packet.play.ResourcePackPush;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.Respawn;
 import dev.warp.protocol.packet.play.SetActionBarText;
 import dev.warp.protocol.packet.play.SetSubtitleText;
 import dev.warp.protocol.packet.play.SetTitleText;
 import dev.warp.protocol.packet.play.SetTitleTimes;
+import dev.warp.protocol.packet.play.SoundEffect;
 import dev.warp.protocol.packet.play.StartConfiguration;
+import dev.warp.protocol.packet.play.StopSound;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
@@ -194,6 +201,13 @@ class StateRegistryTest {
                 CONFIGURATION, CLIENTBOUND, CookieRequest.class, "minecraft:cookie_request"),
             new PacketName(CONFIGURATION, CLIENTBOUND, StoreCookie.class, "minecraft:store_cookie"),
             new PacketName(CONFIGURATION, CLIENTBOUND, Transfer.class, "minecraft:transfer"),
+            new PacketName(
+                CONFIGURATION, SERVERBOUND, ResourcePackResponse.class, "minecraft:resource_pack"),
+            new PacketName(
+                CONFIGURATION, CLIENTBOUND, ResourcePackPush.class, "minecraft:resource_pack_push"),
+            new PacketName(
+                CONFIGURATION, CLIENTBOUND, ResourcePackPop.class, "minecraft:resource_pack_pop"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, ClearDialog.class, "minecraft:clear_dialog"),
             new PacketName(PLAY, SERVERBOUND, KeepAlive.class, "minecraft:keep_alive"),
             new PacketName(PLAY, SERVERBOUND, CookieResponse.class, "minecraft:cookie_response"),
             new PacketName(PLAY, CLIENTBOUND, CookieRequest.class, "minecraft:cookie_request"),
@@ -230,7 +244,16 @@ class StateRegistryTest {
             new PacketName(
                 PLAY, CLIENTBOUND, SetTitleTimes.class, "minecraft:set_titles_animation"),
             new PacketName(
-                PLAY, CLIENTBOUND, SetActionBarText.class, "minecraft:set_action_bar_text"));
+                PLAY, CLIENTBOUND, SetActionBarText.class, "minecraft:set_action_bar_text"),
+            new PacketName(PLAY, CLIENTBOUND, BossBar.class, "minecraft:boss_event"),
+            new PacketName(PLAY, CLIENTBOUND, SoundEffect.class, "minecraft:sound"),
+            new PacketName(PLAY, CLIENTBOUND, EntitySoundEffect.class, "minecraft:sound_entity"),
+            new PacketName(PLAY, CLIENTBOUND, StopSound.class, "minecraft:stop_sound"),
+            new PacketName(
+                PLAY, CLIENTBOUND, ResourcePackPush.class, "minecraft:resource_pack_push"),
+            new PacketName(PLAY, CLIENTBOUND, ResourcePackPop.class, "minecraft:resource_pack_pop"),
+            new PacketName(PLAY, CLIENTBOUND, DeleteChat.class, "minecraft:delete_chat"),
+            new PacketName(PLAY, CLIENTBOUND, ClearDialog.class, "minecraft:clear_dialog"));
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("auditedProtocols")
@@ -383,6 +406,19 @@ class StateRegistryTest {
             new PacketName(CONFIGURATION, CLIENTBOUND, CookieRequest.class, "cookie_request"),
             new PacketName(CONFIGURATION, CLIENTBOUND, StoreCookie.class, "store_cookie"),
             new PacketName(CONFIGURATION, CLIENTBOUND, Transfer.class, "transfer"),
+            new PacketName(
+                CONFIGURATION, SERVERBOUND, ResourcePackResponse.class, "resource_pack_receive"),
+            new PacketName(
+                CONFIGURATION, CLIENTBOUND, ResourcePackPush.class, "resource_pack_send"),
+            new PacketName(
+                CONFIGURATION,
+                CLIENTBOUND,
+                ResourcePackPush.class,
+                "add_resource_pack",
+                ProtocolVersion.MINECRAFT_1_20_3),
+            new PacketName(
+                CONFIGURATION, CLIENTBOUND, ResourcePackPop.class, "remove_resource_pack"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, ClearDialog.class, "clear_dialog"),
             new PacketName(PLAY, SERVERBOUND, KeepAlive.class, "keep_alive"),
             new PacketName(PLAY, SERVERBOUND, CookieResponse.class, "cookie_response"),
             new PacketName(PLAY, CLIENTBOUND, CookieRequest.class, "cookie_request"),
@@ -454,7 +490,27 @@ class StateRegistryTest {
                 CLIENTBOUND,
                 SetActionBarText.class,
                 "action_bar",
-                ProtocolVersion.MINECRAFT_1_17));
+                ProtocolVersion.MINECRAFT_1_17),
+            // Named until 1.19.2, the registry-or-inline sound effect from 1.19.3.
+            new PacketName(PLAY, CLIENTBOUND, SoundEffect.class, "named_sound_effect"),
+            new PacketName(
+                PLAY,
+                CLIENTBOUND,
+                SoundEffect.class,
+                "sound_effect",
+                ProtocolVersion.MINECRAFT_1_19_3),
+            new PacketName(PLAY, CLIENTBOUND, EntitySoundEffect.class, "entity_sound_effect"),
+            new PacketName(PLAY, CLIENTBOUND, StopSound.class, "stop_sound"),
+            new PacketName(PLAY, CLIENTBOUND, ResourcePackPush.class, "resource_pack_send"),
+            new PacketName(
+                PLAY,
+                CLIENTBOUND,
+                ResourcePackPush.class,
+                "add_resource_pack",
+                ProtocolVersion.MINECRAFT_1_20_3),
+            new PacketName(PLAY, CLIENTBOUND, ResourcePackPop.class, "remove_resource_pack"),
+            new PacketName(PLAY, CLIENTBOUND, DeleteChat.class, "hide_message"),
+            new PacketName(PLAY, CLIENTBOUND, ClearDialog.class, "clear_dialog"));
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("unreportedProtocols")

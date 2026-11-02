@@ -315,7 +315,7 @@ public final class WarpCommandManager implements AutoCloseable {
           try {
             current.execute(parsed);
           } catch (CommandSyntaxException e) {
-            source.sendMessage(Component.text(e.getMessage(), NamedTextColor.RED));
+            source.sendMessage(Component.text(String.valueOf(e.getMessage()), NamedTextColor.RED));
           } catch (RuntimeException e) {
             logger.error("Command /{} failed", commandLine, e);
             source.sendMessage(

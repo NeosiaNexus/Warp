@@ -132,6 +132,16 @@ public final class WarpEventBus implements AutoCloseable {
             Thread.ofPlatform().name("warp-event-timer").daemon().factory());
   }
 
+  /**
+   * Returns the executor events are delivered with: plugin code the proxy runs outside an event,
+   * such as an Adventure callback, runs there too, off the network threads.
+   *
+   * @return the executor
+   */
+  public Executor executor() {
+    return executor;
+  }
+
   // ---------------------------------------------------------------------------
   // Firing
   // ---------------------------------------------------------------------------

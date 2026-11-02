@@ -90,9 +90,9 @@ final class ServerLeftovers {
       }
       case PlayerInfoRemove remove -> remove.profileIds().forEach(tabListEntries::remove);
       case BossBar bossBar -> {
-        if (bossBar.action() == BossBar.ADD) {
+        if (bossBar.action() instanceof BossBar.Added) {
           bossBars.add(bossBar.uuid());
-        } else if (bossBar.action() == BossBar.REMOVE) {
+        } else if (bossBar.action() instanceof BossBar.Remove) {
           bossBars.remove(bossBar.uuid());
         }
       }

@@ -251,7 +251,7 @@ class RespawnSwitchTest {
       assertEquals(PlayerInfo.REMOVE_PLAYER, removal.action());
       assertEquals(List.of(ALICE), removal.profileIds());
       assertEquals(BOSS, sent.get(1).as(BossBar.class).uuid());
-      assertEquals(BossBar.REMOVE, sent.get(1).as(BossBar.class).action());
+      assertEquals(new BossBar.Remove(), sent.get(1).as(BossBar.class).action());
       assertFalse(sent.get(3).as(ClearTitles.class).reset(), "the title hidden");
       assertTrue(sent.get(4).as(ClearTitles.class).reset(), "then its times reset");
     }
@@ -281,7 +281,7 @@ class RespawnSwitchTest {
       MinecraftConnection lobby = setup.spawnOn(LOBBY);
       setup.switchTo(SURVIVAL);
       handlerOf(lobby).handle(new PlayerInfo(PlayerInfo.ADD_PLAYER, List.of(ALICE)));
-      handlerOf(lobby).handle(new BossBar(BOSS, BossBar.ADD));
+      handlerOf(lobby).handle(new BossBar(BOSS, new BossBar.Added()));
       setup.sentToClient();
 
       setup.switchTo(CREATIVE);

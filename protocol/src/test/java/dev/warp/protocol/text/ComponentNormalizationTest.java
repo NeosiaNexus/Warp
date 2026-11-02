@@ -24,6 +24,7 @@ import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 import io.netty.buffer.ByteBuf;
@@ -92,7 +93,8 @@ class ComponentNormalizationTest {
           hovered("{'action':'show_item','contents':{'id':'stone','components':'none'}}"));
       Component withComponents =
           hovered("{'action':'show_item','id':'stone','count':1,'components':{'minecraft:a':1}}");
-      HoverEvent.ShowItem item = (HoverEvent.ShowItem) withComponents.hoverEvent().value();
+      HoverEvent.ShowItem item =
+          (HoverEvent.ShowItem) Objects.requireNonNull(withComponents.hoverEvent()).value();
       assertEquals(1, item.dataComponents().size());
     }
   }

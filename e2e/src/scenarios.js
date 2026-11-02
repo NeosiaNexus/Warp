@@ -2,6 +2,7 @@
 // sign of trouble. Backends are told apart by game mode, which every version announces when a
 // player joins: lobby = creative, survival = adventure.
 import { randomBytes, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { connect as tcpConnect } from 'node:net';
 import { dirname, join } from 'node:path';
 
@@ -47,7 +48,7 @@ export const ALT_MAX_PLAYERS = 1;
  *   without Warp; `forwarding` and `online`: the variant's forwarding mode and online mode
  * @returns {Record<string, true|string>}
  */
-export function features(protocol, { direct = false, forwarding = 'none', online = false, bridged = false } = {}) {
+export function features(protocol, { direct = false, forwarding = 'none', online = false, plugin = false, bridged = false } = {}) {
   const proxy = direct ? 'no proxy in a control run' : true;
   return {
     proxy,
@@ -62,6 +63,14 @@ export function features(protocol, { direct = false, forwarding = 'none', online
     ),
     // Offers carry the pack's SHA-1 in a packet of their own from 1.8 (a plugin message before).
     resourcePack: protocol >= 47 || 'no Resource Pack Send packet before 1.8',
+    // A plugin of Warp's own shows a boss bar, plays sounds and sends a pack: the bot checks each as
+    // its own version receives it, which a bridge would translate.
+    audience: all(
+      proxy,
+      plugin || 'no audience probe plugin (--jar without --plugin)',
+      protocol >= 47 || 'the 1.7 bot does not follow boss bars, sounds or plugin message packs',
+      !bridged || 'ViaProxy translates what the bot receives',
+    ),
     // 1.19 to 1.19.2 clients send their chat signing key in Login Start.
     profileKeys: (protocol >= FIRST_PROTOCOL && protocol <= LAST_PROTOCOL) || 'only 1.19 to 1.19.2 clients send a profile key in Login Start',
     // Bots can sign their chat: from 1.20 a server fetches the keys that verify chat sessions from
@@ -426,6 +435,111 @@ async function expectPack(bot, index, pack, server) {
   const response = await fetch(offer.url);
   const downloaded = sha1(Buffer.from(await response.arrayBuffer()));
   if (downloaded !== offer.hash) throw new Error(`${offer.url}: HTTP ${response.status}, SHA-1 ${downloaded} instead of ${offer.hash}`);
+}
+
+/** First protocols where the client: has boss bars (1.9), plays a sound following an entity by its registry id (1.14), by its name (1.19.3), configures (1.20.2), holds several packs by UUID (1.20.3). */
+const BOSS_BARS = 107;
+const ENTITY_SOUNDS = 477;
+const NAMED_ENTITY_SOUNDS = 761;
+const CONFIGURATION = 764;
+const MULTIPLE_PACKS = 765;
+
+/** What the audience probe plugin shows: its bar, and the sound both its plays name. */
+const PROBE_BAR = 'Warp e2e';
+const PROBE_SOUND = /entity\.experience_orb\.pickup$/;
+
+/**
+ * The id of the probe's sound in a client's registry, 1.14 to 1.19.2: read from Mojang's data
+ * generator reports through the samples tools/sound-events.js writes for Warp's tests, never from
+ * the table Warp loads.
+ */
+function probeSoundId(protocol) {
+  const samples = readFileSync(new URL('../../protocol/src/test/resources/dev/warp/protocol/packet/play/sound-event-samples.txt', import.meta.url), 'utf8');
+  const line = samples.split('\n').find((l) => l.startsWith(`${protocol} id entity.experience_orb.pickup `));
+  if (!line) throw new Error(`no sound event sample for protocol ${protocol}`);
+  return Number(line.split(' ')[3]);
+}
+
+/**
+ * A plugin of Warp's own (e2e/plugin) shows the player a boss bar, plays it a sound at a position
+ * and one that follows it, and sends the proxy's resource pack: the bot receives each as its version
+ * has it (no boss bar before 1.9, the sound following the player by its registry id from 1.14, by its
+ * name from 1.19.3, not at all before 1.14), and the plugin
+ * hears the pack's statuses. After a switch the bar is still on the bot's screen, whose model clears
+ * it in the configuration phase from 1.20.2 as the vanilla client does, the plugin's pack is not sent
+ * again, and from 1.20.3 the lobby's own pack is removed, the next server not sending it. The bar is
+ * animated ten times a second for the whole run: an update the bot gets for a bar it does not have
+ * fails the run, as it disconnects a vanilla client.
+ */
+async function audience(ctx) {
+  const protocol = ctx.entry.protocol;
+  const bot = await joinWarp(ctx, 'e2e_audience');
+  const removed = [];
+  bot.bot._client.on('remove_resource_pack', (data) => removed.push(String(data.uuid ?? 'all')));
+  try {
+    // The lobby's own offer first: before 1.20.2 it comes in play, where the bot answers it itself;
+    // a client holds one pack then, and Warp sends the next once the previous one is answered.
+    await bot.waitForEntry('resourcePacks', 0, "the lobby's resource pack", 10_000);
+    if (protocol < CONFIGURATION) bot.bot.acceptResourcePack();
+
+    await bot.command('audience', /^audience shown$/);
+    const details = [];
+    if (protocol >= BOSS_BARS) {
+      await bot.waitFor(() => bot.bossBars.names().includes(PROBE_BAR), 'the boss bar shown', 10_000);
+      details.push('boss bar shown');
+    }
+    await bot.waitFor(() => bot.sounds.some((s) => s.packet !== 'entity_sound_effect' && PROBE_SOUND.test(String(s.sound))), 'the sound played at a position', 10_000);
+    details.push('positioned sound played');
+    if (protocol >= NAMED_ENTITY_SOUNDS) {
+      await bot.waitFor(() => bot.sounds.some((s) => s.packet === 'entity_sound_effect' && PROBE_SOUND.test(String(s.sound))), 'the sound following the player', 10_000);
+      details.push('sound following the player played');
+    } else if (protocol >= ENTITY_SOUNDS) {
+      const id = probeSoundId(protocol);
+      await bot.waitFor(() => bot.sounds.some((s) => s.packet === 'entity_sound_effect' && s.sound === id), `the sound following the player (registry id ${id})`, 10_000);
+      details.push(`sound following the player played by registry id ${id}`);
+    } else if (bot.sounds.some((s) => s.packet === 'entity_sound_effect')) {
+      throw new Error('a sound following the player reached a client before 1.14');
+    }
+    const offer = await bot.waitFor(() => bot.resourcePacks.some((p) => p.url === ctx.packs.proxy.url), "the plugin's resource pack", 10_000)
+      .then(() => bot.resourcePacks.find((p) => p.url === ctx.packs.proxy.url));
+    if (offer.hash !== ctx.packs.proxy.sha1 || (offer.id !== undefined && offer.id !== ctx.packs.proxy.id)) {
+      throw new Error(`the plugin's pack came as ${offer.url} (SHA-1 ${offer.hash}, id ${offer.id}), expected SHA-1 ${ctx.packs.proxy.sha1}, id ${ctx.packs.proxy.id}`);
+    }
+    const from = bot.messages.length;
+    bot.bot.acceptResourcePack();
+    await bot.waitForMessage(/^audience pack ACCEPTED$/, 'the ACCEPTED status at the plugin', 10_000, from);
+    await bot.waitForMessage(/^audience pack SUCCESSFULLY_LOADED$/, 'the SUCCESSFULLY_LOADED status at the plugin', 10_000, from);
+    details.push('pack statuses heard by the plugin');
+    if (protocol < BOSS_BARS && bot.bossBars.added > 0) throw new Error('a boss bar reached a client before 1.9, which has no boss bar packet');
+
+    if (has(ctx, 'switching')) {
+      const offers = bot.resourcePacks.length;
+      await switchToSurvival(bot);
+      await bot.waitFor(() => bot.resourcePacks.slice(offers).some((p) => p.url === ctx.packs.survival.url), "survival's resource pack", 10_000);
+      if (protocol < CONFIGURATION) bot.bot.acceptResourcePack();
+      if (protocol >= BOSS_BARS) {
+        await bot.waitFor(() => bot.bossBars.names().includes(PROBE_BAR), 'the boss bar after the switch', 10_000);
+        await sleep(1_500); // updates keep coming, never for a bar the bot does not have
+        details.push(`boss bar on screen after a switch${protocol >= CONFIGURATION ? ' (shown again after the configuration phase)' : ''}`);
+      }
+      // Once: kept by the client from 1.20.3, replaced by survival's own before (1.20.2 unloads it
+      // in the configuration phase, and gets it again only from a server that sends none).
+      const sent = bot.resourcePacks.filter((p) => p.url === ctx.packs.proxy.url).length;
+      if (sent !== 1) throw new Error(`the plugin's pack was sent ${sent} times, expected once`);
+      if (protocol >= MULTIPLE_PACKS) {
+        // The lobby's pack belongs to the lobby: removed once survival had its time to send it.
+        await bot.waitFor(() => removed.includes(ctx.packs.lobby.id), "the lobby's pack removed after the switch", 20_000);
+        if (removed.includes(ctx.packs.proxy.id) || removed.includes('all')) throw new Error(`packs removed: ${removed.join(', ')}; the plugin's must stay`);
+        details.push("plugin's pack kept, the lobby's removed");
+      } else {
+        details.push("plugin's pack not sent again");
+      }
+    }
+    bot.healthy();
+    return details.join(', ');
+  } finally {
+    bot.quit();
+  }
 }
 
 async function switching(ctx, rounds = 6) {
@@ -953,6 +1067,7 @@ export const SCENARIOS = [
   { name: 'chat', run: chat, requires: 'proxy' },
   { name: 'player-chat', run: playerChat },
   { name: 'resource-pack', run: resourcePack, requires: 'resourcePack' },
+  { name: 'audience', run: audience, requires: 'audience' },
   { name: 'switching', run: switching, requires: 'switching' },
   { name: 'tab-list', run: tabList, requires: 'switching' },
   { name: 'profile-key', run: profileKey, requires: 'profileKeys' },

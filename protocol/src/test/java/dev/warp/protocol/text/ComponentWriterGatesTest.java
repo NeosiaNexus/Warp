@@ -24,6 +24,7 @@ import dev.warp.protocol.ProtocolVersion;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 import com.google.gson.JsonParser;
@@ -118,8 +119,8 @@ class ComponentWriterGatesTest {
           j("{'clickEvent':{'action':'open_url','value':'javascript:x'},'text':'c'}"),
           json(Component.text("c").clickEvent(ClickEvent.openUrl("javascript:x")), V1_20_2));
       assertEquals(
-          j("{'clickEvent':{'action':'change_page','value':'0'},'text':'c'}"),
-          json(Component.text("c").clickEvent(ClickEvent.changePage(0)), V1_20_2));
+          j("{'clickEvent':{'action':'change_page','value':'1'},'text':'c'}"),
+          json(Component.text("c").clickEvent(ClickEvent.changePage(1)), V1_20_2));
       assertEquals(
           j("{'text':'c','click_event':{'action':'open_url','url':'https://a'}}"),
           json(Component.text("c").clickEvent(ClickEvent.openUrl("https://a")), V1_21_5));
@@ -258,7 +259,9 @@ class ComponentWriterGatesTest {
 
       BinaryTag tag = nbt(wide.build());
 
-      assertEquals(400, ((ListBinaryTag) ((CompoundBinaryTag) tag).get("extra")).size());
+      assertEquals(
+          400,
+          ((ListBinaryTag) Objects.requireNonNull(((CompoundBinaryTag) tag).get("extra"))).size());
     }
 
     @Test

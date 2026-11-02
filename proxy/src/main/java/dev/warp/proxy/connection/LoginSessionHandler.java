@@ -40,6 +40,7 @@ import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.login.SetCompression;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.PlayDisconnect;
+import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.proxy.auth.AuthenticationException;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
@@ -280,6 +281,11 @@ final class LoginSessionHandler implements SessionHandler {
     }
     if (!(packet instanceof LoginPacket loginPacket)) {
       if (state == LoginState.COMPLETE) {
+        if (packet instanceof ResourcePackResponse response && loggedIn != null) {
+          // A pack a plugin sent at PostLoginEvent, answered before the first backend is up.
+          loggedIn.resourcePacks().clientAnswered(response);
+          return;
+        }
         // Before 1.20.2, a play packet ahead of the first Join Game, which the client has no
         // reason to send: dropped. From 1.20.2 the player's join replaces this handler at once
         // (SwitchWaitSessionHandler), which keeps the client's brand and settings for its server.

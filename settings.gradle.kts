@@ -33,3 +33,7 @@ include("api")
 include("protocol")
 include("proxy")
 include("jni")
+
+// The plugin the end-to-end harness loads into Warp (e2e/run.sh), next to the harness.
+include("e2e-plugin")
+project(":e2e-plugin").projectDir = file("e2e/plugin")

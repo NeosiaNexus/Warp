@@ -115,10 +115,10 @@ class ServerLeftoversTest {
     @DisplayName("should remove the boss bars still shown")
     void removed() {
       UUID gone = UUID.randomUUID();
-      leftovers.track(new BossBar(BAR, BossBar.ADD));
-      leftovers.track(new BossBar(gone, BossBar.ADD));
-      leftovers.track(new BossBar(gone, BossBar.REMOVE));
-      leftovers.track(new BossBar(BAR, 2));
+      leftovers.track(new BossBar(BAR, new BossBar.Added()));
+      leftovers.track(new BossBar(gone, new BossBar.Added()));
+      leftovers.track(BossBar.remove(gone));
+      leftovers.track(new BossBar(BAR, new BossBar.UpdateProgress(0.5f)));
 
       List<PlayPacket> packets = leftovers.clear(ProtocolVersion.MINECRAFT_1_16_4);
 
@@ -128,7 +128,7 @@ class ServerLeftoversTest {
           packets.stream().filter(BossBar.class::isInstance).map(BossBar.class::cast).toList();
       assertEquals(1, removals.size(), "one bar left on screen");
       assertEquals(BAR, removals.getFirst().uuid());
-      assertEquals(BossBar.REMOVE, removals.getFirst().action());
+      assertEquals(new BossBar.Remove(), removals.getFirst().action());
     }
   }
 
@@ -177,7 +177,7 @@ class ServerLeftoversTest {
     @DisplayName("should forget what it cleared: the next server starts clean")
     void forgets() {
       leftovers.track(new PlayerInfo(PlayerInfo.ADD_PLAYER, List.of(ALICE)));
-      leftovers.track(new BossBar(BAR, BossBar.ADD));
+      leftovers.track(new BossBar(BAR, new BossBar.Added()));
       leftovers.clear(ProtocolVersion.MINECRAFT_1_12_2);
 
       List<PlayPacket> packets = leftovers.clear(ProtocolVersion.MINECRAFT_1_12_2);

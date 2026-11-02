@@ -27,8 +27,11 @@ import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatAcknowledgement;
 import dev.warp.protocol.packet.play.ChatCommand;
+import dev.warp.protocol.packet.play.ClearDialog;
 import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.DeclareCommands;
+import dev.warp.protocol.packet.play.DeleteChat;
+import dev.warp.protocol.packet.play.EntitySoundEffect;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
@@ -40,13 +43,17 @@ import dev.warp.protocol.packet.play.PlayPluginMessage;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
+import dev.warp.protocol.packet.play.ResourcePackPop;
+import dev.warp.protocol.packet.play.ResourcePackPush;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.Respawn;
 import dev.warp.protocol.packet.play.SetActionBarText;
 import dev.warp.protocol.packet.play.SetSubtitleText;
 import dev.warp.protocol.packet.play.SetTitleText;
 import dev.warp.protocol.packet.play.SetTitleTimes;
+import dev.warp.protocol.packet.play.SoundEffect;
 import dev.warp.protocol.packet.play.StartConfiguration;
+import dev.warp.protocol.packet.play.StopSound;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
@@ -120,7 +127,7 @@ final class ClientPlaySessionHandler implements SessionHandler {
       case ChatAcknowledgement acknowledgement -> forwardToBackend(acknowledgement);
       case LegacyChatMessage chatMessage -> handleLegacyChatMessage(chatMessage);
       case PlayClientSettings settings -> handleClientSettings(settings);
-      case ResourcePackResponse response -> forwardToBackend(response);
+      case ResourcePackResponse response -> player.resourcePacks().clientAnswered(response);
       case AcknowledgeConfiguration _ -> handleAcknowledgeConfiguration();
       case TabCompleteRequest request ->
           player.handleSuggestions(request, () -> forwardToBackend(request));
@@ -145,7 +152,14 @@ final class ClientPlaySessionHandler implements SessionHandler {
           SetTitleText _,
           SetSubtitleText _,
           SetTitleTimes _,
-          SetActionBarText _ -> {}
+          SetActionBarText _,
+          SoundEffect _,
+          EntitySoundEffect _,
+          StopSound _,
+          ResourcePackPush _,
+          ResourcePackPop _,
+          DeleteChat _,
+          ClearDialog _ -> {}
     }
   }
 

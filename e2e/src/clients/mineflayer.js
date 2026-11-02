@@ -163,6 +163,78 @@ export class TabList {
 }
 
 // ---------------------------------------------------------------------------
+// Boss bars and sounds
+// ---------------------------------------------------------------------------
+
+/**
+ * The boss bars on the client's screen, as the vanilla client keeps them: added and removed by UUID,
+ * kept across the Join Game of a switch before 1.20.2 and cleared when the client enters the
+ * configuration phase from 1.20.2 (`Gui#onDisconnected`). An update to a bar the client does not
+ * have is an error: the vanilla client fails it with a NullPointerException (Velocity #1529).
+ */
+export class BossBars {
+  /** @param {number} protocol the protocol the client speaks */
+  constructor(protocol) {
+    this.protocol = protocol;
+    this.bars = new Map(); // UUID → name as plain text
+    this.errors = [];
+    this.added = 0;
+  }
+
+  /** Applies a packet the client received: its minecraft-protocol name and parsed fields. */
+  apply(name, data) {
+    if (name === 'start_configuration') {
+      this.bars.clear();
+      return;
+    }
+    if (name !== 'boss_bar') return;
+    const uuid = data.entityUUID;
+    if (data.action === 0) {
+      this.bars.set(uuid, plainText(data.title));
+      this.added++;
+    } else if (data.action === 1) {
+      this.bars.delete(uuid);
+    } else if (!this.bars.has(uuid)) {
+      this.errors.push(`boss bar update (action ${data.action}) for ${uuid}, a bar the client does not have`);
+    } else if (data.action === 3) {
+      this.bars.set(uuid, plainText(data.title));
+    }
+  }
+
+  /** The names of the bars on screen. */
+  names() {
+    return [...this.bars.values()];
+  }
+}
+
+/** The text of a component, JSON text or NBT (1.20.3+), without its styles. */
+export function plainText(component) {
+  if (component === undefined || component === null) return '';
+  if (typeof component === 'string') {
+    try {
+      return plainText(JSON.parse(component));
+    } catch {
+      return component;
+    }
+  }
+  if (component.type !== undefined && component.value !== undefined) {
+    // NBT as minecraft-protocol reads it: a tag type and its value.
+    if (component.type === 'string') return component.value;
+    if (component.type === 'compound') return plainText(Object.fromEntries(Object.entries(component.value).map(([k, v]) => [k, v.type === 'list' ? v.value.value : v.value])));
+  }
+  const own = typeof component.text === 'string' ? component.text : '';
+  const extra = Array.isArray(component.extra) ? component.extra.map(plainText).join('') : '';
+  return own + extra;
+}
+
+/** The packets that play a sound, and the sound each names (a registry id when it is not named). */
+const SOUND_PACKETS = {
+  named_sound_effect: (data) => data.soundName,
+  sound_effect: (data) => data.sound?.data?.soundName ?? data.soundId ?? data.sound?.soundId,
+  entity_sound_effect: (data) => data.sound?.data?.soundName ?? data.soundEvent?.resource ?? data.soundId,
+};
+
+// ---------------------------------------------------------------------------
 // Bots
 // ---------------------------------------------------------------------------
 
@@ -313,6 +385,9 @@ class Bot {
     this.resourcePacks = [];
     this.listedAs = [];
     this.tabList = new TabList(protocol);
+    this.bossBars = new BossBars(protocol);
+    /** The sounds played to the bot: the packet and the sound it names. */
+    this.sounds = [];
     this.quitting = false;
     this.chatSession = false;
     this.closed = new Promise((resolve) => bot.once('end', resolve));
@@ -324,7 +399,9 @@ class Bot {
       else if (meta.name === 'player_chat' && data.signature) this.stats.signedChat++;
       else if (RESOURCE_PACK_PACKETS.has(meta.name)) this.resourcePacks.push({ url: data.url, hash: data.hash, id: data.uuid });
       else if (meta.name === 'player_info') this.listedAs.push(...listedUuids(data, username));
+      else if (SOUND_PACKETS[meta.name]) this.sounds.push({ packet: meta.name, sound: SOUND_PACKETS[meta.name](data) });
       this.tabList.apply(meta.name, data);
+      this.bossBars.apply(meta.name, data);
     });
     // From 1.19.3 a server announces a player's chat session to everyone, the player included,
     // once it has taken it (Player Info Update, initialize chat).
@@ -448,6 +525,7 @@ class Bot {
   healthy() {
     const { errors, kicked, ended } = this.stats;
     if (errors.length) throw new Error(`${this.username}: ${errors.slice(0, 3).join(' | ')}`);
+    if (this.bossBars.errors.length) throw new Error(`${this.username}: ${this.bossBars.errors.slice(0, 3).join(' | ')}`);
     if (kicked) throw new Error(`${this.username} kicked: ${kicked}`);
     if (ended) throw new Error(`${this.username} disconnected: ${ended}`);
   }

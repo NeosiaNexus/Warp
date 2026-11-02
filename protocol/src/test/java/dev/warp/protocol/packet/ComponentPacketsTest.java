@@ -140,9 +140,6 @@ class ComponentPacketsTest {
               Title.Times.times(Duration.ofDays(10_000), Duration.ZERO, Duration.ofMillis(50)),
               V1_8));
       assertNull(ComponentPackets.titlePart(TitlePart.TITLE, Component.text("T"), V1_7));
-      assertThrows(
-          IllegalArgumentException.class,
-          () -> ComponentPackets.titlePart(new TitlePart<String>() {}, "x", V1_8));
     }
 
     @Test

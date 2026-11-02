@@ -52,6 +52,7 @@ a closed port and which lets a single player in) and run the scenarios:
 | `chat` | Chat lines before and after each `/server` that Warp answers itself (list, unknown server, current server): the bot must not be kicked. From 1.20, online, the bot signs its chat, so the lobby checks every acknowledgement (see below) |
 | `player-chat` | Two players on the lobby, each listing the other: a chat line from one comes back to it and reaches the other, and so does a `/tell`, a command Warp does not own and only the backend can deliver |
 | `resource-pack` | Lobby's resource pack offer (URL, SHA-1, and its id from 1.20.3) reaches the player, then survival's after a switch; each pack downloads with the SHA-1 offered |
+| `audience` | A plugin of Warp's own (`e2e/plugin`) answers `/audience`: it shows a boss bar animated ten times a second for the whole run, plays a sound at a position and one following the player, and sends a pack of its own. The bot gets each as its version has them (no boss bar before 1.9, the sound following the player by its registry id from 1.14, checked against the id in Mojang's reports, by its name from 1.19.3, none before 1.14), the plugin hears the pack's statuses, and after a switch the bar is still on screen. The bot keeps boss bars as the vanilla client does (cleared in the configuration phase from 1.20.2): an update for a bar it does not have fails the run. From 1.20.3, the plugin's pack is not sent again and the lobby's own is removed after the switch |
 | `switching` | Six `/server` switches back and forth (configuration phase from 1.20.2, Join Game and Respawn before) |
 | `tab-list` | After a switch, the tab list lists none of the previous server's players: a witness stays on the lobby while another bot moves to survival. Each bot keeps the tab list as the vanilla client does (by name on 1.7, by UUID after, across a Join Game before 1.20.2), not as mineflayer does |
 | `profile-key` | 1.19 to 1.19.2 only: a bot with a chat signing key, as every client of a Microsoft account, joins (online, it signs the verify token instead of encrypting it), chats and switches. Online, Warp refuses a key Mojang did not sign, an expired one and, from 1.19.1, a key issued to another player; offline, it ignores the key and lets the first two in |
@@ -66,8 +67,14 @@ a closed port and which lets a single player in) and run the scenarios:
 A scenario a run cannot hold is skipped and says why: `forwarding` without forwarding or offline
 (Warp then forwards the UUID a backend derives itself, so nothing tells them apart), `switching`
 and the fallbacks in a `--direct` run, `resource-pack` before 1.8 (offers were a plugin message,
-without the SHA-1), `transfer` before 1.20.5 and through ViaProxy (Warp would see the bridge's
-handshake, not the bot's), `drain` through ViaProxy (no bridge leads to warp-drain). The features are in `features()` in `src/scenarios.js`.
+without the SHA-1), `audience` on 1.7 and on versions bridged through ViaProxy, and without the
+plugin (`--jar` without `--plugin`), `transfer` before 1.20.5 and through ViaProxy (Warp would see
+the bridge's handshake, not the bot's), `drain` through ViaProxy (no bridge leads to warp-drain).
+The features are in `features()` in `src/scenarios.js`.
+
+The audience probe plugin is the Gradle project `:e2e-plugin` (`e2e/plugin`). Without `--jar`, the
+harness builds it with Warp and copies it into each Warp's `plugins` directory; the pack it sends
+is a third one the harness serves, given to Warp as system properties.
 
 A run fails if a scenario fails, and also if:
 
@@ -327,3 +334,15 @@ can be edited by hand), and on the latest release every week, which flags a new 
 Before 1.21, `npm run packet-ids` writes `protocol/src/test/resources/dev/warp/protocol/packet/packet-ids.txt`
 from the pinned minecraft-data: the id of every packet at each protocol `ProtocolVersion` registers.
 Run it again after bumping minecraft-data; the test reports a table that misses a protocol.
+
+## Sound event ids
+
+From 1.14 to 1.19.2 a sound following an entity is its id in the client's sound event registry,
+which those clients build themselves. `npm run sound-events` runs the data generator of one server
+jar per protocol in that range, as `packet-reports` does (Java 17 for 1.17, which lists Java 16:
+Adoptium has no Java 16 runtime), reads the `minecraft:sound_event` registry of
+`reports/registries.json`, and writes the table Warp loads
+(`protocol/src/main/resources/dev/warp/protocol/packet/play/sound-events.txt`, the first list whole
+and each next one as its edits from the previous) and the samples `SoundEventIdsTest` and the
+`audience` scenario check it against (`sound-event-samples.txt` in the matching test resources: the
+count, a SHA-256 of every name in id order and a few ids per protocol). Neither is edited by hand.

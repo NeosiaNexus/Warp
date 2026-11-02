@@ -477,9 +477,9 @@ class ServerSwitchPacketsTest {
       Watched<BossBar> added = watch(BossBar.WATCH, version, "boss_bar_add");
       Watched<BossBar> removed = watch(BossBar.WATCH, version, "boss_bar_remove");
 
-      assertEquals(new BossBar(ALICE, BossBar.ADD), added.packet());
+      assertEquals(new BossBar(ALICE, new BossBar.Added()), added.packet());
       assertEquals(UUID_AND_ACTION, added.read(), "title, health, color, division, flags unread");
-      assertEquals(new BossBar(ALICE, BossBar.REMOVE), removed.packet());
+      assertEquals(BossBar.remove(ALICE), removed.packet());
       assertEquals(removed.length(), removed.read());
     }
 
@@ -502,15 +502,17 @@ class ServerSwitchPacketsTest {
       assertEquals(BossBar.remove(ALICE), decode(BossBar.CODEC, version, "boss_bar_remove"));
     }
 
-    @Test
-    @DisplayName("should refuse to write or read anything but a removal: other fields are not kept")
-    void onlyRemovals() {
-      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_12_2;
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("bossBarVersions")
+    @DisplayName(
+        "should read a server's addition and update whole, and write them back as they were")
+    void readAndWriteBack(ProtocolVersion version) {
+      BossBar added = decode(BossBar.CODEC, version, "boss_bar_add");
+      BossBar health = decode(BossBar.CODEC, version, "boss_bar_health");
 
-      assertThrows(
-          IllegalArgumentException.class,
-          () -> encode(BossBar.CODEC, new BossBar(ALICE, BossBar.ADD), version));
-      assertThrows(DecoderException.class, () -> decode(BossBar.CODEC, version, "boss_bar_health"));
+      assertEquals(new BossBar.UpdateProgress(0.5f), health.action());
+      assertArrayEquals(bytes(version, "boss_bar_add"), encode(BossBar.CODEC, added, version));
+      assertArrayEquals(bytes(version, "boss_bar_health"), encode(BossBar.CODEC, health, version));
     }
   }
 

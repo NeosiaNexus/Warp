@@ -173,6 +173,14 @@ describe('scenario features', () => {
     assert.equal(fromSurvival({ state: 'play', gameMode: LOBBY_MODE }), false, 'still on the lobby');
   });
 
+  it('runs the audience probe through Warp from 1.8, with the plugin, natively', () => {
+    assert.equal(features(47, { plugin: true }).audience, true);
+    assert.equal(features(769, { plugin: true, direct: true }).audience, 'no proxy in a control run');
+    assert.equal(features(769).audience, 'no audience probe plugin (--jar without --plugin)');
+    assert.notEqual(features(5, { plugin: true }).audience, true);
+    assert.equal(features(777, { plugin: true, bridged: true }).audience, 'ViaProxy translates what the bot receives');
+  });
+
   it('offers resource packs from 1.8, where they became a packet of their own', () => {
     assert.equal(features(47).resourcePack, true);
     assert.equal(features(5).resourcePack, 'no Resource Pack Send packet before 1.8');

@@ -1,7 +1,7 @@
 // A Warp instance under test: its own directory, generated warp.conf, private copy of the jar.
 import { randomUUID } from 'node:crypto';
 import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { ManagedProcess, run } from './proc.js';
 
@@ -50,6 +50,8 @@ export class Warp {
    * @param {Record<string, string|number|boolean>} [options.drain] keys of the `drain` section
    * @param {string} options.logDir
    * @param {string[]} [options.jvmArgs] JVM options after the defaults (the last -Xmx wins)
+   * @param {string[]} [options.plugins] plugin jars copied into Warp's plugins directory
+   * @param {Record<string, string>} [options.properties] system properties (for the plugins)
    * @param {{motd: string, maxPlayers?: number, playerLimit?: number}} [options.status] the
    *   `status` block (the message of the day in MiniMessage, the maximum shown) and `player-limit`,
    *   the limit enforced at login (none if left out; the server list then shows it as the maximum)
@@ -63,6 +65,10 @@ export class Warp {
     rmSync(this.dir, { recursive: true, force: true });
     mkdirSync(this.dir, { recursive: true });
     copyFileSync(this.jar, join(this.dir, 'warp.jar'));
+    if (this.plugins?.length) {
+      mkdirSync(join(this.dir, 'plugins'));
+      for (const plugin of this.plugins) copyFileSync(plugin, join(this.dir, 'plugins', basename(plugin)));
+    }
     writeFileSync(join(this.dir, 'warp.conf'), this.config());
     if (this.profileKeySigner) writeFileSync(join(this.dir, SIGNER_FILE), this.profileKeySigner);
   }
@@ -108,6 +114,7 @@ ${this.management ? managementSection(this.management) : ''}${this.drain ? drain
       // Every ByteBuf is tracked: a buffer the proxy forgets to release is reported as an ERROR.
       '-Dio.netty.leakDetection.level=paranoid',
       ...(this.jvmArgs ?? []),
+      ...Object.entries(this.properties ?? {}).map(([key, value]) => `-D${key}=${value}`),
       ...(this.online ? [`-Dmojang.sessionserver=${this.sessionServer}`] : []),
       ...(this.profileKeySigner ? [`-Dwarp.profilekeys.signer=${SIGNER_FILE}`] : []),
       '-jar',

@@ -497,16 +497,15 @@ class PacketRegistryTest {
           clientbound.lookup(
               ProtocolVersion.MINECRAFT_1_20_1,
               clientbound.packetId(ProtocolVersion.MINECRAFT_1_20_1, PlayerInfoRemove.class)));
-      for (var type :
-          List.of(BossBar.class, PlayerInfoUpdate.class, PlayerInfoRemove.class, Respawn.class)) {
+      for (var type : List.of(PlayerInfoUpdate.class, PlayerInfoRemove.class, Respawn.class)) {
         assertThrows(
             IllegalArgumentException.class,
             () -> clientbound.packetId(ProtocolVersion.MINECRAFT_1_20_2, type),
             type.getSimpleName());
       }
-      // The header, footer and titles are the proxy's own messages too: written in every
-      // version, never read.
-      for (var type : List.of(TabListHeaderFooter.class, ClearTitles.class)) {
+      // The header, footer, titles and boss bars are the proxy's own too: written in every
+      // version, and from 1.20.2 never read.
+      for (var type : List.of(TabListHeaderFooter.class, ClearTitles.class, BossBar.class)) {
         int id = clientbound.packetId(ProtocolVersion.MINECRAFT_1_20_2, type);
         assertNull(clientbound.lookup(ProtocolVersion.MINECRAFT_1_20_2, id), type.getSimpleName());
       }
