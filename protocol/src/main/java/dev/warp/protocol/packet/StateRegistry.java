@@ -70,6 +70,7 @@ import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatAcknowledgement;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.ClearTitles;
+import dev.warp.protocol.packet.play.DeclareCommands;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
@@ -661,6 +662,21 @@ public final class StateRegistry {
                     map(0x0F, MINECRAFT_1_19_4),
                     map(0x10, MINECRAFT_1_20_2),
                     map(0x0F, MINECRAFT_1_21_5))
+                // The command tree: forwarded untouched until the proxy has commands of its own
+                // to add, then decoded lazily (see dev.warp.protocol.command).
+                .registerEncodeOnly(
+                    DeclareCommands.class,
+                    DeclareCommands.CODEC,
+                    map(0x11, MINECRAFT_1_13),
+                    map(0x12, MINECRAFT_1_15),
+                    map(0x11, MINECRAFT_1_16),
+                    map(0x10, MINECRAFT_1_16_2),
+                    map(0x12, MINECRAFT_1_17),
+                    map(0x0F, MINECRAFT_1_19),
+                    map(0x0E, MINECRAFT_1_19_3),
+                    map(0x10, MINECRAFT_1_19_4),
+                    map(0x11, MINECRAFT_1_20_2),
+                    map(0x10, MINECRAFT_1_21_5))
                 .build());
   }
 }

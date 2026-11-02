@@ -55,6 +55,7 @@ import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatAcknowledgement;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.ClearTitles;
+import dev.warp.protocol.packet.play.DeclareCommands;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
@@ -200,7 +201,8 @@ class StateRegistryTest {
                 PLAY, CLIENTBOUND, StartConfiguration.class, "minecraft:start_configuration"),
             new PacketName(PLAY, CLIENTBOUND, Transfer.class, "minecraft:transfer"),
             new PacketName(
-                PLAY, CLIENTBOUND, TabCompleteResponse.class, "minecraft:command_suggestions"));
+                PLAY, CLIENTBOUND, TabCompleteResponse.class, "minecraft:command_suggestions"),
+            new PacketName(PLAY, CLIENTBOUND, DeclareCommands.class, "minecraft:commands"));
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("auditedProtocols")
@@ -373,6 +375,7 @@ class StateRegistryTest {
             new PacketName(PLAY, CLIENTBOUND, StartConfiguration.class, "start_configuration"),
             new PacketName(PLAY, CLIENTBOUND, Transfer.class, "transfer"),
             new PacketName(PLAY, CLIENTBOUND, TabCompleteResponse.class, "tab_complete"),
+            new PacketName(PLAY, CLIENTBOUND, DeclareCommands.class, "declare_commands"),
             new PacketName(PLAY, CLIENTBOUND, BossBar.class, "boss_bar"),
             new PacketName(PLAY, CLIENTBOUND, LegacyPlayerInfo.class, "player_info"),
             new PacketName(PLAY, CLIENTBOUND, PlayerInfo.class, "player_info"),

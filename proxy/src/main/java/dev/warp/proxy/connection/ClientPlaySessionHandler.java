@@ -27,6 +27,7 @@ import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatAcknowledgement;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.ClearTitles;
+import dev.warp.protocol.packet.play.DeclareCommands;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
@@ -138,7 +139,8 @@ final class ClientPlaySessionHandler implements SessionHandler {
           PlayerInfoRemove _,
           BossBar _,
           TabListHeaderFooter _,
-          ClearTitles _ -> {}
+          ClearTitles _,
+          DeclareCommands _ -> {}
     }
   }
 

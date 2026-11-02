@@ -24,6 +24,7 @@ import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatAcknowledgement;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.ClearTitles;
+import dev.warp.protocol.packet.play.DeclareCommands;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
@@ -127,6 +128,8 @@ final class BackendPlaySessionHandler implements SessionHandler {
       case BundleDelimiter delimiter -> handleBundleDelimiter(delimiter);
       case PlayPluginMessage pluginMessage -> handlePluginMessage(pluginMessage);
       case TabCompleteResponse response -> forwardToClient(response);
+      // Registered encode-only: forwarded untouched by handleBlind, never decoded yet.
+      case DeclareCommands commands -> forwardToClient(commands);
       // Watched before 1.20.2 only, to clear them from the client on a server switch. Their frame
       // follows, forwarded untouched by handleBlind.
       case LegacyPlayerInfo info -> track(info);
