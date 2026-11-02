@@ -81,6 +81,32 @@ async function proxyReportsServer(ctx, bot, expected) {
   const reply = await bot.command('server', /^Servers:/);
   const current = /\[(\w+)\]/.exec(reply)?.[1];
   if (current !== expected) throw new Error(`/server says ${current}, expected ${expected}`);
+  checkServerList(bot.componentOf(reply), expected, expected === 'lobby' ? 'survival' : 'lobby');
+}
+
+/**
+ * Checks the styles of Warp's answer to /server, a component it encodes for the bot's version (JSON,
+ * or NBT from 1.20.3): the current server in green, another one a link that runs /server <name>,
+ * with the click event of the version (`clickEvent` and its `value`, `click_event` and its
+ * `command` from 1.21.5).
+ */
+export function checkServerList(component, current, other) {
+  const nodes = [];
+  const walk = (node) => {
+    if (node === null || typeof node !== 'object') return;
+    nodes.push(node);
+    for (const child of [].concat(node.extra ?? [])) walk(child);
+  };
+  walk(component);
+  const text = (node) => node.text ?? node[''];
+  const here = nodes.find((n) => text(n) === `[${current}]`);
+  if (here?.color !== 'green') throw new Error(`/server: [${current}] is not green in ${JSON.stringify(component)}`);
+  const link = nodes.find((n) => text(n) === other);
+  const click = link?.clickEvent ?? link?.click_event;
+  const command = click?.value ?? click?.command;
+  if (click?.action !== 'run_command' || command !== `/server ${other}`) {
+    throw new Error(`/server: ${other} does not link to /server ${other} in ${JSON.stringify(component)}`);
+  }
 }
 
 async function joinWarp(ctx, username, target = ctx.warp, profileKeys = null) {
