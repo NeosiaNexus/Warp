@@ -43,6 +43,7 @@ import dev.warp.protocol.packet.login.SetCompression;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.proxy.antibot.AntiBotService;
+import dev.warp.proxy.antibot.AntiBotService.RoutineLine;
 import dev.warp.proxy.auth.AuthenticationException;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
@@ -747,7 +748,10 @@ final class LoginSessionHandler implements SessionHandler {
       logger.debug("Client disconnected during login: {} (state={})", username, state);
       return;
     }
-    logger.info("Client disconnected during login: {} (state={})", username, state);
+    if (loginContext.logging().connections()
+        && loginContext.antiBot().logs(RoutineLine.CONNECTION)) {
+      logger.info("Client disconnected during login: {} (state={})", username, state);
+    }
     // Logged in but not on a server yet: drop the backend it is joining.
     loggedIn.disconnect();
   }
@@ -988,7 +992,9 @@ final class LoginSessionHandler implements SessionHandler {
     }
 
     ConnectedPlayer joined = this.player;
-    if (joined != null && loginContext.logging().connections()) {
+    if (joined != null
+        && loginContext.logging().connections()
+        && loginContext.antiBot().logs(RoutineLine.CONNECTION)) {
       joined.log(logger, Level.INFO).log(
           "Player {} ({}) logged in from {}{}",
           profile.name(),

@@ -34,6 +34,7 @@ import dev.warp.api.event.antibot.AttackEndedEvent;
 import dev.warp.api.event.antibot.AttackStartedEvent;
 import dev.warp.api.event.antibot.LockdownChangedEvent;
 import dev.warp.proxy.config.AntiBotConfig;
+import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.limit.Blocklist;
 import dev.warp.proxy.limit.ClientLimits;
@@ -65,6 +66,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.LongSupplier;
 import java.util.function.UnaryOperator;
 
@@ -108,6 +110,7 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
   private final boolean onlineMode;
   private final ClientLimits limits;
   private final WarpEventBus events;
+  private final LoggingConfig logging;
   private final LongSupplier millisClock;
   private final IdentityKeys keys;
   private final @Nullable IdentityStore store;
@@ -119,6 +122,40 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
   private EnumMap<Refusal, Long> refusalsAtStart = new EnumMap<>(Refusal.class);
 
   private EnumMap<Refusal, Long> refusalsAtSummary = new EnumMap<>(Refusal.class);
+
+  /** The routine lines not written during attacks, by kind. */
+  private final EnumMap<RoutineLine, LongAdder> unlogged = new EnumMap<>(RoutineLine.class);
+
+  /** Routine lines not written at the start of the attack and at its last summary. */
+  private EnumMap<RoutineLine, Long> unloggedAtStart = new EnumMap<>(RoutineLine.class);
+
+  private EnumMap<RoutineLine, Long> unloggedAtSummary = new EnumMap<>(RoutineLine.class);
+
+  /**
+   * A kind of line the {@code logging} section writes one of per event, which an attack would turn
+   * into a flood of lines.
+   */
+  public enum RoutineLine {
+    /** A server list ping ({@code logging.pings}). */
+    PING("server list pings"),
+    /** A player logging in, moving between servers or leaving ({@code logging.connections}). */
+    CONNECTION("player connection events");
+
+    private final String description;
+
+    RoutineLine(String description) {
+      this.description = description;
+    }
+
+    /**
+     * Returns how the summaries name these lines.
+     *
+     * @return e.g. {@code server list pings}
+     */
+    public String description() {
+      return description;
+    }
+  }
 
   /**
    * What the anti-bot knows of a login, from its name and address.
@@ -153,6 +190,7 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
    * @param onlineMode whether the proxy authenticates players
    * @param limits the proxy's limits, whose refusals and connections the detector counts
    * @param events the event bus
+   * @param logging the {@code logging} section, whose routine lines attacks hold back
    * @param directory the proxy's working directory
    * @param env reads an environment variable, {@code null} when unset
    * @param millisClock the wall clock
@@ -163,6 +201,7 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
       boolean onlineMode,
       ClientLimits limits,
       WarpEventBus events,
+      LoggingConfig logging,
       Path directory,
       UnaryOperator<@Nullable String> env,
       LongSupplier millisClock)
@@ -171,7 +210,11 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
     this.onlineMode = onlineMode;
     this.limits = limits;
     this.events = events;
+    this.logging = logging;
     this.millisClock = millisClock;
+    for (RoutineLine line : RoutineLine.values()) {
+      unlogged.put(line, new LongAdder());
+    }
     AntiBotConfig.Verified verified = config.verified();
     this.detector =
         new AttackDetector(
@@ -232,6 +275,7 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
           false,
           limits,
           events,
+          LoggingConfig.DEFAULTS,
           Path.of("."),
           _ -> null,
           System::currentTimeMillis);
@@ -649,6 +693,40 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
     }
   }
 
+  /**
+   * Decides whether a routine line that its {@code logging} switch lets through is written: always
+   * out of an attack; during one never, so that a flood of pings or logins never becomes a flood of
+   * log lines. The lines held back are counted in the attack's summaries instead. Thread-safe.
+   *
+   * @param line the kind of line, which the caller's switch already allowed
+   * @return whether to write it
+   */
+  public boolean logs(RoutineLine line) {
+    if (detector.level() != AttackLevel.ATTACK) {
+      return true;
+    }
+    unloggedCounter(line).increment();
+    return false;
+  }
+
+  /**
+   * Returns how many routine lines of a kind attacks held back since the proxy started.
+   *
+   * @param line the kind of line
+   * @return the count
+   */
+  public long unlogged(RoutineLine line) {
+    return unloggedCounter(line).sum();
+  }
+
+  private LongAdder unloggedCounter(RoutineLine line) {
+    LongAdder counter = unlogged.get(line);
+    if (counter == null) {
+      throw new AssertionError("every kind of line has a counter: " + line);
+    }
+    return counter;
+  }
+
   // ---------------------------------------------------------------------------
   // Attack log
   // ---------------------------------------------------------------------------
@@ -660,6 +738,8 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
     public void started(AttackReport attack) {
       refusalsAtStart = refusalTotals();
       refusalsAtSummary = refusalsAtStart;
+      unloggedAtStart = unloggedTotals();
+      unloggedAtSummary = unloggedAtStart;
       logger.warn(
           "Bot attack detected: {} at {}{} (threshold {}). Unknown identities are no longer learned"
               + " from joins; one summary every {}. To let only known players in: /warp antibot"
@@ -669,6 +749,12 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
           attack.trigger() == Signal.PENDING_CONNECTIONS ? "" : "/s",
           attack.threshold(),
           format(config.attack().reportInterval()));
+      String heldBack = heldBack();
+      if (!heldBack.isEmpty()) {
+        logger.info(
+            "Until the attack is over, {} are not logged one by one: the summaries count them",
+            heldBack);
+      }
       var _ = events.fire(new AttackStartedEvent(attack));
     }
 
@@ -677,10 +763,13 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
       EnumMap<Refusal, Long> totals = refusalTotals();
       String refused = refusedSince(refusalsAtSummary, totals);
       refusalsAtSummary = totals;
+      EnumMap<RoutineLine, Long> unloggedNow = unloggedTotals();
+      String notLogged = unloggedSince(unloggedAtSummary, unloggedNow);
+      unloggedAtSummary = unloggedNow;
       logger.info(
           "Attack in progress for {}: {} unknown logins/s (peak {}), {} failed authentications/s"
               + " (peak {}), {} connections/s, {} not logged in; refused since the last summary:"
-              + " {}; top sources: {}",
+              + " {}; top sources: {}{}",
           format(attack.duration(now(attack))),
           now.lastSecond().get(Signal.UNKNOWN_LOGINS),
           attack.peaks().get(Signal.UNKNOWN_LOGINS),
@@ -689,16 +778,18 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
           now.lastSecond().get(Signal.CONNECTIONS),
           now.lastSecond().get(Signal.PENDING_CONNECTIONS),
           refused,
-          sources(attack));
+          sources(attack),
+          notLogged);
     }
 
     @Override
     public void ended(AttackReport attack) {
       String refused = refusedSince(refusalsAtStart, refusalTotals());
+      String notLogged = unloggedSince(unloggedAtStart, unloggedTotals());
       logger.info(
           "Attack over after {}: {} unknown logins (peak {}/s), {} failed authentications (peak"
               + " {}/s), {} connections (peak {}/s), at most {} not logged in; refused: {}; top"
-              + " sources: {}",
+              + " sources: {}{}",
           format(attack.duration(now(attack))),
           attack.totals().get(Signal.UNKNOWN_LOGINS),
           attack.peaks().get(Signal.UNKNOWN_LOGINS),
@@ -708,7 +799,8 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
           attack.peaks().get(Signal.CONNECTIONS),
           attack.peaks().get(Signal.PENDING_CONNECTIONS),
           refused,
-          sources(attack));
+          sources(attack),
+          notLogged);
       var _ = events.fire(new AttackEndedEvent(attack));
     }
 
@@ -716,6 +808,41 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
       Instant ended = attack.endedAt();
       return ended != null ? ended : Instant.ofEpochMilli(millisClock.getAsLong());
     }
+  }
+
+  /** The routine lines the {@code logging} switches turn on, which attacks hold back. */
+  private String heldBack() {
+    List<String> kinds = new ArrayList<>();
+    if (logging.pings()) {
+      kinds.add(RoutineLine.PING.description());
+    }
+    if (logging.connections()) {
+      kinds.add(RoutineLine.CONNECTION.description());
+    }
+    return String.join(" and ", kinds);
+  }
+
+  private EnumMap<RoutineLine, Long> unloggedTotals() {
+    EnumMap<RoutineLine, Long> totals = new EnumMap<>(RoutineLine.class);
+    for (RoutineLine line : RoutineLine.values()) {
+      totals.put(line, unlogged(line));
+    }
+    return totals;
+  }
+
+  /**
+   * Describes the routine lines held back between two counts, such as {@code "; not logged one by
+   * one: 1200 server list pings"}, or nothing if none was.
+   */
+  private static String unloggedSince(Map<RoutineLine, Long> before, Map<RoutineLine, Long> after) {
+    List<String> parts = new ArrayList<>();
+    for (RoutineLine line : RoutineLine.values()) {
+      long delta = after.getOrDefault(line, 0L) - before.getOrDefault(line, 0L);
+      if (delta > 0) {
+        parts.add(delta + " " + line.description());
+      }
+    }
+    return parts.isEmpty() ? "" : "; not logged one by one: " + String.join(", ", parts);
   }
 
   private EnumMap<Refusal, Long> refusalTotals() {

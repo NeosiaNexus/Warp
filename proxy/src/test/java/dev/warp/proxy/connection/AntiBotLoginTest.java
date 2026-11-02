@@ -30,6 +30,9 @@ import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.config.AntiBotConfig;
 import dev.warp.proxy.config.LimitsConfig;
+import dev.warp.proxy.config.LogFormat;
+import dev.warp.proxy.config.LoggingConfig;
+import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.limit.Refusal;
@@ -44,7 +47,9 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
+import java.util.function.LongSupplier;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -65,6 +70,8 @@ class AntiBotLoginTest {
   @TempDir private Path directory;
   private ClientLimits limits = ClientLimits.unlimited();
   private @Nullable AntiBotService antiBot;
+  private LoggingConfig logging = LoggingConfig.DEFAULTS;
+  private LongSupplier clock = System::currentTimeMillis;
 
   AntiBotLoginTest() {}
 
@@ -176,6 +183,65 @@ class AntiBotLoginTest {
     }
   }
 
+  @Nested
+  @DisplayName("routine lines")
+  class RoutineLines {
+
+    @Test
+    @DisplayName(
+        "should hold back ping and connection lines during an attack and count them in its"
+            + " summaries")
+    void heldBackDuringAttack() throws Exception {
+      AtomicLong now = new AtomicLong(1_000_000);
+      clock = now::get;
+      logging = new LoggingConfig(LogFormat.TEXT, true, true, false);
+      start(AntiBotConfig.DEFAULTS.exempt());
+      try (LogCapture logins = new LogCapture(LoginSessionHandler.class);
+          LogCapture pings = new LogCapture(StatusSessionHandler.class);
+          LogCapture attacks = new LogCapture(AntiBotService.class)) {
+        // Calm: the switches apply.
+        assertEquals(0x02, packetId(login("Steve", "198.51.100.1")));
+        ping("198.51.100.2");
+        assertTrue(logged(logins, "Player Steve"));
+        assertTrue(logged(pings, "Server list ping from"));
+
+        attackWaves();
+        assertTrue(
+            logged(
+                attacks,
+                "Until the attack is over, server list pings and player connection events are not"
+                    + " logged one by one"));
+        int loginLines = logins.events().size();
+        int pingLines = pings.events().size();
+        assertEquals(0x02, packetId(login("Late", "198.51.100.3")));
+        for (int i = 0; i < 3; i++) {
+          ping("198.51.100.4");
+        }
+
+        assertEquals(loginLines, logins.events().size(), "no login line during the attack");
+        assertEquals(pingLines, pings.events().size(), "no ping line during the attack");
+        assertEquals(1, bots().unlogged(AntiBotService.RoutineLine.CONNECTION));
+        assertEquals(3, bots().unlogged(AntiBotService.RoutineLine.PING));
+        String counted = "not logged one by one: 3 server list pings, 1 player connection events";
+        now.addAndGet(AntiBotConfig.DEFAULTS.attack().reportInterval().toMillis());
+        bots().tick();
+        assertTrue(logged(attacks, "Attack in progress"), "a summary");
+        assertTrue(logged(attacks, counted), "counted in the summary");
+
+        // Calm again: the end of the attack counts them all, and the lines come back.
+        for (int second = 0; second <= 60 && bots().level() == AttackLevel.ATTACK; second++) {
+          bots().tick();
+        }
+        assertTrue(
+            attacks.events().stream()
+                .map(event -> event.getMessage().getFormattedMessage())
+                .anyMatch(line -> line.startsWith("Attack over") && line.contains(counted)));
+        assertEquals(0x02, packetId(login("After", "198.51.100.5")));
+        assertTrue(logged(logins, "Player After"));
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
@@ -204,9 +270,10 @@ class AntiBotLoginTest {
             false,
             limits,
             new WarpEventBus(Runnable::run),
+            logging,
             directory,
             _ -> null,
-            System::currentTimeMillis);
+            clock);
   }
 
   private AntiBotService bots() {
@@ -214,14 +281,48 @@ class AntiBotLoginTest {
   }
 
   private EmbeddedChannel login(String name, String address) {
+    EmbeddedChannel channel = connect(address);
+    channel.writeInbound(handshake(2), loginStart(name));
+    channel.runPendingTasks();
+    return channel;
+  }
+
+  /** Sends a server list ping's handshake and request from {@code address}. */
+  private void ping(String address) {
+    EmbeddedChannel channel = connect(address);
+    ByteBuf request = Unpooled.buffer();
+    VarInt.write(request, 0x00);
+    channel.writeInbound(handshake(1), frame(request));
+    channel.runPendingTasks();
+    channel.finishAndReleaseAll();
+  }
+
+  private EmbeddedChannel connect(String address) {
     ServerLoginContext context =
-        TestLoginContexts.withAntiBot(false, new MojangSessionService(), limits, bots());
+        TestLoginContexts.with(
+            TestLoginContexts.withAntiBot(false, new MojangSessionService(), limits, bots()),
+            TimeoutsConfig.DEFAULTS,
+            logging);
     EmbeddedChannel channel =
         new ProxyProtocolTest.PeerChannel(new InetSocketAddress(address(address), 40000));
     channel.pipeline().addLast(new ServerChannelInitializer(context));
-    channel.writeInbound(handshake(), loginStart(name));
-    channel.runPendingTasks();
     return channel;
+  }
+
+  /** Three seconds of 20 unknown logins each, from 20 addresses: an attack. */
+  private void attackWaves() {
+    for (int second = 0; second < 3; second++) {
+      for (int i = 0; i < 20; i++) {
+        login("bot_" + second + "_" + i, "203.0.113." + (i + 1));
+      }
+      bots().tick();
+    }
+    assertEquals(AttackLevel.ATTACK, bots().level());
+  }
+
+  private static boolean logged(LogCapture log, String fragment) {
+    return log.events().stream()
+        .anyMatch(event -> event.getMessage().getFormattedMessage().contains(fragment));
   }
 
   private static int packetId(EmbeddedChannel channel) {
@@ -235,13 +336,13 @@ class AntiBotLoginTest {
     }
   }
 
-  private static ByteBuf handshake() {
+  private static ByteBuf handshake(int nextState) {
     ByteBuf body = Unpooled.buffer();
     VarInt.write(body, 0x00);
     VarInt.write(body, VERSION.protocol());
     McString.write(body, "play.warp.dev");
     body.writeShort(25565);
-    VarInt.write(body, 2);
+    VarInt.write(body, nextState);
     return frame(body);
   }
 

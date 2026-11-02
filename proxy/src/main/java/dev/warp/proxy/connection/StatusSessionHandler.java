@@ -25,6 +25,7 @@ import dev.warp.protocol.packet.status.PongResponse;
 import dev.warp.protocol.packet.status.StatusPacket;
 import dev.warp.protocol.packet.status.StatusRequest;
 import dev.warp.protocol.packet.status.StatusResponse;
+import dev.warp.proxy.antibot.AntiBotService.RoutineLine;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.event.proxy.ProxyPingEventImpl;
 import dev.warp.proxy.limit.Refusal;
@@ -142,7 +143,7 @@ final class StatusSessionHandler implements SessionHandler {
       return; // A duplicate: ignored, as vanilla does.
     }
     state = State.ANSWERING;
-    if (context.logging().pings()) {
+    if (context.logging().pings() && context.antiBot().logs(RoutineLine.PING)) {
       logger.info(
           "Server list ping from {} (protocol {})", connection.remoteAddress(), clientProtocol);
     }

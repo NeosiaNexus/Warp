@@ -322,7 +322,18 @@ final class TestLoginContexts {
     ServerLoginContext context = org.mockito.Mockito.mock(ServerLoginContext.class);
     org.mockito.Mockito.when(context.logging()).thenReturn(LoggingConfig.DEFAULTS);
     org.mockito.Mockito.when(context.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
+    org.mockito.Mockito.when(context.antiBot()).thenReturn(calmAntiBot());
     return context;
+  }
+
+  /**
+   * Returns an anti-bot that never sees an attack, for mocked contexts: routine lines are logged as
+   * configured.
+   *
+   * @return the anti-bot
+   */
+  static AntiBotService calmAntiBot() {
+    return AntiBotService.disabled(ClientLimits.unlimited(), EVENTS);
   }
 
   /**

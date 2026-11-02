@@ -28,6 +28,7 @@ import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
 import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.config.AntiBotConfig;
+import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.config.ManagementConfig;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.limit.ClientLimits;
@@ -584,6 +585,7 @@ class ManagementServerTest {
           false,
           ClientLimits.unlimited(),
           new WarpEventBus(Runnable::run),
+          LoggingConfig.DEFAULTS,
           Path.of("."),
           _ -> null,
           System::currentTimeMillis);

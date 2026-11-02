@@ -610,6 +610,7 @@ public final class WarpServer implements Warp {
               config.onlineMode(),
               limits,
               events,
+              config.logging(),
               directory,
               System::getenv,
               System::currentTimeMillis);

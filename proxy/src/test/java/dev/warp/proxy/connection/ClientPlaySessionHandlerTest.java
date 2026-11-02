@@ -457,6 +457,7 @@ class ClientPlaySessionHandlerTest {
     when(loginContext.logging()).thenReturn(LoggingConfig.DEFAULTS);
 
     when(loginContext.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
+    when(loginContext.antiBot()).thenReturn(TestLoginContexts.calmAntiBot());
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
     when(loginContext.channels()).thenReturn(new ChannelRegistry());

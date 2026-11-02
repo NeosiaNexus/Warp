@@ -1229,11 +1229,12 @@ public final class WarpConfig {
           # The log files (logs/warp.log) stay in text.
           format = text
 
-          # Players logging in, leaving, and moving between servers.
+          # Players logging in, leaving, and moving between servers. During a bot attack (anti-bot)
+          # neither these nor pings are logged one by one: the attack's summaries count them.
           connections = true
 
-          # Each server list ping, with its address. Off by default: refreshing a server list, or a
-          # ping flood, writes a line per ping.
+          # Each server list ping, with its address. Off by default: refreshing a server list writes
+          # a line per ping.
           pings = false
 
           # Each command a player sends, with its arguments. Off by default: commands carry passwords
