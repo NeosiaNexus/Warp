@@ -114,6 +114,9 @@ final class LoginSessionHandler implements SessionHandler {
   static final String UNEXPECTED_QUERY_RESPONSE =
       "multiplayer.disconnect.unexpected_query_response";
 
+  /** Why a player beyond the player limit ({@code status.max-players}) is refused. */
+  static final String SERVER_FULL = "The server is full.";
+
   // ---------------------------------------------------------------------------
   // State machine
   // ---------------------------------------------------------------------------
@@ -525,7 +528,7 @@ final class LoginSessionHandler implements SessionHandler {
 
   /**
    * Registers the player, settling a login of an account already connected, then asks the login
-   * handlers whether it may join.
+   * handlers whether it may join: they start from a denial when the proxy is full.
    */
   private void registerPlayer(GameProfile profile) {
     // Register before the client hears its login succeeded, so that a refused duplicate still gets
@@ -540,22 +543,33 @@ final class LoginSessionHandler implements SessionHandler {
             cookies);
     joining.setOnlineMode(onlineMode);
     boolean kickExisting = loginContext.duplicateLoginPolicy().kicksExisting(onlineMode);
-    if (loginContext.playerRegistry().register(joining, kickExisting)
-        == PlayerRegistry.Registration.REFUSED) {
+    if (!(loginContext.playerRegistry().register(joining, kickExisting)
+        instanceof PlayerRegistry.Registration.Registered(int place))) {
       disconnect("You are already connected to this proxy.");
       return;
     }
     this.player = joining;
 
+    // The place is taken atomically at registration: of two logins racing for the last place,
+    // exactly one gets it. A session replacing a duplicate takes the place it frees.
+    LoginEvent.Result proposed =
+        loginContext.serverList().settings().isFull(place)
+            ? new LoginEvent.Denied(Component.text(SERVER_FULL))
+            : new LoginEvent.Allowed();
+
     WarpEventBus events = loginContext.events();
     if (!events.hasHandlers(LoginEventImpl.class)) {
+      if (proposed instanceof LoginEvent.Denied) {
+        refuseFull(joining);
+        return;
+      }
       succeedLogin(profile);
       return;
     }
     // On the account's lane: an old session kicked above has its disconnect handled first.
     var _ =
         events
-            .fire(new LoginEventImpl(joining.api()), profile.uuid())
+            .fire(new LoginEventImpl(joining.api(), proposed), profile.uuid())
             .whenCompleteAsync(
                 (event, _) -> {
                   if (!connection.channel().isActive()) {
@@ -572,6 +586,13 @@ final class LoginSessionHandler implements SessionHandler {
                   succeedLogin(profile);
                 },
                 connection.channel().eventLoop());
+  }
+
+  /** Refuses a player beyond the player limit, which no login handler let in. */
+  private void refuseFull(ConnectedPlayer joining) {
+    this.player = null;
+    loginContext.playerRegistry().unregister(joining);
+    disconnect(SERVER_FULL);
   }
 
   /** Tells the client its login succeeded. */

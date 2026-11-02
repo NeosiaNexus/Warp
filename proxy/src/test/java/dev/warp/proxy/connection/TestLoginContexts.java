@@ -27,6 +27,8 @@ import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
+import dev.warp.proxy.status.ServerList;
+import dev.warp.proxy.status.StatusSettings;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -133,6 +135,26 @@ final class TestLoginContexts {
   }
 
   /**
+   * An offline-mode context whose events go to {@code events}, with the server list entry and
+   * player limit of {@code status}.
+   *
+   * @param events the event bus
+   * @param status the status settings
+   * @return the context
+   */
+  static ServerLoginContext offline(WarpEventBus events, StatusSettings status) {
+    return context(
+        false,
+        -1,
+        new MojangSessionService(),
+        ProfileKeys.mojang(),
+        DuplicateLoginPolicy.AUTO,
+        events,
+        false,
+        status);
+  }
+
+  /**
    * Returns {@link #offline()} in online mode: players authenticate with {@code sessionService}.
    *
    * @param sessionService the session service, usually a mock
@@ -170,6 +192,27 @@ final class TestLoginContexts {
       DuplicateLoginPolicy policy,
       WarpEventBus events,
       boolean acceptsTransfers) {
+    return context(
+        onlineMode,
+        compressionThreshold,
+        sessionService,
+        profileKeys,
+        policy,
+        events,
+        acceptsTransfers,
+        StatusSettings.defaults());
+  }
+
+  private static ServerLoginContext context(
+      boolean onlineMode,
+      int compressionThreshold,
+      MojangSessionService sessionService,
+      ProfileKeys profileKeys,
+      DuplicateLoginPolicy policy,
+      WarpEventBus events,
+      boolean acceptsTransfers,
+      StatusSettings status) {
+    PlayerRegistry players = new PlayerRegistry();
     ServerRegistry registry =
         new ServerRegistry(
             Map.of("lobby", new InetSocketAddress(InetAddress.getLoopbackAddress(), 1)),
@@ -185,7 +228,8 @@ final class TestLoginContexts {
         profileKeys,
         new PlaySession(),
         registry,
-        new PlayerRegistry(),
+        players,
+        new ServerList(status, players),
         policy,
         events,
         new ChannelRegistry(),

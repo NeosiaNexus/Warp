@@ -20,7 +20,7 @@ import { Netem } from './netem.js';
 import { startPackServer } from './packs.js';
 import { killAll, run, sleep } from './proc.js';
 import { signerPem } from './profile-keys.js';
-import { SCENARIOS, features, startKeepAlive } from './scenarios.js';
+import { ALT_MAX_PLAYERS, SCENARIOS, STATUS_MOTD, features, startKeepAlive } from './scenarios.js';
 import { SOAK, soakJvmArgs, soakMarkdown } from './soak.js';
 import { variantStatus, versionNotes, versionStatus } from './status.js';
 import { E2E_DIR, FORWARDING_MODES, findEntry, loadMatrix, resolveVariant } from './versions.js';
@@ -275,6 +275,7 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, forward
           fallbackOrder: ['lobby', 'survival'],
           // The transfer scenario comes back through this one, and is refused by warp-alt.
           acceptsTransfers: true,
+          status: { motd: STATUS_MOTD },
           // The JVM resolves the recording against its own directory: the path must be absolute.
           jvmArgs: opts.soak === undefined ? [] : soakJvmArgs(resolve(logDir, `warp-${variant.name}.jfr`)),
         }),
@@ -286,6 +287,8 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, forward
           port: ports.warpAlt,
           servers: { unreachable: ports.closed, survival: ports.survival },
           fallbackOrder: ['unreachable', 'survival'],
+          // One player at most: player-limit fills it, and checks that the next one is refused.
+          status: { motd: STATUS_MOTD, maxPlayers: ALT_MAX_PLAYERS },
         }),
       ];
   const targets = opts.direct ? { warp: ports.lobby } : { warp: ports.warp, warpAlt: ports.warpAlt };

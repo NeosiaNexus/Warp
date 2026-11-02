@@ -16,6 +16,10 @@
  */
 package dev.warp.proxy.config;
 
+import dev.warp.api.server.Favicon;
+import dev.warp.proxy.status.ServerList;
+import dev.warp.proxy.status.StatusSettings;
+
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -27,11 +31,17 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.minimessage.MiniMessage;
+import net.kyori.adventure.text.minimessage.ParsingException;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.spongepowered.configurate.CommentedConfigurationNode;
+import org.spongepowered.configurate.ConfigurationNode;
 import org.spongepowered.configurate.hocon.HoconConfigurationLoader;
 
 /**
@@ -65,6 +75,19 @@ public final class WarpConfig {
   private static final boolean DEFAULT_COMPRESSION_PASSTHROUGH = true;
   private static final String DEFAULT_DUPLICATE_LOGIN = "auto";
   private static final boolean DEFAULT_ACCEPTS_TRANSFERS = false;
+  private static final String DEFAULT_FAVICON = "server-icon.png";
+
+  /** How many lines of the message of the day clients show. */
+  private static final int MOTD_LINES = 2;
+
+  /**
+   * The largest favicon file read: far more than a 64x64 PNG needs, and than a status answer holds
+   * once encoded, so that a wrong path cannot load a huge file.
+   */
+  private static final long MAX_FAVICON_BYTES = 1024 * 1024;
+
+  /** A legacy color code as BungeeCord configurations write them, such as {@code &a}. */
+  private static final Pattern LEGACY_CODE = Pattern.compile("[&\\u00a7][0-9a-fk-orA-FK-OR]");
 
   /** Characters used for auto-generated forwarding secret. */
   private static final String SECRET_CHARS =
@@ -90,6 +113,7 @@ public final class WarpConfig {
   private final boolean acceptsTransfers;
   private final ManagementConfig management;
   private final DrainConfig drain;
+  private final StatusSettings status;
 
   // ---------------------------------------------------------------------------
   // Constructor (private — use load())
@@ -109,7 +133,8 @@ public final class WarpConfig {
       boolean compressionPassthrough,
       boolean acceptsTransfers,
       ManagementConfig management,
-      DrainConfig drain) {
+      DrainConfig drain,
+      StatusSettings status) {
     this.bind = bind;
     this.onlineMode = onlineMode;
     this.servers = Map.copyOf(servers);
@@ -124,6 +149,7 @@ public final class WarpConfig {
     this.acceptsTransfers = acceptsTransfers;
     this.management = management;
     this.drain = drain;
+    this.status = status;
   }
 
   // ---------------------------------------------------------------------------
@@ -189,6 +215,7 @@ public final class WarpConfig {
 
     ManagementConfig management = ManagementConfig.parse(root, directory, System::getenv);
     DrainConfig drain = DrainConfig.parse(root);
+    StatusSettings status = parseStatus(root.node("status"), directory);
 
     // ---------------------------------------------------------------------------
     // Validate
@@ -218,7 +245,8 @@ public final class WarpConfig {
             compressionPassthrough,
             acceptsTransfers,
             management,
-            drain);
+            drain,
+            status);
 
     logConfig(config);
     return config;
@@ -362,6 +390,15 @@ public final class WarpConfig {
     return drain;
   }
 
+  /**
+   * Returns the server list entry and the player limit, from the {@code status} block.
+   *
+   * @return the status settings
+   */
+  public StatusSettings status() {
+    return status;
+  }
+
   // ---------------------------------------------------------------------------
   // Internals
   // ---------------------------------------------------------------------------
@@ -493,6 +530,186 @@ public final class WarpConfig {
     return result;
   }
 
+  // ---------------------------------------------------------------------------
+  // Status
+  // ---------------------------------------------------------------------------
+
+  private static StatusSettings parseStatus(CommentedConfigurationNode node, Path directory)
+      throws ConfigurationException {
+    StatusSettings defaults = StatusSettings.defaults();
+    // Without a status block every key is virtual and takes its default: server-icon.png is still
+    // loaded when it exists, as vanilla, Velocity and BungeeCord load it.
+    if (!node.virtual() && !node.isMap()) {
+      throw new ConfigurationException(
+          "status must be a block, for example status { motd = \"A Warp Proxy\" }");
+    }
+    int maxPlayers = intValue(node.node("max-players"), defaults.maxPlayers());
+    if (maxPlayers < StatusSettings.NO_LIMIT) {
+      throw new ConfigurationException(
+          "status.max-players must be 0 or more, or -1 for no limit; got " + maxPlayers);
+    }
+    int sampleSize = intValue(node.node("sample-size"), defaults.sampleSize());
+    if (sampleSize < 0) {
+      throw new ConfigurationException(
+          "status.sample-size must be 0 (no sample) or more; got " + sampleSize);
+    }
+    StatusSettings settings =
+        new StatusSettings(
+            parseMotd(node.node("motd")),
+            parseFavicon(node.node("favicon"), directory),
+            maxPlayers,
+            booleanValue(node.node("show-player-count"), defaults.showPlayerCount()),
+            sampleSize,
+            stringValue(node.node("version-name"), defaults.versionName()));
+    try {
+      ServerList.checkFits(settings);
+    } catch (IllegalArgumentException e) {
+      throw new ConfigurationException("status: " + e.getMessage(), e);
+    }
+    return settings;
+  }
+
+  /** Reads the message of the day: one MiniMessage string, or a list of them, one per line. */
+  private static Component parseMotd(ConfigurationNode node) throws ConfigurationException {
+    String source;
+    if (node.virtual()) {
+      source = StatusSettings.DEFAULT_MOTD;
+    } else if (node.isList()) {
+      List<String> lines = new ArrayList<>();
+      for (ConfigurationNode line : node.childrenList()) {
+        String text = line.isMap() || line.isList() ? null : line.getString();
+        if (text == null) {
+          throw new ConfigurationException(
+              "status.motd must be a string, or a list of strings (one per line), in MiniMessage");
+        }
+        lines.add(text);
+      }
+      source = String.join("\n", lines);
+    } else {
+      String text = node.isMap() ? null : node.getString();
+      if (text == null) {
+        throw new ConfigurationException(
+            "status.motd must be a string, or a list of strings (one per line), in MiniMessage");
+      }
+      source = text;
+    }
+    Component motd;
+    try {
+      motd = MiniMessage.miniMessage().deserialize(source);
+    } catch (ParsingException e) {
+      throw new ConfigurationException(
+          "status.motd is not valid MiniMessage: " + e.getMessage(), e);
+    }
+    if (LEGACY_CODE.matcher(source).find()) {
+      logger.warn(
+          "status.motd contains legacy color codes (such as &a), shown as typed: use MiniMessage"
+              + " tags instead, such as <green>");
+    }
+    long lines = PlainTextComponentSerializer.plainText().serialize(motd).lines().count();
+    if (lines > MOTD_LINES) {
+      logger.warn("status.motd has {} lines: clients only show the first {}", lines, MOTD_LINES);
+    }
+    return motd;
+  }
+
+  /**
+   * Reads the server icon: a 64x64 PNG file, relative to the proxy directory. The default file may
+   * be missing (no icon), a file configured otherwise may not.
+   */
+  private static @Nullable Favicon parseFavicon(ConfigurationNode node, Path directory)
+      throws ConfigurationException {
+    String name = stringValue(node, DEFAULT_FAVICON);
+    if (name.isBlank()) {
+      return null;
+    }
+    Path file = directory.resolve(name);
+    if (!Files.isRegularFile(file)) {
+      if (name.equals(DEFAULT_FAVICON)) {
+        return null;
+      }
+      throw new ConfigurationException(
+          "status.favicon: no file at " + file.toAbsolutePath().normalize());
+    }
+    byte[] png;
+    try {
+      long size = Files.size(file);
+      if (size > MAX_FAVICON_BYTES) {
+        throw new ConfigurationException(
+            "status.favicon: "
+                + file
+                + " is "
+                + size
+                + " bytes, far more than a 64x64 PNG needs and a status answer holds");
+      }
+      png = Files.readAllBytes(file);
+    } catch (IOException e) {
+      throw new ConfigurationException("status.favicon: cannot read " + file, e);
+    }
+    try {
+      return Favicon.fromPng(png);
+    } catch (IllegalArgumentException e) {
+      throw new ConfigurationException("status.favicon: " + file + ": " + e.getMessage(), e);
+    }
+  }
+
+  private static int intValue(ConfigurationNode node, int fallback) throws ConfigurationException {
+    if (node.virtual()) {
+      return fallback;
+    }
+    Object raw = node.raw();
+    if (raw instanceof Number number && number.doubleValue() == number.intValue()) {
+      return number.intValue();
+    }
+    if (raw instanceof String text) {
+      try {
+        return Integer.parseInt(text.trim());
+      } catch (NumberFormatException e) {
+        // Reported below.
+      }
+    }
+    throw new ConfigurationException(path(node) + " must be a whole number, got '" + raw + "'");
+  }
+
+  private static boolean booleanValue(ConfigurationNode node, boolean fallback)
+      throws ConfigurationException {
+    if (node.virtual()) {
+      return fallback;
+    }
+    Object raw = node.raw();
+    if (raw instanceof Boolean value) {
+      return value;
+    }
+    if (raw instanceof String text
+        && (text.equalsIgnoreCase("true") || text.equalsIgnoreCase("false"))) {
+      return Boolean.parseBoolean(text);
+    }
+    throw new ConfigurationException(path(node) + " must be true or false, got '" + raw + "'");
+  }
+
+  private static String stringValue(ConfigurationNode node, String fallback)
+      throws ConfigurationException {
+    if (node.virtual()) {
+      return fallback;
+    }
+    String value = node.isMap() || node.isList() ? null : node.getString();
+    if (value == null) {
+      throw new ConfigurationException(path(node) + " must be a string");
+    }
+    return value;
+  }
+
+  /** The dotted path of a node, such as {@code status.max-players}, for error messages. */
+  private static String path(ConfigurationNode node) {
+    StringBuilder path = new StringBuilder();
+    for (Object key : node.path()) {
+      if (!path.isEmpty()) {
+        path.append('.');
+      }
+      path.append(key);
+    }
+    return path.toString();
+  }
+
   private static DuplicateLoginPolicy parseDuplicateLoginPolicy(String value)
       throws ConfigurationException {
     try {
@@ -617,6 +834,38 @@ public final class WarpConfig {
           secret-file = "forwarding.secret"
         }
 
+        # The proxy's entry in the server list, and its player limit.
+        status {
+          # The message of the day, in MiniMessage
+          # (https://docs.papermc.io/adventure/minimessage/format/): colors such as <aqua> or
+          # <#38bdf8>, <bold>, <gradient:#38bdf8:#a78bfa>text</gradient>... Clients show two lines:
+          # write a list of strings, one per line, or use <newline>. Before 1.16, clients see the
+          # closest of the 16 named colors.
+          motd = "<#38bdf8>A Warp Proxy"
+
+          # A 64x64 PNG image shown next to the entry, relative to the proxy directory. Without
+          # this default file, no icon; set "" to ignore it.
+          favicon = "server-icon.png"
+
+          # The most players the proxy lets in at once, also shown as the maximum. Players beyond
+          # it are refused with "The server is full.", unless a plugin lets them in (LoginEvent).
+          # -1 for no limit: the server list then shows one more than the players online.
+          max-players = 500
+
+          # Show how many players are online. Off, clients show ??? instead of the counts.
+          show-player-count = true
+
+          # How many names of players online are listed when hovering the counts, drawn at random
+          # every 5 seconds. Players who turned off "Allow Server Listings" (1.18+) are listed as
+          # Anonymous Player. 0 for none.
+          sample-size = 12
+
+          # The version shown in red, in place of the counts, to clients whose version Warp does
+          # not support. Defaults to the versions Warp supports: "{default-version-name}".
+          # version-name = "{default-version-name}"
+        }
+
+
         # Packet compression settings (applied after login).
         compression {
           # Packets >= this size (bytes) are compressed. Set to -1 to disable.
@@ -683,7 +932,8 @@ public final class WarpConfig {
           # Shown to the players the drain disconnects and to the logins it refuses.
           message = "This proxy is restarting. Please reconnect."
         }
-        """;
+        """
+            .replace("{default-version-name}", StatusSettings.defaultVersionName());
 
     try {
       Files.createDirectories(path.getParent());
@@ -718,5 +968,13 @@ public final class WarpConfig {
         config.compressionThreshold,
         config.compressionLevel,
         config.compressionPassthrough);
+    StatusSettings status = config.status;
+    Favicon favicon = status.favicon();
+    logger.info(
+        "  status: max-players={}, show-player-count={}, sample-size={}, favicon={}",
+        status.maxPlayers() == StatusSettings.NO_LIMIT ? "none" : status.maxPlayers(),
+        status.showPlayerCount(),
+        status.sampleSize(),
+        favicon == null ? "none" : favicon.uri().length() + " characters");
   }
 }

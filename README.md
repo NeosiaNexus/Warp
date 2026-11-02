@@ -191,7 +191,16 @@ compression {
   threshold = 256
   passthrough = true
 }
+
+status {
+  motd = ["<#38bdf8>A Warp Proxy", "<gray>Two lines at most"] # MiniMessage
+  favicon = "server-icon.png"                                # a 64x64 PNG
+  max-players = 500                                          # enforced at login; -1 for no limit
+}
 ```
+
+`max-players` is a real limit, not only what the server list shows: a player beyond it is refused
+with "The server is full.", unless a plugin lets it in from `LoginEvent`.
 
 On each backend, set `online-mode=false` in `server.properties` and keep
 `network-compression-threshold` equal to Warp's threshold (256). For Velocity forwarding, enable

@@ -17,6 +17,7 @@
 package dev.warp.proxy.connection;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -166,7 +167,8 @@ class DrainPlayersTest {
             new InetSocketAddress(InetAddress.getLoopbackAddress(), 50_000 + clients.size()),
             context,
             new ClientCookies(connection, version, warpSide.eventLoop()));
-    assertEquals(PlayerRegistry.Registration.REGISTERED, registry.register(player, false));
+    assertInstanceOf(
+        PlayerRegistry.Registration.Registered.class, registry.register(player, false));
     connection.setSessionHandler(new ClientPlaySessionHandler(player));
     Client client = new Client(player, warpSide);
     clients.add(client);

@@ -64,6 +64,7 @@ import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.config.DuplicateLoginPolicy;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.status.StatusSettings;
 
 import java.math.BigInteger;
 import java.net.InetAddress;
@@ -1181,6 +1182,180 @@ class LoginSessionHandlerTest {
       MinecraftConnection connection = channel.pipeline().get(MinecraftConnection.class);
       assertNotNull(connection);
       return assertInstanceOf(LoginSessionHandler.class, connection.sessionHandler());
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Player limit
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("player limit (status.max-players)")
+  class PlayerLimit {
+
+    private static final ProtocolVersion VERSION = ProtocolVersion.MINECRAFT_1_21_4;
+
+    private final WarpEventBus bus = new WarpEventBus(Runnable::run);
+    private final EventBus events = new PluginEventBus(bus, "test", null, s -> {});
+
+    @AfterEach
+    void closeBus() {
+      bus.close();
+    }
+
+    @Test
+    @DisplayName("should refuse a player beyond the limit, telling it the server is full")
+    void full() {
+      ServerLoginContext context = TestLoginContexts.offline(bus, limit(1));
+      fill(context, 1);
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
+        assertArrayEquals(jsonString("{\"text\":\"The server is full.\"}"), reason);
+        assertClosed(channel);
+        assertEquals(1, context.playerRegistry().count());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should let players in up to the limit")
+    void belowLimit() {
+      ServerLoginContext context = TestLoginContexts.offline(bus, limit(2));
+      fill(context, 1);
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+        assertEquals(2, context.playerRegistry().count());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should propose a denial to login handlers, which can let a player in")
+    void handlerLetsIn() {
+      List<LoginEvent.Result> proposed = new ArrayList<>();
+      events.subscribe(
+          LoginEvent.class,
+          event -> {
+            proposed.add(event.result());
+            event.setResult(new LoginEvent.Allowed());
+          });
+      ServerLoginContext context = TestLoginContexts.offline(bus, limit(1));
+      fill(context, 1);
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+        assertEquals(
+            List.of(new LoginEvent.Denied(Component.text("The server is full."))), proposed);
+        assertEquals(2, context.playerRegistry().count());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should refuse a full proxy's player when the handlers keep the denial")
+    void handlerKeepsDenial() {
+      events.subscribe(LoginEvent.class, event -> {});
+      ServerLoginContext context = TestLoginContexts.offline(bus, limit(1));
+      fill(context, 1);
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
+        assertArrayEquals(
+            jsonString(ComponentCodec.json(Component.text("The server is full."), VERSION)),
+            reason);
+        assertEquals(1, context.playerRegistry().count());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should propose to let players in to handlers when the proxy has room")
+    void handlerSeesAllowed() {
+      List<LoginEvent.Result> proposed = new ArrayList<>();
+      events.subscribe(LoginEvent.class, event -> proposed.add(event.result()));
+      ServerLoginContext context = TestLoginContexts.offline(bus, limit(1));
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+        assertEquals(List.of(new LoginEvent.Allowed()), proposed);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should never fill with a limit of -1")
+    void noLimit() {
+      ServerLoginContext context = TestLoginContexts.offline(bus, limit(StatusSettings.NO_LIMIT));
+      fill(context, 3);
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should refuse everyone with a limit of 0, a maintenance mode plugins can open")
+    void zeroLimit() {
+      ServerLoginContext context = TestLoginContexts.offline(bus, limit(0));
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
+        assertArrayEquals(jsonString("{\"text\":\"The server is full.\"}"), reason);
+        assertEquals(0, context.playerRegistry().count());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    private StatusSettings limit(int maxPlayers) {
+      StatusSettings defaults = StatusSettings.defaults();
+      return new StatusSettings(
+          defaults.motd(),
+          null,
+          maxPlayers,
+          defaults.showPlayerCount(),
+          defaults.sampleSize(),
+          defaults.versionName());
+    }
+
+    /** Registers {@code count} players that are already connected. */
+    private void fill(ServerLoginContext context, int count) {
+      for (int i = 0; i < count; i++) {
+        ConnectedPlayer player = mock(ConnectedPlayer.class);
+        when(player.uuid()).thenReturn(UUID.randomUUID());
+        when(player.username()).thenReturn("Player" + i);
+        context.playerRegistry().register(player, false);
+      }
     }
   }
 

@@ -29,6 +29,12 @@ import net.kyori.adventure.text.Component;
  * <p>A denied login never starts a session: no {@link PostLoginEvent} and no {@link
  * DisconnectEvent} follow.
  *
+ * <p>When the proxy is full (as many players as {@code status.max-players} in {@code warp.conf},
+ * not counting this one), the result starts as {@link Denied} with the reason "The server is full."
+ * rather than {@link Allowed}: a handler lets a player in anyway, such as a staff member or a
+ * subscriber, by setting {@link Allowed}. The player then counts like any other, and the proxy
+ * stays full for the next ones. A limit of {@code -1} never fills.
+ *
  * <p>Implemented by the proxy; plugins must not implement it.
  */
 public interface LoginEvent extends ResultedEvent<LoginEvent.Result> {
@@ -40,7 +46,10 @@ public interface LoginEvent extends ResultedEvent<LoginEvent.Result> {
    */
   Player player();
 
-  /** Whether the login goes on. The default is {@link Allowed}. */
+  /**
+   * Whether the login goes on. The default is {@link Allowed}, or {@link Denied} when the proxy is
+   * full.
+   */
   sealed interface Result {}
 
   /** Let the player in. */

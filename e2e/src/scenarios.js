@@ -27,6 +27,19 @@ export const TRANSFER_PROTOCOL = 766;
 const TRANSFERS_DISABLED = 'multiplayer.disconnect.transfers_disabled';
 
 /**
+ * The message of the day both Warp instances show (`status.motd`, MiniMessage), and its text: a
+ * gradient, so that clients before 1.16 get it downsampled to named colors.
+ */
+export const STATUS_MOTD = '<gradient:#38bdf8:#a78bfa>warp-e2e</gradient> <gray>status';
+export const STATUS_MOTD_TEXT = 'warp-e2e status';
+
+/** The player limit of the main Warp: its default. */
+export const WARP_MAX_PLAYERS = 500;
+
+/** The player limit of warp-alt, which `player-limit` fills. */
+export const ALT_MAX_PLAYERS = 1;
+
+/**
  * What a run offers the scenarios that require it: `true`, or why the run lacks it, which the
  * skipped scenario reports. `proxy` and `forwarding` depend on the run, the others on the protocol.
  * @param {number} protocol
@@ -146,23 +159,43 @@ const token = () => randomBytes(4).toString('hex');
 // Scenarios
 // ---------------------------------------------------------------------------
 
+/** The text of a chat component as a status answer carries it: a string, an object or an array. */
+export function plainText(component) {
+  if (typeof component === 'string') return component;
+  if (Array.isArray(component)) return component.map(plainText).join('');
+  if (component === null || typeof component !== 'object') return '';
+  return `${component.text ?? ''}${(component.extra ?? []).map(plainText).join('')}`;
+}
+
 /**
  * Checks a server list ping answer: Warp's name (any name in a --direct run), and the protocol the
- * bot speaks, without which a vanilla client lists the server as incompatible.
+ * bot speaks, without which a vanilla client lists the server as incompatible. With `motd` and
+ * `maxPlayers`, also the configured message of the day (its text, whatever the colors became for
+ * the client's version) and player limit, and a player count.
  */
-export function checkStatus(response, { direct, protocol }) {
+export function checkStatus(response, { direct, protocol, motd = null, maxPlayers = null }) {
   const name = response?.version?.name ?? '';
   const advertised = response?.version?.protocol;
   if (!direct && !name.startsWith('Warp')) throw new Error(`unexpected status response: ${JSON.stringify(response)}`);
   if (advertised !== protocol) {
     throw new Error(`advertised protocol ${advertised} to a client of protocol ${protocol}, which lists the server as incompatible`);
   }
-  return `answered as "${name}" (protocol ${advertised}) in ${response.latency} ms`;
+  const players = response?.players;
+  if (!direct && motd !== null) {
+    const text = plainText(response?.description);
+    if (!text.includes(motd)) throw new Error(`description "${text}" instead of the configured "${motd}": ${JSON.stringify(response?.description)}`);
+  }
+  if (!direct && maxPlayers !== null) {
+    if (players?.max !== maxPlayers) throw new Error(`players ${JSON.stringify(players)} instead of a maximum of ${maxPlayers}`);
+    if (!Number.isInteger(players?.online)) throw new Error(`no player count: ${JSON.stringify(players)}`);
+  }
+  const counts = players ? `, ${players.online}/${players.max} players` : '';
+  return `answered as "${name}" (protocol ${advertised})${counts} in ${response.latency} ms`;
 }
 
 async function status(ctx) {
   const response = await ctx.client.ping({ host: '127.0.0.1', port: ctx.warp.port });
-  return checkStatus(response, { direct: ctx.direct, protocol: ctx.client.protocol });
+  return checkStatus(response, { direct: ctx.direct, protocol: ctx.client.protocol, motd: STATUS_MOTD_TEXT, maxPlayers: WARP_MAX_PLAYERS });
 }
 
 async function login(ctx) {
@@ -481,6 +514,7 @@ async function crowd(ctx) {
     await sleep(15_000);
     for (const bot of bots) bot.healthy();
     let detail = `${count} bots for 15 s`;
+    if (!ctx.direct) detail += `, ${await checkCrowdCount(ctx, count)}`;
     if (has(ctx, 'switching')) {
       // Half of them switch server at the same moment, unless the server cannot log them in at once.
       const switchers = bots.slice(0, Math.ceil(count / 2));
@@ -502,6 +536,57 @@ async function crowd(ctx) {
     return `${detail}; ${packets} packets / ${chunks} chunks parsed`;
   } finally {
     for (const bot of bots) bot.quit();
+  }
+}
+
+/**
+ * Checks that the server list counts the crowd (and the players of other scenarios still online)
+ * and lists a sample of them, as Warp's default sample size allows.
+ */
+async function checkCrowdCount(ctx, count) {
+  const response = await ctx.client.ping({ host: '127.0.0.1', port: ctx.warp.port });
+  const players = response?.players;
+  if (!Number.isInteger(players?.online) || players.online < count) {
+    throw new Error(`the server list counts ${JSON.stringify(players)} with ${count} bots online`);
+  }
+  const sample = players.sample ?? [];
+  if (sample.length === 0 || sample.length > 12) throw new Error(`a sample of ${sample.length} players with ${players.online} online`);
+  return `the server list counts ${players.online} online and lists ${sample.length}`;
+}
+
+/** Waits until a Warp instance counts no player, so that a scenario starts with it empty. */
+async function waitForEmpty(ctx, port, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const response = await ctx.client.ping({ host: '127.0.0.1', port });
+    if (response?.players?.online === 0) return;
+    if (Date.now() > deadline) throw new Error(`still ${JSON.stringify(response?.players)} after ${timeoutMs / 1000} s`);
+    await sleep(250);
+  }
+}
+
+async function playerLimit(ctx) {
+  // warp-alt lets one player in (status.max-players = 1); the next one is refused at login.
+  await waitForEmpty(ctx, ctx.warpAlt.port);
+  const first = await joinWarp(ctx, 'e2e_limit_in', ctx.warpAlt);
+  try {
+    const status = await ctx.client.ping({ host: '127.0.0.1', port: ctx.warpAlt.port });
+    if (status?.players?.online !== 1 || status?.players?.max !== ALT_MAX_PLAYERS) {
+      throw new Error(`warp-alt answers ${JSON.stringify(status?.players)} with one player in, for a limit of ${ALT_MAX_PLAYERS}`);
+    }
+    const refused = await joinWarp(ctx, 'e2e_limit_out', ctx.warpAlt).then(
+      (bot) => {
+        bot.quit();
+        return null;
+      },
+      (e) => e,
+    );
+    if (refused === null) throw new Error(`a second player got in past max-players = ${ALT_MAX_PLAYERS}`);
+    if (!/The server is full\./.test(refused.message)) throw new Error(`the second player was refused for another reason: ${refused.message}`);
+    first.healthy();
+    return `one player in (the server list shows 1/${ALT_MAX_PLAYERS}), the next refused: "The server is full."`;
+  } finally {
+    first.quit();
   }
 }
 
@@ -877,4 +962,5 @@ export const SCENARIOS = [
   { name: 'switch-refused', run: switchRefused, requires: 'switching' },
   { name: 'transfer', run: transfer, requires: 'transfers' },
   { name: 'drain', run: drain, requires: 'drain' },
+  { name: 'player-limit', run: playerLimit, requires: 'proxy' },
 ];

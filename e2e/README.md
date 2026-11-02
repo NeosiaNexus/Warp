@@ -40,11 +40,11 @@ which the harness never uses (bots log in offline) but the dependency review rej
 For each version: boot two backends (`lobby` in creative mode, `survival` in adventure mode, so
 bots can tell them apart on any version, each offering a resource pack of its own that the harness
 serves), then for each variant boot Warp twice (a normal instance, and one whose default server is
-a closed port) and run the scenarios:
+a closed port and which lets a single player in) and run the scenarios:
 
 | Scenario | Checks |
 |---|---|
-| `status` | Server list ping through Warp, advertising the protocol the bot speaks (else a client lists Warp as incompatible) |
+| `status` | Server list ping through Warp, advertising the protocol the bot speaks (else a client lists Warp as incompatible), with the message of the day the harness configures (`status.motd`, a gradient that clients before 1.16 get as named colors: checked by its text) and Warp's default player limit, 500 |
 | `login` | Join, receive chunks, land on the lobby; `/server` answers |
 | `forwarding` | Online forwarding variants only: lobby, then survival after a switch, list the player under the UUID Warp authenticated (the mock Mojang gives `e2e_forwarded` one of its own), not the one an offline-mode server derives from the name |
 | `keepalive` | One bot stays connected through the whole run (at least 65 s, past Warp's first keep-alive time-out check) |
@@ -55,12 +55,13 @@ a closed port) and run the scenarios:
 | `switching` | Six `/server` switches back and forth (configuration phase from 1.20.2, Join Game and Respawn before) |
 | `tab-list` | After a switch, the tab list lists none of the previous server's players: a witness stays on the lobby while another bot moves to survival. Each bot keeps the tab list as the vanilla client does (by name on 1.7, by UUID after, across a Join Game before 1.20.2), not as mineflayer does |
 | `profile-key` | 1.19 to 1.19.2 only: a bot with a chat signing key, as every client of a Microsoft account, joins (online, it signs the verify token instead of encrypting it), chats and switches. Online, Warp refuses a key Mojang did not sign, an expired one and, from 1.19.1, a key issued to another player; offline, it ignores the key and lets the first two in |
-| `crowd` | Ten bots at once, then half of them switch server at the same moment (50 ms apart on a server with the `concurrentLogins` quirk) while the others stay on the lobby; those that switched must list none of those left behind |
+| `crowd` | Ten bots at once, which the server list must count, listing a sample of them; then half of them switch server at the same moment (50 ms apart on a server with the `concurrentLogins` quirk) while the others stay on the lobby; those that switched must list none of those left behind |
 | `fallback-unreachable` | Default server down: the player lands on the next one |
 | `fallback-rejected` | Lobby refuses the login (whitelist): the player lands on survival |
 | `switch-refused` | Survival refuses a `/server survival` (whitelist): the player stays on the lobby, told why, never disconnected |
 | `transfer` | From 1.20.5, bots speaking the version natively: the lobby sends the player away with its own Transfer packet (`/transfer` to Warp's address), which reaches it through Warp exactly as sent; the player comes back with a transfer handshake (intent 3), which Warp lets in onto the lobby (`accepts-transfers` on). warp-alt, where it is off, refuses one with vanilla's `multiplayer.disconnect.transfers_disabled` |
 | `drain` | A Warp of its own, warp-drain, with its management server and HAProxy agent check, drains towards warp. From 1.20.5, by SIGTERM (`drain.on-sigterm`, as under Kubernetes): `/readyz` answers 503 and the agent `drain` at once, the player gets a Transfer packet to warp and comes back there by transfer, and warp-drain, empty, exits with 0. Before 1.20.5, by `POST /drain?wait=true` (a wrong token gets 401): the player, whose client cannot be transferred, is kept, never kicked; once it leaves, the request answers `drained` and warp-drain exits with 0 |
+| `player-limit` | warp-alt lets one player in (`status.max-players = 1`): once a bot is in, the server list shows 1/1 and the next bot is refused at login with "The server is full." |
 
 A scenario a run cannot hold is skipped and says why: `forwarding` without forwarding or offline
 (Warp then forwards the UUID a backend derives itself, so nothing tells them apart), `switching`
