@@ -25,6 +25,7 @@ import dev.warp.api.event.player.PostLoginEvent;
 import dev.warp.api.event.player.ServerConnectedEvent;
 import dev.warp.api.event.player.ServerPostConnectEvent;
 import dev.warp.api.event.player.ServerPreConnectEvent;
+import dev.warp.api.messaging.ChannelIdentifier;
 import dev.warp.api.messaging.Messaging;
 import dev.warp.api.messaging.PluginMessageEvent;
 import dev.warp.api.player.ConnectionResult;
@@ -66,6 +67,7 @@ import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.event.player.KickedFromServerEventImpl;
 import dev.warp.proxy.event.player.PlayerChooseInitialServerEventImpl;
 import dev.warp.proxy.event.player.ServerPreConnectEventImpl;
+import dev.warp.proxy.messaging.BungeeCordChannel;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.messaging.PluginMessageEventImpl;
 import dev.warp.proxy.server.BackendServer;
@@ -471,6 +473,8 @@ public final class ConnectedPlayer {
     this.currentServer = next;
     if (next != null) {
       notify(new ServerPostConnectEvent(api, next, previous));
+      // Forwards that waited for a player to carry them to this server go now.
+      loginContext.channels().bungeeCord().arrived(this, next);
     }
   }
 
@@ -725,7 +729,7 @@ public final class ConnectedPlayer {
    * @param tell whether the player is told when nothing happens (a command it typed)
    * @return completed with the outcome
    */
-  CompletableFuture<ConnectionResult> requestConnection(BackendServer target, boolean tell) {
+  public CompletableFuture<ConnectionResult> requestConnection(BackendServer target, boolean tell) {
     CompletableFuture<ConnectionResult> result = new CompletableFuture<>();
     onEventLoop(
         () -> {
@@ -2613,8 +2617,11 @@ public final class ConnectedPlayer {
   // ---------------------------------------------------------------------------
 
   /**
-   * Hands a plugin message on a channel a plugin owns to {@link PluginMessageEvent}. Runs on the
-   * client event loop.
+   * Hands a plugin message on a channel a plugin owns to {@link PluginMessageEvent}, and a
+   * backend's message on the BungeeCord channel to the proxy's answer (through the event first,
+   * when a plugin listens). A client's message on the BungeeCord channel is dropped, unless a
+   * plugin registered the channel for players: only backends speak it, and a client must not reach
+   * a backend's plugins under the proxy's name. Runs on the client event loop.
    *
    * @param message the message
    * @param fromBackend the backend that sent it, or {@code null} if the client did
@@ -2622,43 +2629,92 @@ public final class ConnectedPlayer {
    */
   boolean interceptPluginMessage(
       PlayPluginMessage message, @Nullable MinecraftConnection fromBackend) {
-    ChannelRegistry.Registration registration = loginContext.channels().lookup(message.channel());
+    ChannelRegistry channels = loginContext.channels();
+    String name = message.channel();
+    ChannelRegistry.Registration registration = channels.lookup(name);
+    boolean bungeeCordChannel = BungeeCordChannel.isChannel(name);
+    BungeeCordChannel bungeeCord = channels.bungeeCord();
     if (registration == null) {
-      return false;
+      if (!bungeeCordChannel) {
+        return false;
+      }
+      if (fromBackend == null) {
+        logger.debug("Dropped a message of {} on {}: only backends speak it", username, name);
+        return true;
+      }
+      if (!bungeeCord.enabled()) {
+        return false;
+      }
     }
     Messaging.Origin origin =
         fromBackend == null ? Messaging.Origin.PLAYER : Messaging.Origin.SERVER;
-    if (!registration.accepts(origin)) {
+    if (registration != null && !registration.accepts(origin)) {
       logger.debug(
           "Dropped a message on {} from the {} side of {}: plugin {} does not accept it",
-          message.channel(),
+          name,
           origin,
           username,
           registration.owner());
       return true;
     }
+    BackendServer server = null;
     PluginMessageEvent.Source source;
     if (fromBackend == null) {
       source = new PluginMessageEvent.FromPlayer(api);
     } else {
-      BackendServer server = serverOf(fromBackend);
+      server = serverOf(fromBackend);
       if (server == null) {
         return true; // a backend the player already left
       }
       source = new PluginMessageEvent.FromServer(new WarpServerConnection(this, server));
     }
-    var event = new PluginMessageEventImpl(registration.channel(), source, api, message.data());
+    WarpEventBus events = loginContext.events();
+    if (registration == null
+        && server != null
+        && fromBackend != null
+        && !events.hasHandlers(PluginMessageEventImpl.class)) {
+      // The BungeeCord channel, which no plugin watches: the proxy answers at once.
+      bungeeCord.handle(this, server, fromBackend, message.data());
+      return true;
+    }
+    ChannelIdentifier channel =
+        registration != null ? registration.channel() : BungeeCordChannel.identifier(name);
+    PluginMessageEvent.Result initial =
+        registration != null ? new PluginMessageEvent.Handled() : new PluginMessageEvent.Pass();
+    var event = new PluginMessageEventImpl(channel, source, api, message.data(), initial);
+    BackendServer sender = server;
     var _ =
-        loginContext
-            .events()
+        events
             .fire(event, uuid)
             .whenComplete(
-                (done, _) -> {
-                  if (done.result() instanceof PluginMessageEvent.Forward) {
-                    onEventLoop(() -> relay(message, fromBackend));
-                  }
-                });
+                (done, _) ->
+                    onEventLoop(() -> afterPluginMessageEvent(done, message, fromBackend, sender)));
     return true;
+  }
+
+  /** Does what {@link PluginMessageEvent}'s handlers decided. Client event loop. */
+  private void afterPluginMessageEvent(
+      PluginMessageEventImpl done,
+      PlayPluginMessage message,
+      @Nullable MinecraftConnection fromBackend,
+      @Nullable BackendServer sender) {
+    switch (done.result()) {
+      case PluginMessageEvent.Handled() -> {}
+      case PluginMessageEvent.Forward() -> relay(message, fromBackend);
+      case PluginMessageEvent.Pass() -> {
+        if (!BungeeCordChannel.isChannel(message.channel())) {
+          relay(message, fromBackend);
+        } else if (fromBackend != null && sender != null) {
+          BungeeCordChannel bungeeCord = loginContext.channels().bungeeCord();
+          if (bungeeCord.enabled()) {
+            bungeeCord.handle(this, sender, fromBackend, message.data());
+          } else {
+            relay(message, fromBackend);
+          }
+        }
+        // A client's message on the BungeeCord channel is dropped, as when no plugin sees it.
+      }
+    }
   }
 
   private void relay(PlayPluginMessage message, @Nullable MinecraftConnection fromBackend) {
@@ -2746,6 +2802,50 @@ public final class ConnectedPlayer {
           }
         });
     return true;
+  }
+
+  /**
+   * Sends a plugin message over one of this player's backend connections, if it is still open and
+   * in PLAY, such as the answer to a message that came over it. Thread-safe.
+   *
+   * @param backend the backend connection
+   * @param channel the channel's wire name
+   * @param data the payload, not copied: the caller hands it over
+   * @return {@code false} if the connection is closed
+   */
+  public boolean sendPlayPluginMessage(MinecraftConnection backend, String channel, byte[] data) {
+    if (!backend.channel().isActive()) {
+      return false;
+    }
+    onEventLoop(
+        () -> {
+          if (backend.channel().isActive() && backend.encoder().state() == ProtocolState.PLAY) {
+            backend.writeAndFlush(new PlayPluginMessage(channel, data));
+          } else {
+            logger.debug("Dropped a plugin message to {}'s server: it left PLAY", username);
+          }
+        });
+    return true;
+  }
+
+  /**
+   * Sends a plugin message to a server through this player's connection, if the player plays there
+   * and its connection is in PLAY. Thread-safe.
+   *
+   * @param server the server
+   * @param channel the channel's wire name
+   * @param data the payload, not copied: the caller hands it over
+   * @return {@code false} if the player does not play on that server right now
+   */
+  public boolean sendPlayPluginMessageToServer(BackendServer server, String channel, byte[] data) {
+    BackendConnection backend = backendConnection;
+    if (currentServer != server
+        || backend == null
+        || !backend.isActive()
+        || backend.connection().encoder().state() != ProtocolState.PLAY) {
+      return false;
+    }
+    return sendPlayPluginMessage(backend.connection(), channel, data);
   }
 
   // ---------------------------------------------------------------------------

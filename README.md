@@ -57,6 +57,11 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 - **Fallback**: when the server a player joins or switches to is unreachable or refuses the
   login, or kicks them during play, Warp tries the servers of `fallback-order` in turn before
   disconnecting the player.
+- **BungeeCord plugin messaging channel** (`BungeeCord`, `bungeecord:main`): all 18 sub-channels
+  Paper and Spigot plugins use to move players and query the network, answered byte for byte as
+  BungeeCord and Velocity answer them. Connect goes through Warp's own switch and events; each
+  server may only use the sub-channels `bungeecord-channel.allow` gives it; a Forward to an empty
+  server waits briefly for a player instead of being lost; clients can never speak the channel.
 - **Server list ping** answered by Warp itself (a fixed response for now).
 - **PROXY protocol** v1 and v2 behind HAProxy, AWS NLB, Cloudflare Spectrum, TCPShield or a
   Kubernetes load balancer: the player's real address replaces the load balancer's everywhere,

@@ -167,6 +167,12 @@ describe('scenario features', () => {
     assert.equal(features(769, { direct: true, forwarding: 'velocity', online: true }).forwarding, 'no proxy in a control run');
   });
 
+  it('speaks the BungeeCord channel through Warp, where Paper loads the probe plugin', () => {
+    assert.equal(features(47, { paper: true }).bungeeChannel, true);
+    assert.equal(features(769, { paper: false }).bungeeChannel, 'vanilla servers load no plugin to speak the channel');
+    assert.equal(features(769, { paper: true, direct: true }).bungeeChannel, 'no proxy in a control run');
+  });
+
   it('tells survival’s brand from a late one of the lobby, by when it arrives', () => {
     assert.equal(fromSurvival({ state: 'configuration', gameMode: LOBBY_MODE }), true, 'configuration phase of the switch (1.20.2+)');
     assert.equal(fromSurvival({ state: 'play', gameMode: SURVIVAL_MODE }), true, 'after survival’s Join Game (before 1.20.2)');

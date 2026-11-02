@@ -60,6 +60,7 @@ a closed port and which lets a single player in) and run the scenarios:
 | `fallback-unreachable` | Default server down: the player lands on the next one |
 | `fallback-rejected` | Lobby refuses the login (whitelist): the player lands on survival |
 | `switch-refused` | Survival refuses a `/server survival` (whitelist): the player stays on the lobby, told why, never disconnected |
+| `bungeecord` | Paper backends only: the lobby's probe plugin (`plugins/bungee-probe`, built with `javac --release 8` against the Bukkit stubs in `plugins/bukkit-stubs`, so one jar loads from 1.8.8 on) speaks BungeeCord's plugin messaging channel as Paper plugins do, `Player#sendPluginMessage` on `BungeeCord`, which Paper only sends once Warp registered the channel for the client. Its GetServers, PlayerCount and GetServer get Warp's replies; its Connect moves the bot to survival, where GetServer answers survival |
 | `transfer` | From 1.20.5, bots speaking the version natively: the lobby sends the player away with its own Transfer packet (`/transfer` to Warp's address), which reaches it through Warp exactly as sent; the player comes back with a transfer handshake (intent 3), which Warp lets in onto the lobby (`accepts-transfers` on). warp-alt, where it is off, refuses one with vanilla's `multiplayer.disconnect.transfers_disabled` |
 | `drain` | A Warp of its own, warp-drain, with its management server and HAProxy agent check, drains towards warp. From 1.20.5, by SIGTERM (`drain.on-sigterm`, as under Kubernetes): `/readyz` answers 503 and the agent `drain` at once, the player gets a Transfer packet to warp and comes back there by transfer, and warp-drain, empty, exits with 0. Before 1.20.5, by `POST /drain?wait=true` (a wrong token gets 401): the player, whose client cannot be transferred, is kept, never kicked; once it leaves, the request answers `drained` and warp-drain exits with 0 |
 | `player-limit` | warp-alt lets one player in (`player-limit = 1`, no `status.max-players`): once a bot is in, the server list shows 1/1 and the next bot is refused at login with "The server is full." |
@@ -70,8 +71,9 @@ A scenario a run cannot hold is skipped and says why: `forwarding` without forwa
 and the fallbacks in a `--direct` run, `resource-pack` before 1.8 (offers were a plugin message,
 without the SHA-1), `audience` on 1.7 and on versions bridged through ViaProxy, and without the
 plugin (`--jar` without `--plugin`), `transfer` before 1.20.5 and through ViaProxy (Warp would see
-the bridge's handshake, not the bot's), `drain` through ViaProxy (no bridge leads to warp-drain).
-The features are in `features()` in `src/scenarios.js`.
+the bridge's handshake, not the bot's), `drain` through ViaProxy (no bridge leads to warp-drain),
+`bungeecord` on vanilla servers (no plugin to speak the channel) and in a `--direct` run. The
+features are in `features()` in `src/scenarios.js`.
 
 The audience probe plugin is the Gradle project `:e2e-plugin` (`e2e/plugin`). Without `--jar`, the
 harness builds it with Warp and copies it into each Warp's `plugins` directory; the pack it sends

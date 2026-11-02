@@ -29,12 +29,45 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The plugin message channels plugins own. Looked up for every plugin message the proxy sees: one
- * hash lookup, and messages on unregistered channels pass through.
+ * The plugin message channels plugins own, and the one the proxy speaks itself (the BungeeCord
+ * channel, unless disabled). Looked up for every plugin message the proxy sees: one hash lookup,
+ * and messages on channels nobody speaks pass through.
+ *
+ * <p>A plugin may register a channel the proxy speaks: it then takes it over, and the proxy speaks
+ * it again once the registration is closed.
  */
 public final class ChannelRegistry {
 
   private final Map<String, Registration> channels = new ConcurrentHashMap<>();
+  private final BungeeCordChannel bungeeCord;
+
+  /** Creates a registry where the proxy speaks no channel itself. */
+  public ChannelRegistry() {
+    this(BungeeCordChannel.disabled());
+  }
+
+  /**
+   * Creates a registry where the proxy answers the BungeeCord channel, unless it is disabled.
+   *
+   * @param bungeeCord the handler of the BungeeCord channel
+   */
+  public ChannelRegistry(BungeeCordChannel bungeeCord) {
+    this.bungeeCord = bungeeCord;
+    if (bungeeCord.enabled()) {
+      // The proxy reads the backends' messages on its own channel; every other stays blind.
+      PlayPluginMessage.WATCHED_CHANNELS.add(BungeeCordChannel.LEGACY_NAME);
+      PlayPluginMessage.WATCHED_CHANNELS.add(BungeeCordChannel.MODERN_NAME);
+    }
+  }
+
+  /**
+   * Returns the handler of the BungeeCord channel.
+   *
+   * @return the handler, which answers nothing when the channel is disabled
+   */
+  public BungeeCordChannel bungeeCord() {
+    return bungeeCord;
+  }
 
   /**
    * A channel and its owner.
@@ -102,7 +135,7 @@ public final class ChannelRegistry {
       public void unsubscribe() {
         if (active) {
           active = false;
-          if (channels.remove(channel.id(), registration)) {
+          if (channels.remove(channel.id(), registration) && !speaksItself(channel.id())) {
             PlayPluginMessage.WATCHED_CHANNELS.remove(channel.id());
           }
         }
@@ -118,5 +151,10 @@ public final class ChannelRegistry {
    */
   public @Nullable Registration lookup(String wireName) {
     return channels.get(wireName);
+  }
+
+  /** Whether the proxy reads a channel for itself, whoever owns it. */
+  private boolean speaksItself(String wireName) {
+    return bungeeCord.enabled() && BungeeCordChannel.isChannel(wireName);
   }
 }

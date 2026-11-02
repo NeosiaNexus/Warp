@@ -45,11 +45,13 @@ export const ALT_MAX_PLAYERS = 1;
  * What a run offers the scenarios that require it: `true`, or why the run lacks it, which the
  * skipped scenario reports. `proxy` and `forwarding` depend on the run, the others on the protocol.
  * @param {number} protocol
- * @param {{direct?: boolean, forwarding?: string, online?: boolean}} run `direct`: a control run,
- *   without Warp; `forwarding` and `online`: the variant's forwarding mode and online mode
+ * @param {{direct?: boolean, forwarding?: string, online?: boolean, plugin?: boolean, bridged?: boolean, paper?: boolean}} run
+ *   `direct`: a control run, without Warp; `forwarding` and `online`: the variant's forwarding mode
+ *   and online mode; `plugin`: Warp runs the probe plugin; `bridged`: bots go through ViaProxy;
+ *   `paper`: the backends are Paper servers
  * @returns {Record<string, true|string>}
  */
-export function features(protocol, { direct = false, forwarding = 'none', online = false, plugin = false, bridged = false } = {}) {
+export function features(protocol, { direct = false, forwarding = 'none', online = false, plugin = false, bridged = false, paper = false } = {}) {
   const proxy = direct ? 'no proxy in a control run' : true;
   return {
     proxy,
@@ -87,6 +89,9 @@ export function features(protocol, { direct = false, forwarding = 'none', online
     ),
     // The drain runs on a Warp of its own, which no ViaProxy bridge leads to.
     drain: all(proxy, !bridged || 'through ViaProxy, the bridges only lead to warp and warp-alt'),
+    // A backend plugin speaks the BungeeCord channel, which Warp answers: Paper loads it, vanilla
+    // servers load no plugin.
+    bungeeChannel: all(proxy, paper || 'vanilla servers load no plugin to speak the channel'),
   };
 }
 
@@ -764,6 +769,52 @@ async function switchRefused(ctx) {
 }
 
 /**
+ * The BungeeCord plugin messaging channel, as thousands of Paper plugins speak it: the lobby's probe
+ * plugin (plugins/bungee-probe) sends requests through the bot's connection with
+ * `Player#sendPluginMessage` on `BungeeCord` (Bukkit's `bungeecord:main` from 1.13), which Paper
+ * only sends once the channel is registered: Warp registers it on the client's behalf. The plugin
+ * checks the queries' replies (GetServers, PlayerCount, GetServer), then a Connect moves the bot
+ * to survival, where the same plugin learns it is now on survival.
+ */
+async function bungeeCord(ctx) {
+  const name = 'e2e_bungee';
+  const bot = await joinWarp(ctx, name);
+  try {
+    await bot.waitForChunks(20, 30_000, 0);
+    await bot.waitForGameMode(LOBBY_MODE, 5_000);
+    const [servers] = await probe(ctx.lobby, name, 'GetServers');
+    if (servers !== 'lobby, survival') throw new Error(`GetServers answered '${servers}', not 'lobby, survival'`);
+    const [counted, count] = await probe(ctx.lobby, name, 'PlayerCount', 'lobby');
+    if (counted !== 'lobby' || !(Number(count) >= 1)) throw new Error(`PlayerCount lobby answered ${counted} ${count}`);
+    const [onLobby] = await probe(ctx.lobby, name, 'GetServer');
+    if (onLobby !== 'lobby') throw new Error(`GetServer answered '${onLobby}' on the lobby`);
+
+    await ctx.lobby.command(`bungeeprobe ${name} Connect survival`, /\[BungeeProbe\] sent Connect/);
+    await bot.waitForGameMode(SURVIVAL_MODE, 20_000);
+    await proxyReportsServer(ctx, bot, 'survival');
+    const [onSurvival] = await probe(ctx.survival, name, 'GetServer');
+    if (onSurvival !== 'survival') throw new Error(`GetServer answered '${onSurvival}' on survival`);
+    bot.healthy();
+    return `GetServers, PlayerCount (${count}) and GetServer answered; Connect moved the player to survival`;
+  } finally {
+    bot.quit();
+  }
+}
+
+/**
+ * Has a backend's probe plugin send a BungeeCord sub-channel through a player, and returns the
+ * fields of the reply it logs.
+ */
+async function probe(backend, player, subchannel, ...args) {
+  const request = [subchannel, ...args].join(' ');
+  const reply = new RegExp(`\\[BungeeProbe\\] (reply ${subchannel} .*|no player .*)$`);
+  const line = await backend.command(`bungeeprobe ${player} ${request}`, reply, 10_000);
+  const match = new RegExp(`reply ${subchannel} (.*) on \\S+$`).exec(line ?? '');
+  if (!match) throw new Error(`${backend.name}: ${line}`);
+  return match[1].split('|');
+}
+
+/**
  * Transfers, as a proxy drained for a restart sends its players to the next one: the lobby sends a
  * player away with its own Transfer packet, which must reach the client through Warp exactly as
  * sent; the client comes back with a transfer handshake, which Warp lets in (`accepts-transfers` is
@@ -1076,6 +1127,7 @@ export const SCENARIOS = [
   { name: 'fallback-unreachable', run: fallbackUnreachable, requires: 'proxy' },
   { name: 'fallback-rejected', run: fallbackRejected, requires: 'proxy' },
   { name: 'switch-refused', run: switchRefused, requires: 'switching' },
+  { name: 'bungeecord', run: bungeeCord, requires: 'bungeeChannel' },
   { name: 'transfer', run: transfer, requires: 'transfers' },
   { name: 'drain', run: drain, requires: 'drain' },
   { name: 'player-limit', run: playerLimit, requires: 'proxy' },

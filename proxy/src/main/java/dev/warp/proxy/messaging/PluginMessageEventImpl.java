@@ -29,10 +29,11 @@ public final class PluginMessageEventImpl implements PluginMessageEvent {
   private final Source source;
   private final Player player;
   private final byte[] data;
-  private volatile Result result = new Handled();
+  private volatile Result result;
 
   /**
-   * Creates the event.
+   * Creates the event for a channel a plugin owns: the message is consumed unless a handler says
+   * otherwise.
    *
    * @param channel the channel
    * @param source who sent the message
@@ -41,10 +42,26 @@ public final class PluginMessageEventImpl implements PluginMessageEvent {
    */
   public PluginMessageEventImpl(
       ChannelIdentifier channel, Source source, Player player, byte[] data) {
+    this(channel, source, player, data, new Handled());
+  }
+
+  /**
+   * Creates the event with its initial result.
+   *
+   * @param channel the channel
+   * @param source who sent the message
+   * @param player the player it travels for
+   * @param data the payload, not copied: the proxy hands over its own array
+   * @param initial the result until a handler changes it: {@link Handled} on a channel a plugin
+   *     owns, {@link Pass} on a channel the proxy speaks itself
+   */
+  public PluginMessageEventImpl(
+      ChannelIdentifier channel, Source source, Player player, byte[] data, Result initial) {
     this.channel = channel;
     this.source = source;
     this.player = player;
     this.data = data;
+    this.result = initial;
   }
 
   @Override
