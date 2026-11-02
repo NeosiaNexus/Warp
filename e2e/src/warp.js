@@ -45,6 +45,8 @@ export class Warp {
    *   secret the backends share, or null for none
    * @param {string} options.logDir
    * @param {string[]} [options.jvmArgs] JVM options after the defaults (the last -Xmx wins)
+   * @param {{motd: string, maxPlayers?: number}} [options.status] the `status` block: the message of
+   *   the day (MiniMessage) and the player limit, Warp's default (500) if left out
    */
   constructor(options) {
     Object.assign(this, options);
@@ -79,7 +81,15 @@ compression {
   level = -1
   passthrough = ${this.passthrough}
 }
-`;
+${this.statusBlock()}`;
+  }
+
+  /** The `status` block, or nothing for Warp's defaults. */
+  statusBlock() {
+    if (!this.status) return '';
+    const lines = [`  motd = ${JSON.stringify(this.status.motd)}`];
+    if (this.status.maxPlayers !== undefined) lines.push(`  max-players = ${this.status.maxPlayers}`);
+    return `status {\n${lines.join('\n')}\n}\n`;
   }
 
   start() {
