@@ -89,12 +89,8 @@ final class ClientPlaySessionHandler implements SessionHandler {
   @Override
   public void activated() {
     player.switchComplete();
+    // Started when the player joined; it runs on through every state until the player leaves.
     player.startKeepAliveTask();
-  }
-
-  @Override
-  public void deactivated() {
-    player.cancelKeepAliveTask();
   }
 
   @Override
@@ -195,9 +191,7 @@ final class ClientPlaySessionHandler implements SessionHandler {
   // ---------------------------------------------------------------------------
 
   private void handleKeepAlive(KeepAlive keepAlive) {
-    if (!player.handleKeepAliveResponse(keepAlive.id())) {
-      logger.warn("Invalid KeepAlive ID from player {}", player.username());
-    }
+    player.keepAliveAnswered(keepAlive.id());
     // Never forward client KeepAlive to backend — proxy manages its own.
   }
 
@@ -261,7 +255,7 @@ final class ClientPlaySessionHandler implements SessionHandler {
     MinecraftConnection backendConn = backend.connection();
 
     // Transition client to CONFIG and install relay handler.
-    player.clientConnection().setState(ProtocolState.CONFIGURATION);
+    player.clientStateChanged(ProtocolState.CONFIGURATION);
     player
         .clientConnection()
         .setSessionHandler(new ClientConfigSessionHandler(player, backendConn));

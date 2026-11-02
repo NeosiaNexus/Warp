@@ -38,6 +38,7 @@ import dev.warp.protocol.packet.login.LoginPluginResponse;
 import dev.warp.protocol.packet.login.LoginStart;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.login.SetCompression;
+import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.proxy.auth.AuthenticationException;
 import dev.warp.proxy.auth.MojangSessionService;
@@ -268,10 +269,18 @@ final class LoginSessionHandler implements SessionHandler {
       handleCookieResponse(response);
       return;
     }
+    ConnectedPlayer loggedIn = this.player;
+    if (packet instanceof KeepAlive keepAlive && state == LoginState.COMPLETE && loggedIn != null) {
+      // Before 1.20.2, the client waits for its first Join Game here, answering the proxy's
+      // keep-alives, however long plugins take to choose its server.
+      loggedIn.keepAliveAnswered(keepAlive.id());
+      return;
+    }
     if (!(packet instanceof LoginPacket loginPacket)) {
       if (state == LoginState.COMPLETE) {
-        // Client may send CONFIG packets (e.g., brand) before the backend handler is installed.
-        // Silently drop them — the backend will request them during configuration.
+        // Before 1.20.2, a play packet ahead of the first Join Game, which the client has no
+        // reason to send: dropped. From 1.20.2 the player's join replaces this handler at once
+        // (SwitchWaitSessionHandler), which keeps the client's brand and settings for its server.
         return;
       }
       logger.warn("Unexpected packet in LOGIN state: {}", packet.getClass().getSimpleName());

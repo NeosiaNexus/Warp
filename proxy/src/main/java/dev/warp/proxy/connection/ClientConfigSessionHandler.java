@@ -56,7 +56,7 @@ final class ClientConfigSessionHandler implements SessionHandler {
     logger.trace(
         "Client CONFIG handle: {} for {}", packet.getClass().getSimpleName(), player.username());
     if (packet instanceof KeepAlive keepAlive) {
-      player.handleKeepAliveResponse(keepAlive.id());
+      player.keepAliveAnswered(keepAlive.id());
     } else if (packet instanceof ClientInformation clientInfo) {
       player.cacheClientSettings(clientInfo);
       backendConnection.write(clientInfo);
@@ -78,7 +78,7 @@ final class ClientConfigSessionHandler implements SessionHandler {
 
   private void handleAcknowledgeFinish() {
     // Transition client side to PLAY (we are on the client event loop already).
-    player.clientConnection().setState(ProtocolState.PLAY);
+    player.clientStateChanged(ProtocolState.PLAY);
     player.clientConnection().setSessionHandler(new ClientPlaySessionHandler(player));
 
     // Schedule backend-side mutations on the backend's event loop.

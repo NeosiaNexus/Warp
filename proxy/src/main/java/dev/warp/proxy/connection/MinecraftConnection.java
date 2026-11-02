@@ -225,9 +225,10 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
    * Describes a connection that received nothing for {@value #READ_TIMEOUT_SECONDS} s, as it
    * stands: its protocol state, which side went quiet, whether the proxy was reading it, and how
    * much it still had to send it. Reads paused means the proxy itself kept the peer's packets
-   * unread (back-pressure, or a player held during a server switch); bytes piling up mean the peer
-   * stopped reading too; neither means the peer went silent while taking what it was sent. The
-   * queued bytes are Netty's count: the packets plus a small overhead per message.
+   * unread (back-pressure, or a client that sent too much while waiting for its next server); bytes
+   * piling up mean the peer stopped reading too; neither means the peer went silent while taking
+   * what it was sent. The queued bytes are Netty's count: the packets plus a small overhead per
+   * message.
    *
    * @param channel the connection that timed out
    * @param decoder the connection's decoder, which knows its state and which side the peer is

@@ -92,9 +92,9 @@ final class BackendConfigSessionHandler implements SessionHandler {
               }
               clientConn.setSessionHandler(
                   new ClientConfigSessionHandler(player, backendConnection));
-              // Ensure auto-read is enabled. During a server switch, auto-read is paused
-              // while waiting for the new backend to reach CONFIG. This is idempotent for
-              // initial connections where auto-read was never paused.
+              // Ensure auto-read is enabled: a client that sent too much while it waited for
+              // this server had its reads paused (SwitchWaitSessionHandler). Idempotent
+              // otherwise.
               clientConn.setAutoRead(true);
             });
   }
