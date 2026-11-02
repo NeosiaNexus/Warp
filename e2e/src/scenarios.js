@@ -478,7 +478,9 @@ function probeSoundId(protocol) {
  * fails the run, as it disconnects a vanilla client.
  */
 async function audience(ctx) {
-  const protocol = ctx.entry.protocol;
+  // What the bot receives is in its own version: the backends' in most runs, another one when Warp
+  // translates (--client), the plugin's packets going straight to the bot.
+  const protocol = (ctx.clientEntry ?? ctx.entry).protocol;
   const bot = await joinWarp(ctx, 'e2e_audience');
   const removed = [];
   bot.bot._client.on('remove_resource_pack', (data) => removed.push(String(data.uuid ?? 'all')));
