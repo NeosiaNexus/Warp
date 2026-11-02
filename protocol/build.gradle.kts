@@ -27,12 +27,4 @@ dependencies {
     jmh(libs.velocity.native) {
         exclude(group = "io.netty")
     }
-    // velocity-native asks for Guava 33.7.1. The benchmark classpath gets 33.7.2 through the API's
-    // constraint, but the `jmh` configuration resolved alone (as the dependency graph submission
-    // does) does not see it, and reported the vulnerable version.
-    constraints {
-        jmh(libs.guava) {
-            because("fixed by 33.7.2: GHSA-xxph-c9ww-hj94")
-        }
-    }
 }
