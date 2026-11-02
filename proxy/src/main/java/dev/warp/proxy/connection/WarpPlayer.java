@@ -118,7 +118,7 @@ public final class WarpPlayer implements Player {
 
   @Override
   public boolean hasPermission(String permission) {
-    return false;
+    return player.loginContext().permissions().check(this, permission);
   }
 
   @Override

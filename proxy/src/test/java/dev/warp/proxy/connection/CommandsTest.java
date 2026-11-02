@@ -284,6 +284,29 @@ class CommandsTest {
     }
 
     @Test
+    @DisplayName("should show a command once a permission provider grants it")
+    void granted() {
+      SwitchHarness setup = playingOnLobby();
+      plugin(setup)
+          .register(
+              LiteralArgumentBuilder.<CommandSource>literal("admin")
+                  .requires(source -> source.hasPermission("proxy.admin"))
+                  .executes(context -> Command.SINGLE_SUCCESS));
+      new dev.warp.proxy.permission.PluginPermissions(
+              setup.player.loginContext().permissions(), "perms", s -> {})
+          .register(
+              0,
+              (player, permission) ->
+                  dev.warp.api.permission.Tristate.of(permission.equals("proxy.admin")));
+      setup.sentToClient();
+
+      setup.receive(setup.current(), frame(VERSION, DeclareCommands.of(backendTree(), VERSION)));
+
+      assertTrue(shownCommands(setup).contains("admin"));
+      assertTrue(setup.player.api().hasPermission("proxy.admin"));
+    }
+
+    @Test
     @DisplayName("should show an argument type the client lacks as text the proxy completes")
     void fallbackArgument() {
       SwitchHarness setup = playingOnLobby();

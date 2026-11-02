@@ -24,6 +24,7 @@ import dev.warp.proxy.config.DuplicateLoginPolicy;
 import dev.warp.proxy.config.ForwardingMode;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 
@@ -55,6 +56,7 @@ import io.netty.channel.Channel;
  * @param events the event bus plugins subscribe to
  * @param channels the plugin message channels plugins own
  * @param commands the proxy's commands
+ * @param permissions the permission providers plugins registered
  * @param forwardingMode the player info forwarding mode
  * @param forwardingSecret the shared HMAC secret for Velocity modern forwarding
  * @param channelClass the socket channel class matching the detected transport
@@ -75,6 +77,7 @@ public record ServerLoginContext(
     WarpEventBus events,
     ChannelRegistry channels,
     WarpCommandManager commands,
+    PermissionRegistry permissions,
     ForwardingMode forwardingMode,
     byte[] forwardingSecret,
     Class<? extends Channel> channelClass) {

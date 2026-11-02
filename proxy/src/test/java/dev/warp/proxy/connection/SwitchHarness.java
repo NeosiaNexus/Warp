@@ -51,6 +51,7 @@ import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabListHeaderFooter;
 import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 
@@ -113,6 +114,7 @@ final class SwitchHarness implements AutoCloseable {
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
     when(loginContext.channels()).thenReturn(new ChannelRegistry());
+    when(loginContext.permissions()).thenReturn(new PermissionRegistry());
 
     ServerRegistry registry = new ServerRegistry(servers, "lobby", fallbackOrder);
     when(loginContext.serverRegistry()).thenReturn(registry);

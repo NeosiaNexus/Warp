@@ -30,6 +30,7 @@ import dev.warp.api.plugin.PluginState;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.permission.PermissionRegistry;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -63,7 +64,12 @@ class WarpPluginManagerTest {
     events = new WarpEventBus();
     manager =
         new WarpPluginManager(
-            mock(Warp.class), events, new ChannelRegistry(), new WarpCommandManager(), plugins);
+            mock(Warp.class),
+            events,
+            new ChannelRegistry(),
+            new WarpCommandManager(),
+            new PermissionRegistry(),
+            plugins);
   }
 
   @AfterEach

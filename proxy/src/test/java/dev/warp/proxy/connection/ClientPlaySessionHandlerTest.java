@@ -42,6 +42,7 @@ import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.PlayPacket;
 import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 
@@ -431,6 +432,7 @@ class ClientPlaySessionHandlerTest {
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
     when(loginContext.channels()).thenReturn(new ChannelRegistry());
+    when(loginContext.permissions()).thenReturn(new PermissionRegistry());
 
     ServerRegistry registry = new ServerRegistry(servers, "lobby", List.of());
     when(loginContext.serverRegistry()).thenReturn(registry);

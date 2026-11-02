@@ -20,6 +20,7 @@ import dev.warp.api.Warp;
 import dev.warp.api.command.CommandManager;
 import dev.warp.api.event.EventBus;
 import dev.warp.api.messaging.Messaging;
+import dev.warp.api.permission.Permissions;
 import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginContext;
 import dev.warp.proxy.command.PluginCommandManager;
@@ -28,6 +29,8 @@ import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.messaging.PluginMessaging;
+import dev.warp.proxy.permission.PermissionRegistry;
+import dev.warp.proxy.permission.PluginPermissions;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -52,13 +55,15 @@ final class WarpPluginContext implements PluginContext {
   private final PluginEventBus events;
   private final PluginMessaging messaging;
   private final PluginCommandManager commands;
+  private final PluginPermissions permissions;
 
   WarpPluginContext(
       WarpPluginContainer plugin,
       Warp proxy,
       WarpEventBus bus,
       ChannelRegistry channels,
-      WarpCommandManager commandManager) {
+      WarpCommandManager commandManager,
+      PermissionRegistry permissionRegistry) {
     this.plugin = plugin;
     this.proxy = proxy;
     this.pluginLogger = LoggerFactory.getLogger(plugin.description().id());
@@ -67,6 +72,8 @@ final class WarpPluginContext implements PluginContext {
     this.messaging = new PluginMessaging(channels, plugin.description().id(), this::track);
     this.commands =
         new PluginCommandManager(commandManager, plugin.description().id(), this::track);
+    this.permissions =
+        new PluginPermissions(permissionRegistry, plugin.description().id(), this::track);
   }
 
   @Override
@@ -102,6 +109,11 @@ final class WarpPluginContext implements PluginContext {
   @Override
   public CommandManager commands() {
     return commands;
+  }
+
+  @Override
+  public Permissions permissions() {
+    return permissions;
   }
 
   /**

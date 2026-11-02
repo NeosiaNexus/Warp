@@ -20,6 +20,7 @@ import dev.warp.api.Warp;
 import dev.warp.api.command.CommandManager;
 import dev.warp.api.event.EventBus;
 import dev.warp.api.messaging.Messaging;
+import dev.warp.api.permission.Permissions;
 import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginContext;
 import dev.warp.api.plugin.PluginDependency;
@@ -30,6 +31,7 @@ import dev.warp.api.plugin.WarpPlugin;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.permission.PermissionRegistry;
 
 import java.io.IOException;
 import java.net.MalformedURLException;
@@ -60,6 +62,7 @@ public final class WarpPluginManager implements PluginManager {
   private final WarpEventBus events;
   private final ChannelRegistry channels;
   private final WarpCommandManager commands;
+  private final PermissionRegistry permissions;
   private final Path directory;
   private final ApiClassLoader apiLoader;
 
@@ -73,6 +76,7 @@ public final class WarpPluginManager implements PluginManager {
    * @param events the proxy's event bus, of which each plugin gets its own view
    * @param channels the proxy's plugin message channels
    * @param commands the proxy's commands
+   * @param permissions the proxy's permission providers
    * @param directory the plugins directory, created if missing
    */
   public WarpPluginManager(
@@ -80,11 +84,13 @@ public final class WarpPluginManager implements PluginManager {
       WarpEventBus events,
       ChannelRegistry channels,
       WarpCommandManager commands,
+      PermissionRegistry permissions,
       Path directory) {
     this.proxy = proxy;
     this.events = events;
     this.channels = channels;
     this.commands = commands;
+    this.permissions = permissions;
     this.directory = directory;
     this.apiLoader = new ApiClassLoader(WarpPluginManager.class.getClassLoader());
   }
@@ -236,7 +242,8 @@ public final class WarpPluginManager implements PluginManager {
       return;
     }
     container.setClassLoader(loader);
-    WarpPluginContext context = new WarpPluginContext(container, proxy, events, channels, commands);
+    WarpPluginContext context =
+        new WarpPluginContext(container, proxy, events, channels, commands, permissions);
     container.setContext(context);
 
     try {
@@ -274,6 +281,7 @@ public final class WarpPluginManager implements PluginManager {
     injectables.put(EventBus.class, context.events());
     injectables.put(Messaging.class, context.messaging());
     injectables.put(CommandManager.class, context.commands());
+    injectables.put(Permissions.class, context.permissions());
     return injectables;
   }
 

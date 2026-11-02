@@ -34,7 +34,8 @@ public interface CommandSource {
 
   /**
    * Returns whether the source has a permission. The console has every permission; a player has
-   * those the permission provider grants (none without one).
+   * those the registered {@link dev.warp.api.permission.PermissionProvider}s grant (none without
+   * one).
    *
    * @param permission the permission node, such as {@code myplugin.command.lobby}
    * @return {@code true} if granted
