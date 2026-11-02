@@ -18,20 +18,25 @@ package dev.warp.proxy;
 
 import dev.warp.api.Warp;
 import dev.warp.api.WarpProvider;
+import dev.warp.api.plugin.PluginManager;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.config.WarpConfig;
+import dev.warp.proxy.connection.ConnectedPlayer;
 import dev.warp.proxy.connection.PlaySession;
 import dev.warp.proxy.connection.ServerChannelInitializer;
 import dev.warp.proxy.connection.ServerLoginContext;
 import dev.warp.proxy.player.PlayerRegistry;
+import dev.warp.proxy.plugin.WarpPluginManager;
 import dev.warp.proxy.server.ServerRegistry;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
 import java.security.spec.InvalidKeySpecException;
+import java.util.List;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.PooledByteBufAllocator;
@@ -93,6 +98,9 @@ public final class WarpServer implements Warp {
   /** The players connected to the proxy. */
   private final PlayerRegistry playerRegistry = new PlayerRegistry();
 
+  /** The plugins of the proxy's {@code plugins} directory. */
+  private final WarpPluginManager pluginManager;
+
   /** Netty boss group — accepts incoming connections. */
   private @Nullable MultiThreadIoEventLoopGroup bossGroup;
 
@@ -114,9 +122,11 @@ public final class WarpServer implements Warp {
    * Creates a server with the given configuration.
    *
    * @param config the proxy configuration
+   * @param directory the proxy's working directory, which holds the {@code plugins} directory
    */
-  public WarpServer(WarpConfig config) {
+  public WarpServer(WarpConfig config, Path directory) {
     this.config = config;
+    this.pluginManager = new WarpPluginManager(this, directory.resolve("plugins"));
   }
 
   // ---------------------------------------------------------------------------
@@ -143,6 +153,10 @@ public final class WarpServer implements Warp {
     ServerLoginContext loginContext = createLoginContext(transport);
     this.bossGroup = new MultiThreadIoEventLoopGroup(1, transport.ioFactory());
     this.workerGroup = new MultiThreadIoEventLoopGroup(transport.ioFactory());
+
+    // Plugins find the API published, and load before the first player can connect.
+    registerProvider();
+    pluginManager.loadAll();
 
     ServerBootstrap bootstrap =
         new ServerBootstrap()
@@ -180,9 +194,6 @@ public final class WarpServer implements Warp {
 
     Runtime.getRuntime().addShutdownHook(new Thread(this::stop, "warp-shutdown"));
 
-    // Publish ourselves as the API singleton.
-    registerProvider();
-
     this.running = true;
     logger.info("Warp is listening on {}", config.bind());
   }
@@ -198,6 +209,8 @@ public final class WarpServer implements Warp {
     if (serverChannel != null) {
       serverChannel.close().awaitUninterruptibly();
     }
+    disconnectPlayers();
+    pluginManager.disableAll();
     shutdownEventLoops();
 
     if (sessionService != null) {
@@ -205,6 +218,18 @@ public final class WarpServer implements Warp {
     }
 
     logger.info("Warp has been stopped.");
+  }
+
+  /** Disconnects every player, telling them the proxy is shutting down. */
+  private void disconnectPlayers() {
+    List<ConnectedPlayer> players = playerRegistry.all();
+    if (players.isEmpty()) {
+      return;
+    }
+    logger.info("Disconnecting {} players", players.size());
+    for (ConnectedPlayer player : players) {
+      player.disconnectShutdown();
+    }
   }
 
   /** Shuts down boss and worker event loops. Safe to call multiple times. */
@@ -224,6 +249,11 @@ public final class WarpServer implements Warp {
   @Override
   public String version() {
     return WarpBuildInfo.VERSION;
+  }
+
+  @Override
+  public PluginManager plugins() {
+    return pluginManager;
   }
 
   // ---------------------------------------------------------------------------

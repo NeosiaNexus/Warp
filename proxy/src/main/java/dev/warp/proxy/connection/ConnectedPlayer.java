@@ -855,6 +855,11 @@ public final class ConnectedPlayer {
     onEventLoop(() -> disconnectWithReason("You logged in from another location"));
   }
 
+  /** Disconnects the player because the proxy is shutting down. Thread-safe. */
+  public void disconnectShutdown() {
+    onEventLoop(() -> disconnectWithReason("The proxy is shutting down."));
+  }
+
   /** Stops counting the player on its server. Runs on the client's event loop. */
   private void leaveServer() {
     BackendServer previous = this.currentServer;

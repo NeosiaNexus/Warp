@@ -4,8 +4,6 @@ netty = "4.2.18.Final"
 adventure = "4.26.1"
 log4j = "2.26.1"
 slf4j = "2.0.17"
-guice = "7.0.0"
-guava = "33.7.2-jre"
 
 # Utilities
 caffeine = "3.3.0"
@@ -69,11 +67,6 @@ slf4j-api = { group = "org.slf4j", name = "slf4j-api", version.ref = "slf4j" }
 
 # Async logging
 disruptor = { group = "com.lmax", name = "disruptor", version.ref = "disruptor" }
-
-# DI
-guice = { group = "com.google.inject", name = "guice", version.ref = "guice" }
-# Not a direct dependency: the minimum version of the Guava that Guice brings (api/build.gradle.kts).
-guava = { group = "com.google.guava", name = "guava", version.ref = "guava" }
 
 # Utilities
 caffeine = { group = "com.github.ben-manes.caffeine", name = "caffeine", version.ref = "caffeine" }
