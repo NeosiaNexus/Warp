@@ -32,6 +32,7 @@ import dev.warp.api.plugin.WarpPlugin;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.logging.LogSinkRegistry;
+import dev.warp.proxy.management.ReadinessHolds;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
 
@@ -65,6 +66,7 @@ public final class WarpPluginManager implements PluginManager {
   private final ChannelRegistry channels;
   private final WarpCommandManager commands;
   private final PermissionRegistry permissions;
+  private final ReadinessHolds readinessHolds;
   private final LogSinkRegistry logSinks;
   private final Path directory;
   private final ApiClassLoader apiLoader;
@@ -80,6 +82,7 @@ public final class WarpPluginManager implements PluginManager {
    * @param channels the proxy's plugin message channels
    * @param commands the proxy's commands
    * @param permissions the proxy's permission providers
+   * @param readinessHolds the holds plugins keep on the proxy's readiness
    * @param logSinks the proxy's log sinks
    * @param directory the plugins directory, created if missing
    */
@@ -89,6 +92,7 @@ public final class WarpPluginManager implements PluginManager {
       ChannelRegistry channels,
       WarpCommandManager commands,
       PermissionRegistry permissions,
+      ReadinessHolds readinessHolds,
       LogSinkRegistry logSinks,
       Path directory) {
     this.proxy = proxy;
@@ -96,6 +100,7 @@ public final class WarpPluginManager implements PluginManager {
     this.channels = channels;
     this.commands = commands;
     this.permissions = permissions;
+    this.readinessHolds = readinessHolds;
     this.logSinks = logSinks;
     this.directory = directory;
     this.apiLoader = new ApiClassLoader(WarpPluginManager.class.getClassLoader());
@@ -249,7 +254,8 @@ public final class WarpPluginManager implements PluginManager {
     }
     container.setClassLoader(loader);
     WarpPluginContext context =
-        new WarpPluginContext(container, proxy, events, channels, commands, permissions, logSinks);
+        new WarpPluginContext(
+            container, proxy, events, channels, commands, permissions, readinessHolds, logSinks);
     container.setContext(context);
 
     try {

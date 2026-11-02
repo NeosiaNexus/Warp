@@ -129,7 +129,7 @@ class WarpServerDrainTest {
       assertEquals(200, get(http, "/readyz").statusCode());
       assertEquals("up ready", agentReply(agent));
 
-      ReadinessHold hold = server.holdReadiness("primemc: no lobby yet");
+      ReadinessHold hold = server.readinessHolds().hold("primemc: no lobby yet");
       HttpResponse<String> held = get(http, "/readyz");
       assertEquals(503, held.statusCode());
       assertTrue(held.body().contains("primemc: no lobby yet"), held.body());

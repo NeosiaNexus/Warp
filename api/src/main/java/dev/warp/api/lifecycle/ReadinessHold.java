@@ -18,15 +18,15 @@ package dev.warp.api.lifecycle;
 
 /**
  * A plugin's hold on the proxy's readiness, taken with {@link
- * dev.warp.api.Warp#holdReadiness(String)}. While any hold is held, the readiness probe ({@code GET
- * /readyz}) answers 503 and the HAProxy agent check answers {@code down}: load balancers and
- * Kubernetes send no new player here. Players already connected are not affected, nor are the
- * liveness and startup probes.
+ * dev.warp.api.plugin.PluginContext#holdReadiness(String)}. While any hold is held, the readiness
+ * probe ({@code GET /readyz}) answers 503 and the HAProxy agent check answers {@code down}: load
+ * balancers and Kubernetes send no new player here. Players already connected are not affected, nor
+ * are the liveness and startup probes.
  *
  * <p>Hold readiness for as long as the proxy cannot serve a player as the plugin sees it: a network
  * whose lobbies are discovered at runtime holds it until it found one. Releasing twice does
- * nothing. A hold is not tied to the plugin: release it when the plugin is disabled, or the proxy
- * stays unready.
+ * nothing. A hold belongs to the plugin that took it: the proxy releases it when the plugin is
+ * disabled or fails to load.
  *
  * <p>Implemented by the proxy; plugins must not implement it.
  */

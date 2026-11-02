@@ -1382,7 +1382,8 @@ class LoginSessionHandlerTest {
       ServerLoginContext context =
           TestLoginContexts.with(
               TestLoginContexts.offline(),
-              new TimeoutsConfig(Duration.ofSeconds(5), Duration.ofSeconds(7)),
+              new TimeoutsConfig(
+                  Duration.ofSeconds(5), Duration.ofSeconds(7), Duration.ofSeconds(5)),
               LoggingConfig.DEFAULTS);
       EmbeddedChannel channel = loginChannel(VERSION, context);
       try {

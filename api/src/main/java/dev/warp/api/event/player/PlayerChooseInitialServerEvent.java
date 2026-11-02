@@ -16,21 +16,29 @@
  */
 package dev.warp.api.event.player;
 
+import dev.warp.api.event.ResultedEvent;
 import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
 
+import java.util.Objects;
 import java.util.Optional;
 
-import org.jspecify.annotations.Nullable;
+import net.kyori.adventure.text.Component;
 
 /**
- * Fired after {@link PostLoginEvent} to choose the first server a player joins. The proxy proposes
- * its default server (or the first registered server of its fallback order); handlers may pick
- * another. With no server left, the player is disconnected.
+ * Fired after {@link PostLoginEvent} to choose the first server a player joins, or to turn the
+ * player away with a reason it sees.
+ *
+ * <p>The result starts as {@link Allowed} with the server the proxy proposes (its default server,
+ * else the first registered server of its fallback order), or as {@link Denied} with the proxy's
+ * "no server available" message when none of them is registered. Handlers may pick another server,
+ * deny the player with their own reason, or let a server in when the proxy had none. The player
+ * waits on the proxy, kept alive, while asynchronous handlers decide.
  *
  * <p>Implemented by the proxy; plugins must not implement it.
  */
-public interface PlayerChooseInitialServerEvent {
+public interface PlayerChooseInitialServerEvent
+    extends ResultedEvent<PlayerChooseInitialServerEvent.Result> {
 
   /**
    * Returns the player.
@@ -40,16 +48,48 @@ public interface PlayerChooseInitialServerEvent {
   Player player();
 
   /**
-   * Returns the server the player will join.
+   * Returns the server the proxy proposed before any handler ran, whatever the result became.
    *
-   * @return the server, or empty if none is available (the player will be disconnected)
+   * @return the proposed server, or empty when none of the default and fallback servers is
+   *     registered
    */
-  Optional<RegisteredServer> initialServer();
+  Optional<RegisteredServer> proposedServer();
+
+  /** Where the player goes first. */
+  sealed interface Result {}
 
   /**
-   * Chooses the server the player joins.
+   * Send the player to a server. If it cannot be reached or refuses the player, the player goes
+   * down the fallback order, as on any first connection.
    *
-   * @param server the server, or {@code null} to disconnect the player
+   * @param server the server
    */
-  void setInitialServer(@Nullable RegisteredServer server);
+  record Allowed(RegisteredServer server) implements Result {
+
+    /**
+     * Checks the server.
+     *
+     * @param server the server
+     */
+    public Allowed {
+      Objects.requireNonNull(server, "server");
+    }
+  }
+
+  /**
+   * Disconnect the player before it joins any server.
+   *
+   * @param reason shown to the player on its disconnection screen
+   */
+  record Denied(Component reason) implements Result {
+
+    /**
+     * Checks the reason.
+     *
+     * @param reason shown to the player on its disconnection screen
+     */
+    public Denied {
+      Objects.requireNonNull(reason, "reason");
+    }
+  }
 }

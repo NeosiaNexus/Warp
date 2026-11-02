@@ -212,6 +212,7 @@ status {
 timeouts {
   connect = 5s                     # opening a connection to a backend
   read = 25s                       # a logged-in connection that sends nothing is closed
+  ping = 5s                        # RegisteredServer.ping() without a time-out of its own
 }
 tcp-fast-open = false              # Linux (epoll) only
 

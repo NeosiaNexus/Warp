@@ -309,6 +309,55 @@ gh attestation verify warp-<version>.jar --repo NeosiaNexus/Warp
 gh attestation verify warp-<version>.jar --repo NeosiaNexus/Warp --bundle warp-<version>.jar.intoto.jsonl
 ```
 
+### Version numbers
+
+`version.txt` holds the last release; release-please writes it, never edit it by hand. Only the
+release workflow builds that number (`./gradlew shadowJar -Pwarp.release=true`, which fails unless
+the commit carries the tag `v<version>`). Every other build, local or CI, on any branch, is a
+snapshot of the next number: `0.1.0-beta.6-SNAPSHOT` after `0.1.0-beta.5`, `1.0.1-SNAPSHOT` after
+`1.0.0`. A snapshot therefore never reuses a released number, and sorts after the release it
+follows and before the next one in Maven and Gradle ordering.
+
+### Using a snapshot of the plugin API
+
+Every push to `main` publishes `dev.warp:warp-api:<next>-SNAPSHOT` to GitHub Packages
+(`.github/workflows/snapshots.yml`). The plugin API targets Java 21 (class file 65): plugins may
+build on a JDK 21 toolchain. GitHub Packages' Maven registry requires a token to read, even for a
+public repository: create a classic personal access token with the `read:packages` scope (in a
+workflow, `GITHUB_TOKEN` with `packages: read` works for repositories it may read), and keep it
+out of the build files:
+
+```properties
+# ~/.gradle/gradle.properties
+warpPackagesUsername=<your GitHub login>
+warpPackagesPassword=<token with read:packages>
+```
+
+```kotlin
+// settings.gradle.kts
+dependencyResolutionManagement {
+    repositories {
+        mavenCentral()
+        maven("https://libraries.minecraft.net") // Brigadier, a dependency of the API
+        maven("https://maven.pkg.github.com/NeosiaNexus/Warp") {
+            name = "warpPackages" // credentials from warpPackagesUsername / warpPackagesPassword
+            credentials(PasswordCredentials::class)
+            content { includeGroup("dev.warp") }
+        }
+    }
+}
+
+// build.gradle.kts
+dependencies {
+    compileOnly("dev.warp:warp-api:0.1.0-beta.6-SNAPSHOT")
+    annotationProcessor("dev.warp:warp-api:0.1.0-beta.6-SNAPSHOT") // generates warp-plugin.json
+}
+```
+
+In CI, set `ORG_GRADLE_PROJECT_warpPackagesUsername` and `ORG_GRADLE_PROJECT_warpPackagesPassword`
+instead. To pin one build of a snapshot, use its timestamped version as listed on the package page
+(such as `0.1.0-beta.6-20261102.101500-3`).
+
 ## Architecture
 
 ```

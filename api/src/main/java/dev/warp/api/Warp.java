@@ -18,7 +18,6 @@ package dev.warp.api;
 
 import dev.warp.api.lifecycle.DrainPhase;
 import dev.warp.api.lifecycle.DrainStatus;
-import dev.warp.api.lifecycle.ReadinessHold;
 import dev.warp.api.player.Player;
 import dev.warp.api.plugin.PluginManager;
 import dev.warp.api.server.ServerRegistry;
@@ -90,19 +89,8 @@ public interface Warp {
   ServerRegistry servers();
 
   // ---------------------------------------------------------------------------
-  // Readiness and drain
+  // Drain (readiness holds belong to plugins: see PluginContext#holdReadiness)
   // ---------------------------------------------------------------------------
-
-  /**
-   * Holds the proxy's readiness until the hold is released: the readiness probe and the HAProxy
-   * agent check report the proxy as not ready, so that no new player is sent here. Take one while
-   * the proxy cannot serve players as the plugin sees it, such as until it discovered a lobby.
-   *
-   * @param reason why, as the readiness probe reports it
-   * @return the hold, to release once the plugin is ready
-   * @throws IllegalArgumentException if {@code reason} is blank
-   */
-  ReadinessHold holdReadiness(String reason);
 
   /**
    * Starts draining the proxy, as {@code POST /drain} or SIGTERM would: load balancers are told to

@@ -19,6 +19,7 @@ package dev.warp.api.plugin;
 import dev.warp.api.Warp;
 import dev.warp.api.command.CommandManager;
 import dev.warp.api.event.EventBus;
+import dev.warp.api.lifecycle.ReadinessHold;
 import dev.warp.api.logging.LogSinks;
 import dev.warp.api.messaging.Messaging;
 import dev.warp.api.permission.Permissions;
@@ -49,6 +50,19 @@ import org.slf4j.Logger;
  *
  * <p>A constructor asking for anything else fails the plugin with a message naming the parameter
  * and the types available.
+ *
+ * <h2>What the plugin owns</h2>
+ *
+ * <p>Everything a plugin registers through its context belongs to it and is released when the
+ * plugin is disabled or fails to load, whether or not the plugin cleans up: event subscriptions
+ * (drain policies too: they are {@link dev.warp.api.event.player.PlayerDrainEvent} handlers),
+ * plugin message channels, commands, permission providers, log sinks and readiness holds. What the
+ * plugin registers once it is gone, from a task still running, is undone at once and refused with
+ * an {@link IllegalStateException}.
+ *
+ * <p>Backend servers are not owned: a server registered through {@link Warp#servers()} stays
+ * registered when its plugin goes, as players may be playing on it and another plugin may have
+ * registered it too. Unregister them in {@link WarpPlugin#disable()} if they must go.
  *
  * <p>Implemented by the proxy; plugins must not implement it.
  */
@@ -121,4 +135,18 @@ public interface PluginContext {
    * @return the log sink registrar
    */
   LogSinks logSinks();
+
+  /**
+   * Holds the proxy's readiness until the hold is released, or until the plugin is disabled or
+   * fails: the readiness probe and the HAProxy agent check report the proxy as not ready, so that
+   * no new player is sent here. Take one while the proxy cannot serve players as the plugin sees
+   * it, such as until it discovered a lobby. A plugin that fails after taking one no longer leaves
+   * the proxy unready until it restarts.
+   *
+   * @param reason why, as the readiness probe reports it
+   * @return the hold, to release once the plugin is ready
+   * @throws IllegalArgumentException if {@code reason} is blank
+   * @throws IllegalStateException if the plugin is no longer enabled
+   */
+  ReadinessHold holdReadiness(String reason);
 }

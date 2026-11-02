@@ -674,9 +674,26 @@ public final class ConnectedPlayer {
       joinServer(proposed);
       return;
     }
-    holdFor(
-        new PlayerChooseInitialServerEventImpl(api, proposed),
-        event -> joinServer(asBackend(event.initialServer().orElse(null))));
+    holdFor(new PlayerChooseInitialServerEventImpl(api, proposed), this::joinChosen);
+  }
+
+  /** Applies the result {@link PlayerChooseInitialServerEvent} settled on. Client event loop. */
+  private void joinChosen(PlayerChooseInitialServerEventImpl event) {
+    switch (event.result()) {
+      case PlayerChooseInitialServerEvent.Allowed(RegisteredServer server) ->
+          joinServer(asBackend(server));
+      case PlayerChooseInitialServerEvent.Denied(Component reason) -> {
+        if (!clientConnection.channel().isActive()) {
+          return;
+        }
+        if (reason.equals(PlayerChooseInitialServerEventImpl.NO_SERVER_AVAILABLE)) {
+          logger.warn("No server available for {}, disconnecting", username);
+        } else {
+          logger.info("A plugin turned {} away before its first server", username);
+        }
+        disconnectFor(DisconnectEvent.Cause.NO_SERVER_AVAILABLE, reason);
+      }
+    }
   }
 
   /** Starts the session: fires {@link PostLoginEvent}, after which a disconnect event is owed. */
@@ -693,7 +710,7 @@ public final class ConnectedPlayer {
       logger.warn("No server available for {}, disconnecting", username);
       disconnectFor(
           DisconnectEvent.Cause.NO_SERVER_AVAILABLE,
-          "No server is available right now. Try again later.");
+          PlayerChooseInitialServerEventImpl.NO_SERVER_AVAILABLE);
       return;
     }
     preConnect(initial, true, null, false);

@@ -20,25 +20,34 @@ import dev.warp.api.event.player.PlayerChooseInitialServerEvent;
 import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
 
+import java.util.Objects;
 import java.util.Optional;
 
+import net.kyori.adventure.text.Component;
 import org.jspecify.annotations.Nullable;
 
-/** {@link PlayerChooseInitialServerEvent} as the proxy fires it. */
+/** The proxy's {@link PlayerChooseInitialServerEvent}. */
 public final class PlayerChooseInitialServerEventImpl implements PlayerChooseInitialServerEvent {
 
+  /** The reason a player is disconnected with when no server can take it. */
+  public static final Component NO_SERVER_AVAILABLE =
+      Component.text("No server is available right now. Try again later.");
+
   private final Player player;
-  private volatile @Nullable RegisteredServer initialServer;
+  private final @Nullable RegisteredServer proposed;
+  private volatile Result result;
 
   /**
    * Creates the event.
    *
    * @param player the player
-   * @param proposed the server the proxy proposes, or {@code null} if it has none
+   * @param proposed the server the proxy proposes, or {@code null} if it has none: the result then
+   *     starts as a denial with {@link #NO_SERVER_AVAILABLE}
    */
   public PlayerChooseInitialServerEventImpl(Player player, @Nullable RegisteredServer proposed) {
     this.player = player;
-    this.initialServer = proposed;
+    this.proposed = proposed;
+    this.result = proposed == null ? new Denied(NO_SERVER_AVAILABLE) : new Allowed(proposed);
   }
 
   @Override
@@ -47,12 +56,17 @@ public final class PlayerChooseInitialServerEventImpl implements PlayerChooseIni
   }
 
   @Override
-  public Optional<RegisteredServer> initialServer() {
-    return Optional.ofNullable(initialServer);
+  public Optional<RegisteredServer> proposedServer() {
+    return Optional.ofNullable(proposed);
   }
 
   @Override
-  public void setInitialServer(@Nullable RegisteredServer server) {
-    this.initialServer = server;
+  public Result result() {
+    return result;
+  }
+
+  @Override
+  public void setResult(Result result) {
+    this.result = Objects.requireNonNull(result, "result");
   }
 }
