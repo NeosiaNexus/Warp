@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import dev.warp.api.Warp;
 import dev.warp.api.player.InboundConnection;
@@ -43,6 +44,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import io.netty.channel.embedded.EmbeddedChannel;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -428,6 +430,8 @@ class WarpPluginManagerTest {
                   .formatted(PROBE)));
       manager.loadAll();
       PipelineHost host = mock(PipelineHost.class);
+      EmbeddedChannel channel = new EmbeddedChannel();
+      when(host.channel()).thenReturn(channel);
       InboundConnection connection = mock(InboundConnection.class);
 
       assertTrue(pipelines.initializeClient(host, 769, connection));
@@ -437,6 +441,7 @@ class WarpPluginManagerTest {
       assertTrue(pipelines.initializeClient(host, 769, connection));
 
       assertNull(System.getProperty(PROBE + ".counter"));
+      channel.finishAndReleaseAll();
     }
   }
 
