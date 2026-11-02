@@ -178,50 +178,83 @@ class NbtTreesTest {
     }
 
     @Test
-    @DisplayName("should stop at the depth a client stops at")
+    @DisplayName("should stop at the depth a client stops at, lists and compounds alike")
     void depth() {
-      ByteBuf deep = Unpooled.buffer();
-      for (int i = 0; i < 600; i++) {
-        deep.writeByte(0x09).writeByte(0x09).writeInt(1);
-        deep.readerIndex(i == 0 ? 0 : deep.readerIndex());
-      }
       // A list of lists of lists...: the reader stops at 512 levels rather than overflowing.
-      ByteBuf nested = Unpooled.buffer().writeByte(0x09);
+      ByteBuf lists = Unpooled.buffer().writeByte(0x09);
       for (int i = 0; i < 600; i++) {
-        nested.writeByte(0x09).writeInt(1);
+        lists.writeByte(0x09).writeInt(1);
       }
-      BinaryTag tag = NbtReader.readNameless(nested);
+      BinaryTag tag = NbtReader.readNameless(lists);
       int levels = 0;
       while (tag instanceof ListBinaryTag list && list.size() == 1) {
         tag = list.get(0);
         levels++;
       }
       assertEquals(NbtTree.MAX_DEPTH - 1, levels);
-      deep.release();
+
+      ByteBuf compounds = Unpooled.buffer().writeByte(0x0A);
+      for (int i = 0; i < 600; i++) {
+        compounds.writeByte(0x0A).writeShort(1).writeByte('c');
+      }
+      tag = NbtReader.readNameless(compounds);
+      levels = 0;
+      while (tag instanceof CompoundBinaryTag compound && compound.get("c") != null) {
+        tag = compound.get("c");
+        levels++;
+      }
+      assertEquals(NbtTree.MAX_DEPTH - 1, levels);
     }
 
     @Test
-    @DisplayName("should decode modified UTF-8, and malformed bytes leniently")
+    @DisplayName("should read empty arrays, and arrays that end the buffer")
+    void arrays() {
+      assertEquals(ByteArrayBinaryTag.byteArrayBinaryTag(), read(0x07, 0, 0, 0, 0));
+      assertEquals(IntArrayBinaryTag.intArrayBinaryTag(), read(0x0B, 0, 0, 0, 0));
+      assertEquals(LongArrayBinaryTag.longArrayBinaryTag(), read(0x0C, 0, 0, 0, 0));
+      assertEquals(ByteArrayBinaryTag.byteArrayBinaryTag((byte) 9), read(0x07, 0, 0, 0, 1, 9));
+      assertEquals(IntArrayBinaryTag.intArrayBinaryTag(9), read(0x0B, 0, 0, 0, 1, 0, 0, 0, 9));
+      assertEquals(
+          LongArrayBinaryTag.longArrayBinaryTag(9L),
+          read(0x0C, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 9));
+    }
+
+    @Test
+    @DisplayName("should stop a compound after a list of TAG_End claiming elements")
+    void endList() {
+      assertEquals(
+          CompoundBinaryTag.builder()
+              .put("l", ListBinaryTag.empty())
+              .putByte("x", (byte) 1)
+              .build(),
+          read(0x0A, 0x09, 0, 1, 'l', 0x00, 0, 0, 0, 2, 0x01, 0, 1, 'x', 0x01, 0x00));
+    }
+
+    @Test
+    @DisplayName("should stop a list after an element cut short")
+    void truncatedElement() {
+      // Two compounds: the first holds an unknown type, the reader keeps what it read of it.
+      ListBinaryTag list =
+          (ListBinaryTag)
+              read(
+                  0x09, 0x0A, 0, 0, 0, 2, 0x01, 0, 1, 'a', 0x05, 0x63, 0x01, 0, 1, 'b', 0x06, 0x00);
+
+      assertEquals(1, list.size());
+      assertEquals(CompoundBinaryTag.builder().putByte("a", (byte) 5).build(), list.get(0));
+    }
+
+    @Test
+    @DisplayName("should decode modified UTF-8, and anything else as standard UTF-8")
     void modifiedUtf8() {
+      // NUL on two bytes, then an emoji as a surrogate pair of three bytes each.
       assertEquals(
-          "a\u0000\u00E9\u20AC",
-          NbtReader.modifiedUtf8(
-              new byte[] {
-                'a',
-                (byte) 0xC0,
-                (byte) 0x80,
-                (byte) 0xC3,
-                (byte) 0xA9,
-                (byte) 0xE2,
-                (byte) 0x82,
-                (byte) 0xAC
-              }));
-      assertEquals("a\uFFFD", NbtReader.modifiedUtf8(new byte[] {'a', (byte) 0xFF}));
-      assertEquals("\uFFFD", NbtReader.modifiedUtf8(new byte[] {(byte) 0xC3}));
-      assertEquals("\uFFFD", NbtReader.modifiedUtf8(new byte[] {(byte) 0xE2, (byte) 0x82}));
+          "a" + "\u0000" + "\uD83D\uDE00",
+          ((StringBinaryTag) read(0x08, 0, 9, 'a', 0xC0, 0x80, 0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x80))
+              .value());
+      // Standard UTF-8 of the same emoji: not modified UTF-8, read as standard UTF-8.
       assertEquals(
-          "\uFFFD\uFFFD",
-          NbtReader.modifiedUtf8(new byte[] {(byte) 0xE2, 'x', 'y'}).replace("xy", "\uFFFD"));
+          "\uD83D\uDE00", ((StringBinaryTag) read(0x08, 0, 4, 0xF0, 0x9F, 0x98, 0x80)).value());
+      assertEquals("a" + "\uFFFD", ((StringBinaryTag) read(0x08, 0, 2, 'a', 0xFF)).value());
     }
   }
 

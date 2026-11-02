@@ -186,21 +186,17 @@ public final class ComponentCodec {
    * bytes that are there.
    */
   private static String readJson(ByteBuf buf) {
-    if (!buf.isReadable()) {
-      return "";
-    }
     int start = buf.readerIndex();
     int length;
     try {
       length = VarInt.read(buf);
     } catch (RuntimeException malformed) {
       buf.readerIndex(start);
-      length = buf.readableBytes();
+      length = -1;
     }
-    if (length < 0 || length > buf.readableBytes()) {
-      length = buf.readableBytes();
-    }
-    return buf.readCharSequence(length, StandardCharsets.UTF_8).toString();
+    int readable = buf.readableBytes();
+    int read = length < 0 ? readable : Math.min(length, readable);
+    return buf.readCharSequence(read, StandardCharsets.UTF_8).toString();
   }
 
   /**

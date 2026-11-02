@@ -17,12 +17,14 @@
 package dev.warp.protocol.text;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
@@ -31,7 +33,6 @@ import net.kyori.adventure.nbt.BinaryTag;
 import net.kyori.adventure.nbt.ByteArrayBinaryTag;
 import net.kyori.adventure.nbt.ByteBinaryTag;
 import net.kyori.adventure.nbt.CompoundBinaryTag;
-import net.kyori.adventure.nbt.EndBinaryTag;
 import net.kyori.adventure.nbt.IntArrayBinaryTag;
 import net.kyori.adventure.nbt.ListBinaryTag;
 import net.kyori.adventure.nbt.LongArrayBinaryTag;
@@ -102,9 +103,6 @@ final class ComponentDecoder {
    * @return the component, its text when it is not JSON, empty when it is empty
    */
   static Component json(String json) {
-    if (json.isEmpty()) {
-      return Component.empty();
-    }
     JsonElement tree;
     try {
       tree = JsonParser.parseString(json);
@@ -121,9 +119,6 @@ final class ComponentDecoder {
    * @return the component, empty when the tag is
    */
   static Component nbt(BinaryTag tag) {
-    if (tag instanceof EndBinaryTag) {
-      return Component.empty();
-    }
     return tree(toJson(tag, null), null);
   }
 
@@ -133,10 +128,10 @@ final class ComponentDecoder {
     }
     Component component;
     try {
-      component = GSON.deserializeFromTree(normalize(tree, 0));
+      component = GSON.deserializeFromTree(normalize(tree));
     } catch (RuntimeException unreadable) {
       StringBuilder text = new StringBuilder();
-      plainText(tree, text, 0);
+      plainText(tree, text);
       component = Component.text(text.isEmpty() && raw != null ? raw : text.toString());
     }
     return component.equals(Component.empty()) ? Component.empty() : component;
@@ -198,7 +193,7 @@ final class ComponentDecoder {
         }
         yield object;
       }
-      default -> new JsonPrimitive("");
+      default -> JsonNull.INSTANCE; // no tag
     };
   }
 
@@ -217,7 +212,7 @@ final class ComponentDecoder {
     try {
       return new JsonPrimitive(SNBT.asString(tag));
     } catch (IOException unprintable) {
-      return new JsonPrimitive("");
+      throw new UncheckedIOException(unprintable); // written to a string, never happens
     }
   }
 
@@ -227,15 +222,13 @@ final class ComponentDecoder {
 
   /**
    * A copy of a component tree with its events in one form, and what Adventure refuses left out.
+   * Its depth is bounded by what produced it: Gson's nesting limit, or {@link NbtReader}'s.
    */
-  private static JsonElement normalize(JsonElement element, int depth) {
-    if (depth > NbtTree.MAX_DEPTH) {
-      throw new IllegalArgumentException("Component nested too deeply");
-    }
+  private static JsonElement normalize(JsonElement element) {
     if (element.isJsonArray()) {
       JsonArray array = new JsonArray();
       for (JsonElement item : element.getAsJsonArray()) {
-        array.add(normalize(item, depth + 1));
+        array.add(normalize(item));
       }
       return array;
     }
@@ -247,9 +240,9 @@ final class ComponentDecoder {
       String key = entry.getKey();
       JsonElement value = entry.getValue();
       switch (key) {
-        case "extra", "with", "separator" -> object.add(key, normalize(value, depth + 1));
+        case "extra", "with", "separator" -> object.add(key, normalize(value));
         case "hoverEvent", "hover_event" -> {
-          JsonObject hover = hover(value, depth + 1);
+          JsonObject hover = hover(value);
           if (hover != null) {
             object.add("hoverEvent", hover);
           }
@@ -303,7 +296,7 @@ final class ComponentDecoder {
    * inlined one, or a pre-1.16 {@code value}, whose item or entity is SNBT text. Returns {@code
    * null} for one that cannot be read.
    */
-  private static @Nullable JsonObject hover(JsonElement value, int depth) {
+  private static @Nullable JsonObject hover(JsonElement value) {
     if (!value.isJsonObject()) {
       return null;
     }
@@ -320,14 +313,14 @@ final class ComponentDecoder {
         switch (action) {
           case "show_text" -> {
             JsonElement text = contents != null ? contents : legacy;
-            yield text == null ? null : normalize(text, depth + 1);
+            yield text == null ? null : normalize(text);
           }
           case "show_achievement" -> {
             JsonElement id = contents != null ? contents : legacy;
             yield id == null ? null : new JsonPrimitive(plainText(id));
           }
           case "show_item" -> item(contents != null ? contents : legacySnbt(legacy, hover));
-          default -> entity(contents != null ? contents : legacySnbt(legacy, hover), depth);
+          default -> entity(contents != null ? contents : legacySnbt(legacy, hover));
         };
     if (normalized == null) {
       return null;
@@ -395,7 +388,7 @@ final class ComponentDecoder {
    * type is {@code type} and the UUID {@code id}; from 1.21.5 the type is {@code id} and the UUID
    * {@code uuid}. Before 1.13 the name was plain text, a JSON component after.
    */
-  private static @Nullable JsonObject entity(@Nullable JsonElement source, int depth) {
+  private static @Nullable JsonObject entity(@Nullable JsonElement source) {
     if (source == null || !source.isJsonObject()) {
       return null;
     }
@@ -411,7 +404,7 @@ final class ComponentDecoder {
     entity.addProperty("id", id.toString());
     JsonElement name = fields.get("name");
     if (name != null) {
-      entity.add("name", normalize(entityName(name), depth + 1));
+      entity.add("name", normalize(entityName(name)));
     }
     return entity;
   }
@@ -483,7 +476,7 @@ final class ComponentDecoder {
 
   private static String plainText(JsonElement element) {
     StringBuilder text = new StringBuilder();
-    plainText(element, text, 0);
+    plainText(element, text);
     return text.toString();
   }
 
@@ -491,15 +484,12 @@ final class ComponentDecoder {
    * Appends the text a component tree shows, as far as it can be read: strings, the {@code text}
    * and {@code translate} fields (a translation's fallback when it has one), and its children.
    */
-  private static void plainText(JsonElement element, StringBuilder text, int depth) {
-    if (depth > NbtTree.MAX_DEPTH) {
-      return;
-    }
+  private static void plainText(JsonElement element, StringBuilder text) {
     if (element.isJsonPrimitive()) {
       text.append(element.getAsString());
     } else if (element.isJsonArray()) {
       for (JsonElement item : element.getAsJsonArray()) {
-        plainText(item, text, depth + 1);
+        plainText(item, text);
       }
     } else if (element.isJsonObject()) {
       JsonObject object = element.getAsJsonObject();
@@ -513,7 +503,7 @@ final class ComponentDecoder {
       }
       JsonElement extra = object.get("extra");
       if (extra != null) {
-        plainText(extra, text, depth + 1);
+        plainText(extra, text);
       }
     }
   }

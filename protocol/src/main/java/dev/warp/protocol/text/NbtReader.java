@@ -16,9 +16,12 @@
  */
 package dev.warp.protocol.text;
 
+import java.io.DataInputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufInputStream;
 import net.kyori.adventure.nbt.BinaryTag;
 import net.kyori.adventure.nbt.ByteArrayBinaryTag;
 import net.kyori.adventure.nbt.ByteBinaryTag;
@@ -74,9 +77,6 @@ final class NbtReader {
 
   /** Reads a payload, or returns {@code null} when nothing of it could be read. */
   private @Nullable BinaryTag payload(int type, int depth) {
-    if (truncated) {
-      return null;
-    }
     return switch (type) {
       case 1 -> need(Byte.BYTES) ? ByteBinaryTag.byteBinaryTag(in.readByte()) : null;
       case 2 -> need(Short.BYTES) ? ShortBinaryTag.shortBinaryTag(in.readShort()) : null;
@@ -147,7 +147,7 @@ final class NbtReader {
     int elementType = in.readUnsignedByte();
     int size = in.readInt();
     ListBinaryTag.Builder<BinaryTag> list = ListBinaryTag.heterogeneousListBinaryTag();
-    for (int i = 0; i < size && elementType != TAG_END; i++) {
+    for (int i = 0; i < size && elementType != TAG_END && !truncated; i++) {
       BinaryTag element = payload(elementType, depth + 1);
       if (element == null) {
         break;
@@ -183,13 +183,17 @@ final class NbtReader {
     if (!need(Short.BYTES)) {
       return null;
     }
-    int length = in.readUnsignedShort();
-    if (!need(length)) {
+    int length = in.getUnsignedShort(in.readerIndex());
+    if (!need(Short.BYTES + length)) {
       return null;
     }
-    byte[] bytes = new byte[length];
-    in.readBytes(bytes);
-    return modifiedUtf8(bytes);
+    ByteBuf utf = in.readSlice(Short.BYTES + length);
+    try {
+      return DataInputStream.readUTF(new ByteBufInputStream(utf.duplicate()));
+    } catch (IOException notModifiedUtf8) {
+      // Not modified UTF-8: standard UTF-8 decoding replaces what it cannot read.
+      return utf.toString(Short.BYTES, length, StandardCharsets.UTF_8);
+    }
   }
 
   /** Reads an array length, or returns -1 when it is negative or longer than the buffer. */
@@ -211,36 +215,5 @@ final class NbtReader {
     }
     truncated = true;
     return false;
-  }
-
-  /**
-   * Decodes modified UTF-8 as {@link java.io.DataInput#readUTF} does, leniently: a malformed
-   * sequence decodes as U+FFFD, as standard UTF-8 decoding would.
-   */
-  static String modifiedUtf8(byte[] bytes) {
-    StringBuilder out = new StringBuilder(bytes.length);
-    int i = 0;
-    while (i < bytes.length) {
-      int b = bytes[i] & 0xFF;
-      if (b < 0x80) {
-        out.append((char) b);
-        i++;
-      } else if ((b & 0xE0) == 0xC0 && i + 1 < bytes.length && (bytes[i + 1] & 0xC0) == 0x80) {
-        out.append((char) (((b & 0x1F) << 6) | (bytes[i + 1] & 0x3F)));
-        i += 2;
-      } else if ((b & 0xF0) == 0xE0
-          && i + 2 < bytes.length
-          && (bytes[i + 1] & 0xC0) == 0x80
-          && (bytes[i + 2] & 0xC0) == 0x80) {
-        out.append(
-            (char) (((b & 0x0F) << 12) | ((bytes[i + 1] & 0x3F) << 6) | (bytes[i + 2] & 0x3F)));
-        i += 3;
-      } else {
-        // Not modified UTF-8: read the rest as standard UTF-8, which replaces what it cannot read.
-        out.append(new String(bytes, i, bytes.length - i, StandardCharsets.UTF_8));
-        break;
-      }
-    }
-    return out.toString();
   }
 }

@@ -45,7 +45,6 @@ import net.kyori.adventure.text.TranslatableComponent;
 import net.kyori.adventure.text.TranslationArgument;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.DataComponentValue;
-import net.kyori.adventure.text.event.DataComponentValueConverterRegistry;
 import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.ShadowColor;
@@ -342,9 +341,6 @@ final class ComponentWriter {
   // ---------------------------------------------------------------------------
 
   private void style(Style style) {
-    if (style.isEmpty()) {
-      return;
-    }
     if (features.codecs()) {
       color(style.color());
       shadowColor(style.shadowColor());
@@ -505,21 +501,20 @@ final class ComponentWriter {
    * as https, as Adventure does for these versions.
    */
   private static @Nullable String untrustedUri(String url) {
-    String candidate = url;
-    for (int attempt = 0; attempt < 2; attempt++) {
-      try {
-        String scheme = new URI(candidate).getScheme();
-        if (scheme == null) {
-          candidate = "https://" + url;
-          continue;
-        }
-        String lower = scheme.toLowerCase(Locale.ROOT);
-        return lower.equals("http") || lower.equals("https") ? candidate : null;
-      } catch (URISyntaxException e) {
-        return null;
-      }
+    String candidate = scheme(url) == null ? "https://" + url : url;
+    String scheme = scheme(candidate);
+    return scheme != null && (scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))
+        ? candidate
+        : null;
+  }
+
+  /** The scheme of a URI, or {@code null} when it has none or is no URI. */
+  private static @Nullable String scheme(String uri) {
+    try {
+      return new URI(uri).getScheme();
+    } catch (URISyntaxException notUri) {
+      return null;
     }
-    return null;
   }
 
   /**
@@ -634,8 +629,9 @@ final class ComponentWriter {
   }
 
   /**
-   * Writes an item's data components as NBT values: those Adventure holds as SNBT or can convert to
-   * it, and the removed ones as {@code "!id": {}}. A value that converts to nothing is left out.
+   * Writes an item's data components as NBT values: those Adventure holds as SNBT, and the removed
+   * ones as {@code "!id": {}}. Other values, such as a Gson serializer's JSON, which Adventure
+   * 4.26.1 converts to no SNBT, are left out.
    */
   private void dataComponents(Map<Key, DataComponentValue> components) {
     List<String> names = new ArrayList<>(components.size());
@@ -648,7 +644,7 @@ final class ComponentWriter {
         values.add(CompoundBinaryTag.empty());
         continue;
       }
-      BinaryTag tag = dataComponent(key, value);
+      BinaryTag tag = dataComponent(value);
       if (tag != null) {
         names.add(key.asString());
         values.add(tag);
@@ -664,20 +660,10 @@ final class ComponentWriter {
     out.endObject();
   }
 
-  private static @Nullable BinaryTag dataComponent(Key key, DataComponentValue value) {
-    DataComponentValue.TagSerializable serializable;
-    if (value instanceof DataComponentValue.TagSerializable tag) {
-      serializable = tag;
-    } else {
-      try {
-        serializable =
-            DataComponentValueConverterRegistry.convert(
-                DataComponentValue.TagSerializable.class, key, value);
-      } catch (RuntimeException noConversion) {
-        return null;
-      }
-    }
-    return parse(serializable.asBinaryTag());
+  private static @Nullable BinaryTag dataComponent(DataComponentValue value) {
+    return value instanceof DataComponentValue.TagSerializable serializable
+        ? parse(serializable.asBinaryTag())
+        : null;
   }
 
   /** Parses SNBT Adventure holds, or returns {@code null} when it is not valid SNBT. */
@@ -805,9 +791,6 @@ final class ComponentWriter {
 
   /** Whether any part of {@code style} is written for the version. */
   private boolean writesStyle(Style style) {
-    if (style.isEmpty()) {
-      return false;
-    }
     if (style.color() != null) {
       return true;
     }
