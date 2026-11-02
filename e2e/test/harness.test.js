@@ -194,6 +194,12 @@ describe('scenario features', () => {
     assert.equal(features(769, { direct: true }).transfers, 'no proxy in a control run');
   });
 
+  it('drains on every version a bot reaches without a bridge, transferring from 1.20.5', () => {
+    for (const protocol of [47, 763, 765, 766, 777]) assert.equal(features(protocol).drain, true, String(protocol));
+    assert.equal(features(5, { bridged: true }).drain, 'through ViaProxy, the bridges only lead to warp and warp-alt');
+    assert.equal(features(769, { direct: true }).drain, 'no proxy in a control run');
+  });
+
   it('signs chat from 1.20, whose servers take the keys that verify chat sessions from the mock', () => {
     assert.equal(features(47).signedChat, "before 1.20 a server trusts only Mojang's own key to verify chat");
     assert.notEqual(features(762).signedChat, true); // 1.19.4: Mojang's key is bundled in authlib

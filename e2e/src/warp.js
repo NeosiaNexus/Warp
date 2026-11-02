@@ -45,6 +45,9 @@ export class Warp {
    *   packet sends to it (1.20.5+)
    * @param {{mode: string, secret: string}|null} options.forwarding player info forwarding, with the
    *   secret the backends share, or null for none
+   * @param {{http: number, agent: number, token: string}} [options.management] the management server
+   *   (probes, HAProxy agent check, drain endpoint) on these ports, with this token; off if absent
+   * @param {Record<string, string|number|boolean>} [options.drain] keys of the `drain` section
    * @param {string} options.logDir
    * @param {string[]} [options.jvmArgs] JVM options after the defaults (the last -Xmx wins)
    */
@@ -82,7 +85,7 @@ compression {
   level = -1
   passthrough = ${this.passthrough}
 }
-`;
+${this.management ? managementSection(this.management) : ''}${this.drain ? drainSection(this.drain) : ''}`;
   }
 
   start() {
@@ -101,8 +104,11 @@ compression {
     this.process = new ManagedProcess(this.name, this.java, args, {
       cwd: this.dir,
       // The secret goes in the variable that overrides `forwarding.secret-file`, so that one set in
-      // the caller's environment cannot replace it.
-      env: this.forwarding ? { WARP_FORWARDING_SECRET: this.forwarding.secret } : undefined,
+      // the caller's environment cannot replace it. The management token likewise.
+      env: {
+        ...(this.forwarding ? { WARP_FORWARDING_SECRET: this.forwarding.secret } : {}),
+        ...(this.management ? { WARP_MANAGEMENT_TOKEN: this.management.token } : {}),
+      },
       logFile: join(this.logDir, `${this.name}.log`),
       failures: WARP_FAILURES,
     }).start();
@@ -129,6 +135,19 @@ compression {
     }
   }
 
+  /** Resolves with the exit of an instance that stops by itself; rejects after `timeoutMs`. */
+  async exitedWithin(timeoutMs) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${this.name} still runs after ${timeoutMs / 1000} s`)), timeoutMs);
+    });
+    try {
+      return await Promise.race([this.process.exited, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /** Stops the instance. A shutdown that hangs is a bug: the thread dump goes to the log. */
   async stop() {
     if (!this.process) return null;
@@ -149,4 +168,23 @@ compression {
 
 function jcmd(java) {
   return join(dirname(java), 'jcmd');
+}
+
+/** The `management` section: both ports on the loopback; the token goes in the environment. */
+function managementSection({ http, agent }) {
+  return `management {
+  enabled = true
+  bind = "127.0.0.1:${http}"
+  agent-check = "127.0.0.1:${agent}"
+}
+`;
+}
+
+/** The `drain` section, a key per entry: strings quoted, numbers and booleans as they are. */
+function drainSection(keys) {
+  const lines = Object.entries(keys).map(([key, value]) => `  ${key} = ${typeof value === 'string' ? JSON.stringify(value) : value}`);
+  return `drain {
+${lines.join('\n')}
+}
+`;
 }

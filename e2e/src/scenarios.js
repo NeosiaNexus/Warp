@@ -2,11 +2,14 @@
 // sign of trouble. Backends are told apart by game mode, which every version announces when a
 // player joins: lobby = creative, survival = adventure.
 import { randomBytes, randomUUID } from 'node:crypto';
+import { connect as tcpConnect } from 'node:net';
+import { dirname, join } from 'node:path';
 
 import { FORWARDED_PLAYER, mojangUuid, offlineUuid } from './mojang.js';
 import { sha1 } from './packs.js';
 import { sleep } from './proc.js';
 import { FIRST_PROTOCOL, LAST_PROTOCOL, createProfileKeys, createSigner } from './profile-keys.js';
+import { Warp } from './warp.js';
 
 export const LOBBY_MODE = 'creative';
 export const SURVIVAL_MODE = 'adventure';
@@ -59,6 +62,8 @@ export function features(protocol, { direct = false, forwarding = 'none', online
       protocol >= TRANSFER_PROTOCOL || 'no Transfer packet before 1.20.5',
       !bridged || 'through ViaProxy, Warp sees the bridge’s handshake, not the bot’s',
     ),
+    // The drain runs on a Warp of its own, which no ViaProxy bridge leads to.
+    drain: all(proxy, !bridged || 'through ViaProxy, the bridges only lead to warp and warp-alt'),
   };
 }
 
@@ -577,6 +582,144 @@ async function expectTransferRefused(ctx, username) {
   throw new Error('warp-alt let a transferred player in with accepts-transfers off');
 }
 
+/** The bearer token of warp-drain's management server. */
+const DRAIN_TOKEN = 'e2e-drain-token';
+
+/**
+ * A drain, as a rolling update asks for one: a Warp of its own, warp-drain, with its management
+ * server and HAProxy agent check, draining towards warp (which accepts transfers). From 1.20.5,
+ * SIGTERM drains it, as Kubernetes would with `drain.on-sigterm`: readiness and the agent check
+ * say so at once, then the player gets a Transfer packet to warp, comes back there by transfer,
+ * and warp-drain, empty, exits with 0. Before, a client cannot be transferred: `POST /drain?wait`
+ * keeps the player until it leaves, then answers, and warp-drain exits with 0.
+ */
+async function drain(ctx) {
+  const base = ctx.warp.instance;
+  const name = `warp-drain-${ctx.variant.name}`;
+  const instance = new Warp({
+    ...base,
+    name,
+    dir: join(dirname(base.dir), name),
+    port: ctx.ports.drain,
+    acceptsTransfers: false,
+    jvmArgs: [],
+    management: { http: ctx.ports.drainHttp, agent: ctx.ports.drainAgent, token: DRAIN_TOKEN },
+    drain: {
+      'transfer-to': `127.0.0.1:${ctx.warp.port}`,
+      'on-sigterm': true,
+      'propagation-delay': '2s',
+      'transfer-interval': '100ms',
+      timeout: '1m',
+    },
+  });
+  instance.prepare();
+  await instance.start();
+  let detail;
+  try {
+    detail = has(ctx, 'transfers') ? await drainBySigterm(ctx, instance) : await drainByHttp(ctx, instance);
+  } finally {
+    await instance.stop();
+  }
+  const failures = instance.failures();
+  if (failures.length) throw new Error(`${name}: ${failures[0]}`);
+  return detail;
+}
+
+async function drainBySigterm(ctx, instance) {
+  const bot = await joinWarp(ctx, 'e2e_drained', { port: instance.port });
+  let sent;
+  try {
+    await bot.waitForGameMode(LOBBY_MODE, 20_000);
+    await expectReadiness(instance, 200, 'up ready');
+    const received = new Promise((resolve) => bot.bot._client.once('transfer', resolve));
+    instance.process.signal('SIGTERM');
+    await instance.process.waitFor(/Drain started by SIGTERM/, 5_000);
+    // Within the propagation delay: load balancers are told before anyone moves.
+    await expectReadiness(instance, 503, 'drain');
+    sent = await Promise.race([received, sleep(15_000).then(() => null)]);
+    if (sent === null) throw new Error('warp-drain drained, but no Transfer packet reached the player');
+    if (sent.host !== '127.0.0.1' || sent.port !== ctx.warp.port) {
+      throw new Error(`Transfer to ${sent.host}:${sent.port}, expected warp at 127.0.0.1:${ctx.warp.port}`);
+    }
+  } finally {
+    // As a vanilla client does on a Transfer packet.
+    await bot.quit();
+  }
+  const back = await joinWarp(ctx, 'e2e_drained', ctx.warp, null, true);
+  try {
+    await back.waitForGameMode(LOBBY_MODE, 20_000);
+    back.healthy();
+  } finally {
+    back.quit();
+  }
+  await expectExit(instance, /Drain complete after .*: 1 transferred, 0 kept/);
+  return 'SIGTERM: readiness 503 and agent "drain" at once; the player was transferred to warp and came back by transfer; warp-drain exited with 0';
+}
+
+async function drainByHttp(ctx, instance) {
+  const url = `http://127.0.0.1:${instance.management.http}/drain`;
+  const bot = await joinWarp(ctx, 'e2e_kept', { port: instance.port });
+  let answer;
+  try {
+    await bot.waitForGameMode(LOBBY_MODE, 20_000);
+    await expectReadiness(instance, 200, 'up ready');
+    const refused = await fetch(url, { method: 'POST', headers: { Authorization: 'Bearer wrong' } });
+    if (refused.status !== 401) throw new Error(`POST /drain with a wrong token answered ${refused.status}, expected 401`);
+    answer = fetch(`${url}?wait=true`, { method: 'POST', headers: { Authorization: `Bearer ${DRAIN_TOKEN}` } });
+    await instance.process.waitFor(/Drain started by POST \/drain/, 5_000);
+    await expectReadiness(instance, 503, 'drain');
+    // Past the propagation delay and the transfer phase: the player is kept, never kicked.
+    await sleep(4_000);
+    const status = await (await fetch(url)).json();
+    if (status.phase !== 'waiting' || status.kept !== 1 || status.players !== 1) {
+      throw new Error(`expected the player kept in phase 2, got ${JSON.stringify(status)}`);
+    }
+    bot.healthy();
+  } finally {
+    await bot.quit();
+  }
+  const response = await answer;
+  const body = await response.json();
+  if (response.status !== 200 || body.outcome !== 'drained') {
+    throw new Error(`POST /drain?wait answered ${response.status} ${JSON.stringify(body)}, expected 200 drained`);
+  }
+  await expectExit(instance, /Drain complete after .*: 0 transferred, 1 kept/);
+  return 'POST /drain?wait: the player, whose client cannot be transferred, was kept until it left; then the drain answered "drained" and warp-drain exited with 0';
+}
+
+/** Checks warp-drain's readiness probe and HAProxy agent check. */
+async function expectReadiness(instance, status, agent) {
+  const response = await fetch(`http://127.0.0.1:${instance.management.http}/readyz`);
+  const body = await response.json();
+  if (response.status !== status) throw new Error(`/readyz answered ${response.status} ${JSON.stringify(body)}, expected ${status}`);
+  const reply = await agentCheck(instance.management.agent);
+  if (reply !== agent) throw new Error(`the agent check answered "${reply}", expected "${agent}"`);
+}
+
+/** Reads the HAProxy agent check's one line, as HAProxy does. */
+function agentCheck(port) {
+  return new Promise((resolve, reject) => {
+    const socket = tcpConnect(port, '127.0.0.1');
+    let data = '';
+    socket.setEncoding('ascii');
+    socket.setTimeout(5_000, () => {
+      socket.destroy();
+      reject(new Error('the agent check did not answer'));
+    });
+    socket.on('data', (chunk) => { data += chunk; });
+    socket.on('end', () => resolve(data.trim()));
+    socket.on('error', reject);
+  });
+}
+
+/** Waits for warp-drain to stop by itself with 0, having logged `summary`. */
+async function expectExit(instance, summary) {
+  const exit = await instance.exitedWithin(30_000);
+  if (exit.code !== 0) throw new Error(`warp-drain exited with ${exit.code ?? exit.signal}, expected 0 once empty`);
+  if (!instance.process.lines.some((line) => summary.test(line))) throw new Error(`warp-drain never logged ${summary}`);
+  if (!instance.process.lines.some((line) => /Exiting with code 0/.test(line))) throw new Error('warp-drain never logged its exit code');
+}
+
 const DAY_MS = 86_400_000;
 /**
  * Warp's reason for every refused key: the only profile key reason that 1.19, 1.19.1 and 1.19.2
@@ -704,4 +847,5 @@ export const SCENARIOS = [
   { name: 'fallback-rejected', run: fallbackRejected, requires: 'proxy' },
   { name: 'switch-refused', run: switchRefused, requires: 'switching' },
   { name: 'transfer', run: transfer, requires: 'transfers' },
+  { name: 'drain', run: drain, requires: 'drain' },
 ];
