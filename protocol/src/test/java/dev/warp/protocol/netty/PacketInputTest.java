@@ -35,13 +35,16 @@ import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.StateRegistry;
 import dev.warp.protocol.packet.play.KeepAlive;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.zip.Deflater;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.DecoderException;
 import io.netty.handler.codec.MessageToMessageDecoder;
@@ -100,6 +103,37 @@ class PacketInputTest {
 
       assertArrayEquals(before, Frames.drain(ch.readInbound()));
       assertArrayEquals(after, Frames.drain(ch.readInbound()));
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should unframe every frame of a read in pooled buffers, as the proxy gets them")
+    void unframesPooledFrames() {
+      PacketDecompressor handler = new PacketDecompressor(null);
+      List<byte[]> packets = new ArrayList<>();
+      EmbeddedChannel ch =
+          new EmbeddedChannel(
+              new FrameDecoder(),
+              handler,
+              new ChannelInboundHandlerAdapter() {
+                @Override
+                public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                  packets.add(Frames.drain((ByteBuf) msg));
+                  // The first packet switches compression on, as a Set Compression does.
+                  if (packets.size() == 1) {
+                    handler.enableCompression(decompressor(false));
+                  }
+                }
+              });
+      ch.config().setAllocator(PooledByteBufAllocator.DEFAULT);
+      ByteBuf wire = PooledByteBufAllocator.DEFAULT.directBuffer();
+      // Set Compression, then a packet sent uncompressed (Data Length 0): one read, two frames.
+      wire.writeBytes(new byte[] {3, 3, (byte) 0x80, 2, 5, 0, 2, 1, 2, 3});
+
+      ch.writeInbound(wire);
+
+      assertArrayEquals(new byte[] {3, (byte) 0x80, 2}, packets.get(0));
+      assertArrayEquals(new byte[] {2, 1, 2, 3}, packets.get(1));
       assertFalse(ch.finish());
     }
 

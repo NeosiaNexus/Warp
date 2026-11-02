@@ -250,13 +250,21 @@ public final class FrameDecompressor implements AutoCloseable {
    *     inflated; owned by the caller
    */
   public ByteBuf packetOf(ByteBufAllocator alloc, ByteBuf body) {
-    ByteBuf cursor = body.duplicate();
-    int dataLength = VarInt.read(cursor);
-    if (dataLength == 0) {
-      return cursor.retainedSlice();
+    // Read in place and restore the index, rather than through a duplicate: Netty 4.2's pooled
+    // slices (what FrameDecoder hands out) return, from retainedSlice() on their duplicate, a slice
+    // that starts at the slice's own start whatever the duplicate's reader index. Every frame but
+    // the first of a read then came out with its length prefix and Data Length still on.
+    int start = body.readerIndex();
+    try {
+      int dataLength = VarInt.read(body);
+      if (dataLength == 0) {
+        return body.retainedSlice();
+      }
+      checkHeader(dataLength, body.readableBytes());
+      return inflate(alloc, body, dataLength);
+    } finally {
+      body.readerIndex(start);
     }
-    checkHeader(dataLength, cursor.readableBytes());
-    return inflate(alloc, cursor, dataLength);
   }
 
   // ---------------------------------------------------------------------------
