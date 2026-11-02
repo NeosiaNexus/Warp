@@ -308,7 +308,7 @@ class HeldPlayerTest {
       assertTrue(setup.player.isSwitching(), "50 s into the switch, 40 s of them held");
       assertTrue(client.channel.isActive());
       hold.complete(null);
-      assertInstanceOf(ConnectionResult.Failed.class, result.join());
+      assertInstanceOf(ConnectionResult.Failed.class, settled(result));
       assertFalse(setup.player.isSwitching());
       assertEquals(List.of(SystemChatMessage.class), types(setup.sentToClient()), "told why");
       assertTrue(client.channel.isActive(), "kept on its server");
@@ -333,7 +333,7 @@ class HeldPlayerTest {
 
       assertTrue(switchingAt29);
       assertFalse(setup.player.isSwitching(), "given up at 30 s");
-      assertInstanceOf(ConnectionResult.Failed.class, result.join());
+      assertInstanceOf(ConnectionResult.Failed.class, settled(result));
       assertFalse(survival.channel().isOpen());
       assertTrue(client.channel.isActive(), "kept on its server");
     }
@@ -449,6 +449,16 @@ class HeldPlayerTest {
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * The outcome of a connection request, settled by now: the bus delivers on the thread that fires
+   * and the channels are embedded, so nothing is left to wait for. A mutant that never settles it
+   * fails the test here, instead of hanging it until PIT's time-out.
+   */
+  private static ConnectionResult settled(CompletableFuture<ConnectionResult> result) {
+    assertTrue(result.isDone(), "the connection request is settled");
+    return result.join();
+  }
 
   /** Makes every handler of {@code type} hold the event until {@link #hold} completes. */
   private void holdEvery(Class<?> type, int timeoutSeconds) {
