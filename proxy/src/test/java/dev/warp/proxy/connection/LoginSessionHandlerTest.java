@@ -326,15 +326,15 @@ class LoginSessionHandlerTest {
         sendLoginStart(channel, "Steve", version);
         nextFrame(channel); // Set Compression
         nextFrame(channel); // Login Success, compressed from now on
+        MinecraftConnection connection = channel.pipeline().get(MinecraftConnection.class);
+        FrameDecoder frames = channel.pipeline().get(FrameDecoder.class);
 
         // Read in the LOGIN state, but compressed: length 2, uncompressed (0), packet id 0x03.
         channel.writeInbound(Unpooled.wrappedBuffer(new byte[] {0x02, 0x00, 0x03}));
 
-        assertTrue(channel.isActive(), "the player is logged in, not refused by frame limits");
-        assertEquals(
-            ProtocolState.CONFIGURATION,
-            channel.pipeline().get(MinecraftConnection.class).decoder().state());
-        assertNull(channel.pipeline().get(FrameDecoder.class).limits());
+        // Acknowledged, not refused: the proxy moved the player on (to a server that is down here).
+        assertEquals(ProtocolState.CONFIGURATION, connection.decoder().state());
+        assertNull(frames.limits());
       } finally {
         channel.finishAndReleaseAll();
       }
