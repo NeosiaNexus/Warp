@@ -2,7 +2,11 @@ name: Dependency graph
 
 # Resolves every Gradle dependency, transitive ones included (GitHub only sees the declared ones),
 # into a dependency graph snapshot. Runs of main feed Dependabot alerts; runs of a pull request feed
-# the dependency review.
+# the dependency review. The review compares a pull request's snapshot with its base's: a pull
+# request's head has one from its own runs, but a base that is no pull request's head needs runs of
+# its own, or the review takes every dependency for new (and reports every advisory) on the pull
+# requests based on it. Hence the integration branches (integration/primemc), which collect pull
+# requests for a downstream project, run on push as main does.
 #
 # The build runs with a read-only token, so that it also works for pull requests from forks: the
 # snapshot is saved as an artifact, and dependency-graph-submit.yml submits it once this run
@@ -10,7 +14,7 @@ name: Dependency graph
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, 'integration/**']
 
 permissions: {}
 

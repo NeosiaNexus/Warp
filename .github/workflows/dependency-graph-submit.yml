@@ -50,11 +50,14 @@ jobs:
         run: |
           case "$EVENT" in
             push)
-              if [[ "$HEAD_REPOSITORY" != "$GITHUB_REPOSITORY" || "$HEAD_BRANCH" != "$DEFAULT_BRANCH" ]]; then
-                echo "::error::A push run must come from $DEFAULT_BRANCH of $GITHUB_REPOSITORY."
+              # main, and the integration branches that pull requests are based on (see
+              # dependency-graph.yml). Dependabot alerts only read main's graph.
+              if [[ "$HEAD_REPOSITORY" != "$GITHUB_REPOSITORY" ]] ||
+                 [[ "$HEAD_BRANCH" != "$DEFAULT_BRANCH" && ! "$HEAD_BRANCH" =~ ^integration/[A-Za-z0-9._/-]+$ ]]; then
+                echo "::error::A push run must come from $DEFAULT_BRANCH or an integration/ branch of $GITHUB_REPOSITORY."
                 exit 1
               fi
-              ref_pattern="^refs/heads/${DEFAULT_BRANCH}\$"
+              ref_pattern="^refs/heads/${HEAD_BRANCH//./\\.}\$"
               ;;
             pull_request)
               ref_pattern='^refs/pull/[0-9]+/merge$'
