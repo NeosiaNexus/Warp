@@ -220,6 +220,12 @@ async function startBackends({ entry, serverJar, serverJava, preseeded, threshol
   };
   await Promise.all(backends.map((b) => b.boot(template, preseeded, { onHang: onHang(b) })));
   log(`backends ready in ${((Date.now() - booted) / 1000).toFixed(1)} s`);
+  for (const b of backends) {
+    // On NIO, these servers can stop reading a player as it logs in (NATIVE_TRANSPORT_SINCE).
+    if (b.wantsNativeTransport && b.transport() !== 'epoll') {
+      warn(`E2E ${entry.version} backend on NIO`, `${b.name} could not load Netty's epoll transport and runs on NIO, where it can stop reading a player as it logs in (#132)`);
+    }
+  }
   saveTemplate(backends[0].dir, template);
   return { lobby: backends[0], survival: backends[1] };
 }

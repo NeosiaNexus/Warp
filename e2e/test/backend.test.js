@@ -123,6 +123,17 @@ describe('backend boot', () => {
     assert.equal(backend.boots, 2);
   });
 
+  it('tells the transport the server listens with, from its log', async () => {
+    const say = (line) => `console.log(${JSON.stringify(line)})`;
+    const epoll = new ScriptedBackend(`${say('[Server thread/INFO]: Using epoll channel type')}; ${READY}`);
+    const nio = new ScriptedBackend(`${say('[12:00:00 INFO]: Using default channel type')}; ${READY}`);
+    const silent = new ScriptedBackend(READY);
+
+    for (const backend of [epoll, nio, silent]) await backend.boot(null, {}, { timeoutMs: 5_000, onHang: () => {} });
+
+    assert.deepEqual([epoll.transport(), nio.transport(), silent.transport()], ['epoll', 'nio', null]);
+  });
+
   it('does not boot again a server that exited: a crash is not a hang', async () => {
     const backend = new ScriptedBackend('process.exit(1)', READY);
 
@@ -156,6 +167,14 @@ describe('backend configuration', () => {
     assert.equal(modern['resource-pack-hash'], undefined);
     assert.equal(modern['resource-pack-id'], PACK.id);
     assert.equal(modern['require-resource-pack'], 'false');
+  });
+
+  it('listens with the native transport from 1.12, whose NIO can stop reading a player as it logs in', () => {
+    const netty40 = properties(prepare('1.11.2')('server.properties'));
+    const netty41 = properties(prepare('1.12.2')('server.properties'));
+
+    assert.equal(netty40['use-native-transport'], 'false');
+    assert.equal(netty41['use-native-transport'], 'true');
   });
 
   it('accepts players forwarded with the shared secret', () => {

@@ -89,6 +89,16 @@ dumped into its log (`SIGQUIT`) and is booted once more: Paper 1.16 sometimes fr
 CI runners before Warp or any player is involved (#97). Each retry is logged, annotated on GitHub,
 and listed in `result.json` (`bootRetries`) and both reports. Scenarios are never retried.
 
+Backends from 1.12 listen with Netty's native epoll transport (`use-native-transport`), as Linux
+servers do by default; older ones with NIO. As a player logs in, the server turns the connection's
+auto-read off from its main thread and back on from its event loop. On NIO, Netty 4.1 (1.12 on)
+clears the read interest later, on the event loop, without checking that auto-read is still off: when
+the event loop turned it back on in between, the server never reads that player again. It answers
+none of its chat and kicks it 30 s later for not answering its keep-alives (#132, with or without
+Warp in between). Netty's epoll transport checks first; Netty 4.0 (up to 1.11) gets NIO right and
+epoll wrong. A backend that cannot load the native transport falls back to NIO, which the run
+annotates on GitHub.
+
 Logs and `result.json` go to `e2e/build/<version>/`.
 
 ## Signed chat
