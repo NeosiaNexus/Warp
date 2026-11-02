@@ -54,7 +54,12 @@ public final class PacketCorpus {
      * Gameplay mix by packet count: 60% movement, 22% metadata, 12% block updates and player info,
      * 4% chunks, 2% keep-alive-sized packets. Bytes are dominated by chunks, packets by movement.
      */
-    MIXED
+    MIXED,
+    /**
+     * Compressed packets other than chunks: block-update batches and player info, each at least the
+     * compression threshold (0.25 to 3 KiB): the packets a proxy compresses most often.
+     */
+    SMALL
   }
 
   private static final int SECTIONS = 24;
@@ -87,6 +92,7 @@ public final class PacketCorpus {
         case CHUNK -> chunk(buf, ids[0], rng);
         case ENTITY_MOVE -> entityMove(buf, ids[1], rng);
         case MIXED -> mixed(buf, ids, rng);
+        case SMALL -> small(buf, ids, rng);
       }
       packets.add(buf);
     }
@@ -135,6 +141,17 @@ public final class PacketCorpus {
       VarInt.write(buf, ids[2]);
       buf.writeLong(rng.nextLong());
     }
+  }
+
+  private static void small(ByteBuf buf, int[] ids, SplittableRandom rng) {
+    do {
+      buf.clear();
+      if (rng.nextBoolean()) {
+        blockUpdates(buf, ids[3], rng);
+      } else {
+        playerInfo(buf, ids[4], rng);
+      }
+    } while (buf.readableBytes() < BenchmarkConfig.THRESHOLD);
   }
 
   /** Move Entity Pos/Rot: entity id, three short deltas, two angles, on-ground flag (~12 B). */

@@ -27,4 +27,8 @@ dependencies {
     jmh(libs.velocity.native) {
         exclude(group = "io.netty")
     }
+    // Warp's own native codec, which the proxy (not this module) plugs into PacketCompressor: the
+    // benchmarks measure it against the two above, and the fuzz tests check it against the JDK.
+    jmh(project(":jni"))
+    testImplementation(project(":jni"))
 }
