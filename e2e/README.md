@@ -143,6 +143,10 @@ both versions support (the older one's features). `--via-plugin` installs the pl
 the backends' own version, the control run of translation: their connections must keep blind
 forwarding and compression passthrough.
 
+`--survival VERSION` boots the survival backend on another version than the lobby: switches then
+go between backends of two versions, one translated and the other not when the bots speak one of
+them (`--mc 1.21.4 --survival 1.21.8 --client 1.21.8`).
+
 The plugin logs `Translating players of <version> for <server>` once per version and server. A run
 fails if bots of another version were never translated, or if bots of the backends' own version
 were. A bridged client version (`via` in `versions.json`) still goes through ViaProxy, which then

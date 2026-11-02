@@ -68,6 +68,8 @@ Version translation (the via plugin: ViaVersion and ViaBackwards on Warp)
                           translates with the via plugin, installed for the run. Implies --via-plugin
   --via-plugin            install the via plugin (built with Gradle) in every Warp instance; with bots
                           of the backends' own version, checks that nothing is translated
+  --survival VERSION      the survival backend runs VERSION instead of --mc's: switches go between
+                          backends of two versions (with --client or --via-plugin, one may be the bots')
 `;
 
 async function main() {
@@ -93,6 +95,7 @@ async function main() {
       direct: { type: 'boolean', default: false },
       client: { type: 'string' },
       'via-plugin': { type: 'boolean', default: false },
+      survival: { type: 'string' },
       list: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
     },
@@ -118,6 +121,8 @@ async function main() {
   const clientEntry = opts.client ? findEntry(matrix, opts.client.trim()) : null;
   if (clientEntry && opts.direct) throw new UsageError('--client needs Warp to translate: it cannot run with --direct');
   const viaJar = clientEntry || opts['via-plugin'] ? await buildViaPlugin() : null;
+  // The survival backend on another version: switches cross versions.
+  const survivalEntry = opts.survival ? findEntry(matrix, opts.survival.trim()) : null;
   mkdirSync(opts.out, { recursive: true });
   // Up for the whole run: it signs the bots' profile keys, which Warp and the backends trust, and
   // Warp checks online logins against it.
@@ -131,7 +136,7 @@ async function main() {
     }
     for (const { entry, variants } of runs) {
       const bots = clientEntry ?? entry;
-      results.push(await runVersion({ matrix, entry, clientEntry, viaJar, variants: adaptVariants(bots, variants), scenarios, ports, netem, packs: packServer.packs, jar, mojang, opts }));
+      results.push(await runVersion({ matrix, entry, clientEntry, survivalEntry, viaJar, variants: adaptVariants(bots, variants), scenarios, ports, netem, packs: packServer.packs, jar, mojang, opts }));
     }
   } finally {
     netem?.stop();
@@ -145,7 +150,7 @@ async function main() {
 // One version: backends per threshold and forwarding, Warp per variant
 // ---------------------------------------------------------------------------
 
-async function runVersion({ matrix, entry, clientEntry, viaJar, variants, scenarios, ports, netem, packs, jar, mojang, opts }) {
+async function runVersion({ matrix, entry, clientEntry, survivalEntry, viaJar, variants, scenarios, ports, netem, packs, jar, mojang, opts }) {
   const cache = opts.cache;
   const runDir = join(opts.out, entry.version);
   rmSync(runDir, { recursive: true, force: true });
@@ -167,8 +172,10 @@ async function runVersion({ matrix, entry, clientEntry, viaJar, variants, scenar
 
   if (clientEntry) result.client = { version: clientEntry.version, protocol: clientEntry.protocol };
   if (viaJar) result.viaPlugin = basename(viaJar);
+  if (survivalEntry) result.survival = { version: survivalEntry.version, protocol: survivalEntry.protocol, server: describeServer(survivalEntry.server) };
   const bots = clientEntry ? `, bots on ${clientEntry.version} (protocol ${clientEntry.protocol}) translated by the via plugin` : '';
-  group(`Minecraft ${entry.version} (protocol ${entry.protocol}) on ${result.server}${bots}`);
+  const survivalNote = survivalEntry ? `, survival on ${survivalEntry.version} (protocol ${survivalEntry.protocol})` : '';
+  group(`Minecraft ${entry.version} (protocol ${entry.protocol}) on ${result.server}${survivalNote}${bots}`);
   try {
     const [serverJava, warpJava, serverJar, preseeded] = await Promise.all([
       findJava(entry.java, cache),
@@ -176,6 +183,14 @@ async function runVersion({ matrix, entry, clientEntry, viaJar, variants, scenar
       fetchServerJar(entry.server, cache),
       fetchPreseeded(entry.server, cache),
     ]);
+    const survivalServer = survivalEntry
+      ? {
+          entry: survivalEntry,
+          java: await findJava(survivalEntry.java, cache),
+          jar: await fetchServerJar(survivalEntry.server, cache),
+          preseeded: await fetchPreseeded(survivalEntry.server, cache),
+        }
+      : null;
     for (const group of backendGroups(entry, variants, { direct: opts.direct })) {
       if (group.skip) {
         for (const variant of group.variants) result.variants.push(skipVariant(variant, group.skip));
@@ -183,10 +198,10 @@ async function runVersion({ matrix, entry, clientEntry, viaJar, variants, scenar
       }
       // A fresh secret for each boot of forwarding backends, shared with the Warp instances.
       const forwarding = group.forwarding && { ...group.forwarding, secret: randomBytes(16).toString('hex') };
-      const backends = await startBackends({ entry, serverJar, serverJava, preseeded, threshold: group.threshold, forwarding, packs, ports, runDir, logDir, cache, mojang, retries: result.bootRetries });
+      const backends = await startBackends({ entry, serverJar, serverJava, preseeded, survivalServer, threshold: group.threshold, forwarding, packs, ports, runDir, logDir, cache, mojang, retries: result.bootRetries });
       try {
         for (const variant of group.variants) {
-          result.variants.push(await runVariant({ matrix, entry, clientEntry, viaJar, variant, scenarios, backends, forwarding, packs, ports, netem, jar, warpJava, runDir, logDir, mojang, opts }));
+          result.variants.push(await runVariant({ matrix, entry, clientEntry, survivalEntry, viaJar, variant, scenarios, backends, forwarding, packs, ports, netem, jar, warpJava, runDir, logDir, mojang, opts }));
         }
       } finally {
         await stopBackends(backends, result);
@@ -203,17 +218,22 @@ async function runVersion({ matrix, entry, clientEntry, viaJar, variants, scenar
   return result;
 }
 
-async function startBackends({ entry, serverJar, serverJava, preseeded, threshold, forwarding, packs, ports, runDir, logDir, cache, mojang, retries }) {
-  const template = join(serverCacheDir(entry.server, cache), 'template');
+async function startBackends({ entry, serverJar, serverJava, preseeded, survivalServer, threshold, forwarding, packs, ports, runDir, logDir, cache, mojang, retries }) {
+  // Each backend's own server: the survival one may run another version (--survival).
+  const servers = [
+    { entry, jar: serverJar, java: serverJava, preseeded },
+    survivalServer ?? { entry, jar: serverJar, java: serverJava, preseeded },
+  ];
+  const templates = servers.map((s) => join(serverCacheDir(s.entry.server, cache), 'template'));
   const backends = ['lobby', 'survival'].map(
     (name, i) =>
       new Backend({
         name,
         dir: join(runDir, name),
-        server: entry.server,
-        protocol: entry.protocol,
-        jar: serverJar,
-        java: serverJava,
+        server: servers[i].entry.server,
+        protocol: servers[i].entry.protocol,
+        jar: servers[i].jar,
+        java: servers[i].java,
         port: ports[name],
         compressionThreshold: threshold,
         gameMode: i === 0 ? 1 : 2,
@@ -222,7 +242,7 @@ async function startBackends({ entry, serverJar, serverJava, preseeded, threshol
         logDir,
         logSuffix: `t${threshold}${forwarding ? `-${forwarding.mode}-${forwarding.online ? 'online' : 'offline'}` : ''}`,
         // Only where the bots sign chat: older servers ignore the hosts or keep Mojang's bundled key.
-        mojangHost: features(entry.protocol).signedChat === true ? mojang.host : null,
+        mojangHost: features(servers[i].entry.protocol).signedChat === true ? mojang.host : null,
       }),
   );
   const accepting = forwarding ? `, ${forwarding.mode} forwarding from an ${forwarding.online ? 'online' : 'offline'} proxy` : '';
@@ -234,9 +254,10 @@ async function startBackends({ entry, serverJar, serverJava, preseeded, threshol
     retries.push(retry);
     warn(`E2E ${entry.version} backend hung while booting`, `${b.name} hung while booting (${reason}): its threads are in ${retry.log}; booting it again (#97)`);
   };
-  await Promise.all(backends.map((b) => b.boot(template, preseeded, { onHang: onHang(b) })));
+  await Promise.all(backends.map((b, i) => b.boot(templates[i], servers[i].preseeded, { onHang: onHang(b) })));
   log(`backends ready in ${((Date.now() - booted) / 1000).toFixed(1)} s`);
-  saveTemplate(backends[0].dir, template);
+  saveTemplate(backends[0].dir, templates[0]);
+  if (survivalServer) saveTemplate(backends[1].dir, templates[1]);
   return { lobby: backends[0], survival: backends[1] };
 }
 
@@ -262,10 +283,11 @@ function skipVariant(variant, reason) {
   return { name: variant.name, settings: describeVariant(variant), status: 'skip', reason, scenarios: [], failures: [] };
 }
 
-async function runVariant({ matrix, entry, clientEntry, viaJar, variant: base, scenarios, backends, forwarding, packs, ports, netem, jar, warpJava, runDir, logDir, mojang, opts }) {
+async function runVariant({ matrix, entry, clientEntry, survivalEntry, viaJar, variant: base, scenarios, backends, forwarding, packs, ports, netem, jar, warpJava, runDir, logDir, mojang, opts }) {
   // The bots' version: the backends' own, or another one Warp translates (--client).
   const bots = clientEntry ?? entry;
-  const variant = clientEntry ? { ...base, name: `${base.name}-bots-${clientEntry.version}` } : base;
+  const suffix = [clientEntry && `bots-${clientEntry.version}`, survivalEntry && `survival-${survivalEntry.version}`].filter(Boolean);
+  const variant = suffix.length ? { ...base, name: [base.name, ...suffix].join('-') } : base;
   const label = `${entry.version} ${variant.name}`;
   log(`variant ${variant.name}: ${describeVariant(variant)}`);
   const outcome = { name: variant.name, settings: describeVariant(variant), scenarios: [], failures: [], stacks: [], shutdown: [] };
@@ -318,7 +340,7 @@ async function runVariant({ matrix, entry, clientEntry, viaJar, variant: base, s
     variant,
     direct: opts.direct,
     // What both sides support: a translated bot cannot use what its server lacks, nor the reverse.
-    features: features(Math.min(entry.protocol, bots.protocol), {
+    features: features(Math.min(entry.protocol, bots.protocol, survivalEntry?.protocol ?? entry.protocol), {
       direct: opts.direct,
       forwarding: variant.forwarding,
       online: variant.online,
@@ -376,7 +398,9 @@ async function runVariant({ matrix, entry, clientEntry, viaJar, variant: base, s
       if (exit?.forced) outcome.failures.push(`${instance.name} did not shut down within 20 s (thread dump in logs/)`);
       for (const line of instance.failures()) outcome.failures.push(`${instance.name}: ${line}`);
       if (viaJar) {
-        for (const line of translationFailures(instance, { translated: Boolean(clientEntry) && clientEntry.protocol !== entry.protocol })) {
+        const backendProtocols = [entry.protocol, survivalEntry?.protocol ?? entry.protocol];
+        const translated = backendProtocols.some((protocol) => protocol !== bots.protocol);
+        for (const line of translationFailures(instance, { translated })) {
           outcome.failures.push(`${instance.name}: ${line}`);
         }
       }
