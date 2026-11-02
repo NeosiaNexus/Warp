@@ -907,6 +907,21 @@ public final class ConnectedPlayer {
                 (backend, ex) -> onEventLoop(() -> connectionAttempted(target, backend, ex)));
   }
 
+  /**
+   * Returns the registered server a connection to {@code target} leads to: the one the player is
+   * being connected to, or else the one registered with that name and address.
+   *
+   * @param target the server connected to
+   * @return the server, or {@code null} if it is neither
+   */
+  @Nullable BackendServer resolveServer(ServerInfo target) {
+    BackendServer pending = connectingTo;
+    if (pending != null && pending.info().equals(target)) {
+      return pending;
+    }
+    return loginContext.serverRegistry().registered(target);
+  }
+
   /** Opens backend connections for the player; replaced in tests. */
   @FunctionalInterface
   interface Connector {

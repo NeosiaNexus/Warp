@@ -6,7 +6,7 @@
 import { parseArgs } from 'node:util';
 
 import { serverId } from './backend.js';
-import { findEntry, jobsForTier, loadMatrix } from './versions.js';
+import { findEntry, jobsForTier, loadMatrix, translationsForTier } from './versions.js';
 
 const { values: opts } = parseArgs({
   options: {
@@ -18,11 +18,17 @@ const { values: opts } = parseArgs({
 
 const matrix = loadMatrix();
 let jobs = jobsForTier(matrix, opts.tier);
+// Translation runs: bots of another version than the backends, through the via plugin.
+let translations = translationsForTier(matrix, opts.tier);
 if (opts.versions) {
   const wanted = opts.versions.split(',').map((key) => findEntry(matrix, key.trim()).version);
   jobs = jobs.filter((job) => wanted.includes(job.mc));
+  translations = translations.filter((job) => [job.mc, job.client, job.survival].some((v) => wanted.includes(v)));
 }
-if (opts.variants) jobs = jobs.map((job) => ({ ...job, variants: opts.variants }));
+if (opts.variants) {
+  jobs = jobs.map((job) => ({ ...job, variants: opts.variants }));
+  translations = translations.map((job) => ({ ...job, variants: opts.variants }));
+}
 
 const include = jobs.map((job) => {
   const entry = findEntry(matrix, job.mc);
@@ -42,6 +48,25 @@ const include = jobs.map((job) => {
     java: [...new Set([entry.java, 25])].join('\n'),
     server: serverId(entry.server),
     via: Boolean(entry.via),
+    client: '',
+    survival: '',
   };
 });
+for (const job of translations) {
+  const entry = findEntry(matrix, job.mc);
+  const client = findEntry(matrix, job.client);
+  const survival = job.survival ? findEntry(matrix, job.survival) : null;
+  const variants = job.variants.split(',').length;
+  const notes = [job.translator, variants > 1 ? `${variants} variants` : null, client.via ? 'via ViaProxy' : null, job.known_broken ? 'known broken' : null];
+  include.push({
+    id: `translation-${job.id}`,
+    label: [`${job.client} bots on ${job.mc}${survival ? ` and ${survival.version}` : ''}`, ...notes.filter(Boolean)].join(' · '),
+    runs: `${job.mc}=${job.variants}`,
+    java: [...new Set([entry.java, survival?.java, 25].filter(Boolean))].join('\n'),
+    server: serverId(entry.server),
+    via: Boolean(client.via),
+    client: job.client,
+    survival: job.survival,
+  });
+}
 process.stdout.write(JSON.stringify({ include }));

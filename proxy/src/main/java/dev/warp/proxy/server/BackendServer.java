@@ -133,6 +133,11 @@ public final class BackendServer implements RegisteredServer {
     return registry.pinger().ping(info, checkTimeout(timeout));
   }
 
+  @Override
+  public CompletableFuture<ServerPing> ping(int protocolVersion) {
+    return registry.pinger().ping(info, protocolVersion, registry.pingTimeout());
+  }
+
   /**
    * Checks a ping time-out.
    *

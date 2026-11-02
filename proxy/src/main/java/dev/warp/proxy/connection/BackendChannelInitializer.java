@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.server.ServerInfo;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.netty.FrameDecoder;
@@ -23,6 +24,8 @@ import dev.warp.protocol.netty.FrameEncoder;
 import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.packet.PacketDirection;
+import dev.warp.proxy.pipeline.PipelineRegistry;
+import dev.warp.proxy.server.BackendServer;
 
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
@@ -30,6 +33,8 @@ import java.util.concurrent.TimeUnit;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
 import io.netty.handler.timeout.ReadTimeoutHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Builds the Netty pipeline for outbound proxy-to-backend connections.
@@ -47,18 +52,23 @@ import io.netty.handler.timeout.ReadTimeoutHandler;
  */
 final class BackendChannelInitializer extends ChannelInitializer<Channel> {
 
+  private static final Logger logger = LoggerFactory.getLogger(BackendChannelInitializer.class);
+
   private final ConnectedPlayer player;
+  private final ServerInfo server;
   private final Duration readTimeout;
 
   /**
    * Creates the initializer of one backend connection.
    *
    * @param player the player the connection is for
+   * @param server the server it leads to, whose plugin initializers run on it
    * @param readTimeout how long the backend may stay silent before the connection is closed: {@code
    *     timeouts.read}, as for logged-in clients, since a backend connection only exists for one
    */
-  BackendChannelInitializer(ConnectedPlayer player, Duration readTimeout) {
+  BackendChannelInitializer(ConnectedPlayer player, ServerInfo server, Duration readTimeout) {
     this.player = player;
+    this.server = server;
     this.readTimeout = readTimeout;
   }
 
@@ -80,13 +90,32 @@ final class BackendChannelInitializer extends ChannelInitializer<Channel> {
         .addLast(
             ServerChannelInitializer.READ_TIMEOUT,
             new ReadTimeoutHandler(readTimeout.toMillis(), TimeUnit.MILLISECONDS))
+        // The layout of ServerChannelInitializer: each layer's encoder right after its decoder.
         .addLast(ServerChannelInitializer.FRAME_DECODER, new FrameDecoder())
-        .addLast(ServerChannelInitializer.MINECRAFT_DECODER, decoder)
         .addLast(ServerChannelInitializer.FRAME_ENCODER, FrameEncoder.INSTANCE)
+        .addLast(ServerChannelInitializer.MINECRAFT_DECODER, decoder)
         .addLast(ServerChannelInitializer.MINECRAFT_ENCODER, encoder)
         .addLast(ServerChannelInitializer.CONNECTION_HANDLER, connection);
 
+    // Plugin handlers go in before the handshake is written, so that a translator can rewrite it.
+    initializePlugins(connection, version);
+
     // Do NOT set session handler here — the channel is not yet connected.
     // BackendConnection.connect() will set it after TCP connect succeeds.
+  }
+
+  private void initializePlugins(MinecraftConnection connection, ProtocolVersion version) {
+    PipelineRegistry pipelines = player.loginContext().pipelines();
+    BackendServer target = player.resolveServer(server);
+    if (target == null) {
+      logger.debug(
+          "No registered server '{}' for the backend connection of {}: no plugin handlers",
+          server.name(),
+          player.username());
+      return;
+    }
+    // On failure the channel is closed, and the connection attempt fails like an unreachable
+    // server: the switch reports it and the player stays where it is, or falls back.
+    var _ = pipelines.initializeBackend(connection, version.protocol(), player.api(), target);
   }
 }

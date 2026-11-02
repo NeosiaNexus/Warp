@@ -100,7 +100,7 @@ public final class BackendConnection {
     bootstrap
         .group(player.clientConnection().channel().eventLoop())
         .channel(context.channelClass())
-        .handler(new BackendChannelInitializer(player, context.timeouts().read()))
+        .handler(new BackendChannelInitializer(player, server, context.timeouts().read()))
         .option(ChannelOption.TCP_NODELAY, true)
         .option(ChannelOption.SO_KEEPALIVE, true)
         .option(ChannelOption.IP_TOS, IP_TOS_LOW_LATENCY)

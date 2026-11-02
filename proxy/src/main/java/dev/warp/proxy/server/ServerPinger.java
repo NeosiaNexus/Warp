@@ -35,4 +35,18 @@ public interface ServerPinger {
    *     dev.warp.api.server.ServerPingException} saying why it failed
    */
   CompletableFuture<ServerPing> ping(ServerInfo server, Duration timeout);
+
+  /**
+   * Pings a server, announcing a protocol version in the handshake.
+   *
+   * @param server the server
+   * @param protocolVersion the protocol version number to announce, {@code -1} for none
+   * @param timeout the longest the whole ping may take, connection included; positive
+   * @return completed with its answer, or exceptionally with a {@link
+   *     dev.warp.api.server.ServerPingException} saying why it failed
+   */
+  default CompletableFuture<ServerPing> ping(
+      ServerInfo server, int protocolVersion, Duration timeout) {
+    return ping(server, timeout);
+  }
 }

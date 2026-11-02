@@ -91,6 +91,19 @@ final class BackendLoginSessionHandler implements SessionHandler {
     String host = serverAddress.getHostString();
     int port = serverAddress.getPort();
 
+    if (forwardingSecret.length > 0 && backendConnection.isPacketLevel()) {
+      // Plugin handlers (a translator) speak the player's version between this handler and the
+      // backend: the forwarding query is answered below them, in the backend's own protocol.
+      backendConnection
+          .channel()
+          .pipeline()
+          .addAfter(
+              ServerChannelInitializer.PACKET_DECOMPRESSOR,
+              ForwardingResponder.NAME,
+              new ForwardingResponder(
+                  () -> PlayerForwarding.buildVelocityForwardingData(player, forwardingSecret)));
+    }
+
     // Temporarily switch to HANDSHAKE to encode the Handshake packet, then back to LOGIN.
     backendConnection.setState(ProtocolState.HANDSHAKE);
     backendConnection.writeAndFlush(new Handshake(version.protocol(), host, port, 2));
@@ -180,7 +193,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
     int playerThreshold = context.compressionThreshold(player.protocolVersion());
     if (context.compressionPassthrough()
         && playerThreshold >= 0
-        && backendConnection.decoder().decompressor() == null
+        && !backendConnection.isCompressed()
         && COMPRESSION_ADVICE_GIVEN.add(serverAddress)) {
       logger.warn(
           "Backend {} has compression disabled, so Warp must compress its traffic for every player."

@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.plugin;
 
+import dev.warp.api.plugin.Capability;
 import dev.warp.api.plugin.PluginDependency;
 import dev.warp.api.plugin.PluginDescription;
 
@@ -27,10 +28,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -171,6 +174,18 @@ final class PluginDiscovery {
           new PluginDependency(
               required(dependency, "id"), optional != null && optional.getAsBoolean()));
     }
+    Set<Capability> capabilities = EnumSet.noneOf(Capability.class);
+    for (JsonElement element : array(root, "capabilities")) {
+      String id = element.getAsString();
+      capabilities.add(
+          Capability.byId(id)
+              .orElseThrow(
+                  () ->
+                      new IllegalArgumentException(
+                          "unknown capability '"
+                              + id
+                              + "': the plugin was built for a newer version of Warp")));
+    }
     return new PluginDescription(
         required(root, "id"),
         optional(root, "name"),
@@ -179,7 +194,8 @@ final class PluginDiscovery {
         optional(root, "url"),
         authors,
         dependencies,
-        required(root, "main"));
+        required(root, "main"),
+        capabilities);
   }
 
   private static String required(JsonObject object, String key) {

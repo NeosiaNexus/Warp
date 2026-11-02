@@ -29,6 +29,7 @@ import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
+import dev.warp.proxy.pipeline.PipelineRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 import dev.warp.proxy.status.ServerList;
@@ -75,6 +76,7 @@ import io.netty.channel.Channel;
  * @param tcpFastOpen whether connections to backends request TCP Fast Open: only when configured
  *     and the transport supports it
  * @param antiBot the anti-bot: attack detection, trusted identities, lockdown, plugin checks
+ * @param pipelines the pipeline initializers plugins registered
  */
 @SuppressWarnings("ArrayRecordComponent") // forwardingSecret is treated as immutable
 public record ServerLoginContext(
@@ -102,7 +104,8 @@ public record ServerLoginContext(
     TimeoutsConfig timeouts,
     LoggingConfig logging,
     boolean tcpFastOpen,
-    AntiBotService antiBot) {
+    AntiBotService antiBot,
+    PipelineRegistry pipelines) {
 
   /** Validates configuration invariants. */
   public ServerLoginContext {

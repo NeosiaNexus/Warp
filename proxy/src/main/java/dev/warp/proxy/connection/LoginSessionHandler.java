@@ -1071,10 +1071,11 @@ final class LoginSessionHandler implements SessionHandler {
         ServerChannelInitializer.CIPHER_DECODER,
         new CipherDecoder(sharedSecret));
 
-    // Outbound: cipher must sit before frame-encoder in pipeline order, so Netty's
-    // tail-to-head outbound traversal hits frame-encoder first, then cipher-encoder.
-    pipeline.addBefore(
-        ServerChannelInitializer.FRAME_ENCODER,
+    // Outbound: cipher must sit before the framing layer in pipeline order, so Netty's
+    // tail-to-head outbound traversal hits frame-encoder (and any plugin frame handler) first,
+    // then cipher-encoder.
+    pipeline.addAfter(
+        ServerChannelInitializer.CIPHER_DECODER,
         ServerChannelInitializer.CIPHER_ENCODER,
         new CipherEncoder(sharedSecret));
   }

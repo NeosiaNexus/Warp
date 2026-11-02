@@ -22,6 +22,7 @@ import dev.warp.api.event.EventBus;
 import dev.warp.api.lifecycle.ReadinessHold;
 import dev.warp.api.logging.LogSinks;
 import dev.warp.api.messaging.Messaging;
+import dev.warp.api.network.NetworkPipelines;
 import dev.warp.api.permission.Permissions;
 
 import java.nio.file.Path;
@@ -45,6 +46,8 @@ import org.slf4j.Logger;
  *   <li>{@link CommandManager}: the plugin's commands;
  *   <li>{@link Permissions}: the plugin's permission providers;
  *   <li>{@link LogSinks}: the plugin's log sinks;
+ *   <li>{@link NetworkPipelines}: the plugin's network pipeline initializers, for plugins that
+ *       declare {@link Capability#NETWORK_PIPELINE};
  *   <li>{@link Path} annotated with {@link DataDirectory}: the plugin's data directory.
  * </ul>
  *
@@ -127,6 +130,17 @@ public interface PluginContext {
    * @return the permission registrar
    */
   Permissions permissions();
+
+  /**
+   * Returns the plugin's network pipeline initializers: Netty handlers on player and backend
+   * connections. Initializers registered through it are removed when the plugin is disabled or
+   * fails.
+   *
+   * @return the network pipeline registrar
+   * @throws IllegalStateException if the plugin did not declare {@link Capability#NETWORK_PIPELINE}
+   *     in {@link Plugin#capabilities()}
+   */
+  NetworkPipelines network();
 
   /**
    * Returns the plugin's log sinks, which receive the proxy's log records to forward them elsewhere

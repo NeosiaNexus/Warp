@@ -52,6 +52,7 @@ import dev.warp.proxy.messaging.BungeeCordChannel;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.network.CidrRanges;
 import dev.warp.proxy.permission.PermissionRegistry;
+import dev.warp.proxy.pipeline.PipelineRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.plugin.WarpPluginManager;
 import dev.warp.proxy.server.ServerRegistry;
@@ -189,6 +190,9 @@ public final class WarpServer implements Warp {
   /** The permission providers plugins registered. */
   private final PermissionRegistry permissions = new PermissionRegistry();
 
+  /** The pipeline initializers plugins registered. */
+  private final PipelineRegistry pipelines = new PipelineRegistry();
+
   private final LogSinkRegistry logSinks = new LogSinkRegistry();
   private final SinkAppender sinkAppender = new SinkAppender(logSinks);
 
@@ -299,6 +303,7 @@ public final class WarpServer implements Warp {
             commands,
             permissions,
             readinessHolds,
+            pipelines,
             logSinks,
             directory.resolve("plugins"));
     this.drain =
@@ -856,7 +861,8 @@ public final class WarpServer implements Warp {
         config.timeouts(),
         config.logging(),
         config.tcpFastOpen() && transport.tcpFastOpen(),
-        bots);
+        bots,
+        pipelines);
   }
 
   /**

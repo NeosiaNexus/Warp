@@ -17,6 +17,13 @@ dependencyResolutionManagement {
             }
             filter { includeGroup("com.mojang") }
         }
+        // ViaVersion and ViaBackwards, bundled into the via plugin: published on their own repository.
+        exclusiveContent {
+            forRepository {
+                maven("https://repo.viaversion.com") { name = "viaversion" }
+            }
+            filter { includeGroup("com.viaversion") }
+        }
         // Velocity's natives, used only as the competitor baseline in JMH benchmarks.
         exclusiveContent {
             forRepository {
@@ -33,6 +40,7 @@ include("api")
 include("protocol")
 include("proxy")
 include("jni")
+include("via")
 
 // The plugin the end-to-end harness loads into Warp (e2e/run.sh), next to the harness.
 include("e2e-plugin")

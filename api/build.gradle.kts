@@ -25,4 +25,10 @@ dependencies {
 
     // JSpecify: the API's nullness annotations reach plugin compilers (Kotlin reads them)
     api(libs.jspecify)
+
+    // Netty: the types of the network pipeline API (dev.warp.api.network). On the compile class
+    // path of plugins only: at run time, plugins that declare the NETWORK_PIPELINE capability see
+    // the proxy's Netty, and the others see none.
+    compileOnlyApi(platform(libs.netty.bom))
+    compileOnlyApi(libs.netty.transport)
 }

@@ -70,7 +70,25 @@
           "transcode",
           "backend-lower"
         ]
-      }
+      },
+      "translations": [
+        {
+          "mc": "1.21.4",
+          "client": "1.21.8",
+          "variants": [
+            "offline"
+          ],
+          "why": "A newer player than its backend: ViaVersion."
+        },
+        {
+          "mc": "1.21.4",
+          "client": "1.8.8",
+          "variants": [
+            "offline"
+          ],
+          "why": "A 1.8 player on a modern backend: ViaRewind, then ViaBackwards."
+        }
+      ]
     },
     "full": {
       "description": "Pull requests that change Warp's modules or the harness (required), every push to main, nightly, on demand, and pull requests labelled \"e2e: full\": every protocol version, all variants on era boundaries.",
@@ -133,7 +151,58 @@
           "backend-higher",
           "backend-uncompressed"
         ]
-      }
+      },
+      "translations": [
+        {
+          "mc": "1.21.4",
+          "client": "1.21.8",
+          "variants": [
+            "offline"
+          ],
+          "why": "A newer player than its backend: ViaVersion."
+        },
+        {
+          "mc": "1.21.4",
+          "client": "1.8.8",
+          "variants": [
+            "offline"
+          ],
+          "why": "A 1.8 player on a modern backend: ViaRewind, then ViaBackwards."
+        },
+        {
+          "mc": "1.21.8",
+          "client": "1.21.4",
+          "variants": [
+            "offline"
+          ],
+          "why": "An older player than its backend, on PrimeMC's backend version: ViaBackwards."
+        },
+        {
+          "mc": "1.21.4",
+          "client": "1.12.2",
+          "variants": [
+            "velocity"
+          ],
+          "why": "A pre-1.13 player on a modern forwarding backend: Warp answers the forwarding query below ViaBackwards."
+        },
+        {
+          "mc": "1.21.4",
+          "client": "1.7.10",
+          "variants": [
+            "offline"
+          ],
+          "why": "A 1.7 player, who has no compression: ViaRewind compresses below ViaVersion."
+        },
+        {
+          "mc": "1.21.4",
+          "survival": "1.21.8",
+          "client": "1.21.8",
+          "variants": [
+            "offline"
+          ],
+          "why": "Switches between a translated backend and one of the player's own version."
+        }
+      ]
     }
   },
   "versions": [

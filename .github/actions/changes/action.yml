@@ -38,12 +38,13 @@ runs:
             - '!LICENSE'
             - '!.github/ISSUE_TEMPLATE/**'
             - '!.github/PULL_REQUEST_TEMPLATE.md'
-          # Warp's modules (their code, and how each builds its part of the jar) and what the
-          # end-to-end tests run with (the harness, its npm dependencies, its workflow, this filter).
+          # Warp's modules (their code, and how each builds its part of the jar), the via plugin
+          # (the translation runs install it) and what the end-to-end tests run with (the harness,
+          # its npm dependencies, its workflow, this filter).
           # Unit tests, benchmarks and the harness's own tests change neither: CI runs them anyway.
           # Dependency and build tool bumps run the quick tier, then the full matrix on main.
           e2e-full:
-            - '{api,protocol,proxy,jni}/**'
+            - '{api,protocol,proxy,jni,via}/**'
             - 'e2e/**'
             - '.github/workflows/_e2e.yml'
             - '.github/actions/changes/**'

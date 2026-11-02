@@ -92,6 +92,28 @@ class PluginProcessorTest {
     }
 
     @Test
+    @DisplayName("should list the declared capabilities, and leave them out when there are none")
+    void writesCapabilities() throws IOException {
+      Compilation compilation =
+          compile(
+              Map.of(
+                  "demo/Via.java",
+                  """
+                  package demo;
+                  import dev.warp.api.plugin.*;
+                  @Plugin(id = "via", capabilities = Capability.NETWORK_PIPELINE)
+                  public final class Via {
+                    public Via() {}
+                  }
+                  """));
+
+      assertTrue(compilation.errors().isEmpty(), compilation.errors().toString());
+      assertTrue(
+          compilation.descriptor().contains("  \"capabilities\": [\"network-pipeline\"],\n"),
+          compilation.descriptor());
+    }
+
+    @Test
     @DisplayName("should name a static nested main class by its binary name")
     void nestedClass() throws IOException {
       Compilation compilation =
@@ -159,6 +181,17 @@ class PluginProcessorTest {
       assertError(
           plugin(
               "@Plugin(id = \"dup\", dependencies = {@Dependency(id = \"db\"), @Dependency(id = \"db\")})",
+              "public final class Main { public Main() {} }"),
+          "declared twice");
+    }
+
+    @Test
+    @DisplayName("should reject a capability declared twice")
+    void duplicateCapability() throws IOException {
+      assertError(
+          plugin(
+              "@Plugin(id = \"twice\", capabilities = {Capability.NETWORK_PIPELINE,"
+                  + " Capability.NETWORK_PIPELINE})",
               "public final class Main { public Main() {} }"),
           "declared twice");
     }

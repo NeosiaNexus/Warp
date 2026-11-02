@@ -29,6 +29,7 @@ import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
+import dev.warp.proxy.pipeline.PipelineRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 import dev.warp.proxy.status.ServerList;
@@ -309,7 +310,8 @@ final class TestLoginContexts {
         TimeoutsConfig.DEFAULTS,
         LoggingConfig.DEFAULTS,
         false,
-        antiBot);
+        antiBot,
+        new PipelineRegistry());
   }
 
   /**
@@ -371,7 +373,8 @@ final class TestLoginContexts {
         timeouts,
         logging,
         base.tcpFastOpen(),
-        base.antiBot());
+        base.antiBot(),
+        base.pipelines());
   }
 
   /**

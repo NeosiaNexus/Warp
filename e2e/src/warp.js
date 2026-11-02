@@ -66,7 +66,7 @@ export class Warp {
     mkdirSync(this.dir, { recursive: true });
     copyFileSync(this.jar, join(this.dir, 'warp.jar'));
     if (this.plugins?.length) {
-      mkdirSync(join(this.dir, 'plugins'));
+      mkdirSync(join(this.dir, 'plugins'), { recursive: true });
       for (const plugin of this.plugins) copyFileSync(plugin, join(this.dir, 'plugins', basename(plugin)));
     }
     writeFileSync(join(this.dir, 'warp.conf'), this.config());

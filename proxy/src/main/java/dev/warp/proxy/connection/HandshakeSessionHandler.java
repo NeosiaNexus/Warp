@@ -176,6 +176,12 @@ final class HandshakeSessionHandler implements SessionHandler {
       guard.loginStarted();
     }
     connection.setState(ProtocolState.LOGIN);
+    // Plugin handlers go in before the first login packet is read.
+    if (!loginContext
+        .pipelines()
+        .initializeClient(connection, version.protocol(), new WarpInboundConnection(connection))) {
+      return; // a plugin failed to set the connection up, which closed it
+    }
     connection.setSessionHandler(new LoginSessionHandler(connection, loginContext));
   }
 

@@ -108,6 +108,18 @@ public final class BackendPinger implements ServerPinger {
 
   @Override
   public CompletableFuture<ServerPing> ping(ServerInfo server, Duration timeout) {
+    return ping(server, ProtocolVersion.latest().protocol(), timeout);
+  }
+
+  /**
+   * {@inheritDoc}
+   *
+   * <p>The packets are encoded as the newest version does (the status packets have not changed
+   * since 1.7); only the handshake announces {@code protocolVersion}.
+   */
+  @Override
+  public CompletableFuture<ServerPing> ping(
+      ServerInfo server, int protocolVersion, Duration timeout) {
     CompletableFuture<ServerPing> outcome = new CompletableFuture<>();
     ProtocolVersion version = ProtocolVersion.latest();
     long timeoutMillis = Math.max(1, Math.min(timeout.toMillis(), MAX_CONNECT_TIMEOUT_MILLIS));
@@ -179,7 +191,7 @@ public final class BackendPinger implements ServerPinger {
               Channel channel = future.channel();
               MinecraftConnection connection = channel.pipeline().get(MinecraftConnection.class);
               connection.setSessionHandler(
-                  new PingSessionHandler(connection, server, version, outcome));
+                  new PingSessionHandler(connection, server, protocolVersion, outcome));
               var _ =
                   channel
                       .closeFuture()
@@ -226,17 +238,17 @@ public final class BackendPinger implements ServerPinger {
 
     private final MinecraftConnection connection;
     private final ServerInfo server;
-    private final ProtocolVersion version;
+    private final int protocolVersion;
     private final CompletableFuture<ServerPing> result;
 
     PingSessionHandler(
         MinecraftConnection connection,
         ServerInfo server,
-        ProtocolVersion version,
+        int protocolVersion,
         CompletableFuture<ServerPing> result) {
       this.connection = connection;
       this.server = server;
-      this.version = version;
+      this.protocolVersion = protocolVersion;
       this.result = result;
     }
 
@@ -244,7 +256,7 @@ public final class BackendPinger implements ServerPinger {
     public void activated() {
       InetSocketAddress address = server.address();
       connection.writeAndFlush(
-          new Handshake(version.protocol(), address.getHostString(), address.getPort(), 1));
+          new Handshake(protocolVersion, address.getHostString(), address.getPort(), 1));
       connection.setState(ProtocolState.STATUS);
       connection.writeAndFlush(new StatusRequest());
     }

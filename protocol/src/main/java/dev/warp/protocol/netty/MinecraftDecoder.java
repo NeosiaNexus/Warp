@@ -71,6 +71,12 @@ import org.jspecify.annotations.Nullable;
  * original compressed bytes are still forwarded when the backend accepts them, skipping the
  * re-deflate.
  *
+ * <h3>Packet input</h3>
+ *
+ * <p>A connection whose packets a plugin reads or rewrites (see the pipeline API) gives up all of
+ * the above: {@link #usePacketInput()} moves unframing and decompression to a {@link
+ * PacketDecompressor} upstream, and this decoder then receives, and forwards, bare packets.
+ *
  * <h3>Other guarantees</h3>
  *
  * <ul>
@@ -114,6 +120,12 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
   private boolean peekCompressedFrames;
 
   /**
+   * Whether messages are wire frames (the default) rather than bare packets, see {@link
+   * #usePacketInput}.
+   */
+  private boolean framedInput = true;
+
+  /**
    * The last frame forwarded after being inflated anyway, and its inflated packet bytes — kept
    * until the next frame so a relay that must re-encode it does not inflate it a second time.
    */
@@ -154,16 +166,21 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
       return;
     }
 
+    int start = frame.readerIndex();
+    if (!framedInput) {
+      decodeUncompressed(frame, start, out); // a bare packet: unframed and inflated upstream
+      return;
+    }
     VarInt.skip(frame); // outer length prefix — the frame is complete by construction
     FrameDecompressor inflater = decompressor;
     if (inflater == null) {
-      decodeUncompressed(frame, out);
+      decodeUncompressed(frame, start, out);
       return;
     }
 
     int dataLength = VarInt.read(frame);
     if (dataLength == 0) {
-      decodeUncompressed(frame, out);
+      decodeUncompressed(frame, start, out);
       return;
     }
 
@@ -171,7 +188,7 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
     if (peekCompressedFrames) {
       int packetId = inflater.peekPacketId(frame);
       if (packetId != DeflatePeek.UNKNOWN && registry.lookup(version, packetId) == null) {
-        forward(frame, out);
+        forward(frame, start, out);
         return;
       }
     }
@@ -195,7 +212,7 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
       inflatedFrame = frame;
       inflatedPacket = packet.readerIndex(0);
       handedOver = true;
-      forward(frame, out);
+      forward(frame, start, out);
     } finally {
       if (!handedOver) {
         packet.release();
@@ -237,26 +254,31 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
   /**
    * Decodes, watches or forwards a frame whose packet bytes start at the reader index,
    * uncompressed.
+   *
+   * @param start where the message started, to forward it whole
    */
-  private void decodeUncompressed(ByteBuf frame, List<Object> out) {
+  private void decodeUncompressed(ByteBuf frame, int start, List<Object> out) {
     int packetId = readPacketId(frame);
     PacketReader reader = registry.lookup(version, packetId);
     if (reader == null) {
-      forward(frame, out); // the hot path: a plain null check, ahead of any type switch
+      forward(frame, start, out); // the hot path: a plain null check, ahead of any type switch
       return;
     }
     switch (reader) {
       case PacketCodec<?> codec -> out.add(decodePacket(codec, packetId, frame));
       case PacketWatch<?> watch -> {
         watchPacket(watch, packetId, frame, out);
-        forward(frame, out);
+        forward(frame, start, out);
       }
     }
   }
 
-  /** Emits the complete original frame, length prefix included, for verbatim forwarding. */
-  private static void forward(ByteBuf frame, List<Object> out) {
-    frame.readerIndex(0);
+  /**
+   * Emits the complete original message (the frame, length prefix included, or the bare packet in
+   * packet input) for forwarding.
+   */
+  private static void forward(ByteBuf frame, int start, List<Object> out) {
+    frame.readerIndex(start);
     // The base class releases the input after decode(); the retain hands ownership downstream.
     out.add(frame.retain());
   }
@@ -340,6 +362,10 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
    *     verify, every compressed frame before forwarding it
    */
   public void enableCompression(FrameDecompressor decompressor, boolean peekCompressedFrames) {
+    if (!framedInput) {
+      throw new IllegalStateException(
+          "Compression is handled upstream once the decoder reads bare packets");
+    }
     FrameDecompressor previous = this.decompressor;
     this.decompressor = decompressor;
     this.peekCompressedFrames = peekCompressedFrames;
@@ -351,10 +377,42 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
   /**
    * Returns the decompressor of this connection, if compression is enabled.
    *
-   * @return the decompressor, or {@code null} while uncompressed
+   * @return the decompressor, or {@code null} while uncompressed or in packet input
    */
   public @Nullable FrameDecompressor decompressor() {
     return decompressor;
+  }
+
+  /**
+   * Switches this decoder to <b>packet input</b>, for good: from the next message on, each message
+   * is the bytes of one packet, {@code [Packet ID][Payload]}, without length prefix and never
+   * compressed. An upstream handler ({@link PacketDecompressor}) unframes and inflates the frames,
+   * so that handlers placed between the two see plain packets.
+   *
+   * <p>Packets this decoder does not decode are then emitted as these same bare packets, so the
+   * relay must re-frame them: see {@link #emitsFrames()}. Peeking at compressed frames, and keeping
+   * inflated bytes for the relay, no longer apply.
+   *
+   * @return the decompressor this decoder was using, now owned by the caller (who installs it
+   *     upstream), or {@code null} if the connection was not compressed yet
+   */
+  public @Nullable FrameDecompressor usePacketInput() {
+    releaseInflated();
+    FrameDecompressor previous = decompressor;
+    decompressor = null;
+    peekCompressedFrames = false;
+    framedInput = false;
+    return previous;
+  }
+
+  /**
+   * Returns whether the messages this decoder emits for forwarding are complete wire frames, which
+   * may be written verbatim, rather than bare packets, which must be framed (and compressed) again.
+   *
+   * @return {@code false} once {@link #usePacketInput()} was called
+   */
+  public boolean emitsFrames() {
+    return framedInput;
   }
 
   /**

@@ -54,6 +54,26 @@ import org.slf4j.LoggerFactory;
  * Outbound: [connection-handler] → [minecraft-encoder] → [frame-encoder] → [legacy-ping-encoder]
  * }</pre>
  *
+ * <p>In pipeline order, each encoder sits right after the decoder of its layer: {@code legacy-ping
+ * handlers, frame-decoder, read-timeout, frame-encoder, minecraft-decoder, minecraft-encoder,
+ * connection-handler}. A duplex handler placed between two layers then sees the same format both
+ * ways, which is what makes the two positions of the plugin pipeline API ({@link
+ * dev.warp.api.network.PipelinePosition}) possible:
+ *
+ * <pre>{@code
+ * legacy-ping-decoder, -encoder      (remove themselves on the first bytes)
+ * cipher-decoder, cipher-encoder      (online mode, inserted during login)
+ * frame-decoder
+ * read-timeout                        (reset by complete frames only)
+ *   <plugin FRAME handlers>           frames, as on the wire
+ * frame-encoder | compression-encoder
+ * packet-decompressor                 (only once a plugin added a PACKET handler)
+ *   <plugin PACKET handlers>          bare packets, decompressed
+ * minecraft-decoder
+ * minecraft-encoder
+ * connection-handler
+ * }</pre>
+ *
  * <p>The legacy ping handlers answer the server list ping of Minecraft 1.6 and older; on the first
  * bytes of any other connection they remove themselves, so that a session's packets never pass
  * through them.
@@ -84,7 +104,10 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Encryption handlers are inserted during login. Compression needs no extra inbound handler: the
  * {@link MinecraftDecoder} decompresses only the frames it inspects (see {@link
- * MinecraftConnection#enableCompression}), and the compression encoder replaces the frame encoder.
+ * MinecraftConnection#enableCompression}), and the compression encoder replaces the frame encoder
+ * in place. A connection with plugin packet handlers is the exception: its {@code
+ * packet-decompressor} unframes and inflates every frame (see {@link
+ * MinecraftConnection#usePacketLevel()}).
  *
  * <h3>Handler naming</h3>
  *
@@ -131,6 +154,12 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
 
   /** Compression encoder — compresses and frames outgoing data, replaces frame-encoder. */
   public static final String COMPRESSION_ENCODER = "compression-encoder";
+
+  /**
+   * Packet decompressor: unframes and inflates every frame, only on connections with plugin packet
+   * handlers.
+   */
+  public static final String PACKET_DECOMPRESSOR = "packet-decompressor";
 
   /** Minecraft decoder — deserializes frames into typed packets or blind-forwards raw buffers. */
   public static final String MINECRAFT_DECODER = "minecraft-decoder";
@@ -251,9 +280,9 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
         .addLast(
             READ_TIMEOUT,
             new ReadTimeoutHandler(MinecraftConnection.READ_TIMEOUT_SECONDS, TimeUnit.SECONDS))
-        .addLast(MINECRAFT_DECODER, decoder)
-        // Outbound: handler → packet encode → frame prepend
+        // Each layer's encoder right after its decoder (see the class documentation).
         .addLast(FRAME_ENCODER, FrameEncoder.INSTANCE)
+        .addLast(MINECRAFT_DECODER, decoder)
         .addLast(MINECRAFT_ENCODER, encoder)
         // Tail: inbound handler that dispatches to SessionHandler
         .addLast(CONNECTION_HANDLER, connection);

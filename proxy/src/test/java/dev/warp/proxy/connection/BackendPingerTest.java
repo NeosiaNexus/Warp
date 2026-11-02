@@ -24,9 +24,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.warp.api.server.ServerInfo;
 import dev.warp.api.server.ServerPing;
 import dev.warp.api.server.ServerPingException;
+import dev.warp.protocol.ProtocolVersion;
 
 import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -157,6 +160,32 @@ class BackendPingerTest {
     }
   }
 
+  @Test
+  @DisplayName("should announce the protocol asked for, -1 included, and read the server's own")
+  void announcesRequestedProtocol() throws Exception {
+    try (ServerSocket socket = listen()) {
+      CompletableFuture<Integer> announced = answerOnce(socket);
+
+      ServerPing ping =
+          pinger.ping(info(socket), -1, Duration.ofSeconds(5)).get(10, TimeUnit.SECONDS);
+
+      assertEquals(-1, announced.get(10, TimeUnit.SECONDS));
+      assertEquals(769, ping.version().protocol());
+    }
+  }
+
+  @Test
+  @DisplayName("should announce the newest protocol by default")
+  void announcesLatestByDefault() throws Exception {
+    try (ServerSocket socket = listen()) {
+      CompletableFuture<Integer> announced = answerOnce(socket);
+
+      var _ = pinger.ping(info(socket), Duration.ofSeconds(5)).get(10, TimeUnit.SECONDS);
+
+      assertEquals(ProtocolVersion.latest().protocol(), announced.get(10, TimeUnit.SECONDS));
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
@@ -211,5 +240,60 @@ class BackendPingerTest {
       remaining >>>= 7;
     }
     out.write(remaining);
+  }
+
+  /** Plays a server answering one status ping; completes with the protocol of its handshake. */
+  private static CompletableFuture<Integer> answerOnce(ServerSocket socket) {
+    CompletableFuture<Integer> announced = new CompletableFuture<>();
+    Thread.ofVirtual()
+        .start(
+            () -> {
+              try (Socket client = socket.accept()) {
+                DataInputStream in = new DataInputStream(client.getInputStream());
+                readVarInt(in); // handshake frame length
+                readVarInt(in); // packet id 0
+                announced.complete(readVarInt(in));
+                in.readFully(new byte[readVarInt(in)]); // host
+                in.readUnsignedShort(); // port
+                readVarInt(in); // intent
+                readVarInt(in); // status request frame length
+                readVarInt(in); // packet id 0
+                ByteArrayOutputStream body = new ByteArrayOutputStream();
+                byte[] json =
+                    ("{\"version\":{\"name\":\"1.21.4\",\"protocol\":769},"
+                            + "\"description\":{\"text\":\"hi\"}}")
+                        .getBytes(StandardCharsets.UTF_8);
+                writeVarInt(body, 0);
+                writeVarInt(body, json.length);
+                body.write(json);
+                ByteArrayOutputStream frame = new ByteArrayOutputStream();
+                writeVarInt(frame, body.size());
+                body.writeTo(frame);
+                OutputStream out = client.getOutputStream();
+                out.write(frame.toByteArray());
+                out.flush();
+                // Wait for the pinger to close the connection.
+                while (in.read() >= 0) {
+                  // drain
+                }
+              } catch (IOException e) {
+                announced.completeExceptionally(e);
+              }
+            });
+    return announced;
+  }
+
+  private static int readVarInt(InputStream in) throws IOException {
+    int value = 0;
+    for (int shift = 0; ; shift += 7) {
+      int b = in.read();
+      if (b < 0) {
+        throw new IOException("end of stream");
+      }
+      value |= (b & 0x7F) << shift;
+      if ((b & 0x80) == 0) {
+        return value;
+      }
+    }
   }
 }

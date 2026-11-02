@@ -65,6 +65,15 @@ Environment
   --strict                treat known-broken versions and scenarios like any other
   --direct                control run: bots connect straight to the lobby, without Warp
   --list                  print the version matrix and exit
+
+Version translation (the via plugin: ViaVersion, ViaBackwards and ViaRewind on Warp)
+  --client VERSION        bots speak VERSION (from e2e/versions.json) to backends of --mc: Warp
+                          translates with the via plugin, installed for the run. Implies --via-plugin
+  --via-plugin            install the via plugin (built with Gradle) in every Warp instance; with bots
+                          of the backends' own version, checks that nothing is translated
+  --via-jar PATH          via plugin jar to install (default: build it with Gradle). Implies --via-plugin
+  --survival VERSION      the survival backend runs VERSION instead of --mc's: switches go between
+                          backends of two versions (with --client or --via-plugin, one may be the bots')
 `;
 
 async function main() {
@@ -89,6 +98,10 @@ async function main() {
       cache: { type: 'string', default: process.env.WARP_E2E_CACHE ?? join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'warp-e2e') },
       strict: { type: 'boolean', default: false },
       direct: { type: 'boolean', default: false },
+      client: { type: 'string' },
+      'via-plugin': { type: 'boolean', default: false },
+      'via-jar': { type: 'string' },
+      survival: { type: 'string' },
       list: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
     },
@@ -112,6 +125,13 @@ async function main() {
   const { jar, plugin } = opts.jar
     ? { jar: resolve(opts.jar), plugin: opts.plugin ? resolve(opts.plugin) : null }
     : await buildWarp(opts.plugin);
+  // Bots of another version than the backends: Warp translates, with the via plugin.
+  const clientEntry = opts.client ? findEntry(matrix, opts.client.trim()) : null;
+  if (clientEntry && opts.direct) throw new UsageError('--client needs Warp to translate: it cannot run with --direct');
+  const viaPlugin = Boolean(clientEntry || opts['via-plugin'] || opts['via-jar']);
+  const viaJar = !viaPlugin ? null : opts['via-jar'] ? resolve(opts['via-jar']) : await buildViaPlugin();
+  // The survival backend on another version: switches cross versions.
+  const survivalEntry = opts.survival ? findEntry(matrix, opts.survival.trim()) : null;
   mkdirSync(opts.out, { recursive: true });
   // The Paper plugin of the bungeecord scenario, which every Paper backend loads.
   const probePlugin = await buildProbePlugin(opts.out);
@@ -127,7 +147,8 @@ async function main() {
       log(`netem on 127.0.0.1:${netem.ports.join(', ')}, both ways: ${netem.spec}`);
     }
     for (const { entry, variants } of runs) {
-      results.push(await runVersion({ matrix, entry, variants: adaptVariants(entry, variants), scenarios, ports, netem, packs: packServer.packs, jar, plugin, mojang, probePlugin, opts }));
+      const bots = clientEntry ?? entry;
+      results.push(await runVersion({ matrix, entry, clientEntry, survivalEntry, viaJar, variants: adaptVariants(bots, variants), scenarios, ports, netem, packs: packServer.packs, jar, plugin, mojang, probePlugin, opts }));
     }
   } finally {
     netem?.stop();
@@ -141,7 +162,7 @@ async function main() {
 // One version: backends per threshold and forwarding, Warp per variant
 // ---------------------------------------------------------------------------
 
-async function runVersion({ matrix, entry, variants, scenarios, ports, netem, packs, jar, plugin, mojang, probePlugin, opts }) {
+async function runVersion({ matrix, entry, clientEntry, survivalEntry, viaJar, variants, scenarios, ports, netem, packs, jar, plugin, mojang, probePlugin, opts }) {
   const cache = opts.cache;
   const runDir = join(opts.out, entry.version);
   rmSync(runDir, { recursive: true, force: true });
@@ -161,7 +182,12 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, netem, pa
   };
   const knownBroken = Boolean(entry.knownBroken) && !opts.strict;
 
-  group(`Minecraft ${entry.version} (protocol ${entry.protocol}) on ${result.server}`);
+  if (clientEntry) result.client = { version: clientEntry.version, protocol: clientEntry.protocol };
+  if (viaJar) result.viaPlugin = basename(viaJar);
+  if (survivalEntry) result.survival = { version: survivalEntry.version, protocol: survivalEntry.protocol, server: describeServer(survivalEntry.server) };
+  const bots = clientEntry ? `, bots on ${clientEntry.version} (protocol ${clientEntry.protocol}) translated by the via plugin` : '';
+  const survivalNote = survivalEntry ? `, survival on ${survivalEntry.version} (protocol ${survivalEntry.protocol})` : '';
+  group(`Minecraft ${entry.version} (protocol ${entry.protocol}) on ${result.server}${survivalNote}${bots}`);
   try {
     const [serverJava, warpJava, serverJar, preseeded] = await Promise.all([
       findJava(entry.java, cache),
@@ -169,6 +195,14 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, netem, pa
       fetchServerJar(entry.server, cache),
       fetchPreseeded(entry.server, cache),
     ]);
+    const survivalServer = survivalEntry
+      ? {
+          entry: survivalEntry,
+          java: await findJava(survivalEntry.java, cache),
+          jar: await fetchServerJar(survivalEntry.server, cache),
+          preseeded: await fetchPreseeded(survivalEntry.server, cache),
+        }
+      : null;
     for (const group of backendGroups(entry, variants, { direct: opts.direct })) {
       if (group.skip) {
         for (const variant of group.variants) result.variants.push(skipVariant(variant, group.skip));
@@ -176,10 +210,10 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, netem, pa
       }
       // A fresh secret for each boot of forwarding backends, shared with the Warp instances.
       const forwarding = group.forwarding && { ...group.forwarding, secret: randomBytes(16).toString('hex') };
-      const backends = await startBackends({ entry, serverJar, serverJava, preseeded, threshold: group.threshold, forwarding, packs, ports, runDir, logDir, cache, mojang, probePlugin, retries: result.bootRetries });
+      const backends = await startBackends({ entry, serverJar, serverJava, preseeded, survivalServer, threshold: group.threshold, forwarding, packs, ports, runDir, logDir, cache, mojang, probePlugin, retries: result.bootRetries });
       try {
         for (const variant of group.variants) {
-          result.variants.push(await runVariant({ matrix, entry, variant, scenarios, backends, forwarding, packs, ports, netem, jar, plugin, warpJava, runDir, logDir, mojang, opts }));
+          result.variants.push(await runVariant({ matrix, entry, clientEntry, survivalEntry, viaJar, variant, scenarios, backends, forwarding, packs, ports, netem, jar, plugin, warpJava, runDir, logDir, mojang, opts }));
         }
       } finally {
         await stopBackends(backends, result);
@@ -196,17 +230,22 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, netem, pa
   return result;
 }
 
-async function startBackends({ entry, serverJar, serverJava, preseeded, threshold, forwarding, packs, ports, runDir, logDir, cache, mojang, probePlugin, retries }) {
-  const template = join(serverCacheDir(entry.server, cache), 'template');
+async function startBackends({ entry, serverJar, serverJava, preseeded, survivalServer, threshold, forwarding, packs, ports, runDir, logDir, cache, mojang, probePlugin, retries }) {
+  // Each backend's own server: the survival one may run another version (--survival).
+  const servers = [
+    { entry, jar: serverJar, java: serverJava, preseeded },
+    survivalServer ?? { entry, jar: serverJar, java: serverJava, preseeded },
+  ];
+  const templates = servers.map((s) => join(serverCacheDir(s.entry.server, cache), 'template'));
   const backends = ['lobby', 'survival'].map(
     (name, i) =>
       new Backend({
         name,
         dir: join(runDir, name),
-        server: entry.server,
-        protocol: entry.protocol,
-        jar: serverJar,
-        java: serverJava,
+        server: servers[i].entry.server,
+        protocol: servers[i].entry.protocol,
+        jar: servers[i].jar,
+        java: servers[i].java,
         port: ports[name],
         compressionThreshold: threshold,
         gameMode: i === 0 ? 1 : 2,
@@ -215,8 +254,8 @@ async function startBackends({ entry, serverJar, serverJava, preseeded, threshol
         logDir,
         logSuffix: `t${threshold}${forwarding ? `-${forwarding.mode}-${forwarding.online ? 'online' : 'offline'}` : ''}`,
         // Only where the bots sign chat: older servers ignore the hosts or keep Mojang's bundled key.
-        mojangHost: features(entry.protocol).signedChat === true ? mojang.host : null,
-        plugins: entry.server.type === 'paper' && probePlugin ? [probePlugin] : [],
+        mojangHost: features(servers[i].entry.protocol).signedChat === true ? mojang.host : null,
+        plugins: servers[i].entry.server.type === 'paper' && probePlugin ? [probePlugin] : [],
       }),
   );
   const accepting = forwarding ? `, ${forwarding.mode} forwarding from an ${forwarding.online ? 'online' : 'offline'} proxy` : '';
@@ -228,7 +267,7 @@ async function startBackends({ entry, serverJar, serverJava, preseeded, threshol
     retries.push(retry);
     warn(`E2E ${entry.version} backend hung while booting`, `${b.name} hung while booting (${reason}): its threads are in ${retry.log}; booting it again (#97)`);
   };
-  await Promise.all(backends.map((b) => b.boot(template, preseeded, { onHang: onHang(b) })));
+  await Promise.all(backends.map((b, i) => b.boot(templates[i], servers[i].preseeded, { onHang: onHang(b) })));
   log(`backends ready in ${((Date.now() - booted) / 1000).toFixed(1)} s`);
   for (const b of backends) {
     // On NIO, these servers can stop reading a player as it logs in (NATIVE_TRANSPORT_SINCE).
@@ -236,7 +275,8 @@ async function startBackends({ entry, serverJar, serverJava, preseeded, threshol
       warn(`E2E ${entry.version} backend on NIO`, `${b.name} could not load Netty's epoll transport and runs on NIO, where it can stop reading a player as it logs in (#132)`);
     }
   }
-  saveTemplate(backends[0].dir, template);
+  saveTemplate(backends[0].dir, templates[0]);
+  if (survivalServer) saveTemplate(backends[1].dir, templates[1]);
   return { lobby: backends[0], survival: backends[1] };
 }
 
@@ -262,7 +302,11 @@ function skipVariant(variant, reason) {
   return { name: variant.name, settings: describeVariant(variant), status: 'skip', reason, scenarios: [], failures: [] };
 }
 
-async function runVariant({ matrix, entry, variant, scenarios, backends, forwarding, packs, ports, netem, jar, plugin, warpJava, runDir, logDir, mojang, opts }) {
+async function runVariant({ matrix, entry, clientEntry, survivalEntry, viaJar, variant: base, scenarios, backends, forwarding, packs, ports, netem, jar, plugin, warpJava, runDir, logDir, mojang, opts }) {
+  // The bots' version: the backends' own, or another one Warp translates (--client).
+  const bots = clientEntry ?? entry;
+  const suffix = [clientEntry && `bots-${clientEntry.version}`, survivalEntry && `survival-${survivalEntry.version}`].filter(Boolean);
+  const variant = suffix.length ? { ...base, name: [base.name, ...suffix].join('-') } : base;
   const label = `${entry.version} ${variant.name}`;
   log(`variant ${variant.name}: ${describeVariant(variant)}`);
   const outcome = { name: variant.name, settings: describeVariant(variant), scenarios: [], failures: [], stacks: [], shutdown: [] };
@@ -277,7 +321,7 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, forward
     threshold: variant.threshold,
     forwarding,
     logDir,
-    plugins: plugin ? [plugin] : [],
+    plugins: [plugin, viaJar].filter(Boolean),
     // The pack the audience probe sends: its own, so that a bot tells it from the backends'.
     properties: { 'warp.e2e.pack.url': packs.proxy.url, 'warp.e2e.pack.sha1': packs.proxy.sha1, 'warp.e2e.pack.id': packs.proxy.id },
   };
@@ -317,17 +361,19 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, forward
   const targets = opts.direct ? { warp: ports.lobby } : { warp: ports.warp, warpAlt: ports.warpAlt };
   const ctx = {
     entry,
+    clientEntry: bots,
     variant,
     direct: opts.direct,
-    features: features(entry.protocol, {
+    // What both sides support: a translated bot cannot use what its server lacks, nor the reverse.
+    features: features(Math.min(entry.protocol, bots.protocol, survivalEntry?.protocol ?? entry.protocol), {
       direct: opts.direct,
       forwarding: variant.forwarding,
       online: variant.online,
       plugin: plugin !== null,
-      bridged: entry.via !== undefined,
+      bridged: bots.via !== undefined,
       paper: entry.server.type === 'paper',
     }),
-    client: connectClient(entry, { tools: matrix.tools, cache: opts.cache, java: warpJava, ports, targets: Object.values(targets), logDir, runDir }),
+    client: connectClient(bots, { tools: matrix.tools, cache: opts.cache, java: warpJava, ports, targets: Object.values(targets), logDir, runDir }),
     warp: { port: targets.warp, instance: instances[0] ?? null },
     warpAlt: { port: targets.warpAlt },
     ports,
@@ -378,6 +424,13 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, forward
       outcome.shutdown.push({ name: instance.name, seconds: secondsSince(stopping), forced: Boolean(exit?.forced) });
       if (exit?.forced) outcome.failures.push(`${instance.name} did not shut down within 20 s (thread dump in logs/)`);
       for (const line of instance.failures()) outcome.failures.push(`${instance.name}: ${line}`);
+      if (viaJar) {
+        const backendProtocols = [entry.protocol, survivalEntry?.protocol ?? entry.protocol];
+        const translated = backendProtocols.some((protocol) => protocol !== bots.protocol);
+        for (const line of translationFailures(instance, { translated })) {
+          outcome.failures.push(`${instance.name}: ${line}`);
+        }
+      }
     }
   }
   if (ctx.soak?.report) outcome.soak = ctx.soak.report;
@@ -518,6 +571,30 @@ async function reservePorts(base) {
     if (!free) throw new UsageError(`port ${port} (${name}) is in use: pick other ports with --port-base`);
   }
   return ports;
+}
+
+async function buildViaPlugin() {
+  log('building the via plugin (./gradlew :via:jar)');
+  await run(join(ROOT, 'gradlew'), ['--quiet', ':via:jar'], { cwd: ROOT });
+  const version = readFileSync(join(ROOT, 'version.txt'), 'utf8').trim();
+  return join(ROOT, 'via', 'build', 'libs', `warp-via-${version}.jar`);
+}
+
+/**
+ * What the via plugin logged that contradicts the run: bots of the backends' own version must
+ * never be translated (their connections keep compression passthrough), bots of another version
+ * must be. The plugin logs "Translating players of" once per version and server.
+ */
+function translationFailures(instance, { translated }) {
+  const logFile = join(instance.logDir, `${instance.name}.log`);
+  const text = existsSync(logFile) ? readFileSync(logFile, 'utf8') : '';
+  if (!/Enabled plugin viaversion /.test(text)) return ['the via plugin was not enabled'];
+  const translating = text.split('\n').filter((line) => line.includes('Translating players of'));
+  if (translated && !translating.length && instance.name.startsWith('warp-') && !instance.name.startsWith('warp-alt')) {
+    return ['bots of another version than the backends were never translated'];
+  }
+  if (!translated && translating.length) return [`bots of the backends' own version were translated: ${translating[0].trim()}`];
+  return [];
 }
 
 /** Builds Warp's shadow jar and, unless `plugin` names one, the audience probe plugin. */

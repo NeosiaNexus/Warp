@@ -22,7 +22,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -102,6 +104,30 @@ class PluginDescriptionTest {
 
     assertEquals(List.of("Steve"), description.authors());
     assertThrows(UnsupportedOperationException.class, () -> description.authors().add("x"));
+  }
+
+  @Test
+  @DisplayName("should declare no capability unless given some, and keep those given unmodifiable")
+  void capabilities() {
+    PluginDescription plain = description("plain", List.of());
+    Set<Capability> declared = EnumSet.of(Capability.NETWORK_PIPELINE);
+    PluginDescription via =
+        new PluginDescription("via", "", "", "", "", List.of(), List.of(), "a.Main", declared);
+
+    declared.clear();
+
+    assertEquals(Set.of(), plain.capabilities());
+    assertFalse(plain.hasCapability(Capability.NETWORK_PIPELINE));
+    assertTrue(via.hasCapability(Capability.NETWORK_PIPELINE));
+    assertThrows(UnsupportedOperationException.class, () -> via.capabilities().clear());
+  }
+
+  @Test
+  @DisplayName("should name each capability in the descriptor's form, and find it back")
+  void capabilityIds() {
+    assertEquals("network-pipeline", Capability.NETWORK_PIPELINE.id());
+    assertEquals(Capability.NETWORK_PIPELINE, Capability.byId("network-pipeline").orElseThrow());
+    assertTrue(Capability.byId("packets").isEmpty());
   }
 
   @Test

@@ -58,3 +58,42 @@ export function jobsForTier(matrix, tierName) {
     };
   });
 }
+
+/** The first protocol ViaVersion translates to without ViaRewind: 1.9. */
+const V1_9 = 107;
+
+/**
+ * Which part of the via plugin translates bots of protocol `client` for backends of `backend`:
+ * ViaRewind below 1.9, ViaBackwards for other older bots, ViaVersion for newer ones.
+ */
+export function translator(client, backend) {
+  if (client < V1_9 && backend >= V1_9) return 'ViaRewind';
+  return client < backend ? 'ViaBackwards' : 'ViaVersion';
+}
+
+/**
+ * Expands the translation runs of a tier (`translations`) into CI jobs: bots of `client` on the
+ * backends of `mc` (and `survival`, when it differs), Warp translating with the via plugin. Each
+ * runs its own `variants`, else the tier's.
+ */
+export function translationsForTier(matrix, tierName) {
+  const tier = matrix.tiers[tierName];
+  if (!tier) throw new Error(`unknown tier "${tierName}". Known: ${Object.keys(matrix.tiers).join(', ')}`);
+  return (tier.translations ?? []).map((run) => {
+    const entry = findEntry(matrix, run.mc);
+    const client = findEntry(matrix, run.client);
+    const survival = run.survival ? findEntry(matrix, run.survival) : null;
+    if (client.version === entry.version) throw new Error(`tier ${tierName}: translation of ${run.client} bots on ${run.mc} translates nothing`);
+    return {
+      id: `${client.version}-on-${entry.version}${survival ? `-and-${survival.version}` : ''}`,
+      mc: entry.version,
+      client: client.version,
+      survival: survival?.version ?? '',
+      protocol: entry.protocol,
+      java: entry.java,
+      variants: (run.variants ?? tier.variants).join(','),
+      translator: translator(client.protocol, entry.protocol),
+      known_broken: Boolean(entry.knownBroken || client.knownBroken),
+    };
+  });
+}
