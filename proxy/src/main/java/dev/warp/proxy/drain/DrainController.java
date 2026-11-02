@@ -221,7 +221,7 @@ public final class DrainController<P extends DrainCandidate> {
       return new Transfer(target.host(), target.port());
     }
     return config.cannotTransfer() == DrainConfig.CannotTransfer.KICK
-        ? new Kick(Component.text(config.message()))
+        ? new Kick(config.message())
         : new Keep();
   }
 
@@ -581,7 +581,7 @@ public final class DrainController<P extends DrainCandidate> {
 
   private void cannotTransfer(P player) {
     if (config.cannotTransfer() == DrainConfig.CannotTransfer.KICK) {
-      kick(player, Component.text(config.message()));
+      kick(player, config.message());
     } else {
       keep(player);
     }

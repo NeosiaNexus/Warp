@@ -31,6 +31,7 @@ import dev.warp.api.command.PlayerAvailableCommandsEvent;
 import dev.warp.api.command.SimpleCommand;
 import dev.warp.api.event.EventBus;
 import dev.warp.api.event.Subscription;
+import dev.warp.api.logging.LogRecord;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.command.CommandTree;
@@ -41,8 +42,11 @@ import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
 import dev.warp.proxy.command.PluginCommandManager;
 import dev.warp.proxy.command.WarpCommandManager;
+import dev.warp.proxy.config.LogFormat;
+import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.logging.LogCapture;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -199,6 +203,36 @@ class CommandsTest {
       clientHandler(setup).readComplete();
 
       assertEquals(1, setup.sentToBackend(setup.current()));
+    }
+
+    @Test
+    @DisplayName("should log every command a player sends when logging.commands is on")
+    void logged() throws Exception {
+      SwitchHarness setup = playingOnLobby();
+      when(setup.player.loginContext().logging())
+          .thenReturn(new LoggingConfig(LogFormat.TEXT, true, false, true));
+
+      try (LogCapture logs = new LogCapture()) {
+        clientHandler(setup).handle(new ChatCommand("tell Alex hi", new byte[0], 0));
+        clientHandler(setup).readComplete();
+
+        LogRecord record =
+            logs.await(r -> r.message().equals("Steve ran the command /tell Alex hi"));
+        assertEquals("Steve", record.context().get(ConnectedPlayer.LOG_PLAYER));
+      }
+    }
+
+    @Test
+    @DisplayName("should not log commands by default: they may carry passwords")
+    void notLoggedByDefault() throws Exception {
+      SwitchHarness setup = playingOnLobby();
+
+      try (LogCapture logs = new LogCapture()) {
+        clientHandler(setup).handle(new ChatCommand("login hunter2", new byte[0], 0));
+        clientHandler(setup).readComplete();
+
+        assertFalse(logs.anyAfterSettling(r -> r.message().contains("hunter2")));
+      }
     }
 
     @Test

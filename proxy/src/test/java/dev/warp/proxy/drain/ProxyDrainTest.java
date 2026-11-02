@@ -70,7 +70,7 @@ class ProxyDrainTest {
             DrainConfig.CannotTransfer.KEEP,
             newPlayers,
             Duration.ofMinutes(30),
-            MESSAGE),
+            Component.text(MESSAGE)),
         new PlayerRegistry(),
         events,
         clock,

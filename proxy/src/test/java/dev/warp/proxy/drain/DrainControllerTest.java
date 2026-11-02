@@ -64,7 +64,7 @@ class DrainControllerTest {
         cannotTransfer,
         DrainConfig.NewPlayers.ACCEPT,
         TIMEOUT,
-        MESSAGE);
+        Component.text(MESSAGE));
   }
 
   private DrainController<FakePlayer> controller() {
@@ -223,7 +223,7 @@ class DrainControllerTest {
                   DrainConfig.CannotTransfer.KEEP,
                   DrainConfig.NewPlayers.ACCEPT,
                   TIMEOUT,
-                  MESSAGE));
+                  Component.text(MESSAGE)));
 
       var _ = drain.start(DrainTrigger.HTTP);
       clock.advance(PROPAGATION);
