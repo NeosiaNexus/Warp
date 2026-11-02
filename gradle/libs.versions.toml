@@ -13,6 +13,11 @@ gson = "2.14.0"
 configurate = "4.2.0"
 jspecify = "1.0.0"
 
+# Via plugin: ViaVersion and ViaBackwards, and the Guava they expect their platform to provide
+viaversion = "5.12.2"
+viabackwards = "5.12.2"
+guava = "33.7.2-jre"
+
 # Native
 netty-tcnative = "2.0.84.Final"
 
@@ -76,6 +81,11 @@ disruptor = { group = "com.lmax", name = "disruptor", version.ref = "disruptor" 
 caffeine = { group = "com.github.ben-manes.caffeine", name = "caffeine", version.ref = "caffeine" }
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 configurate-hocon = { group = "org.spongepowered", name = "configurate-hocon", version.ref = "configurate" }
+
+# Via plugin
+viaversion-common = { group = "com.viaversion", name = "viaversion-common", version.ref = "viaversion" }
+viabackwards-common = { group = "com.viaversion", name = "viabackwards-common", version.ref = "viabackwards" }
+guava = { group = "com.google.guava", name = "guava", version.ref = "guava" }
 
 # Annotations
 jspecify = { group = "org.jspecify", name = "jspecify", version.ref = "jspecify" }
