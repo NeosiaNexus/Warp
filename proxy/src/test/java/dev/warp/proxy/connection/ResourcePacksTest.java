@@ -44,6 +44,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
+import io.netty.channel.embedded.EmbeddedChannel;
 import net.kyori.adventure.resource.ResourcePackCallback;
 import net.kyori.adventure.resource.ResourcePackInfo;
 import net.kyori.adventure.resource.ResourcePackRequest;
@@ -383,6 +384,135 @@ class ResourcePacksTest {
   @Nested
   @DisplayName("before 1.20.3")
   class Single {
+
+    @Nested
+    @DisplayName("a client that does not answer in time")
+    class Deadline {
+
+      /** Lets {@code millis} pass on the player's frozen clock, then runs what fell due. */
+      private void elapse(SwitchHarness setup, long millis) {
+        EmbeddedChannel client = (EmbeddedChannel) setup.client.channel();
+        client.advanceTimeBy(millis, TimeUnit.MILLISECONDS);
+        client.runScheduledPendingTasks();
+      }
+
+      private SwitchHarness frozen() {
+        SwitchHarness setup = inGame(SINGLE);
+        ((EmbeddedChannel) setup.client.channel()).freezeTime();
+        return setup;
+      }
+
+      @Test
+      @DisplayName(
+          "should report the proxy's pack failed without a first answer, then send the next")
+      void noFirstAnswer() throws InterruptedException {
+        SwitchHarness setup = frozen();
+        MinecraftConnection lobby = setup.current();
+        setup.player.api().sendResourcePacks(request(NETWORK));
+        setup.sentToClient();
+        setup.receive(lobby, frame(SINGLE, pushOf(EVENT, SINGLE)));
+
+        elapse(setup, ResourcePacks.ANSWER_DEADLINE_MS - 1);
+        List<ResourcePackPush> beforeDeadline = pushes(setup.sentToClient());
+        assertNoStatus();
+        elapse(setup, 1);
+
+        assertEquals(List.of(), beforeDeadline);
+        assertEquals(new Status(NETWORK.id(), ResourcePackStatus.FAILED_DOWNLOAD), nextStatus());
+        assertEquals(
+            List.of("https://warp.dev/event.zip"),
+            pushes(setup.sentToClient()).stream().map(ResourcePackPush::url).toList());
+        // The proxy's pack is never reported to a server.
+        assertEquals(List.of(), results(setup.packetsSentToBackend(lobby)));
+      }
+
+      @Test
+      @DisplayName("should give a client that accepted the pack the time to load it")
+      void acceptedThenSilent() throws InterruptedException {
+        SwitchHarness setup = frozen();
+        setup.player.api().sendResourcePacks(request(NETWORK));
+        elapse(setup, ResourcePacks.ANSWER_DEADLINE_MS - 1);
+        setup
+            .player
+            .resourcePacks()
+            .clientAnswered(answer(new UUID(0, 0), ResourcePackResponse.ACCEPTED));
+
+        elapse(setup, ResourcePacks.LOAD_DEADLINE_MS - 1);
+        Status accepted = nextStatus();
+        assertNoStatus();
+        elapse(setup, 1);
+
+        assertEquals(new Status(NETWORK.id(), ResourcePackStatus.ACCEPTED), accepted);
+        assertEquals(new Status(NETWORK.id(), ResourcePackStatus.FAILED_DOWNLOAD), nextStatus());
+      }
+
+      @Test
+      @DisplayName("should report a server's pack failed to the server, and drop late answers")
+      void serverPack() {
+        SwitchHarness setup = frozen();
+        MinecraftConnection lobby = setup.current();
+        setup.receive(lobby, frame(SINGLE, pushOf(EVENT, SINGLE)));
+        setup.sentToClient();
+
+        elapse(setup, ResourcePacks.ANSWER_DEADLINE_MS);
+        List<Integer> reported = results(setup.packetsSentToBackend(lobby));
+        setup
+            .player
+            .resourcePacks()
+            .clientAnswered(answer(new UUID(0, 0), ResourcePackResponse.ACCEPTED));
+        setup
+            .player
+            .resourcePacks()
+            .clientAnswered(answer(new UUID(0, 0), ResourcePackResponse.SUCCESSFULLY_LOADED));
+        lobby.flush();
+
+        assertEquals(List.of(ResourcePackResponse.FAILED_DOWNLOAD), reported);
+        assertEquals(List.of(), results(setup.packetsSentToBackend(lobby)));
+        // The client loaded it after all: the same pack is answered for, not sent again.
+        setup.receive(lobby, frame(SINGLE, pushOf(EVENT, SINGLE)));
+        assertEquals(List.of(), pushes(setup.sentToClient()));
+      }
+
+      @Test
+      @DisplayName("should never report a pack the client answered in time")
+      void answeredInTime() throws InterruptedException {
+        SwitchHarness setup = frozen();
+        setup.player.api().sendResourcePacks(request(NETWORK));
+        setup
+            .player
+            .resourcePacks()
+            .clientAnswered(answer(new UUID(0, 0), ResourcePackResponse.ACCEPTED));
+        setup
+            .player
+            .resourcePacks()
+            .clientAnswered(answer(new UUID(0, 0), ResourcePackResponse.SUCCESSFULLY_LOADED));
+
+        elapse(setup, ResourcePacks.LOAD_DEADLINE_MS);
+
+        assertEquals(new Status(NETWORK.id(), ResourcePackStatus.ACCEPTED), nextStatus());
+        assertEquals(
+            new Status(NETWORK.id(), ResourcePackStatus.SUCCESSFULLY_LOADED), nextStatus());
+        assertNoStatus();
+      }
+
+      @Test
+      @DisplayName("should count the deadline of a pack kept before the first Join Game from it")
+      void heldUntilJoin() throws InterruptedException {
+        SwitchHarness setup = new SwitchHarness(SINGLE, List.of(), ProtocolState.PLAY);
+        harnesses.add(setup);
+        EmbeddedChannel client = (EmbeddedChannel) setup.client.channel();
+        client.freezeTime();
+        setup.player.api().sendResourcePacks(request(NETWORK));
+
+        elapse(setup, ResourcePacks.ANSWER_DEADLINE_MS);
+        setup.player.joinedGame();
+        elapse(setup, ResourcePacks.ANSWER_DEADLINE_MS - 1);
+        assertNoStatus();
+        elapse(setup, 1);
+
+        assertEquals(new Status(NETWORK.id(), ResourcePackStatus.FAILED_DOWNLOAD), nextStatus());
+      }
+    }
 
     @Test
     @DisplayName("should send the first pack, and discard the others: the client holds one")

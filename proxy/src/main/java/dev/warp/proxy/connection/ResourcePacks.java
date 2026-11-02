@@ -74,7 +74,11 @@ import org.slf4j.LoggerFactory;
  *   <li><b>1.8 to 1.20.2</b>: the client holds one server pack, which the next replaces, and
  *       answers for the last pack sent without naming it. It cannot download two packs at once
  *       (Velocity #1279): the proxy sends one pack at a time, the next once the client gave a final
- *       answer for the previous, so that every answer is for the pack in flight. A pack the client
+ *       answer for the previous, so that every answer is for the pack in flight. A client that
+ *       stays silent cannot hold the packs after it back forever: without a first answer {@value
+ *       #ANSWER_DEADLINE_MS} ms after the pack reached it, or a final one {@value
+ *       #LOAD_DEADLINE_MS} ms after it accepted it, the pack is reported {@code FAILED_DOWNLOAD} to
+ *       whoever sent it and the next pack goes (see {@link #ANSWER_DEADLINE_MS}). A pack the client
  *       loaded last (same URL and hash) is not sent again. 1.20.2 unloads the server pack when it
  *       enters the configuration phase (Waterfall #827): the proxy sends its own pack again at the
  *       end of the next server's configuration, unless that server sent one of its own.
@@ -94,6 +98,29 @@ final class ResourcePacks {
 
   /** How long a previous server's packs stay after the next server's Join Game. */
   static final long STALE_PACK_GRACE_MS = 10_000;
+
+  /**
+   * Before 1.20.3: how long the client has to give a first answer about the pack in flight, from
+   * the moment the pack reached it. A vanilla client answers at once, accepted or declined (server
+   * packs disabled), or once the player chose at the prompt. Once it accepted, it has {@link
+   * #LOAD_DEADLINE_MS} to download and load the pack.
+   *
+   * <p>A client silent past its deadline is taken to have failed the download: the pack is reported
+   * {@code FAILED_DOWNLOAD} to whoever sent it, the proxy's callback and event or the server, and
+   * the next pack goes. Of the final answers of 1.8 to 1.20.2, it is the one that claims nothing
+   * that did not happen: {@code DECLINED} says the player refused (a server that requires its pack
+   * kicks for that), {@code SUCCESSFULLY_LOADED} that the pack is on screen, and a vanilla client
+   * reports a pack it could not get, whatever the reason, as {@code FAILED_DOWNLOAD} (an invalid
+   * URL too, without answering {@code ACCEPTED} first). {@code DISCARDED}, the 1.20.3 answer for a
+   * pack the client dropped, does not exist before, and a server rejects an answer its version does
+   * not know (Velocity #1280). The client keeps the pack it held, or not: the proxy assumes it
+   * dropped it, so that the pack is sent again rather than answered for. Answers that still come
+   * for that pack while no other is in flight are dropped: it was already reported.
+   */
+  static final long ANSWER_DEADLINE_MS = 60_000;
+
+  /** Before 1.20.3: how long the client has to load a pack it accepted, or report it failed. */
+  static final long LOAD_DEADLINE_MS = 600_000;
 
   /** The answers the client gives for a pack it loads, by generation. */
   private static final int[] LOADED = {ACCEPTED, DOWNLOADED, SUCCESSFULLY_LOADED};
@@ -134,6 +161,15 @@ final class ResourcePacks {
   private final ArrayDeque<Packet> held = new ArrayDeque<>();
 
   private @Nullable ScheduledFuture<?> staleRemoval;
+
+  /**
+   * Before 1.20.3: when the proxy gives up waiting for the client's answer about the pack in
+   * flight.
+   */
+  private @Nullable ScheduledFuture<?> deadline;
+
+  /** Before 1.20.3: the last pack given up on, whose late answers are dropped. */
+  private @Nullable Pack overdue;
 
   ResourcePacks(ConnectedPlayer player) {
     this.player = player;
@@ -339,6 +375,11 @@ final class ResourcePacks {
       }
     } else {
       pack = inFlight;
+      Pack late = overdue;
+      if (pack == null && late != null) {
+        lateAnswer(late, result);
+        return;
+      }
     }
     if (pack == null) {
       forwardToServer(response, null);
@@ -346,6 +387,9 @@ final class ResourcePacks {
     }
     deliver(pack, response);
     if (!ResourcePackResponse.isFinal(result)) {
+      if (!multiple) {
+        armDeadline(pack, LOAD_DEADLINE_MS); // accepted: it downloads the pack
+      }
       return;
     }
     pack.finished = true;
@@ -357,15 +401,54 @@ final class ResourcePacks {
       return;
     }
     inFlight = null;
+    cancelDeadline();
     if (pack.loaded) {
       current = pack;
     } else if (result != DECLINED) {
       current = null; // the client dropped its pack to download this one
     }
-    Pack next = waiting.poll();
-    if (next != null) {
-      sendNow(next);
+    sendNext();
+  }
+
+  /** Before 1.20.3: an answer for the pack given up on, while no other is in flight. */
+  private void lateAnswer(Pack late, int result) {
+    logger.debug("Dropped a late resource pack answer of {}", player.username());
+    if (ResourcePackResponse.isFinal(result)) {
+      overdue = null;
+      if (result == SUCCESSFULLY_LOADED) {
+        current = late; // the client holds it after all
+      }
     }
+  }
+
+  /**
+   * Before 1.20.3: the client said nothing in time about a pack in flight, which is reported {@code
+   * FAILED_DOWNLOAD} (see {@link #ANSWER_DEADLINE_MS}) before the next pack goes.
+   *
+   * @param pack the pack the deadline was set for
+   */
+  private void deadlinePassed(Pack pack) {
+    if (inFlight != pack || player.isGone()) {
+      return; // answered, or dropped with its server, in the meantime
+    }
+    deadline = null;
+    logger.debug(
+        "{} gave no answer in time about resource pack {}: reported as failed",
+        player.username(),
+        pack.id());
+    inFlight = null;
+    overdue = pack;
+    pack.finished = true;
+    current = null; // whether the client still holds its previous pack is unknown
+    deliver(
+        pack,
+        new ResourcePackResponse(
+            pack.id(), pack.push.hash(), ResourcePackResponse.FAILED_DOWNLOAD));
+    BackendConnection backend = player.backendConnection();
+    if (!pack.proxy() && backend != null && backend.isActive()) {
+      backend.connection().flush();
+    }
+    sendNext();
   }
 
   // ---------------------------------------------------------------------------
@@ -409,10 +492,8 @@ final class ResourcePacks {
     Pack flying = inFlight;
     if (flying != null && !flying.proxy() && flying.backend != backend) {
       inFlight = null;
-      Pack next = waiting.poll();
-      if (next != null) {
-        sendNow(next);
-      }
+      cancelDeadline();
+      sendNext();
     }
   }
 
@@ -472,6 +553,7 @@ final class ResourcePacks {
   /** The player is gone. */
   void close() {
     cancelStaleRemoval();
+    cancelDeadline();
     held.clear();
   }
 
@@ -514,7 +596,37 @@ final class ResourcePacks {
 
   private void sendNow(Pack pack) {
     inFlight = pack;
+    overdue = null; // the client's answers are now for this pack
     write(pack.push);
+    if (!held.contains(pack.push)) {
+      armDeadline(pack, ANSWER_DEADLINE_MS); // a held pack's counts once it is sent (flushHeld)
+    }
+  }
+
+  private void sendNext() {
+    Pack next = waiting.poll();
+    if (next != null) {
+      sendNow(next);
+    }
+  }
+
+  /** Before 1.20.3: gives the client {@code delayMs} from now to answer about {@code pack}. */
+  private void armDeadline(Pack pack, long delayMs) {
+    cancelDeadline();
+    deadline =
+        player
+            .clientConnection()
+            .channel()
+            .eventLoop()
+            .schedule(() -> deadlinePassed(pack), delayMs, TimeUnit.MILLISECONDS);
+  }
+
+  private void cancelDeadline() {
+    ScheduledFuture<?> task = deadline;
+    if (task != null) {
+      task.cancel(false);
+      deadline = null;
+    }
   }
 
   /** Answers a pack the client already loaded in its place, as it would answer it. */
@@ -579,11 +691,17 @@ final class ResourcePacks {
     if (held.isEmpty()) {
       return;
     }
+    Pack flying = inFlight;
+    boolean flyingHeld = flying != null && held.contains(flying.push);
     MinecraftConnection client = player.clientConnection();
     for (Packet packet = held.poll(); packet != null; packet = held.poll()) {
       client.write(packet);
     }
     client.flush();
+    if (flying != null && flyingHeld) {
+      // The pack in flight reaches the client now: its deadline counts from here.
+      armDeadline(flying, ANSWER_DEADLINE_MS);
+    }
   }
 
   private void cancelStaleRemoval() {
