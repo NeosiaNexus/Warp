@@ -10,7 +10,8 @@
   "scripts": {
     "test": "node --test \"test/**/*.test.js\"",
     "packet-ids": "node tools/packet-ids.js",
-    "packet-reports": "node tools/packet-reports.js"
+    "packet-reports": "node tools/packet-reports.js",
+    "component-fixtures": "node tools/component-fixtures.js"
   },
   "dependencies": {
     "minecraft-data": "3.117.0",
