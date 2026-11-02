@@ -140,9 +140,9 @@ class ProxyProtocolForwardingTest {
    * player's information on {@code velocity:player_info} and returns the payload of the answer.
    */
   private static byte[] forwardingDataSentTo(ServerSocket backend) throws IOException {
-    try (Socket connection = backend.accept()) {
+    try (Socket connection = backend.accept();
+        DataInputStream in = new DataInputStream(connection.getInputStream())) {
       connection.setSoTimeout(10_000);
-      DataInputStream in = new DataInputStream(connection.getInputStream());
       readFrame(in); // Handshake
       readFrame(in); // Login Start
 
