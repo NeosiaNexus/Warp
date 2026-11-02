@@ -280,8 +280,7 @@ final class LoginSessionHandler implements SessionHandler {
       authenticateAsync(decryptedSharedSecret);
 
     } catch (GeneralSecurityException e) {
-      logger.warn(
-          "Encryption error for {} from {}", username, connection.channel().remoteAddress(), e);
+      logger.warn("Encryption error for {} from {}", username, connection.remoteAddress(), e);
       disconnect("Encryption error");
     }
   }
@@ -401,7 +400,7 @@ final class LoginSessionHandler implements SessionHandler {
                           logger.info(
                               "Authentication failed for {} from {}: {}",
                               playerName,
-                              connection.channel().remoteAddress(),
+                              connection.remoteAddress(),
                               e.getMessage());
                           disconnect("Authentication failed");
                         });
@@ -429,7 +428,7 @@ final class LoginSessionHandler implements SessionHandler {
         "Player {} ({}) logged in from {}",
         profile.name(),
         profile.uuid(),
-        connection.channel().remoteAddress());
+        connection.remoteAddress());
 
     if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
       // Wait for LoginAcknowledged before transitioning.
@@ -497,7 +496,7 @@ final class LoginSessionHandler implements SessionHandler {
    * refuses the player sends it down the fallback order, whatever its version.
    */
   private void initiateBackendConnection(GameProfile profile) {
-    InetSocketAddress remoteAddr = (InetSocketAddress) connection.channel().remoteAddress();
+    InetSocketAddress remoteAddr = (InetSocketAddress) connection.remoteAddress();
     ConnectedPlayer joining =
         new ConnectedPlayer(connection, clientVersion(), profile, remoteAddr, loginContext);
     this.player = joining;
@@ -520,7 +519,7 @@ final class LoginSessionHandler implements SessionHandler {
     logger.warn(
         "Disconnecting {} from {}: invalid profile public key, {}",
         username != null ? username : "unknown",
-        connection.channel().remoteAddress(),
+        connection.remoteAddress(),
         problem.description());
     connection.writeAndClose(LoginDisconnect.ofTranslation(ProfileKeys.REFUSAL_REASON));
   }
@@ -529,7 +528,7 @@ final class LoginSessionHandler implements SessionHandler {
     logger.warn(
         "Disconnecting {} from {}: {}",
         username != null ? username : "unknown",
-        connection.channel().remoteAddress(),
+        connection.remoteAddress(),
         reason);
     // The disconnect packet of the client's current state: LoginAcknowledged moves it to
     // CONFIGURATION, completeLogin (before 1.20.2) to PLAY. The login reason is JSON in every

@@ -29,6 +29,8 @@ import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
 
 import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NotYetConnectedException;
 
@@ -84,6 +86,12 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   private final Channel channel;
   private final FrameForwarder forwarder;
+
+  /**
+   * The client's address as a PROXY protocol header gave it, or {@code null} to use the socket's
+   * peer. Set once, on the event loop, before any session handler reads it.
+   */
+  private @Nullable InetSocketAddress proxiedAddress;
 
   private @Nullable SessionHandler sessionHandler;
   private @Nullable MinecraftDecoder decoder;
@@ -155,16 +163,14 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
       // A peer that went quiet: it is gone or stuck, and closing is all the proxy can do. Worth a
       // line, unlike a reset connection: how the connection stood says which side stopped.
       logger.info(
-          "Connection {} timed out {}",
-          channel.remoteAddress(),
-          describeTimeout(channel, decoder()));
+          "Connection {} timed out {}", remoteAddress(), describeTimeout(channel, decoder()));
     } else {
       String routine = describeRoutine(cause, ctx.channel().isActive());
       if (routine != null) {
-        logger.debug("{} ({}): {}", routine, channel.remoteAddress(), cause.toString());
+        logger.debug("{} ({}): {}", routine, remoteAddress(), cause.toString());
       } else {
         // Everything else is logged in full.
-        logger.error("Exception in pipeline for {}", channel.remoteAddress(), cause);
+        logger.error("Exception in pipeline for {}", remoteAddress(), cause);
       }
     }
     if (ctx.channel().isActive()) {
@@ -391,10 +397,37 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
   /**
    * Returns the underlying Netty channel.
    *
+   * <p>Its {@link Channel#remoteAddress()} is the socket's peer, which is a load balancer when the
+   * PROXY protocol is on: use {@link #remoteAddress()} for the address of the client.
+   *
    * @return the channel
    */
   public Channel channel() {
     return channel;
+  }
+
+  /**
+   * Returns the address of the peer this connection serves: the client's real address when a
+   * trusted load balancer sent it in a PROXY protocol header, the socket's peer otherwise (the
+   * client itself, or the backend server of a backend connection).
+   *
+   * <p>Everything that names, limits or forwards a client uses this address, never the channel's.
+   *
+   * @return the peer's address
+   */
+  public SocketAddress remoteAddress() {
+    InetSocketAddress proxied = proxiedAddress;
+    return proxied != null ? proxied : channel.remoteAddress();
+  }
+
+  /**
+   * Records the client's real address, read from the PROXY protocol header a trusted load balancer
+   * sent at the start of the connection.
+   *
+   * @param address the client's address and port
+   */
+  void setProxiedAddress(InetSocketAddress address) {
+    this.proxiedAddress = address;
   }
 
   /**

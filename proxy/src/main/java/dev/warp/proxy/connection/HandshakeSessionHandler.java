@@ -91,7 +91,7 @@ final class HandshakeSessionHandler implements SessionHandler {
           logger.warn(
               "Unsupported protocol version {} from {}",
               handshake.protocolVersion(),
-              connection.channel().remoteAddress());
+              connection.remoteAddress());
           connection.close();
           return;
         }
@@ -100,9 +100,7 @@ final class HandshakeSessionHandler implements SessionHandler {
       }
       default -> {
         logger.warn(
-            "Unknown nextState {} from {}",
-            handshake.nextState(),
-            connection.channel().remoteAddress());
+            "Unknown nextState {} from {}", handshake.nextState(), connection.remoteAddress());
         connection.close();
       }
     }
