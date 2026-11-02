@@ -589,6 +589,89 @@ class FrameDecoderTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Pre-login limits
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("pre-login limits")
+  class PreLoginLimits {
+
+    @Test
+    @DisplayName("should read the next frame under the limits the previous one led to")
+    void limitsBetweenFrames() {
+      FrameDecoder decoder = new FrameDecoder(FrameLimits.HANDSHAKE);
+      List<Integer> lengths = new ArrayList<>();
+      EmbeddedChannel ch =
+          new EmbeddedChannel(
+              decoder,
+              new ChannelInboundHandlerAdapter() {
+                @Override
+                public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                  ByteBuf frame = (ByteBuf) msg;
+                  lengths.add(VarInt.read(frame));
+                  frame.release();
+                  // The handshake moves the client to STATUS, as the proxy's handler would.
+                  decoder.limits(FrameLimits.STATUS);
+                }
+              });
+      ByteBuf handshakeThenRequest = Unpooled.buffer();
+      handshakeThenRequest.writeBytes(HexFormat.of().parseHex("06000400000001"));
+      handshakeThenRequest.writeBytes(HexFormat.of().parseHex("0100"));
+
+      ch.writeInbound(handshakeThenRequest);
+
+      // A request is not a handshake: read under the handshake's limits, it would be refused.
+      assertEquals(List.of(6, 1), lengths);
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should wait for the packet identifier before judging a frame")
+    void waitsForIdentifier() {
+      EmbeddedChannel ch = new EmbeddedChannel(new FrameDecoder(FrameLimits.STATUS));
+
+      ch.writeInbound(Unpooled.wrappedBuffer(new byte[] {0x09}));
+      assertNull(ch.readInbound());
+      ch.writeInbound(Unpooled.wrappedBuffer(new byte[] {0x01, 0, 0, 0, 0, 0, 0, 0, 1}));
+
+      assertFrameLength(9, ch.readInbound());
+      assertFalse(ch.finish());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({
+      "0102, PACKET_NOT_ALLOWED", // a packet STATUS does not have
+      "028100, PACKET_NOT_ALLOWED", // an overlong encoding of a request
+      "020000, WRONG_LENGTH", // a request is its identifier alone
+      "0a01, TOO_LONG" // longer than a ping, the longest status packet
+    })
+    @DisplayName("should refuse a frame its state cannot hold from its header")
+    void refuses(String hex, FrameLimitException.Reason reason) {
+      EmbeddedChannel ch = new EmbeddedChannel(new FrameDecoder(FrameLimits.STATUS));
+
+      DecoderException thrown =
+          assertThrows(
+              DecoderException.class,
+              () -> ch.writeInbound(Unpooled.wrappedBuffer(HexFormat.of().parseHex(hex))));
+
+      assertEquals(reason, assertInstanceOf(FrameLimitException.class, thrown).reason());
+    }
+
+    @Test
+    @DisplayName("should frame without limits once they are lifted, as for a logged-in client")
+    void lifted() {
+      FrameDecoder decoder = new FrameDecoder(FrameLimits.STATUS);
+      EmbeddedChannel ch = new EmbeddedChannel(decoder);
+      decoder.limits(null);
+
+      ch.writeInbound(Unpooled.wrappedBuffer(HexFormat.of().parseHex("0a01020304050607080900")));
+
+      assertFrameLength(10, ch.readInbound());
+      assertNull(decoder.limits());
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 

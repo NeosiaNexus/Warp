@@ -24,6 +24,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.codec.DecoderException;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Splits a TCP byte stream into Minecraft protocol frames based on VarInt length prefixes.
@@ -55,7 +56,19 @@ import io.netty.handler.codec.DecoderException;
  *       ByteBuf#retainedSlice(int, int)}, sharing the underlying memory with no copy.
  *   <li><b>Cached exceptions</b> — protocol violations throw pre-allocated {@link DecoderException}
  *       instances with no-op {@code fillInStackTrace()} to avoid allocation on error paths.
+ *   <li><b>Pre-login frame limits</b>: with {@link FrameLimits}, from a client that is not logged
+ *       in, each frame is checked against the packet it announces as soon as its length and packet
+ *       identifier are readable, and refused with a {@link FrameLimitException} before the rest of
+ *       it is buffered: a connection that has not even sent its handshake can no longer make the
+ *       proxy hold 2 MiB (Velocity {@code 374acad83}, Waterfall #607).
  * </ul>
+ *
+ * <h3>One frame at a time before login</h3>
+ *
+ * <p>While limits apply, each call emits at most one frame: the next frame's header is read only
+ * once the previous frame went through the pipeline, which may have changed the state (a handshake
+ * moves the client to STATUS or LOGIN, a Login Acknowledged to CONFIGURATION) and so the limits.
+ * Without limits, every complete frame of a read is emitted in one pass.
  */
 public final class FrameDecoder extends ByteToMessageDecoder {
 
@@ -90,6 +103,64 @@ public final class FrameDecoder extends ByteToMessageDecoder {
         }
       };
 
+  @SuppressWarnings("StaticAssignmentOfThrowable")
+  private static final FrameLimitException LONGER_THAN_STATE_ALLOWS =
+      new FrameLimitException(
+          FrameLimitException.Reason.TOO_LONG,
+          "Frame longer than any packet a client may send in this state");
+
+  @SuppressWarnings("StaticAssignmentOfThrowable")
+  private static final FrameLimitException PACKET_NOT_ALLOWED =
+      new FrameLimitException(
+          FrameLimitException.Reason.PACKET_NOT_ALLOWED,
+          "Packet a client may not send in this state");
+
+  @SuppressWarnings("StaticAssignmentOfThrowable")
+  private static final FrameLimitException LENGTH_OUTSIDE_PACKET_BOUNDS =
+      new FrameLimitException(
+          FrameLimitException.Reason.WRONG_LENGTH,
+          "Frame length outside the bounds of the packet it announces");
+
+  /** The limits of the state the client is read in, or {@code null} for none. */
+  private @Nullable FrameLimits limits;
+
+  // ---------------------------------------------------------------------------
+  // Construction
+  // ---------------------------------------------------------------------------
+
+  /** Creates a decoder bounded by the protocol's 3-byte length alone: for logged-in peers. */
+  public FrameDecoder() {
+    this(null);
+  }
+
+  /**
+   * Creates a decoder bounded by {@code limits}.
+   *
+   * @param limits the limits of the state the client starts in, or {@code null} for none
+   */
+  public FrameDecoder(@Nullable FrameLimits limits) {
+    this.limits = limits;
+  }
+
+  /**
+   * Replaces the limits, from the next frame on: the proxy sets those of each state the client
+   * enters, and none once it is logged in. Called on the channel's event loop.
+   *
+   * @param limits the limits, or {@code null} for none
+   */
+  public void limits(@Nullable FrameLimits limits) {
+    this.limits = limits;
+  }
+
+  /**
+   * Returns the limits frames are checked against.
+   *
+   * @return the limits, or {@code null} for none
+   */
+  public @Nullable FrameLimits limits() {
+    return limits;
+  }
+
   // ---------------------------------------------------------------------------
   // Decode
   // ---------------------------------------------------------------------------
@@ -101,6 +172,12 @@ public final class FrameDecoder extends ByteToMessageDecoder {
     // burning CPU for nothing (BungeeCord #2908).
     if (!ctx.channel().isActive()) {
       in.skipBytes(in.readableBytes());
+      return;
+    }
+
+    FrameLimits bounds = this.limits;
+    if (bounds != null) {
+      decodeLimited(in, out, bounds);
       return;
     }
 
@@ -143,6 +220,50 @@ public final class FrameDecoder extends ByteToMessageDecoder {
       out.add(in.retainedSlice(startIndex, frameLength));
       in.readerIndex(startIndex + frameLength);
     }
+  }
+
+  /**
+   * Decodes at most one frame, checked against {@code bounds} from its header.
+   *
+   * @param in the cumulated bytes
+   * @param out receives the frame
+   * @param bounds the limits of the state
+   */
+  private static void decodeLimited(ByteBuf in, List<Object> out, FrameLimits bounds) {
+    int startIndex = in.readerIndex();
+    int length = readFrameVarInt(in);
+    if (length < 0) {
+      if (length == TOO_WIDE) {
+        throw VARINT_TOO_WIDE;
+      }
+      in.readerIndex(startIndex);
+      return;
+    }
+    if (length == 0) {
+      return; // Empty frame: skipped; the base class calls again for the next one.
+    }
+    if (length > bounds.largest()) {
+      throw LONGER_THAN_STATE_ALLOWS;
+    }
+    if (!in.isReadable()) {
+      in.readerIndex(startIndex);
+      return;
+    }
+    // Every packet identifier of these states is one VarInt byte below 0x80.
+    int packetId = in.getUnsignedByte(in.readerIndex());
+    if (!bounds.allows(packetId)) {
+      throw PACKET_NOT_ALLOWED;
+    }
+    if (!bounds.allows(packetId, length)) {
+      throw LENGTH_OUTSIDE_PACKET_BOUNDS;
+    }
+    if (in.readableBytes() < length) {
+      in.readerIndex(startIndex);
+      return;
+    }
+    int frameLength = in.readerIndex() - startIndex + length;
+    out.add(in.retainedSlice(startIndex, frameLength));
+    in.readerIndex(startIndex + frameLength);
   }
 
   // ---------------------------------------------------------------------------
