@@ -731,7 +731,9 @@ public final class ConnectedPlayer {
     pendingKeepAliveId = id;
     keepAliveSentTime = System.nanoTime();
     keepAliveOutstanding = true;
-    clientConnection.writeAndFlush(new KeepAlive(id));
+    // Between Start Configuration and its acknowledgement the client reads configuration packets:
+    // the keep-alive waits, and goes out with the configuration state's id.
+    clientConnection.writeWhenSettled(new KeepAlive(id));
   }
 
   /**

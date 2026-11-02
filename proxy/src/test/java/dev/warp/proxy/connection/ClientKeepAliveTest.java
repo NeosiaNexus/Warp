@@ -31,6 +31,7 @@ import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.StartConfiguration;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -45,6 +46,7 @@ import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
@@ -165,6 +167,36 @@ class ClientKeepAliveTest {
       assertNull(warpSide.readOutbound(), "no keep-alive may be sent while one is pending");
       echo(pending);
       assertNotNull(nextKeepAlive(), "the right echo must still be accepted");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // State change
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("During a state change")
+  class DuringStateChange {
+
+    @Test
+    @DisplayName("should hold a keep-alive due after Start Configuration until acknowledged")
+    void heldUntilAcknowledged() {
+      connectPlayer(ProtocolVersion.latest());
+      MinecraftConnection connection = warpSide.pipeline().get(MinecraftConnection.class);
+      connection.writeTerminal(new StartConfiguration());
+      ByteBuf startConfiguration = warpSide.readOutbound();
+      startConfiguration.release();
+
+      advanceOneTick();
+      boolean held = warpSide.outboundMessages().isEmpty();
+      connection.setState(ProtocolState.CONFIGURATION); // the client acknowledged
+
+      assertTrue(held, "the client reads configuration ids after Start Configuration");
+      ByteBuf wire = warpSide.readOutbound();
+      assertNotNull(wire, "the keep-alive must follow the acknowledgement");
+      clientSide.pipeline().get(MinecraftDecoder.class).setState(ProtocolState.CONFIGURATION);
+      assertTrue(clientSide.writeInbound(wire));
+      assertInstanceOf(KeepAlive.class, clientSide.readInbound());
     }
   }
 
