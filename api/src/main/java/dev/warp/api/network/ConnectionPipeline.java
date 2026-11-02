@@ -61,7 +61,10 @@ public interface ConnectionPipeline {
    * channel is not connected yet when its initializers run.
    *
    * <p>The proxy's own handlers in {@code channel().pipeline()}, their names and their order are
-   * not part of the API: add handlers with {@link #addHandler}, never through the pipeline.
+   * not part of the API: add handlers with {@link #addHandler}, which places them. After each
+   * initializer, the proxy checks that the handlers it found (the proxy's, and those of the plugins
+   * initialized before) are all still there, in their order: one removed, replaced or moved closes
+   * the connection, and the proxy reports the plugin and the handler.
    *
    * @return the channel
    */

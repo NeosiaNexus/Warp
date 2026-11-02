@@ -23,13 +23,17 @@ import dev.warp.api.network.PipelinePosition;
 import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
+import io.netty.channel.ChannelPipeline;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The view of a connection's pipeline given to one plugin's initializer: it names the plugin's
- * handlers after it, and stops accepting handlers once the initializer returned.
+ * handlers after it, stops accepting handlers once the initializer returned, and keeps track of the
+ * handlers the initializer must leave where they are ({@link ProtectedHandlers}).
  */
 abstract class AbstractConnectionPipeline implements ConnectionPipeline {
 
@@ -40,6 +44,12 @@ abstract class AbstractConnectionPipeline implements ConnectionPipeline {
 
   /** Cleared once the initializer returned: the view is only valid during the call. */
   private boolean open = true;
+
+  /** The handlers the initializer must leave where they are, the proxy's new ones included. */
+  private ProtectedHandlers protectedHandlers = ProtectedHandlers.NONE;
+
+  /** The first change to a protected handler, found when the initializer added a handler. */
+  private ProtectedHandlers.@Nullable Violation violation;
 
   /**
    * Creates the view.
@@ -91,11 +101,21 @@ abstract class AbstractConnectionPipeline implements ConnectionPipeline {
       throw new IllegalArgumentException("A handler name must not be blank");
     }
     String qualified = plugin + ":" + name;
-    if (host.channel().pipeline().get(qualified) != null) {
+    ChannelPipeline pipeline = host.channel().pipeline();
+    if (pipeline.get(qualified) != null) {
       throw new IllegalArgumentException(
           "Plugin " + plugin + " already added a handler named '" + name + "' to this connection");
     }
+    // The proxy may put handlers of its own in (packet level): they are protected too, but only
+    // once what the initializer did so far was checked, so that none of its changes is taken in.
+    if (violation == null) {
+      violation = protectedHandlers.check(pipeline);
+    }
+    Set<String> before = Set.copyOf(pipeline.names());
     host.addPluginHandler(position, qualified, handler);
+    if (violation == null) {
+      protectedHandlers = protectedHandlers.withAddedByProxy(pipeline, before, qualified);
+    }
     return qualified;
   }
 
@@ -107,6 +127,27 @@ abstract class AbstractConnectionPipeline implements ConnectionPipeline {
   @Override
   public boolean decompressesPackets() {
     return host.isPacketLevel();
+  }
+
+  /**
+   * Sets the handlers the initializer must leave where they are: those of the pipeline before it
+   * ran.
+   *
+   * @param handlers the handlers
+   */
+  void protect(ProtectedHandlers handlers) {
+    protectedHandlers = handlers;
+  }
+
+  /**
+   * Returns the first change the initializer made to a protected handler. Call it once the
+   * initializer returned.
+   *
+   * @return the change, or {@code null} if it left them all where they were
+   */
+  ProtectedHandlers.@Nullable Violation violation() {
+    ProtectedHandlers.Violation found = violation;
+    return found != null ? found : protectedHandlers.check(host.channel().pipeline());
   }
 
   /** Stops accepting handlers: the initializer returned. */

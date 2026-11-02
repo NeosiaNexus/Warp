@@ -57,8 +57,11 @@
  * <h2>What a handler may do</h2>
  *
  * <p>A handler reads, rewrites, drops or adds messages in the format of its position, and may use
- * the channel for its event loop, its attributes and closing it. It must not add, remove or move
- * the proxy's own handlers, nor another plugin's: their names and order are not part of the API.
+ * the channel for its event loop, its attributes and closing it. It must not remove, replace or
+ * move the proxy's own handlers, nor another plugin's: their names and order are not part of the
+ * API. The proxy enforces it where it costs nothing on the packet path: after each initializer, it
+ * checks that the handlers the initializer found are all still there, in their order, and closes
+ * the connection otherwise, naming the plugin and the handler (once per plugin).
  */
 @NullMarked
 package dev.warp.api.network;

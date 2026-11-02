@@ -64,6 +64,7 @@ import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.embedded.EmbeddedChannel;
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -228,6 +229,180 @@ class PluginHandlersTest {
 
       assertFalse(subscription.isActive());
       assertEquals(List.of(), ran);
+    }
+  }
+
+  @Nested
+  @DisplayName("pipeline contract")
+  class Contract {
+
+    /** The handlers of {@link #connection}, in order, as the proxy lays them out. */
+    private static final List<String> PROXY_HANDLERS =
+        List.of(
+            ServerChannelInitializer.FRAME_DECODER,
+            ServerChannelInitializer.FRAME_ENCODER,
+            ServerChannelInitializer.MINECRAFT_DECODER,
+            ServerChannelInitializer.MINECRAFT_ENCODER,
+            ServerChannelInitializer.CONNECTION_HANDLER);
+
+    private final LogCapture log = new LogCapture(PipelineRegistry.class);
+
+    @AfterEach
+    void stopCapture() {
+      log.close();
+    }
+
+    @Test
+    @DisplayName("should keep a connection whose initializer adds handlers, its own way too")
+    void keepsCompliantInitializer() {
+      MinecraftConnection backend = backend();
+      var _ =
+          registry.addBackendInitializer(
+              "translator",
+              p -> {
+                p.addHandler(PipelinePosition.FRAME, "frames", new Recorder());
+                String codec = p.addHandler(PipelinePosition.PACKET, "codec", new Recorder());
+                // Adding next to its own handler through the channel is allowed.
+                p.channel().pipeline().addBefore(codec, "translator:extra", new Recorder());
+              });
+
+      boolean set = registry.initializeBackend(backend, VERSION.protocol(), player, server);
+
+      assertTrue(set);
+      assertTrue(backend.channel().isOpen());
+      List<String> names = backend.channel().pipeline().names();
+      assertEquals(PROXY_HANDLERS, names.stream().filter(PROXY_HANDLERS::contains).toList());
+      assertEquals(List.of(), errors());
+    }
+
+    @Test
+    @DisplayName("should close the connection of an initializer that removes a proxy handler")
+    void closesOnRemovedHandler() {
+      MinecraftConnection backend = backend();
+      List<String> ran = new ArrayList<>();
+      var _ =
+          registry.addBackendInitializer(
+              "rogue", p -> p.channel().pipeline().remove(ServerChannelInitializer.FRAME_DECODER));
+      var _ = registry.addBackendInitializer("next", p -> ran.add("next"));
+
+      boolean set = registry.initializeBackend(backend, VERSION.protocol(), player, server);
+
+      assertFalse(set);
+      assertFalse(backend.channel().isOpen());
+      assertEquals(List.of(), ran);
+      assertEquals(1, errors().size());
+      String error = errors().getFirst();
+      assertTrue(error.contains("Plugin rogue removed the proxy's handler 'frame-decoder'"), error);
+      assertTrue(error.contains("backend connection of Steve to lobby"), error);
+    }
+
+    @Test
+    @DisplayName("should close the connection of an initializer that replaces a proxy handler")
+    void closesOnReplacedHandler() {
+      MinecraftConnection backend = backend();
+      var _ =
+          registry.addBackendInitializer(
+              "rogue",
+              p -> {
+                String name = ServerChannelInitializer.MINECRAFT_DECODER;
+                var _ = p.channel().pipeline().replace(name, name, new Recorder());
+              });
+
+      boolean set = registry.initializeBackend(backend, VERSION.protocol(), player, server);
+
+      assertFalse(set);
+      assertFalse(backend.channel().isOpen());
+      assertTrue(
+          errors().getFirst().contains("replaced the proxy's handler 'minecraft-decoder'"),
+          errors().getFirst());
+    }
+
+    @Test
+    @DisplayName("should close the connection of an initializer that moves a proxy handler")
+    void closesOnMovedHandler() {
+      MinecraftConnection backend = backend();
+      var _ =
+          registry.addBackendInitializer(
+              "rogue",
+              p -> {
+                var pipeline = p.channel().pipeline();
+                String name = ServerChannelInitializer.FRAME_ENCODER;
+                pipeline.addLast(name, pipeline.remove(name));
+              });
+
+      boolean set = registry.initializeBackend(backend, VERSION.protocol(), player, server);
+
+      assertFalse(set);
+      assertFalse(backend.channel().isOpen());
+      assertTrue(
+          errors().getFirst().contains("reordered the handlers: the proxy's handler"),
+          errors().getFirst());
+    }
+
+    @Test
+    @DisplayName("should protect the handlers the proxy adds while the initializer runs")
+    void protectsHandlersAddedForThePlugin() {
+      MinecraftConnection backend = backend();
+      var _ =
+          registry.addBackendInitializer(
+              "rogue",
+              p -> {
+                p.addHandler(PipelinePosition.PACKET, "codec", new Recorder());
+                var _ = p.channel().pipeline().remove(ServerChannelInitializer.PACKET_DECOMPRESSOR);
+              });
+
+      boolean set = registry.initializeBackend(backend, VERSION.protocol(), player, server);
+
+      assertFalse(set);
+      assertTrue(
+          errors().getFirst().contains("removed the proxy's handler 'packet-decompressor'"),
+          errors().getFirst());
+    }
+
+    @Test
+    @DisplayName("should protect an earlier plugin's handlers from a later plugin")
+    void protectsEarlierPluginHandlers() {
+      MinecraftConnection backend = backend();
+      var _ =
+          registry.addBackendInitializer(
+              "first", p -> p.addHandler(PipelinePosition.PACKET, "codec", new Recorder()));
+      var _ =
+          registry.addBackendInitializer(
+              "second", p -> p.channel().pipeline().remove("first:codec"));
+
+      boolean set = registry.initializeBackend(backend, VERSION.protocol(), player, server);
+
+      assertFalse(set);
+      assertTrue(
+          errors()
+              .getFirst()
+              .contains("Plugin second removed plugin first's handler 'first:codec'"),
+          errors().getFirst());
+    }
+
+    @Test
+    @DisplayName("should report a plugin once, however many of its connections are closed")
+    void reportsOnce() {
+      MinecraftConnection first = backend();
+      MinecraftConnection second = backend();
+      var _ =
+          registry.addBackendInitializer(
+              "rogue", p -> p.channel().pipeline().remove(ServerChannelInitializer.FRAME_ENCODER));
+
+      boolean firstSet = registry.initializeBackend(first, VERSION.protocol(), player, server);
+      boolean secondSet = registry.initializeBackend(second, VERSION.protocol(), player, server);
+
+      assertFalse(firstSet);
+      assertFalse(secondSet);
+      assertFalse(second.channel().isOpen());
+      assertEquals(1, errors().size());
+    }
+
+    private List<String> errors() {
+      return log.events().stream()
+          .filter(event -> Level.ERROR.equals(event.getLevel()))
+          .map(event -> event.getMessage().getFormattedMessage())
+          .toList();
     }
   }
 

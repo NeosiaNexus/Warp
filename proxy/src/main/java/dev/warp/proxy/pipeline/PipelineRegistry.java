@@ -27,9 +27,12 @@ import dev.warp.api.server.RegisteredServer;
 
 import java.net.InetSocketAddress;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
 
+import io.netty.channel.ChannelPipeline;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,6 +41,12 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Registration is thread-safe; runs happen on each connection's event loop. A connection with no
  * initializer registered costs one list check.
+ *
+ * <p>Initializers get the raw channel, so after each one the registry checks that the handlers it
+ * found (the proxy's, and earlier plugins') are all still there, in their order ({@link
+ * ProtectedHandlers}). An initializer that removed, replaced or moved one has its connection
+ * closed, as one that throws: a pipeline rearranged under the proxy would corrupt the stream. The
+ * check costs nothing once the connection is set up.
  */
 public final class PipelineRegistry {
 
@@ -48,6 +57,9 @@ public final class PipelineRegistry {
 
   /** Initializers of backend connections, in registration order. */
   private final List<Registration<BackendPipeline>> backends = new CopyOnWriteArrayList<>();
+
+  /** The plugins already reported for changing a protected handler: each is reported once. */
+  private final Set<String> reportedPlugins = ConcurrentHashMap.newKeySet();
 
   // ---------------------------------------------------------------------------
   // Registration
@@ -106,8 +118,8 @@ public final class PipelineRegistry {
    * @param host the connection
    * @param protocolVersion the client's protocol version number
    * @param connection the connection as plugins see it
-   * @return {@code true} if the connection is set up; {@code false} if an initializer failed, in
-   *     which case the connection was closed
+   * @return {@code true} if the connection is set up; {@code false} if an initializer failed or
+   *     changed a protected handler, in which case the connection was closed
    */
   public boolean initializeClient(
       PipelineHost host, int protocolVersion, InboundConnection connection) {
@@ -130,8 +142,8 @@ public final class PipelineRegistry {
    * @param protocolVersion the protocol version the proxy speaks on it: the client's
    * @param player the player it is for
    * @param server the server it leads to
-   * @return {@code true} if the connection is set up; {@code false} if an initializer failed, in
-   *     which case the connection was closed
+   * @return {@code true} if the connection is set up; {@code false} if an initializer failed or
+   *     changed a protected handler, in which case the connection was closed
    */
   public boolean initializeBackend(
       PipelineHost host, int protocolVersion, Player player, RegisteredServer server) {
@@ -146,13 +158,16 @@ public final class PipelineRegistry {
         "backend connection of " + player.username() + " to " + server.name());
   }
 
-  private static boolean run(
+  private boolean run(
       List<? extends Registration<?>> registrations,
       Function<String, AbstractConnectionPipeline> pipelines,
       PipelineHost host,
       String description) {
+    ChannelPipeline channelPipeline = host.channel().pipeline();
+    ProtectedHandlers protectedHandlers = ProtectedHandlers.of(channelPipeline);
     for (Registration<?> registration : registrations) {
       AbstractConnectionPipeline pipeline = pipelines.apply(registration.plugin());
+      pipeline.protect(protectedHandlers);
       try {
         initializerOf(registration).initialize(pipeline);
       } catch (Exception | LinkageError e) {
@@ -163,8 +178,33 @@ public final class PipelineRegistry {
       } finally {
         pipeline.close();
       }
+      ProtectedHandlers.Violation violation = pipeline.violation();
+      if (violation != null) {
+        report(registration.plugin(), violation, description);
+        var _ = host.channel().close();
+        return false;
+      }
+      // What this plugin added is protected from the next ones.
+      protectedHandlers = ProtectedHandlers.of(channelPipeline);
     }
     return true;
+  }
+
+  /**
+   * Logs a change to a protected handler: once per plugin, which would do it on every connection.
+   */
+  private void report(String plugin, ProtectedHandlers.Violation violation, String description) {
+    if (reportedPlugins.add(plugin)) {
+      logger.error(
+          "Plugin {} {} on the {}: closing it. A plugin may add handlers to a pipeline, never"
+              + " remove, replace or move the proxy's or another plugin's; each of its connections"
+              + " is closed until it is fixed (reported once)",
+          plugin,
+          violation.describe(),
+          description);
+    } else {
+      logger.debug("Plugin {} {} on the {}: closing it", plugin, violation.describe(), description);
+    }
   }
 
   /** The registration was made for the kind of pipeline it is run on: see the two lists. */
