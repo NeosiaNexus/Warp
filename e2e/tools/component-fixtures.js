@@ -18,7 +18,7 @@
 // Warp's substitutes. Selector, score and NBT contents are left out: the server resolves them
 // before sending. The test builds the same components with Adventure and compares: the JSON byte
 // for byte, the NBT tag by tag.
-import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -157,6 +157,19 @@ function body(buffer) {
   return buffer.subarray(i + 1);
 }
 
+/**
+ * The fixtures written so far, or nothing on a first run. Read at once rather than checked for
+ * first: the file is rewritten at the end, and a check apart from the read could go stale.
+ */
+function previousFixtures() {
+  try {
+    return readFileSync(FIXTURES, 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT') return '';
+    throw e;
+  }
+}
+
 async function capture(version, matrix) {
   const entry = findEntry(matrix, version);
   if (entry.via) throw new Error(`${version}: the bots cannot speak it without ViaProxy, whose bytes would not be the server's`);
@@ -219,8 +232,8 @@ async function capture(version, matrix) {
 
 const matrix = loadMatrix();
 const versions = positionals.length ? positionals : VERSIONS;
-const kept = existsSync(FIXTURES) && positionals.length
-  ? readFileSync(FIXTURES, 'utf8').split('\n').filter((line) => line && !line.startsWith('#') && !versions.includes(line.split(' ')[0]))
+const kept = positionals.length
+  ? previousFixtures().split('\n').filter((line) => line && !line.startsWith('#') && !versions.includes(line.split(' ')[0]))
   : [];
 const captured = [];
 for (const version of versions) captured.push(...(await capture(version, matrix)));
