@@ -78,7 +78,7 @@ public final class Compression {
       logger.info("Compression: java.util.zip (native libdeflate {})", status.detail());
     } else {
       logger.warn(
-          "Compression: java.util.zip, about half as fast, because native libdeflate is"
+          "Compression: java.util.zip, which is slower, because native libdeflate is"
               + " unavailable: {}. {}. To keep java.util.zip without this warning, start Warp"
               + " with -D{}=true.",
           status.detail(),

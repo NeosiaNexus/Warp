@@ -25,7 +25,7 @@ import io.netty.buffer.ByteBuf;
  *
  * <p>Implementations may use Java's built-in {@link java.util.zip.Deflater}/{@link
  * java.util.zip.Inflater} ({@link JavaCompressor}) or a native library (the proxy's libdeflate
- * implementation, through the FFM API). Instances are <b>not</b> thread-safe — each Netty channel
+ * implementation, through the FFM API). Instances are <b>not</b> thread-safe: each Netty channel
  * must use its own compressor.
  *
  * <p>Lifecycle: the owning pipeline handler calls {@link #close()} from {@code handlerRemoved()}.
