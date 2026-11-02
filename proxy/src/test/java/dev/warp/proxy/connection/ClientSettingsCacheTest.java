@@ -83,6 +83,10 @@ class ClientSettingsCacheTest {
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
     when(loginContext.channels()).thenReturn(new ChannelRegistry());
+    when(loginContext.commands())
+        .thenReturn(
+            TestLoginContexts.commands(
+                new ServerRegistry(java.util.Map.of(), null, java.util.List.of())));
     ServerRegistry registry =
         new ServerRegistry(
             Map.of("lobby", new InetSocketAddress("localhost", 25565)), "lobby", List.of());

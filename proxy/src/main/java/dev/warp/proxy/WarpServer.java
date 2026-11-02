@@ -24,6 +24,8 @@ import dev.warp.api.player.Player;
 import dev.warp.api.plugin.PluginManager;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
+import dev.warp.proxy.command.ProxyCommands;
+import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.config.WarpConfig;
 import dev.warp.proxy.connection.BackendPinger;
 import dev.warp.proxy.connection.ConnectedPlayer;
@@ -122,6 +124,9 @@ public final class WarpServer implements Warp {
   /** The plugin message channels plugins own. */
   private final ChannelRegistry channels = new ChannelRegistry();
 
+  /** The proxy's commands, its own and the plugins'. */
+  private final WarpCommandManager commands = new WarpCommandManager();
+
   /** The plugins of the proxy's {@code plugins} directory. */
   private final WarpPluginManager pluginManager;
 
@@ -152,8 +157,9 @@ public final class WarpServer implements Warp {
     this.config = config;
     this.serverRegistry =
         new ServerRegistry(config.servers(), config.defaultServer(), config.fallbackOrder());
+    ProxyCommands.register(commands, serverRegistry);
     this.pluginManager =
-        new WarpPluginManager(this, events, channels, directory.resolve("plugins"));
+        new WarpPluginManager(this, events, channels, commands, directory.resolve("plugins"));
   }
 
   // ---------------------------------------------------------------------------
@@ -243,6 +249,7 @@ public final class WarpServer implements Warp {
     awaitShutdownHandlers();
     pluginManager.disableAll();
     events.close();
+    commands.close();
     shutdownEventLoops();
 
     if (sessionService != null) {
@@ -395,6 +402,7 @@ public final class WarpServer implements Warp {
         config.duplicateLoginPolicy(),
         events,
         channels,
+        commands,
         config.forwardingMode(),
         config.forwardingSecret(),
         transport.clientChannelClass());

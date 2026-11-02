@@ -27,6 +27,7 @@ import static org.mockito.Mockito.mock;
 import dev.warp.api.Warp;
 import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginState;
+import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.messaging.ChannelRegistry;
 
@@ -60,7 +61,9 @@ class WarpPluginManagerTest {
   void setUp() {
     plugins = root.resolve("plugins");
     events = new WarpEventBus();
-    manager = new WarpPluginManager(mock(Warp.class), events, new ChannelRegistry(), plugins);
+    manager =
+        new WarpPluginManager(
+            mock(Warp.class), events, new ChannelRegistry(), new WarpCommandManager(), plugins);
   }
 
   @AfterEach

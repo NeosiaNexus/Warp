@@ -16,6 +16,7 @@
  */
 package dev.warp.api.player;
 
+import dev.warp.api.command.CommandSource;
 import dev.warp.api.messaging.ChannelIdentifier;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerConnection;
@@ -34,7 +35,7 @@ import net.kyori.adventure.text.Component;
  *
  * <p>Implemented by the proxy; plugins must not implement it.
  */
-public interface Player extends InboundConnection {
+public interface Player extends InboundConnection, CommandSource {
 
   /**
    * Returns the player's UUID: Mojang's in online mode, derived from the name in offline mode, or

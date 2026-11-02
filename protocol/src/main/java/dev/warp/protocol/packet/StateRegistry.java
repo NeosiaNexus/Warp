@@ -663,9 +663,9 @@ public final class StateRegistry {
                     map(0x0F, MINECRAFT_1_19_4),
                     map(0x10, MINECRAFT_1_20_2),
                     map(0x0F, MINECRAFT_1_21_5))
-                // The command tree: forwarded untouched until the proxy has commands of its own
-                // to add, then decoded lazily (see dev.warp.protocol.command).
-                .registerEncodeOnly(
+                // The command tree: its payload is copied and decoded lazily, for the proxy to add
+                // its own commands (see dev.warp.protocol.command).
+                .register(
                     DeclareCommands.class,
                     DeclareCommands.CODEC,
                     map(0x11, MINECRAFT_1_13),

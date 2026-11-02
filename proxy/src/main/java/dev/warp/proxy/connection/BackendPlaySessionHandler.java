@@ -133,7 +133,7 @@ final class BackendPlaySessionHandler implements SessionHandler {
       case PlayPluginMessage pluginMessage -> handlePluginMessage(pluginMessage);
       case TabCompleteResponse response -> forwardToClient(response);
       // Registered encode-only: forwarded untouched by handleBlind, never decoded yet.
-      case DeclareCommands commands -> forwardToClient(commands);
+      case DeclareCommands commands -> player.sendCommands(commands, backendConnection);
       // Watched before 1.20.2 only, to clear them from the client on a server switch. Their frame
       // follows, forwarded untouched by handleBlind.
       case LegacyPlayerInfo info -> track(info);

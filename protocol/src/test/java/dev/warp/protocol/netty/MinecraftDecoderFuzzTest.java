@@ -38,6 +38,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.command.CommandTree;
 import dev.warp.protocol.compress.FrameDecompressor;
 import dev.warp.protocol.compress.JavaCompressor;
 import dev.warp.protocol.fuzz.FuzzSeeds;
@@ -70,6 +71,7 @@ import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatCommand;
+import dev.warp.protocol.packet.play.DeclareCommands;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
@@ -644,6 +646,9 @@ class MinecraftDecoderFuzzTest {
                       PlayPluginMessage.CODEC,
                       new PlayPluginMessage("minecraft:brand", new byte[] {1}),
                       v)),
+          Map.entry(
+              DeclareCommands.CODEC,
+              v -> encode(DeclareCommands.CODEC, DeclareCommands.of(CommandTree.empty(), v), v)),
           fixture(BossBar.WATCH, "boss_bar_add"),
           fixture(LegacyPlayerInfo.WATCH, "legacy_player_info_add"),
           fixture(PlayerInfo.WATCH, "player_info_add"),

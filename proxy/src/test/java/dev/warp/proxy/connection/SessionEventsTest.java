@@ -31,6 +31,7 @@ import dev.warp.protocol.netty.FrameEncoder;
 import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.packet.PacketDirection;
+import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.event.player.LoginEventImpl;
@@ -65,6 +66,7 @@ class SessionEventsTest {
     when(context.events()).thenReturn(bus);
     when(context.playerRegistry()).thenReturn(registry);
     when(context.channels()).thenReturn(new ChannelRegistry());
+    when(context.commands()).thenReturn(new WarpCommandManager(Runnable::run));
     when(context.serverRegistry()).thenReturn(new ServerRegistry(Map.of(), null, List.of()));
   }
 

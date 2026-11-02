@@ -110,6 +110,10 @@ class SessionHandlerLifecycleTest {
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
     when(loginContext.channels()).thenReturn(new ChannelRegistry());
+    when(loginContext.commands())
+        .thenReturn(
+            TestLoginContexts.commands(
+                new ServerRegistry(java.util.Map.of(), null, java.util.List.of())));
     // Provide a real ServerRegistry with empty fallback so handleBackendFailure disconnects.
     ServerRegistry registry =
         new ServerRegistry(

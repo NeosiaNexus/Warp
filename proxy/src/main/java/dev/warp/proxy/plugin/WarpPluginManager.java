@@ -17,6 +17,7 @@
 package dev.warp.proxy.plugin;
 
 import dev.warp.api.Warp;
+import dev.warp.api.command.CommandManager;
 import dev.warp.api.event.EventBus;
 import dev.warp.api.messaging.Messaging;
 import dev.warp.api.plugin.PluginContainer;
@@ -26,6 +27,7 @@ import dev.warp.api.plugin.PluginDescription;
 import dev.warp.api.plugin.PluginManager;
 import dev.warp.api.plugin.PluginState;
 import dev.warp.api.plugin.WarpPlugin;
+import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.messaging.ChannelRegistry;
 
@@ -57,6 +59,7 @@ public final class WarpPluginManager implements PluginManager {
   private final Warp proxy;
   private final WarpEventBus events;
   private final ChannelRegistry channels;
+  private final WarpCommandManager commands;
   private final Path directory;
   private final ApiClassLoader apiLoader;
 
@@ -69,13 +72,19 @@ public final class WarpPluginManager implements PluginManager {
    * @param proxy the proxy given to plugins
    * @param events the proxy's event bus, of which each plugin gets its own view
    * @param channels the proxy's plugin message channels
+   * @param commands the proxy's commands
    * @param directory the plugins directory, created if missing
    */
   public WarpPluginManager(
-      Warp proxy, WarpEventBus events, ChannelRegistry channels, Path directory) {
+      Warp proxy,
+      WarpEventBus events,
+      ChannelRegistry channels,
+      WarpCommandManager commands,
+      Path directory) {
     this.proxy = proxy;
     this.events = events;
     this.channels = channels;
+    this.commands = commands;
     this.directory = directory;
     this.apiLoader = new ApiClassLoader(WarpPluginManager.class.getClassLoader());
   }
@@ -227,7 +236,7 @@ public final class WarpPluginManager implements PluginManager {
       return;
     }
     container.setClassLoader(loader);
-    WarpPluginContext context = new WarpPluginContext(container, proxy, events, channels);
+    WarpPluginContext context = new WarpPluginContext(container, proxy, events, channels, commands);
     container.setContext(context);
 
     try {
@@ -264,6 +273,7 @@ public final class WarpPluginManager implements PluginManager {
     injectables.put(PluginManager.class, this);
     injectables.put(EventBus.class, context.events());
     injectables.put(Messaging.class, context.messaging());
+    injectables.put(CommandManager.class, context.commands());
     return injectables;
   }
 

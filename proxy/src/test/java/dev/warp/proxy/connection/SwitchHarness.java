@@ -113,8 +113,10 @@ final class SwitchHarness implements AutoCloseable {
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
     when(loginContext.channels()).thenReturn(new ChannelRegistry());
-    when(loginContext.serverRegistry())
-        .thenReturn(new ServerRegistry(servers, "lobby", fallbackOrder));
+
+    ServerRegistry registry = new ServerRegistry(servers, "lobby", fallbackOrder);
+    when(loginContext.serverRegistry()).thenReturn(registry);
+    when(loginContext.commands()).thenReturn(TestLoginContexts.commands(registry));
     // Cannot be registered on an embedded event loop: every connection fails at once.
     when(loginContext.channelClass()).thenAnswer(invocation -> LocalChannel.class);
     when(loginContext.forwardingSecret()).thenReturn(new byte[0]);
@@ -275,7 +277,9 @@ final class SwitchHarness implements AutoCloseable {
             StartConfiguration.class,
             BundleDelimiter.class,
             ConfigDisconnect.class,
-            PlayPluginMessage.class)) {
+            PlayPluginMessage.class,
+            dev.warp.protocol.packet.play.DeclareCommands.class,
+            dev.warp.protocol.packet.play.TabCompleteResponse.class)) {
       try {
         if (registry.packetId(version, type) == packetId) {
           return type;

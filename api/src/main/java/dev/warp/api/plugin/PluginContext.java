@@ -17,6 +17,7 @@
 package dev.warp.api.plugin;
 
 import dev.warp.api.Warp;
+import dev.warp.api.command.CommandManager;
 import dev.warp.api.event.EventBus;
 import dev.warp.api.messaging.Messaging;
 
@@ -38,6 +39,7 @@ import org.slf4j.Logger;
  *   <li>{@link PluginManager}: every plugin;
  *   <li>{@link EventBus}: the plugin's event bus;
  *   <li>{@link Messaging}: the plugin's plugin message channels;
+ *   <li>{@link CommandManager}: the plugin's commands;
  *   <li>{@link Path} annotated with {@link DataDirectory}: the plugin's data directory.
  * </ul>
  *
@@ -91,4 +93,12 @@ public interface PluginContext {
    * @return the messaging registrar
    */
   Messaging messaging();
+
+  /**
+   * Returns the plugin's commands. Commands registered through it are removed when the plugin is
+   * disabled or fails.
+   *
+   * @return the command manager
+   */
+  CommandManager commands();
 }

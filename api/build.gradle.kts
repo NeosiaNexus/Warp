@@ -16,6 +16,9 @@ dependencies {
     api(libs.adventure.text.serializer.plain)
     api(libs.adventure.text.serializer.legacy)
 
+    // Brigadier: commands, as the vanilla client knows them
+    api(libs.brigadier)
+
     // SLF4J: plugins log through this facade
     api(libs.slf4j.api)
 

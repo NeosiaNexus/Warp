@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.command.CommandExecuteEvent;
 import dev.warp.api.event.player.DisconnectEvent;
 import dev.warp.api.event.player.KickedFromServerEvent;
 import dev.warp.api.event.player.PlayerChooseInitialServerEvent;
@@ -30,15 +31,27 @@ import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerInfo;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.codec.McString;
+import dev.warp.protocol.codec.VarInt;
+import dev.warp.protocol.command.CommandTree;
+import dev.warp.protocol.command.CommandTreeDecoding;
+import dev.warp.protocol.command.NameConflict;
 import dev.warp.protocol.packet.TextComponent;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.config.ConfigPluginMessage;
 import dev.warp.protocol.packet.play.BundleDelimiter;
+import dev.warp.protocol.packet.play.ChatAcknowledgement;
+import dev.warp.protocol.packet.play.DeclareCommands;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPluginMessage;
 import dev.warp.protocol.packet.play.SystemChatMessage;
+import dev.warp.protocol.packet.play.TabCompleteRequest;
+import dev.warp.protocol.packet.play.TabCompleteResponse;
+import dev.warp.proxy.command.CommandExecuteEventImpl;
+import dev.warp.proxy.command.PlayerAvailableCommandsEventImpl;
+import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.event.player.KickedFromServerEventImpl;
 import dev.warp.proxy.event.player.PlayerChooseInitialServerEventImpl;
@@ -59,6 +72,11 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import com.mojang.brigadier.suggestion.Suggestion;
+import com.mojang.brigadier.suggestion.Suggestions;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.EventLoop;
 import io.netty.util.AttributeKey;
 import net.kyori.adventure.text.Component;
@@ -1544,6 +1562,207 @@ public final class ConnectedPlayer {
           }
         });
     return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Commands
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Handles a command the client typed: the proxy runs its own, {@link CommandExecuteEvent} may
+   * block any, and the rest goes to the backend. Runs on the client event loop.
+   *
+   * @param commandLine the command line, without {@code /}
+   * @param acknowledgements the chat messages the command acknowledges (1.19.3 to 1.20.4), which
+   *     the backend must hear about when it does not get the command itself
+   * @param forward sends the command to the backend as typed
+   */
+  void handleCommand(String commandLine, int acknowledgements, Runnable forward) {
+    WarpCommandManager commands = loginContext.commands();
+    boolean proxyCommand = commands.owns(commandLine);
+    WarpEventBus events = loginContext.events();
+    if (!events.hasHandlers(CommandExecuteEventImpl.class)) {
+      if (proxyCommand) {
+        consumeCommand(acknowledgements);
+        var _ = commands.execute(api, commandLine);
+      } else {
+        forward.run();
+      }
+      return;
+    }
+    // Hold what the client sends next, so that nothing overtakes the command: signed chat requires
+    // the backend to see the player's messages and commands in order.
+    clientConnection.setAutoRead(false);
+    var _ =
+        events
+            .fire(new CommandExecuteEventImpl(api, commandLine), uuid)
+            .whenComplete(
+                (event, _) ->
+                    onEventLoop(
+                        () -> {
+                          clientConnection.setAutoRead(true);
+                          if (!clientConnection.channel().isActive()) {
+                            return;
+                          }
+                          if (event.result() instanceof CommandExecuteEvent.Denied) {
+                            consumeCommand(acknowledgements);
+                          } else if (proxyCommand) {
+                            consumeCommand(acknowledgements);
+                            var _ = commands.execute(api, commandLine);
+                          } else {
+                            forward.run();
+                          }
+                        }));
+  }
+
+  /**
+   * Tells the backend about the chat messages a command it never sees acknowledges. From 1.19.3 to
+   * 1.20.4 the client counts them as delivered: the backend must move its last-seen window by as
+   * many, or the client's next message no longer lines up and the player is kicked (Velocity does
+   * the same, SessionCommandHandler#consumeCommand).
+   */
+  private void consumeCommand(int acknowledgements) {
+    BackendConnection backend = backendConnection;
+    if (acknowledgements > 0 && backend != null && backend.isActive()) {
+      backend.connection().writeAndFlush(new ChatAcknowledgement(acknowledgements));
+    }
+  }
+
+  /**
+   * Answers a suggestion request for a proxy command; forwards any other. Runs on the client event
+   * loop.
+   *
+   * @param request the request
+   * @param forward sends it to the backend
+   */
+  void handleSuggestions(TabCompleteRequest request, Runnable forward) {
+    String text = request.text();
+    if (protocolVersion.isOlderThan(ProtocolVersion.MINECRAFT_1_13)
+        || !text.startsWith("/")
+        || text.indexOf(' ') < 0
+        || !loginContext.commands().owns(text.substring(1))) {
+      forward.run();
+      return;
+    }
+    var _ =
+        loginContext
+            .commands()
+            .suggest(api, text.substring(1))
+            .thenAccept(
+                suggestions ->
+                    onEventLoop(
+                        () -> {
+                          if (clientConnection.channel().isActive()) {
+                            clientConnection.writeAndFlush(
+                                new TabCompleteResponse(
+                                    request.transactionId(), encodeSuggestions(suggestions, 1)));
+                          }
+                        }));
+  }
+
+  /**
+   * Writes Brigadier suggestions in the 1.13+ layout after the transaction id: start, length,
+   * count, then each match without tooltip.
+   */
+  private static byte[] encodeSuggestions(Suggestions suggestions, int offset) {
+    ByteBuf buf = Unpooled.buffer();
+    try {
+      VarInt.write(buf, suggestions.getRange().getStart() + offset);
+      VarInt.write(buf, suggestions.getRange().getLength());
+      VarInt.write(buf, suggestions.getList().size());
+      for (Suggestion suggestion : suggestions.getList()) {
+        McString.write(buf, suggestion.getText());
+        buf.writeBoolean(false);
+      }
+      return ByteBufUtil.getBytes(buf);
+    } finally {
+      buf.release();
+    }
+  }
+
+  /**
+   * Sends the client its server's command list with the proxy's commands merged in, as {@link
+   * PlayerAvailableCommandsEvent} leaves it. A list the proxy cannot read goes as it came. Runs on
+   * the client event loop.
+   *
+   * @param packet the server's commands packet
+   * @param backend the server's connection
+   */
+  void sendCommands(DeclareCommands packet, MinecraftConnection backend) {
+    if (!isPlayingOn(backend)) {
+      return;
+    }
+    CommandTreeDecoding decoding;
+    try {
+      decoding = packet.tree(protocolVersion);
+    } catch (RuntimeException e) {
+      // A tree the client would refuse too: let it judge, as it would without a proxy.
+      clientConnection.writeAndFlush(packet);
+      return;
+    }
+    switch (decoding) {
+      case CommandTreeDecoding.Opaque opaque -> {
+        if (!opaqueCommandsLogged) {
+          opaqueCommandsLogged = true;
+          logger.info("Proxy commands not shown to {}: {}", username, opaque.message());
+        }
+        clientConnection.writeAndFlush(packet);
+      }
+      case CommandTreeDecoding.Decoded(CommandTree tree) -> {
+        CommandTree merged =
+            tree.merge(
+                loginContext.commands().treeFor(api, protocolVersion), NameConflict.PROXY_WINS);
+        WarpEventBus events = loginContext.events();
+        if (!events.hasHandlers(PlayerAvailableCommandsEventImpl.class)) {
+          clientConnection.writeAndFlush(DeclareCommands.of(merged, protocolVersion));
+          return;
+        }
+        var event = new PlayerAvailableCommandsEventImpl(api, merged.topLevelNames());
+        var _ =
+            events
+                .fire(event, uuid)
+                .whenComplete(
+                    (done, _) ->
+                        onEventLoop(
+                            () -> {
+                              if (!clientConnection.channel().isActive()) {
+                                return;
+                              }
+                              CommandTree shown =
+                                  merged.withoutTopLevel(node -> !done.keeps(topLevelName(node)));
+                              clientConnection.writeAndFlush(
+                                  DeclareCommands.of(shown, protocolVersion));
+                            }));
+      }
+    }
+  }
+
+  private static String topLevelName(dev.warp.protocol.command.CommandNode node) {
+    return switch (node) {
+      case dev.warp.protocol.command.CommandNode.Literal literal -> literal.name();
+      case dev.warp.protocol.command.CommandNode.Argument argument -> argument.name();
+      case dev.warp.protocol.command.CommandNode.Root _ -> "";
+    };
+  }
+
+  /** Whether the proxy already logged that it cannot read this player's command lists. */
+  private boolean opaqueCommandsLogged;
+
+  /**
+   * Sends a message to the player's chat, from any thread. Messages carry their text only until the
+   * full component codec lands; none is lost while the client is in PLAY.
+   *
+   * @param message the message
+   */
+  void sendMessage(Component message) {
+    String text = Reasons.plain(message);
+    onEventLoop(
+        () -> {
+          if (clientConnection.channel().isActive()
+              && clientConnection.encoder().state() == ProtocolState.PLAY) {
+            sendSystemMessage(text);
+          }
+        });
   }
 
   /** Fires a notification event on the player's lane, if anyone listens. */

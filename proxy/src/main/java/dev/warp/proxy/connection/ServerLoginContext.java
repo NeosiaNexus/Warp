@@ -19,6 +19,7 @@ package dev.warp.proxy.connection;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
+import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.config.DuplicateLoginPolicy;
 import dev.warp.proxy.config.ForwardingMode;
 import dev.warp.proxy.event.WarpEventBus;
@@ -53,6 +54,7 @@ import io.netty.channel.Channel;
  *     still connected
  * @param events the event bus plugins subscribe to
  * @param channels the plugin message channels plugins own
+ * @param commands the proxy's commands
  * @param forwardingMode the player info forwarding mode
  * @param forwardingSecret the shared HMAC secret for Velocity modern forwarding
  * @param channelClass the socket channel class matching the detected transport
@@ -72,6 +74,7 @@ public record ServerLoginContext(
     DuplicateLoginPolicy duplicateLoginPolicy,
     WarpEventBus events,
     ChannelRegistry channels,
+    WarpCommandManager commands,
     ForwardingMode forwardingMode,
     byte[] forwardingSecret,
     Class<? extends Channel> channelClass) {

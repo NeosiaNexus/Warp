@@ -17,10 +17,13 @@
 package dev.warp.proxy.plugin;
 
 import dev.warp.api.Warp;
+import dev.warp.api.command.CommandManager;
 import dev.warp.api.event.EventBus;
 import dev.warp.api.messaging.Messaging;
 import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginContext;
+import dev.warp.proxy.command.PluginCommandManager;
+import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.messaging.ChannelRegistry;
@@ -48,15 +51,22 @@ final class WarpPluginContext implements PluginContext {
   private final List<AutoCloseable> registrations = new CopyOnWriteArrayList<>();
   private final PluginEventBus events;
   private final PluginMessaging messaging;
+  private final PluginCommandManager commands;
 
   WarpPluginContext(
-      WarpPluginContainer plugin, Warp proxy, WarpEventBus bus, ChannelRegistry channels) {
+      WarpPluginContainer plugin,
+      Warp proxy,
+      WarpEventBus bus,
+      ChannelRegistry channels,
+      WarpCommandManager commandManager) {
     this.plugin = plugin;
     this.proxy = proxy;
     this.pluginLogger = LoggerFactory.getLogger(plugin.description().id());
     this.events =
         new PluginEventBus(bus, plugin.description().id(), plugin.classLoader(), this::track);
     this.messaging = new PluginMessaging(channels, plugin.description().id(), this::track);
+    this.commands =
+        new PluginCommandManager(commandManager, plugin.description().id(), this::track);
   }
 
   @Override
@@ -87,6 +97,11 @@ final class WarpPluginContext implements PluginContext {
   @Override
   public Messaging messaging() {
     return messaging;
+  }
+
+  @Override
+  public CommandManager commands() {
+    return commands;
   }
 
   /**

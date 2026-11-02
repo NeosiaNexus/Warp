@@ -112,6 +112,16 @@ public final class WarpPlayer implements Player {
   }
 
   @Override
+  public void sendMessage(Component message) {
+    player.sendMessage(message);
+  }
+
+  @Override
+  public boolean hasPermission(String permission) {
+    return false;
+  }
+
+  @Override
   public boolean sendPluginMessage(ChannelIdentifier channel, byte[] data) {
     return player.sendPluginMessage(channel.id(), data);
   }

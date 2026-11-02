@@ -431,7 +431,10 @@ class ClientPlaySessionHandlerTest {
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
     when(loginContext.channels()).thenReturn(new ChannelRegistry());
-    when(loginContext.serverRegistry()).thenReturn(new ServerRegistry(servers, "lobby", List.of()));
+
+    ServerRegistry registry = new ServerRegistry(servers, "lobby", List.of());
+    when(loginContext.serverRegistry()).thenReturn(registry);
+    when(loginContext.commands()).thenReturn(TestLoginContexts.commands(registry));
     ConnectedPlayer player =
         new ConnectedPlayer(
             connection(client),
@@ -439,7 +442,10 @@ class ClientPlaySessionHandlerTest {
             new GameProfile(UUID.randomUUID(), "Steve", List.of()),
             InetSocketAddress.createUnresolved("player", 50000),
             loginContext);
-    player.setBackendConnection(backendConnection(connection(backend)));
+    BackendConnection lobby = backendConnection(connection(backend));
+    player.setBackendConnection(lobby);
+    // The player plays on the lobby: the lobby counts it, and /server marks it.
+    player.playOn(lobby.connection());
     player.setCurrentServerName("lobby");
     return new Session(player, new ClientPlaySessionHandler(player), client, backend);
   }

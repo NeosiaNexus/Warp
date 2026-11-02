@@ -34,6 +34,7 @@ import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
+import dev.warp.proxy.server.ServerRegistry;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -185,6 +186,10 @@ class ClientKeepAliveTest {
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
     when(loginContext.channels()).thenReturn(new ChannelRegistry());
+    when(loginContext.commands())
+        .thenReturn(
+            TestLoginContexts.commands(
+                new ServerRegistry(java.util.Map.of(), null, java.util.List.of())));
     ConnectedPlayer player =
         new ConnectedPlayer(
             connection,

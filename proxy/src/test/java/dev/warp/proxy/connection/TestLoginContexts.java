@@ -18,6 +18,8 @@ package dev.warp.proxy.connection;
 
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
+import dev.warp.proxy.command.ProxyCommands;
+import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.config.DuplicateLoginPolicy;
 import dev.warp.proxy.config.ForwardingMode;
 import dev.warp.proxy.event.WarpEventBus;
@@ -165,6 +167,7 @@ final class TestLoginContexts {
         policy,
         events,
         new ChannelRegistry(),
+        commands(registry),
         ForwardingMode.NONE,
         new byte[0],
         NioSocketChannel.class);
@@ -178,5 +181,18 @@ final class TestLoginContexts {
     } catch (GeneralSecurityException e) {
       throw new AssertionError("RSA is a mandatory JCA algorithm", e);
     }
+  }
+
+  /**
+   * The proxy's commands for a test, running on the calling thread, with {@code /server} over
+   * {@code servers}.
+   *
+   * @param servers the servers {@code /server} knows
+   * @return the command manager
+   */
+  static WarpCommandManager commands(ServerRegistry servers) {
+    WarpCommandManager commands = new WarpCommandManager(Runnable::run);
+    ProxyCommands.register(commands, servers);
+    return commands;
   }
 }

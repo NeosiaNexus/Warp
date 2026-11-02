@@ -20,7 +20,6 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -94,15 +93,15 @@ class DeclareCommandsTest {
   }
 
   @Test
-  @DisplayName("should be registered encode-only: forwarded untouched, never decoded on receipt")
-  void encodeOnly() {
+  @DisplayName("should be registered decoded: its payload is copied, its tree parsed on demand")
+  void decoded() {
     PacketRegistry registry = StateRegistry.get(ProtocolState.PLAY, PacketDirection.CLIENTBOUND);
 
     PacketRegistry.Encoding encoding = registry.encoding(VERSION, DeclareCommands.class);
 
     assertEquals(0x11, encoding.packetId());
     assertSame(DeclareCommands.CODEC, encoding.codec());
-    assertNull(registry.lookup(VERSION, encoding.packetId()));
+    assertSame(DeclareCommands.CODEC, registry.lookup(VERSION, encoding.packetId()));
     assertThrows(
         IllegalArgumentException.class,
         () -> registry.encoding(ProtocolVersion.MINECRAFT_1_12_2, DeclareCommands.class));

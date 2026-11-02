@@ -40,7 +40,8 @@ final class ApiClassLoader extends ClassLoader {
 
   /** Packages the API exposes to plugins, as class name prefixes. */
   static final List<String> EXPOSED_PACKAGES =
-      List.of("dev.warp.api.", "net.kyori.", "org.slf4j.", "org.jspecify.");
+      List.of(
+          "dev.warp.api.", "net.kyori.", "com.mojang.brigadier.", "org.slf4j.", "org.jspecify.");
 
   /**
    * Packages of the exposed prefixes that stay hidden: Adventure's Gson serializers, which the

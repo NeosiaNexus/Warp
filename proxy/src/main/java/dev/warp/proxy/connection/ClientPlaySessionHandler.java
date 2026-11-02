@@ -47,10 +47,6 @@ import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
 import dev.warp.protocol.packet.play.TabListHeaderFooter;
 import dev.warp.protocol.packet.play.Transfer;
-import dev.warp.proxy.server.BackendServer;
-import dev.warp.proxy.server.ServerRegistry;
-
-import java.util.stream.Collectors;
 
 import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
@@ -75,8 +71,6 @@ final class ClientPlaySessionHandler implements SessionHandler {
   private static final Logger logger = LoggerFactory.getLogger(ClientPlaySessionHandler.class);
 
   /** The proxy's own command, which lists the servers or moves the player to another one. */
-  private static final String SERVER_COMMAND = "server";
-
   private final ConnectedPlayer player;
 
   ClientPlaySessionHandler(ConnectedPlayer player) {
@@ -123,7 +117,8 @@ final class ClientPlaySessionHandler implements SessionHandler {
       case PlayClientSettings settings -> handleClientSettings(settings);
       case ResourcePackResponse response -> forwardToBackend(response);
       case AcknowledgeConfiguration _ -> handleAcknowledgeConfiguration();
-      case TabCompleteRequest request -> forwardToBackend(request);
+      case TabCompleteRequest request ->
+          player.handleSuggestions(request, () -> forwardToBackend(request));
       case PlayPluginMessage pluginMessage -> handlePluginMessage(pluginMessage);
       // Clientbound packets should never arrive from a client: a protocol violation, ignored.
       case PlayDisconnect _,
@@ -194,74 +189,18 @@ final class ClientPlaySessionHandler implements SessionHandler {
   }
 
   private void handleChatCommand(ChatCommand chatCommand) {
-    String command = chatCommand.command();
-    if (!isProxyCommand(command)) {
-      forwardToBackend(chatCommand);
-      return;
-    }
-    // From 1.19.3 to 1.20.4 the client counts the chat messages a command acknowledges as
-    // delivered. The backend never sees this one, so it must still move its last-seen window by as
-    // many, or the client's next message no longer lines up with it and the player is kicked.
-    // Velocity does the same (SessionCommandHandler#consumeCommand). Sent before the command runs,
-    // while the backend is still the player's, and ahead of anything the client sends next: both
-    // connections of a player write from one event loop.
-    int offset = chatCommand.lastSeenOffset();
-    if (offset > 0) {
-      forwardToBackend(new ChatAcknowledgement(offset));
-    }
-    runProxyCommand(command);
+    player.handleCommand(
+        chatCommand.command(), chatCommand.lastSeenOffset(), () -> forwardToBackend(chatCommand));
   }
 
   private void handleLegacyChatMessage(LegacyChatMessage chatMessage) {
     // Before 1.19, a command is a chat line starting with '/'.
     String message = chatMessage.message();
-    if (message.startsWith("/") && isProxyCommand(message.substring(1))) {
-      runProxyCommand(message.substring(1));
+    if (message.startsWith("/")) {
+      player.handleCommand(message.substring(1), 0, () -> forwardToBackend(chatMessage));
       return;
     }
     forwardToBackend(chatMessage);
-  }
-
-  /**
-   * Tells the proxy's own commands from the backend's.
-   *
-   * @param command the command line, without its leading {@code /}
-   * @return {@code true} if the proxy runs it, {@code false} if it belongs to the backend
-   */
-  private static boolean isProxyCommand(String command) {
-    return command.equals(SERVER_COMMAND) || command.startsWith(SERVER_COMMAND + " ");
-  }
-
-  /**
-   * Runs a command the proxy owns (see {@link #isProxyCommand}).
-   *
-   * @param command the command line, without its leading {@code /}
-   */
-  private void runProxyCommand(String command) {
-    handleServerCommand(command.substring(SERVER_COMMAND.length()).trim());
-  }
-
-  private void handleServerCommand(String args) {
-    ServerRegistry registry = player.loginContext().serverRegistry();
-
-    if (args.isEmpty()) {
-      // List servers and current server.
-      String current = player.currentServerName();
-      String list =
-          registry.allServers().stream()
-              .map(s -> s.name().equals(current) ? "[" + s.name() + "]" : s.name())
-              .collect(Collectors.joining(", "));
-      player.sendSystemMessage("Servers: " + list);
-      return;
-    }
-
-    BackendServer target = registry.getServer(args);
-    if (target == null) {
-      player.sendSystemMessage("Unknown server: " + args);
-      return;
-    }
-
-    var _ = player.requestConnection(target, true);
   }
 
   private void handleClientSettings(PlayClientSettings settings) {
