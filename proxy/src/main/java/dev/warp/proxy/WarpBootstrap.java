@@ -42,15 +42,16 @@ public final class WarpBootstrap {
    * @param args command-line arguments (currently unused)
    */
   public static void main(String[] args) {
+    Path directory = Path.of(".");
     WarpConfig config;
     try {
-      config = WarpConfig.load(Path.of("."));
+      config = WarpConfig.load(directory);
     } catch (ConfigurationException e) {
       logger.error("Failed to load configuration: {}", e.getMessage());
       System.exit(1);
       return; // unreachable, but keeps the compiler happy
     }
 
-    new WarpServer(config).start();
+    new WarpServer(config, directory).start();
   }
 }
