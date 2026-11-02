@@ -389,8 +389,13 @@ class ResourcePacksTest {
     @DisplayName("a client that does not answer in time")
     class Deadline {
 
-      /** Lets {@code millis} pass on the player's frozen clock, then runs what fell due. */
+      /**
+       * Lets {@code millis} pass on the player's frozen clock, then runs what fell due. The proxy's
+       * keep-alives are stopped first: the client here answers none, and would time out after 30 s,
+       * well before the deadlines of its packs.
+       */
       private void elapse(SwitchHarness setup, long millis) {
+        setup.player.cancelKeepAliveTask();
         EmbeddedChannel client = (EmbeddedChannel) setup.client.channel();
         client.advanceTimeBy(millis, TimeUnit.MILLISECONDS);
         client.runScheduledPendingTasks();
