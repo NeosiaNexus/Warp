@@ -39,7 +39,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
-import net.kyori.adventure.text.Component;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -173,7 +172,7 @@ public final class ProxyDrain implements DrainHost<PlayerCandidate> {
     if (refusal == null) {
       return;
     }
-    event.setResult(new PreLoginEvent.Denied(Component.text(config.message())));
+    event.setResult(new PreLoginEvent.Denied(config.message()));
     controller.loginRefused();
     logger.info(
         "Refused the login of {} from {} while draining: {}",

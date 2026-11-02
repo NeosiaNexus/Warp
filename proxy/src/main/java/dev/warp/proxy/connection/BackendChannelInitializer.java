@@ -27,6 +27,7 @@ import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.proxy.pipeline.PipelineRegistry;
 import dev.warp.proxy.server.BackendServer;
 
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
 import io.netty.channel.Channel;
@@ -55,10 +56,20 @@ final class BackendChannelInitializer extends ChannelInitializer<Channel> {
 
   private final ConnectedPlayer player;
   private final ServerInfo server;
+  private final Duration readTimeout;
 
-  BackendChannelInitializer(ConnectedPlayer player, ServerInfo server) {
+  /**
+   * Creates the initializer of one backend connection.
+   *
+   * @param player the player the connection is for
+   * @param server the server it leads to, whose plugin initializers run on it
+   * @param readTimeout how long the backend may stay silent before the connection is closed: {@code
+   *     timeouts.read}, as for logged-in clients, since a backend connection only exists for one
+   */
+  BackendChannelInitializer(ConnectedPlayer player, ServerInfo server, Duration readTimeout) {
     this.player = player;
     this.server = server;
+    this.readTimeout = readTimeout;
   }
 
   @Override
@@ -78,7 +89,7 @@ final class BackendChannelInitializer extends ChannelInitializer<Channel> {
     ch.pipeline()
         .addLast(
             ServerChannelInitializer.READ_TIMEOUT,
-            new ReadTimeoutHandler(MinecraftConnection.READ_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+            new ReadTimeoutHandler(readTimeout.toMillis(), TimeUnit.MILLISECONDS))
         // The layout of ServerChannelInitializer: each layer's encoder right after its decoder.
         .addLast(ServerChannelInitializer.FRAME_DECODER, new FrameDecoder())
         .addLast(ServerChannelInitializer.FRAME_ENCODER, FrameEncoder.INSTANCE)

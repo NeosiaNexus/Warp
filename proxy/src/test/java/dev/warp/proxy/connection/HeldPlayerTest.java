@@ -47,6 +47,7 @@ import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.SystemChatMessage;
+import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.server.BackendServer;
@@ -200,7 +201,7 @@ class HeldPlayerTest {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("dev.warp.proxy.connection.HeldPlayerTest#bothSwitches")
-    @DisplayName("should still drop a held client that goes silent, after 30 s")
+    @DisplayName("should still drop a held client that goes silent, after timeouts.read")
     void silentClient(ProtocolVersion version) {
       events.subscribeAsync(
           PlayerChooseInitialServerEvent.class,
@@ -209,11 +210,13 @@ class HeldPlayerTest {
           e -> hold);
       Client client = loggedIn(version);
 
-      client.waitFor(Duration.ofSeconds(29), Client.Behaviour.SILENT);
-      boolean openAt29 = client.channel.isOpen();
+      Duration readTimeout = TimeoutsConfig.DEFAULTS.read();
+
+      client.waitFor(readTimeout.minusSeconds(1), Client.Behaviour.SILENT);
+      boolean openJustBefore = client.channel.isOpen();
       client.waitFor(Duration.ofSeconds(2), Client.Behaviour.SILENT);
 
-      assertTrue(openAt29);
+      assertTrue(openJustBefore);
       assertFalse(client.channel.isOpen(), "the read time-out of the pipeline");
     }
   }
@@ -305,7 +308,7 @@ class HeldPlayerTest {
       assertTrue(setup.player.isSwitching(), "50 s into the switch, 40 s of them held");
       assertTrue(client.channel.isActive());
       hold.complete(null);
-      assertInstanceOf(ConnectionResult.Failed.class, result.join());
+      assertInstanceOf(ConnectionResult.Failed.class, settled(result));
       assertFalse(setup.player.isSwitching());
       assertEquals(List.of(SystemChatMessage.class), types(setup.sentToClient()), "told why");
       assertTrue(client.channel.isActive(), "kept on its server");
@@ -330,7 +333,7 @@ class HeldPlayerTest {
 
       assertTrue(switchingAt29);
       assertFalse(setup.player.isSwitching(), "given up at 30 s");
-      assertInstanceOf(ConnectionResult.Failed.class, result.join());
+      assertInstanceOf(ConnectionResult.Failed.class, settled(result));
       assertFalse(survival.channel().isOpen());
       assertTrue(client.channel.isActive(), "kept on its server");
     }
@@ -446,6 +449,16 @@ class HeldPlayerTest {
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * The outcome of a connection request, settled by now: the bus delivers on the thread that fires
+   * and the channels are embedded, so nothing is left to wait for. A mutant that never settles it
+   * fails the test here, instead of hanging it until PIT's time-out.
+   */
+  private static ConnectionResult settled(CompletableFuture<ConnectionResult> result) {
+    assertTrue(result.isDone(), "the connection request is settled");
+    return result.join();
+  }
 
   /** Makes every handler of {@code type} hold the event until {@link #hold} completes. */
   private void holdEvery(Class<?> type, int timeoutSeconds) {

@@ -51,8 +51,9 @@ export class Warp {
    * @param {string} options.logDir
    * @param {string[]} [options.jvmArgs] JVM options after the defaults (the last -Xmx wins)
    * @param {string[]} [options.plugins] plugin jars installed in its plugins directory
-   * @param {{motd: string, maxPlayers?: number}} [options.status] the `status` block: the message of
-   *   the day (MiniMessage) and the player limit, Warp's default (500) if left out
+   * @param {{motd: string, maxPlayers?: number, playerLimit?: number}} [options.status] the
+   *   `status` block (the message of the day in MiniMessage, the maximum shown) and `player-limit`,
+   *   the limit enforced at login (none if left out; the server list then shows it as the maximum)
    */
   constructor(options) {
     Object.assign(this, options);
@@ -95,12 +96,13 @@ compression {
 ${this.management ? managementSection(this.management) : ''}${this.drain ? drainSection(this.drain) : ''}${this.statusBlock()}`;
   }
 
-  /** The `status` block, or nothing for Warp's defaults. */
+  /** The `status` block and `player-limit`, or nothing for Warp's defaults. */
   statusBlock() {
     if (!this.status) return '';
     const lines = [`  motd = ${JSON.stringify(this.status.motd)}`];
     if (this.status.maxPlayers !== undefined) lines.push(`  max-players = ${this.status.maxPlayers}`);
-    return `status {\n${lines.join('\n')}\n}\n`;
+    const limit = this.status.playerLimit !== undefined ? `player-limit = ${this.status.playerLimit}\n` : '';
+    return `${limit}status {\n${lines.join('\n')}\n}\n`;
   }
 
   start() {

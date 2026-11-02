@@ -40,6 +40,8 @@ import dev.warp.proxy.drain.ExecutorDrainScheduler;
 import dev.warp.proxy.drain.ProxyDrain;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.limit.ClientLimits;
+import dev.warp.proxy.logging.LogSinkRegistry;
+import dev.warp.proxy.logging.SinkAppender;
 import dev.warp.proxy.management.ManagementServer;
 import dev.warp.proxy.management.ProxyHealth;
 import dev.warp.proxy.management.ReadinessHolds;
@@ -81,6 +83,8 @@ import io.netty.channel.socket.ServerSocketChannel;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.util.concurrent.Future;
+import net.kyori.adventure.text.Component;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -112,6 +116,13 @@ public final class WarpServer implements Warp {
    * game packets over bulk transfers.
    */
   private static final int IP_TOS_LOW_LATENCY = 0x18;
+
+  /**
+   * How many TCP Fast Open connections may wait for their handshake to complete at once. Beyond it
+   * the kernel falls back to a normal handshake, so the value only bounds how many data-carrying
+   * SYNs the listener holds during a SYN flood; it never refuses a player.
+   */
+  private static final int TCP_FAST_OPEN_QUEUE = 256;
 
   /**
    * RSA key size for the Minecraft encryption handshake: 1024 bits, as specified by the protocol
@@ -167,6 +178,9 @@ public final class WarpServer implements Warp {
 
   /** The pipeline initializers plugins registered. */
   private final PipelineRegistry pipelines = new PipelineRegistry();
+
+  private final LogSinkRegistry logSinks = new LogSinkRegistry();
+  private final SinkAppender sinkAppender = new SinkAppender(logSinks);
 
   /** The plugins of the proxy's {@code plugins} directory. */
   private final WarpPluginManager pluginManager;
@@ -237,7 +251,14 @@ public final class WarpServer implements Warp {
     ProxyCommands.register(commands, serverRegistry);
     this.pluginManager =
         new WarpPluginManager(
-            this, events, channels, commands, permissions, pipelines, directory.resolve("plugins"));
+            this,
+            events,
+            channels,
+            commands,
+            permissions,
+            pipelines,
+            logSinks,
+            directory.resolve("plugins"));
     this.drain =
         new ProxyDrain(
             config.drain(), playerRegistry, events, drainScheduler, this::stopAfterDrain);
@@ -271,6 +292,9 @@ public final class WarpServer implements Warp {
             config.proxyProtocol().enabled()
                 ? config.proxyProtocol().trustedProxies()
                 : CidrRanges.none());
+    if (config.tcpFastOpen() && !transport.tcpFastOpen()) {
+      logger.warn("tcp-fast-open is on, but only the epoll transport (Linux) supports it: ignored");
+    }
     // Before the event loops, so that a configuration error leaves nothing to shut down.
     ServerLoginContext loginContext = createLoginContext(transport, limits);
     this.bossGroup = new MultiThreadIoEventLoopGroup(1, transport.ioFactory());
@@ -285,8 +309,10 @@ public final class WarpServer implements Warp {
     // Probes get an answer (503) while plugins load, and the agent check from the start.
     startManagement();
 
-    // Plugins find the API published, and load before the first player can connect.
+    // Plugins find the API published, and load before the first player can connect. Their log
+    // sinks receive the records logged from their registration on.
     registerProvider();
+    sinkAppender.install();
     pluginManager.loadAll();
 
     ServerBootstrap bootstrap =
@@ -308,6 +334,9 @@ public final class WarpServer implements Warp {
             .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
             // SO_REUSEADDR: allow rebind immediately after restart.
             .option(ChannelOption.SO_REUSEADDR, true);
+    if (loginContext.tcpFastOpen()) {
+      bootstrap.option(ChannelOption.TCP_FASTOPEN, TCP_FAST_OPEN_QUEUE);
+    }
 
     // No SO_REUSEPORT: with it, a second Warp started on the same port binds without error and the
     // kernel silently splits players between the two processes. A port conflict must fail loudly.
@@ -351,7 +380,7 @@ public final class WarpServer implements Warp {
    * @param reason shown to the players disconnected, or {@code null} for the default
    * @return whether this call shut the proxy down, rather than a call before it
    */
-  private boolean stop(@Nullable String reason) {
+  private boolean stop(@Nullable Component reason) {
     if (!stopping.compareAndSet(false, true)) {
       awaitStopped();
       return false;
@@ -371,6 +400,8 @@ public final class WarpServer implements Warp {
       disconnectPlayers(reason);
       awaitShutdownHandlers();
       pluginManager.disableAll();
+      logSinks.close();
+      sinkAppender.uninstall();
       events.close();
       commands.close();
       drainScheduler.shutdown();
@@ -420,7 +451,7 @@ public final class WarpServer implements Warp {
   }
 
   /** Disconnects every player, telling them the proxy is shutting down. */
-  private void disconnectPlayers(@Nullable String reason) {
+  private void disconnectPlayers(@Nullable Component reason) {
     List<ConnectedPlayer> players = playerRegistry.all();
     if (players.isEmpty()) {
       return;
@@ -492,13 +523,21 @@ public final class WarpServer implements Warp {
     }
   }
 
-  /** Shuts down boss and worker event loops. Safe to call multiple times. */
+  /**
+   * Shuts down boss and worker event loops, both at once: each waits out its quiet period (2 s)
+   * before it terminates, so shutting them down one after the other made every stop, a drain's exit
+   * included, wait twice as long. Safe to call multiple times.
+   */
   private void shutdownEventLoops() {
-    if (bossGroup != null) {
-      bossGroup.shutdownGracefully().awaitUninterruptibly();
+    MultiThreadIoEventLoopGroup bosses = bossGroup;
+    MultiThreadIoEventLoopGroup workers = workerGroup;
+    Future<?> boss = bosses != null ? bosses.shutdownGracefully() : null;
+    Future<?> worker = workers != null ? workers.shutdownGracefully() : null;
+    if (boss != null) {
+      boss.awaitUninterruptibly();
     }
-    if (workerGroup != null) {
-      workerGroup.shutdownGracefully().awaitUninterruptibly();
+    if (worker != null) {
+      worker.awaitUninterruptibly();
     }
   }
 
@@ -692,6 +731,9 @@ public final class WarpServer implements Warp {
         transport.clientChannelClass(),
         config.acceptsTransfers(),
         limits,
+        config.timeouts(),
+        config.logging(),
+        config.tcpFastOpen() && transport.tcpFastOpen(),
         pipelines);
   }
 
@@ -744,7 +786,7 @@ public final class WarpServer implements Warp {
         Class<? extends SocketChannel> clientClass =
             (Class<? extends SocketChannel>)
                 Class.forName("io.netty.channel.epoll.EpollSocketChannel");
-        return new TransportInfo(factory, serverClass, clientClass);
+        return new TransportInfo(factory, serverClass, clientClass, true);
       }
     } catch (ReflectiveOperationException | UnsatisfiedLinkError e) {
       logger.trace("Epoll not available", e);
@@ -765,7 +807,7 @@ public final class WarpServer implements Warp {
         Class<? extends SocketChannel> clientClass =
             (Class<? extends SocketChannel>)
                 Class.forName("io.netty.channel.kqueue.KQueueSocketChannel");
-        return new TransportInfo(factory, serverClass, clientClass);
+        return new TransportInfo(factory, serverClass, clientClass, false);
       }
     } catch (ReflectiveOperationException | UnsatisfiedLinkError e) {
       logger.trace("KQueue not available", e);
@@ -773,7 +815,7 @@ public final class WarpServer implements Warp {
 
     logger.info("Using NIO transport (native transport unavailable)");
     return new TransportInfo(
-        NioIoHandler.newFactory(), NioServerSocketChannel.class, NioSocketChannel.class);
+        NioIoHandler.newFactory(), NioServerSocketChannel.class, NioSocketChannel.class, false);
   }
 
   /** Registers this server as the {@link WarpProvider} singleton. */
@@ -787,9 +829,12 @@ public final class WarpServer implements Warp {
    * @param ioFactory the Netty I/O handler factory for event loops
    * @param serverChannelClass the server socket channel class matching the transport
    * @param clientChannelClass the client socket channel class matching the transport
+   * @param tcpFastOpen whether the transport supports TCP Fast Open on both the listener and
+   *     outgoing connections (epoll only)
    */
   private record TransportInfo(
       IoHandlerFactory ioFactory,
       Class<? extends ServerSocketChannel> serverChannelClass,
-      Class<? extends SocketChannel> clientChannelClass) {}
+      Class<? extends SocketChannel> clientChannelClass,
+      boolean tcpFastOpen) {}
 }

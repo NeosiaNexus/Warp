@@ -19,6 +19,7 @@ package dev.warp.proxy.plugin;
 import dev.warp.api.Warp;
 import dev.warp.api.command.CommandManager;
 import dev.warp.api.event.EventBus;
+import dev.warp.api.logging.LogSinks;
 import dev.warp.api.messaging.Messaging;
 import dev.warp.api.network.NetworkPipelines;
 import dev.warp.api.permission.Permissions;
@@ -32,6 +33,7 @@ import dev.warp.api.plugin.PluginState;
 import dev.warp.api.plugin.WarpPlugin;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.logging.LogSinkRegistry;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.pipeline.PipelineRegistry;
@@ -68,6 +70,7 @@ public final class WarpPluginManager implements PluginManager {
   private final WarpCommandManager commands;
   private final PermissionRegistry permissions;
   private final PipelineRegistry pipelines;
+  private final LogSinkRegistry logSinks;
   private final Path directory;
   private final ApiClassLoader apiLoader;
 
@@ -86,6 +89,7 @@ public final class WarpPluginManager implements PluginManager {
    * @param commands the proxy's commands
    * @param permissions the proxy's permission providers
    * @param pipelines the proxy's pipeline initializers
+   * @param logSinks the proxy's log sinks
    * @param directory the plugins directory, created if missing
    */
   public WarpPluginManager(
@@ -95,6 +99,7 @@ public final class WarpPluginManager implements PluginManager {
       WarpCommandManager commands,
       PermissionRegistry permissions,
       PipelineRegistry pipelines,
+      LogSinkRegistry logSinks,
       Path directory) {
     this.proxy = proxy;
     this.events = events;
@@ -102,6 +107,7 @@ public final class WarpPluginManager implements PluginManager {
     this.commands = commands;
     this.permissions = permissions;
     this.pipelines = pipelines;
+    this.logSinks = logSinks;
     this.directory = directory;
     this.apiLoader = new ApiClassLoader(WarpPluginManager.class.getClassLoader());
     this.networkApiLoader = new ApiClassLoader(WarpPluginManager.class.getClassLoader(), true);
@@ -256,7 +262,8 @@ public final class WarpPluginManager implements PluginManager {
     }
     container.setClassLoader(loader);
     WarpPluginContext context =
-        new WarpPluginContext(container, proxy, events, channels, commands, permissions, pipelines);
+        new WarpPluginContext(
+            container, proxy, events, channels, commands, permissions, pipelines, logSinks);
     container.setContext(context);
 
     try {
@@ -299,6 +306,7 @@ public final class WarpPluginManager implements PluginManager {
     if (context.plugin().description().hasCapability(Capability.NETWORK_PIPELINE)) {
       injectables.put(NetworkPipelines.class, context.network());
     }
+    injectables.put(LogSinks.class, context.logSinks());
     return injectables;
   }
 

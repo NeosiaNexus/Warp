@@ -19,6 +19,7 @@ package dev.warp.proxy.plugin;
 import dev.warp.api.Warp;
 import dev.warp.api.command.CommandManager;
 import dev.warp.api.event.EventBus;
+import dev.warp.api.logging.LogSinks;
 import dev.warp.api.messaging.Messaging;
 import dev.warp.api.network.NetworkPipelines;
 import dev.warp.api.permission.Permissions;
@@ -29,6 +30,8 @@ import dev.warp.proxy.command.PluginCommandManager;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.logging.LogSinkRegistry;
+import dev.warp.proxy.logging.PluginLogSinks;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.messaging.PluginMessaging;
 import dev.warp.proxy.permission.PermissionRegistry;
@@ -62,6 +65,7 @@ final class WarpPluginContext implements PluginContext {
   private final PluginCommandManager commands;
   private final PluginPermissions permissions;
   private final @Nullable PluginNetworkPipelines network;
+  private final PluginLogSinks logSinks;
 
   WarpPluginContext(
       WarpPluginContainer plugin,
@@ -70,7 +74,8 @@ final class WarpPluginContext implements PluginContext {
       ChannelRegistry channels,
       WarpCommandManager commandManager,
       PermissionRegistry permissionRegistry,
-      PipelineRegistry pipelines) {
+      PipelineRegistry pipelines,
+      LogSinkRegistry logSinkRegistry) {
     this.plugin = plugin;
     this.proxy = proxy;
     this.pluginLogger = LoggerFactory.getLogger(plugin.description().id());
@@ -85,6 +90,9 @@ final class WarpPluginContext implements PluginContext {
         plugin.description().hasCapability(Capability.NETWORK_PIPELINE)
             ? new PluginNetworkPipelines(pipelines, plugin.description().id(), this::track)
             : null;
+    this.logSinks =
+        new PluginLogSinks(
+            logSinkRegistry, plugin.description().id(), plugin.classLoader(), this::track);
   }
 
   @Override
@@ -138,6 +146,11 @@ final class WarpPluginContext implements PluginContext {
               + " Capability.NETWORK_PIPELINE to its @Plugin annotation");
     }
     return pipelines;
+  }
+
+  @Override
+  public LogSinks logSinks() {
+    return logSinks;
   }
 
   /**

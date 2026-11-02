@@ -26,13 +26,19 @@ import net.kyori.adventure.text.minimessage.MiniMessage;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The {@code status} block of {@code warp.conf}: the proxy's server list entry, and its player
- * limit.
+ * The proxy's server list entry ({@code status} block of {@code warp.conf}) and its player limit
+ * ({@code player-limit}).
+ *
+ * <p>The maximum the server list shows and the limit enforced at login are separate: the maximum is
+ * only displayed (Velocity's {@code show-max-players}), the limit is off unless configured. With a
+ * limit and no displayed maximum configured, the server list shows the limit.
  *
  * @param motd the message of the day
  * @param favicon the server icon, or {@code null} for none
- * @param maxPlayers the most players the proxy lets in, also shown as the maximum; {@code -1} for
- *     no limit, the server list then showing one more than the players online
+ * @param maxPlayers the maximum the server list shows, never enforced; {@value
+ *     #ONE_MORE_THAN_ONLINE} to show one more than the players online
+ * @param playerLimit the most players the proxy lets in at once, {@code 0} letting in only those a
+ *     plugin admits (a maintenance mode); {@value #NO_LIMIT} for no limit
  * @param showPlayerCount whether the server list shows the counts; without them clients show {@code
  *     ???}
  * @param sampleSize the most player names listed when hovering the counts; {@code 0} for none
@@ -43,6 +49,7 @@ public record StatusSettings(
     Component motd,
     @Nullable Favicon favicon,
     int maxPlayers,
+    int playerLimit,
     boolean showPlayerCount,
     int sampleSize,
     String versionName) {
@@ -51,23 +58,29 @@ public record StatusSettings(
   public static final String DEFAULT_MOTD = "<#38bdf8>A Warp Proxy";
 
   /**
-   * The default player limit: Velocity's default {@code show-max-players}, so that a network moving
-   * from Velocity shows the same entry, now enforced.
+   * The default maximum shown when no player limit is set: Velocity's default {@code
+   * show-max-players}, so that a network moving from Velocity shows the same entry.
    */
   public static final int DEFAULT_MAX_PLAYERS = 500;
 
   /** The default sample size: vanilla's (12 random players, refreshed every 5 seconds). */
   public static final int DEFAULT_SAMPLE_SIZE = 12;
 
-  /** The value of {@link #maxPlayers()} that disables the limit. */
+  /** The value of {@link #maxPlayers()} that shows one more than the players online. */
+  public static final int ONE_MORE_THAN_ONLINE = -1;
+
+  /** The value of {@link #playerLimit()} that lets any number of players in: the default. */
   public static final int NO_LIMIT = -1;
 
   /** Validates the settings. */
   public StatusSettings {
     Objects.requireNonNull(motd, "motd");
     Objects.requireNonNull(versionName, "versionName");
-    if (maxPlayers < NO_LIMIT) {
+    if (maxPlayers < ONE_MORE_THAN_ONLINE) {
       throw new IllegalArgumentException("maxPlayers must be -1 or more, got " + maxPlayers);
+    }
+    if (playerLimit < NO_LIMIT) {
+      throw new IllegalArgumentException("playerLimit must be -1 or more, got " + playerLimit);
     }
     if (sampleSize < 0) {
       throw new IllegalArgumentException("sampleSize must be 0 or more, got " + sampleSize);
@@ -75,7 +88,7 @@ public record StatusSettings(
   }
 
   /**
-   * Returns the settings of a {@code warp.conf} without {@code status} block.
+   * Returns the settings of a {@code warp.conf} without {@code status} block nor player limit.
    *
    * @return the default settings
    */
@@ -84,6 +97,7 @@ public record StatusSettings(
         MiniMessage.miniMessage().deserialize(DEFAULT_MOTD),
         null,
         DEFAULT_MAX_PLAYERS,
+        NO_LIMIT,
         true,
         DEFAULT_SAMPLE_SIZE,
         defaultVersionName());
@@ -102,9 +116,19 @@ public record StatusSettings(
    * Returns whether a player is beyond the limit.
    *
    * @param place how many players are registered with it, counting it
-   * @return {@code true} if the limit is on and {@code place} exceeds it
+   * @return {@code true} if a limit is set and {@code place} exceeds it
    */
   public boolean isFull(int place) {
-    return maxPlayers != NO_LIMIT && place > maxPlayers;
+    return playerLimit != NO_LIMIT && place > playerLimit;
+  }
+
+  /**
+   * Returns the maximum the server list shows.
+   *
+   * @param online the players online
+   * @return the configured maximum, or one more than {@code online}
+   */
+  public int shownMax(int online) {
+    return maxPlayers == ONE_MORE_THAN_ONLINE ? online + 1 : maxPlayers;
   }
 }

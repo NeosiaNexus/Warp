@@ -34,6 +34,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.Random;
@@ -48,6 +49,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.spongepowered.configurate.CommentedConfigurationNode;
+import org.spongepowered.configurate.hocon.HoconConfigurationLoader;
 
 @DisplayName("WarpConfig")
 class WarpConfigTest {
@@ -218,7 +221,7 @@ class WarpConfigTest {
     }
 
     @Test
-    @DisplayName("should read the limit, the counts, the sample size and the version name")
+    @DisplayName("should read the maximum, the counts, the sample size and the version name")
     void values() throws Exception {
       StatusSettings status =
           load("""
@@ -238,10 +241,11 @@ class WarpConfigTest {
     }
 
     @Test
-    @DisplayName("should accept -1 as no limit")
-    void noLimit() throws Exception {
+    @DisplayName("should accept -1 as one more than the players online")
+    void oneMoreThanOnline() throws Exception {
       assertEquals(
-          StatusSettings.NO_LIMIT, load("status { max-players = -1 }").status().maxPlayers());
+          StatusSettings.ONE_MORE_THAN_ONLINE,
+          load("status { max-players = -1 }").status().maxPlayers());
     }
 
     @Test
@@ -384,6 +388,237 @@ class WarpConfigTest {
       out.write(png, 33, png.length - 33);
       return out.toByteArray();
     }
+  }
+
+  @Nested
+  @DisplayName("player limit")
+  class PlayerLimit {
+
+    @Test
+    @DisplayName("should enforce no limit and show 500 by default")
+    void defaults() throws Exception {
+      StatusSettings status = load("").status();
+
+      assertEquals(StatusSettings.NO_LIMIT, status.playerLimit());
+      assertEquals(500, status.maxPlayers());
+      assertFalse(status.isFull(100_000));
+    }
+
+    @Test
+    @DisplayName("should only show the maximum of the status block, never enforce it")
+    void maximumShownOnly() throws Exception {
+      StatusSettings status = load("status { max-players = 100 }").status();
+
+      assertEquals(100, status.maxPlayers());
+      assertEquals(StatusSettings.NO_LIMIT, status.playerLimit());
+      assertFalse(status.isFull(101));
+    }
+
+    @Test
+    @DisplayName("should enforce the limit and show it when no maximum is configured")
+    void limitShown() throws Exception {
+      StatusSettings status = load("player-limit = 50").status();
+
+      assertEquals(50, status.playerLimit());
+      assertEquals(50, status.maxPlayers());
+      assertFalse(status.isFull(50));
+      assertTrue(status.isFull(51));
+    }
+
+    @Test
+    @DisplayName("should show the configured maximum over the limit when both are set")
+    void bothSet() throws Exception {
+      StatusSettings status = load("player-limit = 1000\nstatus { max-players = 100 }").status();
+
+      assertEquals(1000, status.playerLimit());
+      assertEquals(100, status.maxPlayers());
+      assertFalse(status.isFull(500));
+    }
+
+    @Test
+    @DisplayName("should refuse everyone a plugin does not let in with a limit of 0")
+    void zero() throws Exception {
+      StatusSettings status = load("player-limit = 0").status();
+
+      assertTrue(status.isFull(1));
+      assertEquals(0, status.maxPlayers());
+    }
+
+    @Test
+    @DisplayName("should refuse a limit below -1, naming the key")
+    void tooLow() {
+      ConfigurationException error =
+          assertThrows(ConfigurationException.class, () -> load("player-limit = -2"));
+
+      assertTrue(String.valueOf(error.getMessage()).contains("player-limit"), error.getMessage());
+    }
+  }
+
+  @Nested
+  @DisplayName("timeouts and transport")
+  class Timeouts {
+
+    @Test
+    @DisplayName(
+        "should default to Velocity's connect timeout and a read timeout below the client's")
+    void defaults() throws Exception {
+      WarpConfig config = load("");
+
+      assertEquals(Duration.ofSeconds(5), config.timeouts().connect());
+      assertEquals(Duration.ofSeconds(25), config.timeouts().read());
+      assertFalse(config.tcpFastOpen());
+    }
+
+    @Test
+    @DisplayName("should read the timeouts and TCP Fast Open")
+    void values() throws Exception {
+      WarpConfig config = load("timeouts { connect = 2500ms, read = 1m }\ntcp-fast-open = true");
+
+      assertEquals(Duration.ofMillis(2500), config.timeouts().connect());
+      assertEquals(Duration.ofMinutes(1), config.timeouts().read());
+      assertTrue(config.tcpFastOpen());
+    }
+
+    @Test
+    @DisplayName("should refuse a timeout without a unit, telling which one to add")
+    void bareNumber() {
+      ConfigurationException error =
+          assertThrows(ConfigurationException.class, () -> load("timeouts { connect = 5000 }"));
+
+      assertTrue(
+          String.valueOf(error.getMessage())
+              .contains("timeouts.connect needs a unit: write 5000ms"),
+          error.getMessage());
+    }
+
+    @Test
+    @DisplayName("should refuse a zero connect timeout and a read timeout under a second")
+    void bounds() {
+      assertThrows(ConfigurationException.class, () -> load("timeouts { connect = 0 }"));
+      assertThrows(ConfigurationException.class, () -> load("timeouts { read = 500ms }"));
+    }
+  }
+
+  @Nested
+  @DisplayName("logging")
+  class Logging {
+
+    @Test
+    @DisplayName("should default to text, connections logged, pings and commands not")
+    void defaults() throws Exception {
+      assertEquals(LoggingConfig.DEFAULTS, load("").logging());
+      assertEquals(new LoggingConfig(LogFormat.TEXT, true, false, false), LoggingConfig.DEFAULTS);
+    }
+
+    @Test
+    @DisplayName("should read the format and the switches")
+    void values() throws Exception {
+      LoggingConfig logging =
+          load("logging { format = json, connections = false, pings = true, commands = true }")
+              .logging();
+
+      assertEquals(new LoggingConfig(LogFormat.JSON, false, true, true), logging);
+    }
+
+    @Test
+    @DisplayName("should let WARP_LOG_FORMAT override logging.format")
+    void environmentWins() throws Exception {
+      CommentedConfigurationNode root = parse("logging { format = text }");
+
+      LoggingConfig logging =
+          LoggingConfig.parse(root, name -> name.equals("WARP_LOG_FORMAT") ? "JSON" : null);
+
+      assertEquals(LogFormat.JSON, logging.format());
+    }
+
+    @Test
+    @DisplayName("should refuse an unknown format, naming where it comes from")
+    void unknownFormat() throws Exception {
+      CommentedConfigurationNode root = parse("");
+
+      ConfigurationException error =
+          assertThrows(
+              ConfigurationException.class, () -> LoggingConfig.parse(root, name -> "xml"));
+
+      assertTrue(
+          String.valueOf(error.getMessage()).contains("WARP_LOG_FORMAT must be text or json"),
+          error.getMessage());
+      assertThrows(ConfigurationException.class, () -> load("logging { format = xml }"));
+    }
+
+    @Test
+    @DisplayName("should pick the format before logging starts: environment, then file, then text")
+    void selectFormat() throws Exception {
+      assertEquals(LogFormat.TEXT, LoggingConfig.selectFormat(directory, name -> null));
+
+      Files.writeString(directory.resolve("warp.conf"), "logging { format = json }");
+      assertEquals(LogFormat.JSON, LoggingConfig.selectFormat(directory, name -> null));
+      assertEquals(LogFormat.TEXT, LoggingConfig.selectFormat(directory, name -> "text"));
+
+      Files.writeString(directory.resolve("warp.conf"), "logging { format = xml }");
+      assertEquals(LogFormat.TEXT, LoggingConfig.selectFormat(directory, name -> null));
+
+      Files.writeString(directory.resolve("warp.conf"), "logging { ");
+      assertEquals(LogFormat.TEXT, LoggingConfig.selectFormat(directory, name -> null));
+    }
+  }
+
+  @Nested
+  @DisplayName("environment substitution")
+  class Environment {
+
+    @Test
+    @DisplayName("should replace a value with a variable that is set")
+    void setVariable() throws Exception {
+      String home = Objects.requireNonNull(System.getenv("HOME"), "HOME is set");
+
+      WarpConfig config = load("status {\n  version-name = \"none\"\n  version-name = ${?HOME}\n}");
+
+      assertEquals(home, config.status().versionName());
+    }
+
+    @Test
+    @DisplayName("should keep the value written before a variable that is not set")
+    void unsetVariable() throws Exception {
+      WarpConfig config =
+          load("player-limit = 40\nplayer-limit = ${?WARP_TEST_SURELY_UNSET_VARIABLE}");
+
+      assertEquals(40, config.status().playerLimit());
+    }
+
+    @Test
+    @DisplayName("should leave a key at its default when its only value is an unset variable")
+    void unsetAlone() throws Exception {
+      WarpConfig config = load("timeouts { read = ${?WARP_TEST_SURELY_UNSET_VARIABLE} }");
+
+      assertEquals(Duration.ofSeconds(25), config.timeouts().read());
+    }
+
+    @Test
+    @DisplayName("should concatenate a variable into a string, an unset one as empty")
+    void concatenation() throws Exception {
+      WarpConfig config =
+          load("status { version-name = \"Requires \"${?WARP_TEST_SURELY_UNSET_VARIABLE}1.20 }");
+
+      assertEquals("Requires 1.20", config.status().versionName());
+    }
+
+    @Test
+    @DisplayName("should document the substitution and the secrets in the default file")
+    void documented() throws Exception {
+      WarpConfig.load(directory);
+
+      String written = Files.readString(directory.resolve("warp.conf"));
+      assertTrue(written.contains("bind = ${?WARP_BIND}"), written);
+      assertTrue(written.contains("WARP_FORWARDING_SECRET"), written);
+      assertTrue(written.contains("WARP_MANAGEMENT_TOKEN"), written);
+    }
+  }
+
+  private CommentedConfigurationNode parse(String content) throws IOException {
+    Path file = directory.resolve("parsed.conf");
+    Files.writeString(file, content, StandardCharsets.UTF_8);
+    return HoconConfigurationLoader.builder().path(file).build().load();
   }
 
   private WarpConfig load(String content) throws IOException, ConfigurationException {

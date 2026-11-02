@@ -97,6 +97,8 @@ import net.kyori.adventure.translation.Translator;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
+import org.slf4j.spi.LoggingEventBuilder;
 
 /**
  * Represents a fully authenticated player connected to the proxy.
@@ -133,6 +135,12 @@ import org.slf4j.LoggerFactory;
 public final class ConnectedPlayer {
 
   private static final Logger logger = LoggerFactory.getLogger(ConnectedPlayer.class);
+
+  /** The context key of the player's name in the log records about it. */
+  public static final String LOG_PLAYER = "player";
+
+  /** The context key of the session identifier in the log records about a player. */
+  public static final String LOG_SESSION = "session";
 
   /** Interval between KeepAlive packets sent to the client. */
   private static final long KEEP_ALIVE_INTERVAL_MS = 15_000;
@@ -754,7 +762,7 @@ public final class ConnectedPlayer {
     if (initial) {
       connectingTo = target;
       currentServerName = target.name();
-      logger.info("Connecting {} to server '{}'", username, target.name());
+      logConnection("Connecting {} to server '{}'", username, target.name());
       connect(target.info());
       return;
     }
@@ -776,7 +784,7 @@ public final class ConnectedPlayer {
     pendingResult = result;
     connectingTo = target;
     beginSwitch(target.info());
-    logger.info("Switching {} from '{}' to '{}'", username, currentServerName, target.name());
+    logConnection("Switching {} from '{}' to '{}'", username, currentServerName, target.name());
     serverSwitch.start(target.info());
   }
 
@@ -824,7 +832,7 @@ public final class ConnectedPlayer {
       return;
     }
     beginSwitch(target);
-    logger.info("Switching {} from '{}' to '{}'", username, currentServerName, target.name());
+    logConnection("Switching {} from '{}' to '{}'", username, currentServerName, target.name());
     serverSwitch.start(target);
   }
 
@@ -879,8 +887,7 @@ public final class ConnectedPlayer {
   private Connector connector = this::openBackend;
 
   private CompletableFuture<BackendConnection> openBackend(ServerInfo target) {
-    return BackendConnection.connect(
-        loginContext.channelClass(), this, target, loginContext.forwardingSecret());
+    return BackendConnection.connect(loginContext, this, target);
   }
 
   /**
@@ -965,7 +972,7 @@ public final class ConnectedPlayer {
       if (target != null) {
         currentServerName = target.name();
       }
-      logger.info("Server switch complete: {} is now on '{}'", username, currentServerName);
+      logConnection("Server switch complete: {} is now on '{}'", username, currentServerName);
       switching = false;
       pendingSwitchTarget = null;
       failedFallbackServers = null;
@@ -2072,6 +2079,13 @@ public final class ConnectedPlayer {
       return;
     }
     loginContext.playerRegistry().unregister(this);
+    if (sessionStarted) {
+      logConnection(
+          "Player {} ({}) left: {}",
+          username,
+          uuid,
+          disconnectCause.name().toLowerCase(Locale.ROOT).replace('_', ' '));
+    }
     endSession();
     cancelKeepAliveTask();
     cancelSwitchTimeout();
@@ -2161,8 +2175,17 @@ public final class ConnectedPlayer {
    * @param reason shown to the player
    */
   public void disconnectShutdown(String reason) {
+    disconnectShutdown(Component.text(reason));
+  }
+
+  /**
+   * Disconnects the player because the proxy is shutting down, telling it why. Thread-safe.
+   *
+   * @param reason shown to the player
+   */
+  public void disconnectShutdown(Component reason) {
     setDisconnectCause(DisconnectEvent.Cause.PROXY_SHUTDOWN);
-    onEventLoop(() -> disconnectWithReason(reason));
+    disconnect(reason);
   }
 
   /** Stops counting the player on its server. Runs on the client's event loop. */
@@ -2194,6 +2217,28 @@ public final class ConnectedPlayer {
    */
   public UUID sessionId() {
     return sessionId;
+  }
+
+  /**
+   * Starts a log record about this player: its name and session go in the record's context, which
+   * JSON logs and plugin log sinks carry as {@value #LOG_PLAYER} and {@value #LOG_SESSION}.
+   *
+   * @param logger the logger to write with
+   * @param level the record's level
+   * @return the record, to finish with {@link LoggingEventBuilder#log(String, Object...)}
+   */
+  public LoggingEventBuilder log(Logger logger, Level level) {
+    return logger
+        .atLevel(level)
+        .addKeyValue(LOG_PLAYER, username)
+        .addKeyValue(LOG_SESSION, sessionId.toString());
+  }
+
+  /** Logs a player connection event at INFO, when {@code logging.connections} is on. */
+  private void logConnection(String format, @Nullable Object... arguments) {
+    if (loginContext.logging().connections()) {
+      log(logger, Level.INFO).log(format, arguments);
+    }
   }
 
   /**
@@ -2390,6 +2435,9 @@ public final class ConnectedPlayer {
    * @param forward sends the command to the backend as typed
    */
   void handleCommand(String commandLine, int acknowledgements, Runnable forward) {
+    if (loginContext.logging().commands()) {
+      log(logger, Level.INFO).log("{} ran the command /{}", username, commandLine);
+    }
     WarpCommandManager commands = loginContext.commands();
     boolean proxyCommand = commands.owns(commandLine);
     WarpEventBus events = loginContext.events();
