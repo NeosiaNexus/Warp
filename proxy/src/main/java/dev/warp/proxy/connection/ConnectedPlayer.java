@@ -26,6 +26,7 @@ import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.SystemChatMessage;
+import dev.warp.proxy.server.BackendServer;
 
 import java.net.InetSocketAddress;
 import java.util.HashSet;
@@ -114,6 +115,13 @@ public final class ConnectedPlayer {
 
   private volatile int entityId;
   private volatile @Nullable String currentServerName;
+
+  /**
+   * The registered server the player plays on, which counts it; {@code null} before it plays on
+   * one, or when the server it plays on was unregistered before it got there.
+   */
+  private volatile @Nullable BackendServer currentServer;
+
   private volatile boolean switching;
   private volatile @Nullable ServerInfo pendingSwitchTarget;
   private volatile @Nullable ClientInformation cachedClientSettings;
@@ -247,6 +255,44 @@ public final class ConnectedPlayer {
    */
   void playOn(@Nullable MinecraftConnection backend) {
     this.playingOn = backend;
+    BackendConnection current = this.backendConnection;
+    if (backend != null && current != null && current.connection() == backend) {
+      enterServer(current.server());
+    }
+  }
+
+  /**
+   * Counts the player on the registered server it now plays on, and no longer on the previous one.
+   * Runs on the client's event loop, so membership changes of one player never interleave.
+   *
+   * @param server the server the player now plays on
+   */
+  private void enterServer(ServerInfo server) {
+    if (disconnected.get()) {
+      return;
+    }
+    BackendServer next = loginContext.serverRegistry().registered(server);
+    BackendServer previous = this.currentServer;
+    if (previous == next) {
+      return;
+    }
+    if (previous != null) {
+      previous.removePlayer(this);
+    }
+    if (next != null) {
+      next.addPlayer(this);
+    }
+    this.currentServer = next;
+  }
+
+  /**
+   * Returns the registered server the player plays on.
+   *
+   * @return the server, or {@code null} before the player plays on one, or if the server it plays
+   *     on is not registered
+   */
+  public @Nullable BackendServer currentServer() {
+    return currentServer;
   }
 
   /**
@@ -411,7 +457,13 @@ public final class ConnectedPlayer {
    * reached or refuses the player sends it down the fallback order.
    */
   void join() {
-    ServerInfo server = loginContext.serverRegistry().defaultServer();
+    BackendServer initial = loginContext.serverRegistry().initialServer();
+    if (initial == null) {
+      logger.warn("No server available for {}, disconnecting", username);
+      disconnectWithReason("No server is available right now. Try again later.");
+      return;
+    }
+    ServerInfo server = initial.info();
     currentServerName = server.name();
     logger.info("Connecting {} to server '{}'", username, server.name());
     connect(server);
@@ -587,15 +639,25 @@ public final class ConnectedPlayer {
   /**
    * Sends a disconnect reason to the client and then disconnects.
    *
-   * <p>Sends the appropriate disconnect packet based on the current protocol state (CONFIG or
-   * PLAY).
+   * <p>Sends the disconnect packet of the state the client is in. A player exists from the moment
+   * the proxy sends Login Success: a 1.20.2+ client then enters the configuration state at once,
+   * while the proxy still reads it in the login state until its acknowledgement arrives, so the
+   * reason goes out as a configuration disconnect.
    */
   void disconnectWithReason(String reason) {
     if (clientConnection.channel().isActive()) {
-      if (clientConnection.decoder().state() == ProtocolState.CONFIGURATION) {
-        clientConnection.writeAndFlush(ConfigDisconnect.ofPlainText(reason, protocolVersion));
-      } else {
-        clientConnection.writeAndFlush(PlayDisconnect.ofPlainText(reason, protocolVersion));
+      switch (clientConnection.decoder().state()) {
+        case LOGIN -> {
+          clientConnection.encoder().setState(ProtocolState.CONFIGURATION);
+          clientConnection.writeAndFlush(ConfigDisconnect.ofPlainText(reason, protocolVersion));
+        }
+        case CONFIGURATION ->
+            clientConnection.writeAndFlush(ConfigDisconnect.ofPlainText(reason, protocolVersion));
+        case PLAY ->
+            clientConnection.writeAndFlush(PlayDisconnect.ofPlainText(reason, protocolVersion));
+        case HANDSHAKE, STATUS -> {
+          // No player exists in these states.
+        }
       }
     }
     disconnect();
@@ -647,7 +709,9 @@ public final class ConnectedPlayer {
       failedFallbackServers.add(currentServerName);
     }
 
-    ServerInfo fallback = loginContext.serverRegistry().nextFallback(failedFallbackServers);
+    BackendServer fallbackServer =
+        loginContext.serverRegistry().nextFallback(failedFallbackServers);
+    ServerInfo fallback = fallbackServer == null ? null : fallbackServer.info();
 
     if (fallback == null) {
       logger.info("No fallback server available for {}, disconnecting", username);
@@ -757,11 +821,15 @@ public final class ConnectedPlayer {
   // Disconnect
   // ---------------------------------------------------------------------------
 
-  /** Disconnects the player from both client and backend. Idempotent and thread-safe. */
+  /**
+   * Disconnects the player from both client and backend, and removes it from the proxy's players at
+   * once, so that the same account can log in again right away. Idempotent and thread-safe.
+   */
   public void disconnect() {
     if (!disconnected.compareAndSet(false, true)) {
       return;
     }
+    loginContext.playerRegistry().unregister(this);
     cancelKeepAliveTask();
     cancelSwitchTimeout();
     clientConnection.close();
@@ -769,6 +837,30 @@ public final class ConnectedPlayer {
     if (backend != null) {
       backend.disconnect();
     }
-    onEventLoop(serverSwitch::close);
+    onEventLoop(
+        () -> {
+          serverSwitch.close();
+          leaveServer();
+        });
+  }
+
+  /**
+   * Disconnects the player because the same account logged in again and the duplicate login policy
+   * keeps the newcomer. The player leaves the registry before this returns; the client is told why
+   * on its own event loop. Thread-safe.
+   */
+  public void disconnectDuplicate() {
+    loginContext.playerRegistry().unregister(this);
+    logger.info("Disconnecting {}: the same account logged in again", username);
+    onEventLoop(() -> disconnectWithReason("You logged in from another location"));
+  }
+
+  /** Stops counting the player on its server. Runs on the client's event loop. */
+  private void leaveServer() {
+    BackendServer previous = this.currentServer;
+    if (previous != null) {
+      previous.removePlayer(this);
+      this.currentServer = null;
+    }
   }
 }

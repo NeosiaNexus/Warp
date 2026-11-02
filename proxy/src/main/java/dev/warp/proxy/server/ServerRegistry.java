@@ -20,116 +20,191 @@ import dev.warp.api.server.ServerInfo;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
-import java.util.Collection;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.jspecify.annotations.Nullable;
 
 /**
- * Immutable registry of backend servers known to the proxy.
+ * The backend servers known to the proxy, which can change while it runs.
  *
- * <p>Server names are case-insensitive (stored and looked up in lowercase). The registry is built
- * once at startup from the configuration and shared across all connections.
+ * <p>The configuration seeds the registry with its static servers; plugins and service discovery
+ * register and unregister servers at runtime (a Kubernetes or Agones network starts game servers on
+ * demand). Every operation is atomic and lock-free: registering a server that is already registered
+ * with the same address is a no-op that returns the existing server, so two discovery paths racing
+ * on the same server (a pub/sub event and a periodic poll) cannot fail each other.
+ *
+ * <p>Server names are case-insensitive (stored and looked up in lowercase). The default server and
+ * the fallback order are kept as names and resolved on each use, so they follow servers that come
+ * and go.
  */
 public final class ServerRegistry {
 
-  private final Map<String, ServerInfo> servers;
-  private final ServerInfo defaultServer;
-  private final List<ServerInfo> fallbackOrder;
+  private final Map<String, BackendServer> servers = new ConcurrentHashMap<>();
+  private final @Nullable String defaultServerName;
+  private final List<String> fallbackOrder;
 
   /**
-   * Creates a registry from a map of server name to address, a default server name, and a fallback
-   * order list.
+   * Creates a registry holding the given static servers.
    *
-   * @param servers map of server name to address (at least one entry required)
-   * @param defaultServerName the name of the default server (must exist in the map)
-   * @param fallbackServerNames ordered list of fallback server names (must all exist in the map)
-   * @throws IllegalArgumentException if the map is empty or the default server is not found
+   * @param servers the static servers, by name (may be empty: servers are then registered at
+   *     runtime)
+   * @param defaultServerName the server players join first, or {@code null} for none
+   * @param fallbackServerNames the servers tried in order when a player loses its server
+   * @throws IllegalArgumentException if the default server is not one of {@code servers}
    */
   public ServerRegistry(
       Map<String, InetSocketAddress> servers,
-      String defaultServerName,
+      @Nullable String defaultServerName,
       List<String> fallbackServerNames) {
-    if (servers.isEmpty()) {
-      throw new IllegalArgumentException("At least one server must be configured");
-    }
-
-    Map<String, ServerInfo> registry = new LinkedHashMap<>();
     for (var entry : servers.entrySet()) {
-      String key = entry.getKey().toLowerCase(Locale.ROOT);
-      registry.put(key, new ServerInfo(key, entry.getValue()));
+      register(new ServerInfo(normalize(entry.getKey()), entry.getValue()));
     }
-    this.servers = Map.copyOf(registry);
 
-    String defaultKey = defaultServerName.toLowerCase(Locale.ROOT);
-    @Nullable ServerInfo resolved = this.servers.get(defaultKey);
-    if (resolved == null) {
+    this.defaultServerName = defaultServerName == null ? null : normalize(defaultServerName);
+    if (this.defaultServerName != null && !this.servers.containsKey(this.defaultServerName)) {
       throw new IllegalArgumentException(
           "Default server '"
               + defaultServerName
               + "' not found in server list: "
               + servers.keySet());
     }
-    this.defaultServer = resolved;
 
-    List<ServerInfo> fallback = new ArrayList<>(fallbackServerNames.size());
+    List<String> fallback = new ArrayList<>(fallbackServerNames.size());
     for (String name : fallbackServerNames) {
-      ServerInfo info = this.servers.get(name.toLowerCase(Locale.ROOT));
-      if (info != null) {
-        fallback.add(info);
-      }
+      fallback.add(normalize(name));
     }
     this.fallbackOrder = List.copyOf(fallback);
   }
 
+  // ---------------------------------------------------------------------------
+  // Registration
+  // ---------------------------------------------------------------------------
+
   /**
-   * Returns the server with the given name, or {@code null} if not found.
+   * Registers a server, or returns the one already registered under its name at the same address.
    *
-   * @param name the server name (case-insensitive)
-   * @return the server info, or {@code null}
+   * @param info the server; its name is stored in lowercase
+   * @return the registered server
+   * @throws IllegalArgumentException if another address is registered under the same name
    */
-  public @Nullable ServerInfo getServer(String name) {
-    return servers.get(name.toLowerCase(Locale.ROOT));
+  public BackendServer register(ServerInfo info) {
+    ServerInfo normalized =
+        info.name().equals(normalize(info.name()))
+            ? info
+            : new ServerInfo(normalize(info.name()), info.address());
+    BackendServer server =
+        servers.computeIfAbsent(normalized.name(), _ -> new BackendServer(normalized));
+    if (!server.address().equals(normalized.address())) {
+      throw new IllegalArgumentException(
+          "Server '"
+              + normalized.name()
+              + "' is already registered at "
+              + server.address()
+              + ", not "
+              + normalized.address());
+    }
+    return server;
   }
 
   /**
-   * Returns the default server that players connect to on join.
+   * Unregisters a server. Its players keep playing on it; new connections can no longer reach it
+   * through the registry.
    *
-   * @return the default server
+   * @param name the server's name, in any case
+   * @return the server that was registered, or {@code null} if none was
    */
-  public ServerInfo defaultServer() {
-    return defaultServer;
+  public @Nullable BackendServer unregister(String name) {
+    return servers.remove(normalize(name));
   }
 
   /**
-   * Returns all registered servers.
+   * Unregisters a server only if it is still the given instance, so that a stale unregistration
+   * cannot remove a server registered again since.
    *
-   * @return unmodifiable collection of all servers
+   * @param server the server to unregister
+   * @return {@code true} if it was registered and is no longer
    */
-  public Collection<ServerInfo> allServers() {
-    return servers.values();
+  public boolean unregister(BackendServer server) {
+    return servers.remove(server.name(), server);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lookup
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the server registered under a name.
+   *
+   * @param name the name, in any case
+   * @return the server, or {@code null} if none is registered under that name
+   */
+  public @Nullable BackendServer getServer(String name) {
+    return servers.get(normalize(name));
   }
 
   /**
-   * Returns the first fallback server not in the excluded set.
+   * Returns the registered server for a server info, only if it is still registered with that exact
+   * name and address.
    *
-   * <p>Iterates the configured {@code fallback-order} and returns the first server whose name is
-   * not in {@code excludedServers}. Returns {@code null} if all fallback servers have been
-   * excluded.
-   *
-   * @param excludedServers server names to skip (lowercase)
-   * @return the next fallback server, or {@code null} if none available
+   * @param info the server info a connection was opened with
+   * @return the registered server, or {@code null} if it was unregistered or replaced
    */
-  public @Nullable ServerInfo nextFallback(Set<String> excludedServers) {
-    for (ServerInfo server : fallbackOrder) {
-      if (!excludedServers.contains(server.name())) {
+  public @Nullable BackendServer registered(ServerInfo info) {
+    BackendServer server = servers.get(normalize(info.name()));
+    return server != null && server.address().equals(info.address()) ? server : null;
+  }
+
+  /**
+   * Returns a snapshot of every registered server.
+   *
+   * @return the servers, unmodifiable, sorted by name
+   */
+  public List<BackendServer> allServers() {
+    List<BackendServer> snapshot = new ArrayList<>(servers.values());
+    snapshot.sort((a, b) -> a.name().compareTo(b.name()));
+    return List.copyOf(snapshot);
+  }
+
+  /**
+   * Returns the server a player joining the proxy connects to: the default server if it is
+   * registered, else the first registered server of the fallback order.
+   *
+   * @return the server, or {@code null} if none of them is registered
+   */
+  public @Nullable BackendServer initialServer() {
+    if (defaultServerName != null) {
+      BackendServer server = servers.get(defaultServerName);
+      if (server != null) {
+        return server;
+      }
+    }
+    return nextFallback(Set.of());
+  }
+
+  /**
+   * Returns the first registered server of the fallback order that is not excluded.
+   *
+   * @param excludedServers names of the servers to skip (lowercase)
+   * @return the server, or {@code null} if every fallback is excluded or unregistered
+   */
+  public @Nullable BackendServer nextFallback(Set<String> excludedServers) {
+    for (String name : fallbackOrder) {
+      if (excludedServers.contains(name)) {
+        continue;
+      }
+      BackendServer server = servers.get(name);
+      if (server != null) {
         return server;
       }
     }
     return null;
+  }
+
+  private static String normalize(String name) {
+    return name.toLowerCase(Locale.ROOT);
   }
 }

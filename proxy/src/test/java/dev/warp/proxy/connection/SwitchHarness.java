@@ -49,6 +49,7 @@ import dev.warp.protocol.packet.play.SpawnInfo;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabListHeaderFooter;
+import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 
 import java.net.InetAddress;
@@ -107,6 +108,7 @@ final class SwitchHarness implements AutoCloseable {
       servers.put(server.name(), server.address());
     }
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
+    when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     when(loginContext.serverRegistry())
         .thenReturn(new ServerRegistry(servers, "lobby", fallbackOrder));
     // Cannot be registered on an embedded event loop: every connection fails at once.

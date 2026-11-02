@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
@@ -31,6 +32,7 @@ import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.proxy.player.PlayerRegistry;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -178,13 +180,15 @@ class ClientKeepAliveTest {
     addCodecs(clientSide, PacketDirection.CLIENTBOUND, PacketDirection.SERVERBOUND, version);
     MinecraftConnection connection = new MinecraftConnection(warpSide);
     warpSide.pipeline().addLast(ServerChannelInitializer.CONNECTION_HANDLER, connection);
+    ServerLoginContext loginContext = mock(ServerLoginContext.class);
+    when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     ConnectedPlayer player =
         new ConnectedPlayer(
             connection,
             version,
             new GameProfile(UUID.randomUUID(), "KeepAliveTester", List.of()),
             new InetSocketAddress(InetAddress.getLoopbackAddress(), 25565),
-            mock(ServerLoginContext.class));
+            loginContext);
     // Entering PLAY starts the keep-alive task.
     connection.setSessionHandler(new ClientPlaySessionHandler(player));
   }

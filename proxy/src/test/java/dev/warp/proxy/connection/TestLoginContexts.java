@@ -18,7 +18,9 @@ package dev.warp.proxy.connection;
 
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
+import dev.warp.proxy.config.DuplicateLoginPolicy;
 import dev.warp.proxy.config.ForwardingMode;
+import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 
 import java.net.InetAddress;
@@ -78,6 +80,16 @@ final class TestLoginContexts {
   }
 
   /**
+   * An offline-mode context that settles duplicate logins with {@code policy}.
+   *
+   * @param policy the duplicate login policy
+   * @return the context
+   */
+  static ServerLoginContext offline(DuplicateLoginPolicy policy) {
+    return context(false, -1, new MojangSessionService(), ProfileKeys.mojang(), policy);
+  }
+
+  /**
    * Returns {@link #offline()} in online mode: players authenticate with {@code sessionService}.
    *
    * @param sessionService the session service, usually a mock
@@ -93,6 +105,16 @@ final class TestLoginContexts {
       int compressionThreshold,
       MojangSessionService sessionService,
       ProfileKeys profileKeys) {
+    return context(
+        onlineMode, compressionThreshold, sessionService, profileKeys, DuplicateLoginPolicy.AUTO);
+  }
+
+  private static ServerLoginContext context(
+      boolean onlineMode,
+      int compressionThreshold,
+      MojangSessionService sessionService,
+      ProfileKeys profileKeys,
+      DuplicateLoginPolicy policy) {
     ServerRegistry registry =
         new ServerRegistry(
             Map.of("lobby", new InetSocketAddress(InetAddress.getLoopbackAddress(), 1)),
@@ -108,6 +130,8 @@ final class TestLoginContexts {
         profileKeys,
         new PlaySession(),
         registry,
+        new PlayerRegistry(),
+        policy,
         ForwardingMode.NONE,
         new byte[0],
         NioSocketChannel.class);
