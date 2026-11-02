@@ -81,16 +81,16 @@ async function proxyReportsServer(ctx, bot, expected) {
   const reply = await bot.command('server', /^Servers:/);
   const current = /\[(\w+)\]/.exec(reply)?.[1];
   if (current !== expected) throw new Error(`/server says ${current}, expected ${expected}`);
-  checkServerList(bot.componentOf(reply), expected, expected === 'lobby' ? 'survival' : 'lobby');
+  checkServerList(bot.componentOf(reply), expected);
 }
 
 /**
  * Checks the styles of Warp's answer to /server, a component it encodes for the bot's version (JSON,
- * or NBT from 1.20.3): the current server in green, another one a link that runs /server <name>,
+ * or NBT from 1.20.3): the current server in green, every other one a link that runs /server <name>,
  * with the click event of the version (`clickEvent` and its `value`, `click_event` and its
  * `command` from 1.21.5).
  */
-export function checkServerList(component, current, other) {
+export function checkServerList(component, current) {
   const nodes = [];
   const walk = (node) => {
     if (node === null || typeof node !== 'object') return;
@@ -101,11 +101,14 @@ export function checkServerList(component, current, other) {
   const text = (node) => node.text ?? node[''];
   const here = nodes.find((n) => text(n) === `[${current}]`);
   if (here?.color !== 'green') throw new Error(`/server: [${current}] is not green in ${JSON.stringify(component)}`);
-  const link = nodes.find((n) => text(n) === other);
-  const click = link?.clickEvent ?? link?.click_event;
-  const command = click?.value ?? click?.command;
-  if (click?.action !== 'run_command' || command !== `/server ${other}`) {
-    throw new Error(`/server: ${other} does not link to /server ${other} in ${JSON.stringify(component)}`);
+  const others = nodes.slice(1).filter((n) => /^[\w-]+$/.test(text(n) ?? ''));
+  if (others.length === 0) throw new Error(`/server: no other server in ${JSON.stringify(component)}`);
+  for (const link of others) {
+    const click = link.clickEvent ?? link.click_event;
+    const command = click?.value ?? click?.command;
+    if (click?.action !== 'run_command' || command !== `/server ${text(link)}`) {
+      throw new Error(`/server: ${text(link)} does not link to /server ${text(link)} in ${JSON.stringify(component)}`);
+    }
   }
 }
 

@@ -290,17 +290,18 @@ describe('checkServerList', () => {
     text: 'Servers: ',
   };
 
-  it('accepts the current server in green and a link to the other, before and after 1.21.5', () => {
-    checkServerList(json, 'lobby', 'survival');
+  it('accepts the current server in green and links to the others, before and after 1.21.5', () => {
+    checkServerList(json, 'lobby');
     const snake = structuredClone(json);
     snake.extra[2] = { text: 'survival', color: 'aqua', click_event: { action: 'run_command', command: '/server survival' } };
-    checkServerList(snake, 'lobby', 'survival');
+    checkServerList(snake, 'lobby');
   });
 
   it('refuses a plain answer, or a link elsewhere', () => {
-    assert.throws(() => checkServerList({ text: 'Servers: [lobby], survival' }, 'lobby', 'survival'), /not green/);
+    assert.throws(() => checkServerList({ text: 'Servers: [lobby], survival' }, 'lobby'), /not green/);
+    assert.throws(() => checkServerList({ text: 'Servers: ', extra: [{ text: '[lobby]', color: 'green' }] }, 'lobby'), /no other server/);
     const elsewhere = structuredClone(json);
     elsewhere.extra[2].clickEvent.value = '/server lobby';
-    assert.throws(() => checkServerList(elsewhere, 'lobby', 'survival'), /does not link/);
+    assert.throws(() => checkServerList(elsewhere, 'lobby'), /does not link/);
   });
 });
