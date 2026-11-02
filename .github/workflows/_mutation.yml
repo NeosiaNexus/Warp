@@ -2,15 +2,26 @@ name: Mutation testing
 
 # Reusable: PIT mutation testing (`./gradlew :<module>:pitest`, configured in
 # build-logic/src/main/kotlin/warp.pitest-conventions.gradle.kts) of the given modules, one job per
-# module so that each has a runner's cores to itself. A job fails when its module's mutation score
-# drops below its threshold in config/pitest/thresholds.properties. Its summary has the score and
-# the mutants left alive in each class, and the HTML report is attached.
+# module so that each has a runner's cores to itself. It mutates every main class, or only those
+# changed since a revision (`since`), as pull requests do. A job fails when the mutation score of
+# what it mutated drops below its module's threshold in config/pitest/thresholds.properties. Its
+# summary has the score and the mutants left alive in each class, and the HTML report is attached.
 on:
   workflow_call:
     inputs:
       modules:
         description: The modules to analyse, as a JSON array of names (`["protocol", "proxy"]`).
         type: string
+        required: true
+      since:
+        description: >-
+          A Git revision: only the main classes changed since its merge base with the checked-out
+          commit are mutated. Empty, the default, mutates every main class.
+        type: string
+        default: ''
+      timeout-minutes:
+        description: Timeout of each job, in minutes.
+        type: number
         required: true
 
 permissions: {}
@@ -19,7 +30,7 @@ jobs:
   pitest:
     name: ${{ matrix.module }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read # check out the code
     strategy:
@@ -27,10 +38,12 @@ jobs:
       matrix:
         module: ${{ fromJSON(inputs.modules) }}
     steps:
+      # The whole history when scoped, to find the merge base of `since` with the commit.
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: ${{ inputs.since != '' && '0' || '1' }}
 
       - name: Set up build
         uses: $/.github/actions/setup-build
@@ -38,11 +51,14 @@ jobs:
       - name: Run PIT
         env:
           MODULE: ${{ matrix.module }}
-        run: ./gradlew ":$MODULE:pitest"
+          SINCE: ${{ inputs.since }}
+        run: ./gradlew ":$MODULE:pitest" ${SINCE:+"-Pwarp.pitest.since=$SINCE"}
 
       - name: Report the mutation score
         if: ${{ !cancelled() }}
-        run: python3 .github/scripts/mutation-summary.py >> "$GITHUB_STEP_SUMMARY"
+        env:
+          SINCE: ${{ inputs.since }}
+        run: python3 .github/scripts/mutation-summary.py ${SINCE:+--since "$SINCE"} >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the PIT report
         if: ${{ !cancelled() }}

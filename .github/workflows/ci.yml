@@ -194,9 +194,10 @@ jobs:
       # Fuzzing takes 9 minutes on a two-core runner (three rounds and the build), ten more report.
       timeout-minutes: 30
 
-  # PIT mutation testing of each module whose score the pull request may change, each on its own
-  # runner, alongside the build and the end-to-end tests. Pushes to main analyse every module, in
-  # mutation.yml.
+  # PIT mutation testing of the main classes the pull request changes, held to their module's
+  # threshold, alongside the build and the end-to-end tests: one runner per module with such a
+  # class, for as long as the change needs, not the module. A module with none skips it, as the
+  # Detect changes job notes. Every class of every module is analysed nightly, in mutation.yml.
   mutation:
     name: Mutation testing
     needs: changes
@@ -206,6 +207,8 @@ jobs:
     uses: $/.github/workflows/_mutation.yml
     with:
       modules: ${{ needs.changes.outputs.mutation }}
+      since: ${{ github.event.pull_request.base.sha }}
+      timeout-minutes: 20
 
   # The only check to mark as required: it fails if any job above failed or was cancelled, and
   # passes when they succeeded or were skipped on purpose.
