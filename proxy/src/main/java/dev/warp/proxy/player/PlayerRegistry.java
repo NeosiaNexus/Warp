@@ -25,6 +25,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.random.RandomGenerator;
 
 import org.jspecify.annotations.Nullable;
@@ -37,6 +38,10 @@ import org.jspecify.annotations.Nullable;
  * #register} settles a second login under the same UUID atomically, so two logins racing for the
  * same account always end with exactly one of them registered.
  *
+ * <p>Registration also ranks players, for the player limit: each registration says how many players
+ * are registered once it is, so that of two logins racing for the last place, exactly one gets it
+ * (BungeeCord's {@code player_limit} lets both in, SpigotMC/BungeeCord#2660).
+ *
  * <p>Lookups are lock-free and never block; snapshots are copies, safe to iterate from any thread.
  */
 public final class PlayerRegistry {
@@ -44,12 +49,22 @@ public final class PlayerRegistry {
   private final Map<UUID, ConnectedPlayer> byId = new ConcurrentHashMap<>();
   private final Map<String, ConnectedPlayer> byName = new ConcurrentHashMap<>();
 
+  /** How many players are registered: changed right after {@link #byId}, by whoever changed it. */
+  private final AtomicInteger count = new AtomicInteger();
+
   /** Outcome of {@link #register}. */
-  public enum Registration {
-    /** The player is registered. */
-    REGISTERED,
+  public sealed interface Registration {
+
+    /**
+     * The player is registered.
+     *
+     * @param place how many players were registered right after it, counting it: the player limit
+     *     is reached when this exceeds it
+     */
+    record Registered(int place) implements Registration {}
+
     /** A session with the same UUID is connected and the policy keeps it: the newcomer is out. */
-    REFUSED
+    record Refused() implements Registration {}
   }
 
   /**
@@ -63,12 +78,15 @@ public final class PlayerRegistry {
   public Registration register(ConnectedPlayer player, boolean kickExisting) {
     while (true) {
       ConnectedPlayer existing = byId.putIfAbsent(player.uuid(), player);
-      if (existing == null || existing == player) {
+      if (existing == null) {
         byName.put(key(player.username()), player);
-        return Registration.REGISTERED;
+        return new Registration.Registered(count.incrementAndGet());
+      }
+      if (existing == player) {
+        return new Registration.Registered(count.get());
       }
       if (!kickExisting) {
-        return Registration.REFUSED;
+        return new Registration.Refused();
       }
       existing.disconnectDuplicate();
       // disconnectDuplicate unregisters it; removing here too covers a session that was already
@@ -83,7 +101,9 @@ public final class PlayerRegistry {
    * @param player the player that left
    */
   public void unregister(ConnectedPlayer player) {
-    byId.remove(player.uuid(), player);
+    if (byId.remove(player.uuid(), player)) {
+      count.decrementAndGet();
+    }
     byName.remove(key(player.username()), player);
   }
 
@@ -122,7 +142,7 @@ public final class PlayerRegistry {
    * @return the player count
    */
   public int count() {
-    return byId.size();
+    return count.get();
   }
 
   /**
@@ -137,7 +157,7 @@ public final class PlayerRegistry {
     if (size <= 0) {
       return new ArrayList<>();
     }
-    List<ConnectedPlayer> sample = new ArrayList<>(Math.max(0, Math.min(size, byId.size())));
+    List<ConnectedPlayer> sample = new ArrayList<>(Math.max(0, Math.min(size, count.get())));
     int seen = 0;
     for (ConnectedPlayer player : byId.values()) {
       seen++;

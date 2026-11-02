@@ -40,6 +40,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -61,7 +62,7 @@ class PlayerRegistryTest {
 
       Registration result = registry.register(steve, false);
 
-      assertEquals(Registration.REGISTERED, result);
+      assertEquals(new Registration.Registered(1), result);
       assertSame(steve, registry.get(steve.uuid()));
       assertSame(steve, registry.get("sTeVe"));
       assertEquals(1, registry.count());
@@ -79,7 +80,7 @@ class PlayerRegistryTest {
 
       Registration result = registry.register(second, false);
 
-      assertEquals(Registration.REFUSED, result);
+      assertEquals(new Registration.Refused(), result);
       assertSame(first, registry.get(id));
       verify(first, never()).disconnectDuplicate();
     }
@@ -95,7 +96,7 @@ class PlayerRegistryTest {
 
       Registration result = registry.register(second, true);
 
-      assertEquals(Registration.REGISTERED, result);
+      assertEquals(new Registration.Registered(1), result);
       verify(first).disconnectDuplicate();
       assertSame(second, registry.get(id));
       assertSame(second, registry.get("steve"));
@@ -108,7 +109,7 @@ class PlayerRegistryTest {
       ConnectedPlayer steve = player(UUID.randomUUID(), "Steve");
       registry.register(steve, false);
 
-      assertEquals(Registration.REGISTERED, registry.register(steve, false));
+      assertEquals(new Registration.Registered(1), registry.register(steve, false));
       assertEquals(1, registry.count());
     }
 
@@ -143,8 +144,84 @@ class PlayerRegistryTest {
         assertTrue(pool.awaitTermination(10, TimeUnit.SECONDS));
       }
 
-      assertEquals(1, results.stream().filter(r -> r == Registration.REGISTERED).count());
+      assertEquals(1, results.stream().filter(r -> r instanceof Registration.Registered).count());
       assertEquals(1, registry.count());
+    }
+  }
+
+  @Nested
+  @DisplayName("places, for the player limit")
+  class Places {
+
+    @Test
+    @DisplayName("should give each player the count once it is registered")
+    void countsInOrder() {
+      ConnectedPlayer steve = player(UUID.randomUUID(), "Steve");
+      ConnectedPlayer alex = player(UUID.randomUUID(), "Alex");
+
+      Registration first = registry.register(steve, false);
+      Registration second = registry.register(alex, false);
+
+      assertEquals(new Registration.Registered(1), first);
+      assertEquals(new Registration.Registered(2), second);
+    }
+
+    @Test
+    @DisplayName("should free a place when a player leaves")
+    void freesPlaces() {
+      ConnectedPlayer steve = player(UUID.randomUUID(), "Steve");
+      registry.register(steve, false);
+      registry.unregister(steve);
+
+      Registration alex = registry.register(player(UUID.randomUUID(), "Alex"), false);
+
+      assertEquals(new Registration.Registered(1), alex);
+      assertEquals(1, registry.count());
+    }
+
+    @Test
+    @DisplayName("should count a player unregistered twice once")
+    void unregisterTwice() {
+      ConnectedPlayer steve = player(UUID.randomUUID(), "Steve");
+      registry.register(steve, false);
+      registry.register(player(UUID.randomUUID(), "Alex"), false);
+
+      registry.unregister(steve);
+      registry.unregister(steve);
+
+      assertEquals(1, registry.count());
+    }
+
+    @Test
+    @DisplayName("should give distinct places to players registering at the same moment")
+    void distinctPlacesUnderContention() throws InterruptedException {
+      int threads = 16;
+      ExecutorService pool = Executors.newFixedThreadPool(threads);
+      CountDownLatch start = new CountDownLatch(1);
+      List<Registration> results = Collections.synchronizedList(new ArrayList<>());
+      try {
+        for (int i = 0; i < threads; i++) {
+          ConnectedPlayer session = player(UUID.randomUUID(), "Player" + i);
+          pool.execute(
+              () -> {
+                try {
+                  start.await();
+                } catch (InterruptedException e) {
+                  Thread.currentThread().interrupt();
+                  return;
+                }
+                results.add(registry.register(session, false));
+              });
+        }
+        start.countDown();
+      } finally {
+        pool.shutdown();
+        assertTrue(pool.awaitTermination(10, TimeUnit.SECONDS));
+      }
+
+      List<Integer> places =
+          results.stream().map(r -> ((Registration.Registered) r).place()).sorted().toList();
+      assertEquals(IntStream.rangeClosed(1, threads).boxed().toList(), places);
     }
   }
 
