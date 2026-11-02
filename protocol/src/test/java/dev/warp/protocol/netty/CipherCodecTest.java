@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
 import java.security.GeneralSecurityException;
@@ -96,6 +97,23 @@ class CipherCodecTest {
         frame.release();
       }
       assertArrayEquals(reference(Cipher.ENCRYPT_MODE, plaintext), drainOutbound(ch));
+      assertFalse(ch.finish());
+    }
+
+    @ParameterizedTest(name = "{0} frame")
+    @EnumSource(Layout.class)
+    @DisplayName("should encrypt into a direct buffer, as the socket wants it")
+    void encryptsIntoDirectMemory(Layout frames) throws GeneralSecurityException {
+      EmbeddedChannel ch = channel(new CipherEncoder(key), Memory.DIRECT);
+
+      ch.writeOutbound(frames.wrap(plaintext));
+
+      ByteBuf encrypted = ch.readOutbound();
+      try {
+        assertTrue(encrypted.isDirect());
+      } finally {
+        encrypted.release();
+      }
       assertFalse(ch.finish());
     }
   }

@@ -56,6 +56,33 @@ class WatchedChannelsTest {
       assertFalse(watched.contains("bungeecord:main"));
       assertFalse(watched.isEmpty());
     }
+
+    @Test
+    @DisplayName("should keep the channels on either side of one removed from the middle")
+    void removeFromTheMiddle() {
+      watched.add("first");
+      watched.add("middle");
+      watched.add("last");
+
+      boolean removed = watched.remove("middle");
+
+      assertTrue(removed);
+      assertTrue(watched.contains("first"));
+      assertFalse(watched.contains("middle"));
+      assertTrue(watched.contains("last"));
+    }
+
+    @Test
+    @DisplayName("should keep the first channel when the last one is removed")
+    void removeTheLast() {
+      watched.add("first");
+      watched.add("last");
+
+      watched.remove("last");
+
+      assertTrue(watched.contains("first"));
+      assertFalse(watched.contains("last"));
+    }
   }
 
   @Nested
@@ -120,6 +147,36 @@ class WatchedChannelsTest {
       } finally {
         truncated.release();
         empty.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should not match a watched name the message holds only part of")
+    void truncatedName() {
+      watched.add("abc");
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        VarInt.write(buf, 3);
+        buf.writeByte('a').writeByte('b');
+
+        assertNull(watched.read(buf));
+      } finally {
+        buf.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should not match an empty length, even with an empty name watched")
+    void emptyName() {
+      watched.add("");
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        VarInt.write(buf, 0);
+        buf.writeByte(42);
+
+        assertNull(watched.read(buf));
+      } finally {
+        buf.release();
       }
     }
 
