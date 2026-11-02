@@ -7,6 +7,8 @@ publishing {
     publications {
         register<MavenPublication>("mavenJava") {
             from(components["java"])
+            // dev.warp:warp-api rather than dev.warp:api: unambiguous next to other projects' "api".
+            artifactId = "warp-${project.name}"
             pom {
                 name = project.name
                 description = project.description
