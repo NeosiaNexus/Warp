@@ -56,25 +56,24 @@ final class BackendChannelInitializer extends ChannelInitializer<Channel> {
 
   private final ConnectedPlayer player;
   private final ServerInfo server;
-  private final Duration readTimeout;
 
   /**
    * Creates the initializer of one backend connection.
    *
    * @param player the player the connection is for
    * @param server the server it leads to, whose plugin initializers run on it
-   * @param readTimeout how long the backend may stay silent before the connection is closed: {@code
-   *     timeouts.read}, as for logged-in clients, since a backend connection only exists for one
    */
-  BackendChannelInitializer(ConnectedPlayer player, ServerInfo server, Duration readTimeout) {
+  BackendChannelInitializer(ConnectedPlayer player, ServerInfo server) {
     this.player = player;
     this.server = server;
-    this.readTimeout = readTimeout;
   }
 
   @Override
   protected void initChannel(Channel ch) {
     ProtocolVersion version = player.protocolVersion();
+    // timeouts.backend-read, not the clients' timeouts.read: a backend may take longer to log a
+    // player in than a client may stay silent, and the proxy keeps the waiting client alive.
+    Duration readTimeout = player.loginContext().timeouts().backendRead();
 
     // Decoder reads CLIENTBOUND packets (backend sends responses to proxy).
     MinecraftDecoder decoder =

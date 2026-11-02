@@ -96,9 +96,10 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
   private static final Logger logger = LoggerFactory.getLogger(MinecraftConnection.class);
 
   /**
-   * Seconds without receiving anything after which a connection, to a player or to a backend, is
-   * closed. A live peer never stays that quiet: a client sends a movement packet every tick and
-   * answers keep-alives, a server sends keep-alives.
+   * Seconds without receiving anything after which a client connection that has not logged in yet
+   * is closed; {@code timeouts.read} replaces it once the player is logged in, and backend
+   * connections use {@code timeouts.backend-read}. A live peer never stays that quiet: a client
+   * sends a movement packet every tick and answers keep-alives, a server sends keep-alives.
    */
   static final int READ_TIMEOUT_SECONDS = 30;
 
@@ -277,13 +278,14 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
   }
 
   /**
-   * Describes a connection that received nothing for as long as its read timeout waits ({@value
-   * #READ_TIMEOUT_SECONDS} s before login, {@code timeouts.read} after), as it stands: its protocol
-   * state, which side went quiet, whether the proxy was reading it, and how much it still had to
-   * send it. Reads paused means the proxy itself kept the peer's packets unread (back-pressure, or
-   * a client that sent too much while waiting for its next server); bytes piling up mean the peer
-   * stopped reading too; neither means the peer went silent while taking what it was sent. The
-   * queued bytes are Netty's count: the packets plus a small overhead per message.
+   * Describes a connection that received nothing for as long as its read timeout waits (for a
+   * client {@value #READ_TIMEOUT_SECONDS} s before login, {@code timeouts.read} after; for a
+   * backend {@code timeouts.backend-read}), as it stands: its protocol state, which side went
+   * quiet, whether the proxy was reading it, and how much it still had to send it. Reads paused
+   * means the proxy itself kept the peer's packets unread (back-pressure, or a client that sent too
+   * much while waiting for its next server); bytes piling up mean the peer stopped reading too;
+   * neither means the peer went silent while taking what it was sent. The queued bytes are Netty's
+   * count: the packets plus a small overhead per message.
    *
    * @param channel the connection that timed out
    * @param decoder the connection's decoder, which knows its state and which side the peer is

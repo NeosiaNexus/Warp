@@ -471,15 +471,29 @@ class WarpConfigTest {
     }
 
     @Test
+    @DisplayName("should default the backend read timeout to Velocity's and BungeeCord's 30 s")
+    void backendReadDefault() throws Exception {
+      WarpConfig config = load("timeouts { read = 10s }");
+
+      assertEquals(Duration.ofSeconds(30), config.timeouts().backendRead());
+      assertEquals(Duration.ofSeconds(10), config.timeouts().read(), "set apart from backends");
+    }
+
+    @Test
     @DisplayName("should read the timeouts and TCP Fast Open")
     void values() throws Exception {
       WarpConfig config =
-          load("timeouts { connect = 2500ms, read = 1m, ping = 2s }\ntcp-fast-open = true");
+          load(
+              "timeouts { connect = 2500ms, read = 1m, backend-read = 45s, ping = 2s }\n"
+                  + "tcp-fast-open = true");
 
       assertEquals(Duration.ofMillis(2500), config.timeouts().connect());
       assertEquals(Duration.ofMinutes(1), config.timeouts().read());
+      assertEquals(Duration.ofSeconds(45), config.timeouts().backendRead());
       assertEquals(Duration.ofSeconds(2), config.timeouts().ping());
       assertTrue(config.tcpFastOpen());
+      assertEquals(
+          "connect 2500ms, read 1m, backend-read 45s, ping 2s", config.timeouts().toString());
     }
 
     @Test
@@ -508,6 +522,13 @@ class WarpConfigTest {
     void bounds() {
       assertThrows(ConfigurationException.class, () -> load("timeouts { connect = 0 }"));
       assertThrows(ConfigurationException.class, () -> load("timeouts { read = 500ms }"));
+      ConfigurationException backend =
+          assertThrows(
+              ConfigurationException.class, () -> load("timeouts { backend-read = 500ms }"));
+      assertTrue(
+          String.valueOf(backend.getMessage())
+              .contains("timeouts.backend-read must be at least 1s"),
+          backend.getMessage());
     }
   }
 

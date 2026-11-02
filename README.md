@@ -216,7 +216,8 @@ status {
 
 timeouts {
   connect = 5s                     # opening a connection to a backend
-  read = 25s                       # a logged-in connection that sends nothing is closed
+  read = 25s                       # a logged-in client that sends nothing is closed
+  backend-read = 30s               # a backend that sends nothing is closed, in every state
   ping = 5s                        # RegisteredServer.ping() without a time-out of its own
 }
 tcp-fast-open = false              # Linux (epoll) only
@@ -233,6 +234,11 @@ The server list's `max-players` is only shown, as Velocity's `show-max-players`.
 actually meet is `player-limit`, off by default: a player beyond it is refused with "The server is
 full.", unless a plugin lets it in from `LoginEvent`. With a limit and no `max-players`, the server
 list shows the limit.
+
+`timeouts.read` watches clients, `timeouts.backend-read` watches backends. A backend may stay silent
+longer than a client: while it logs a player in or prepares its world, Warp keeps the waiting client
+connected with its own keep-alives, so `backend-read` can safely exceed the client's own 30 s. A
+backend that times out sends its player down the fallback order.
 
 Durations take a unit everywhere (`200ms`, `30s`, `5m`, `1h`, `30d`); a bare number other than `0`
 is refused rather than guessed.
