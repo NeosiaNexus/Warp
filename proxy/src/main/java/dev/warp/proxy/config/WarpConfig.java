@@ -1293,11 +1293,16 @@ public final class WarpConfig {
           # Opening a TCP connection to a backend server.
           connect = 5s
 
-          # A logged-in player's connection, or its connection to a backend, that sends nothing for
-          # this long is closed. Below the client's own 30s, so that a backend that stalls is noticed
-          # and its players sent to a fallback server before their clients give up with "Timed out".
-          # The deadline before login is limits.logins.timeout.
+          # A logged-in player's connection that sends nothing for this long is closed. Below the
+          # client's own 30s, so that the proxy notices a dead client first. The deadline before
+          # login is limits.logins.timeout.
           read = 25s
+
+          # A connection to a backend server that sends nothing for this long is closed, in every
+          # state: while it logs a player in, until its first Join Game, and in play. Its player is
+          # sent to a fallback server. The proxy keeps a waiting client connected meanwhile, so this
+          # may exceed the client's 30s, for backends slow to prepare a new player.
+          backend-read = 30s
 
           # A plugin's RegisteredServer.ping() without a time-out of its own: connection, handshake
           # and answer. A server that does not answer in time fails the ping with TIMED_OUT.

@@ -43,6 +43,7 @@ import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.login.LoginAcknowledged;
 import dev.warp.protocol.packet.login.LoginStart;
+import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
@@ -51,6 +52,7 @@ import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.server.BackendServer;
+import dev.warp.proxy.server.ServerRegistry;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -58,7 +60,9 @@ import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -68,6 +72,7 @@ import java.util.stream.Stream;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.handler.timeout.IdleStateHandler;
 import net.kyori.adventure.text.Component;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -79,8 +84,9 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /**
- * Tests that the proxy keeps a player alive while it holds it on purpose: between two servers, and
- * while plugins decide where it goes, in the configuration phase (1.20.2+) or in play.
+ * Tests that the proxy keeps a player alive while it holds it on purpose: between two servers,
+ * while plugins decide where it goes, and while a slow server logs it in, in the configuration
+ * phase (1.20.2+) or in play.
  *
  * <p>A vanilla client drops a connection that sent it nothing for 30 s, and the proxy drops a
  * client that sent it nothing for 30 s, or answers a keep-alive more than 30 s late. Every hold
@@ -218,6 +224,133 @@ class HeldPlayerTest {
 
       assertTrue(openJustBefore);
       assertFalse(client.channel.isOpen(), "the read time-out of the pipeline");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // While a slow backend logs it in
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("while a slow backend logs it in (timeouts.backend-read)")
+  class SlowBackend {
+
+    /** The server players join first. */
+    private static final String FIRST = "lobby";
+
+    /** The server the fallback order sends them to when the first fails. */
+    private static final String FALLBACK = "survival";
+
+    /** The servers the player was connected to, in order. */
+    private final List<String> targets = new ArrayList<>();
+
+    /** The backend connections the player opened, in order. */
+    private final List<EmbeddedChannel> backends = new ArrayList<>();
+
+    @Test
+    @DisplayName("should give backend connections timeouts.backend-read, and clients timeouts.read")
+    void backendTimeoutFromConfig() {
+      Client client = joining(MODERN, timeouts(Duration.ofSeconds(7), Duration.ofSeconds(45)));
+
+      assertEquals(List.of(FIRST), targets);
+      assertEquals(45_000, readTimeoutMillis(backends.getFirst()), "timeouts.backend-read");
+      assertEquals(7_000, readTimeoutMillis(client.channel), "timeouts.read");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("dev.warp.proxy.connection.HeldPlayerTest#bothSwitches")
+    @DisplayName("should keep the client connected while its first server takes 40 s to log it in")
+    void clientKeptAlive(ProtocolVersion version) {
+      // A backend allowed more than the client's own 30 s: only the proxy's keep-alives keep the
+      // client connected meanwhile, timeouts.read (25 s) being shorter than the wait.
+      Client client =
+          joining(version, timeouts(TimeoutsConfig.DEFAULTS.read(), Duration.ofMinutes(1)));
+      EmbeddedChannel lobby = backends.getFirst();
+
+      client.waitFor(HOLD, Client.Behaviour.ANSWERING);
+      boolean clientActive = client.channel.isActive();
+      boolean lobbyOpen = lobby.isOpen();
+      lobby.writeInbound(loginSuccess(version));
+      client.waitFor(Duration.ofSeconds(1), Client.Behaviour.ANSWERING);
+
+      assertTrue(clientActive, "dropped while its server logged it in");
+      assertTrue(lobbyOpen, "within timeouts.backend-read");
+      assertEquals(2, client.keepAliveWireIds.size(), "one per 15 s");
+      assertEquals(
+          version.supportsConfigurationState() ? ProtocolState.CONFIGURATION : ProtocolState.PLAY,
+          connectionOf(lobby).decoder().state(),
+          "the server logged the player in");
+      assertTrue(client.channel.isActive());
+      assertEquals(List.of(FIRST), targets, "no fallback");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("dev.warp.proxy.connection.HeldPlayerTest#bothSwitches")
+    @DisplayName("should close a silent first server after timeouts.backend-read, and fall back")
+    void backendTimesOut(ProtocolVersion version) {
+      Client client = joining(version, TimeoutsConfig.DEFAULTS);
+      EmbeddedChannel lobby = backends.getFirst();
+      Duration backendRead = TimeoutsConfig.DEFAULTS.backendRead();
+
+      client.waitFor(backendRead.minusSeconds(1), Client.Behaviour.ANSWERING);
+      boolean openJustBefore = lobby.isOpen();
+      client.waitFor(Duration.ofSeconds(2), Client.Behaviour.ANSWERING);
+
+      assertEquals(Duration.ofSeconds(30), backendRead, "Velocity's and BungeeCord's");
+      assertTrue(openJustBefore, "past timeouts.read: the backend has its own time-out");
+      assertFalse(lobby.isOpen(), "the backend's read time-out");
+      assertEquals(List.of(FIRST, FALLBACK), targets, "down the fallback order");
+      assertTrue(backends.getLast().isOpen(), "the fallback logs the player in");
+      assertTrue(client.channel.isActive(), "the player waits for its fallback");
+    }
+
+    /** Timeouts of {@code read} for clients and {@code backendRead} for backends. */
+    private static TimeoutsConfig timeouts(Duration read, Duration backendRead) {
+      TimeoutsConfig defaults = TimeoutsConfig.DEFAULTS;
+      return new TimeoutsConfig(defaults.connect(), read, backendRead, defaults.ping());
+    }
+
+    /**
+     * Logs a client of {@code version} in on a proxy with {@code timeouts}, and lets it join its
+     * first server: each server the player connects to accepts the connection at once, through the
+     * pipeline Warp builds for backends, then says nothing until the test plays its part.
+     */
+    private Client joining(ProtocolVersion version, TimeoutsConfig timeouts) {
+      Map<String, InetSocketAddress> servers = new LinkedHashMap<>();
+      servers.put(FIRST, new InetSocketAddress(InetAddress.getLoopbackAddress(), 25_565));
+      servers.put(FALLBACK, new InetSocketAddress(InetAddress.getLoopbackAddress(), 25_566));
+      ServerLoginContext context =
+          TestLoginContexts.with(
+              TestLoginContexts.offline(bus),
+              new ServerRegistry(servers, FIRST, List.of(FIRST, FALLBACK)),
+              timeouts);
+      // Held until the backends below replace the real connections, which open nothing here.
+      holdEvery(PlayerChooseInitialServerEvent.class, DECLARED_TIMEOUT_SECONDS);
+      Client client = loggedIn(version, context);
+      ConnectedPlayer player = client.player();
+      player.setConnector(
+          target -> {
+            EmbeddedChannel channel =
+                new EmbeddedChannel(new BackendChannelInitializer(player, target));
+            channels.add(channel);
+            backends.add(channel);
+            targets.add(target.name());
+            client.shareClock(channel);
+            MinecraftConnection backend = connectionOf(channel);
+            backend.setSessionHandler(
+                new BackendLoginSessionHandler(player, backend, target.address(), new byte[0]));
+            return CompletableFuture.completedFuture(new BackendConnection(backend, target));
+          });
+      hold.complete(null);
+      client.channel.runPendingTasks();
+      return client;
+    }
+
+    /** The backend's Login Success for the player. */
+    private static ByteBuf loginSuccess(ProtocolVersion version) {
+      UUID uuid = UUID.nameUUIDFromBytes("Steve".getBytes(StandardCharsets.UTF_8));
+      return frame(
+          version, ProtocolState.LOGIN, new LoginSuccess(uuid, "Steve", List.of(), false, null));
     }
   }
 
@@ -499,6 +632,18 @@ class HeldPlayerTest {
     return new AcknowledgeConfiguration();
   }
 
+  /** The connection handler of a pipeline Warp built. */
+  private static MinecraftConnection connectionOf(EmbeddedChannel channel) {
+    return Objects.requireNonNull(channel.pipeline().get(MinecraftConnection.class));
+  }
+
+  /** The read time-out of a pipeline Warp built, in milliseconds. */
+  private static long readTimeoutMillis(EmbeddedChannel channel) {
+    return assertInstanceOf(
+            IdleStateHandler.class, channel.pipeline().get(ServerChannelInitializer.READ_TIMEOUT))
+        .getReaderIdleTimeInMillis();
+  }
+
   private static BackendServer server(SwitchHarness setup, String name) {
     return Objects.requireNonNull(
         setup.player.loginContext().serverRegistry().getServer(name), name);
@@ -509,9 +654,15 @@ class HeldPlayerTest {
    * and returns it once the player joined: in the configuration state from 1.20.2, in play before.
    */
   private Client loggedIn(ProtocolVersion version) {
+    return loggedIn(version, TestLoginContexts.offline(bus));
+  }
+
+  /**
+   * Logs a client of {@code version} in as {@link #loggedIn(ProtocolVersion)}, on {@code context}.
+   */
+  private Client loggedIn(ProtocolVersion version, ServerLoginContext context) {
     EmbeddedChannel channel = new ClientChannel();
     channels.add(channel);
-    ServerLoginContext context = TestLoginContexts.offline(bus);
     channel.pipeline().addLast(new ServerChannelInitializer(context));
     channel.runPendingTasks();
     Client client =
@@ -563,6 +714,9 @@ class HeldPlayerTest {
     private int answerWireId = -1;
     private long seconds;
 
+    /** Backend connections whose time passes with the client's, as on the event loop they share. */
+    private final List<EmbeddedChannel> backends = new ArrayList<>();
+
     /** The player, once it joined. */
     private @Nullable ConnectedPlayer player;
 
@@ -598,9 +752,20 @@ class HeldPlayerTest {
       return answerWireId;
     }
 
+    /** Lets time pass on {@code backend} with the client's from now on. */
+    void shareClock(EmbeddedChannel backend) {
+      backend.freezeTime();
+      backends.add(backend);
+    }
+
     void waitFor(Duration duration, Behaviour behaviour) {
       for (long i = 0; i < duration.toSeconds() && channel.isOpen(); i++) {
         channel.advanceTimeBy(1, TimeUnit.SECONDS);
+        // A copy: a backend that times out sends the player to a fallback, which opens another.
+        for (EmbeddedChannel backend : List.copyOf(backends)) {
+          backend.advanceTimeBy(1, TimeUnit.SECONDS);
+          backend.runPendingTasks();
+        }
         runTasks.run();
         seconds++;
         readReceived(behaviour == Behaviour.ANSWERING);

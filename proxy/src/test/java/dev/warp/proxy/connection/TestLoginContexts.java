@@ -348,6 +348,27 @@ final class TestLoginContexts {
    */
   static ServerLoginContext with(
       ServerLoginContext base, TimeoutsConfig timeouts, LoggingConfig logging) {
+    return with(base, base.serverRegistry(), timeouts, logging);
+  }
+
+  /**
+   * Returns a context like {@code base}, with other servers and timeouts.
+   *
+   * @param base the context to copy
+   * @param servers the servers players join and fall back to
+   * @param timeouts the timeouts
+   * @return the context
+   */
+  static ServerLoginContext with(
+      ServerLoginContext base, ServerRegistry servers, TimeoutsConfig timeouts) {
+    return with(base, servers, timeouts, base.logging());
+  }
+
+  private static ServerLoginContext with(
+      ServerLoginContext base,
+      ServerRegistry servers,
+      TimeoutsConfig timeouts,
+      LoggingConfig logging) {
     return new ServerLoginContext(
         base.rsaKeyPair(),
         base.onlineMode(),
@@ -357,7 +378,7 @@ final class TestLoginContexts {
         base.sessionService(),
         base.profileKeys(),
         base.playSession(),
-        base.serverRegistry(),
+        servers,
         base.playerRegistry(),
         base.serverList(),
         base.duplicateLoginPolicy(),
