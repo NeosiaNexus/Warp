@@ -10,6 +10,8 @@ const execFileAsync = promisify(execFile);
 const running = new Set();
 // eslint-disable-next-line no-control-regex
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
+/** How long output may still arrive after a process exits, from processes it started. */
+const OUTPUT_GRACE_MS = 2_000;
 
 export class ManagedProcess {
   /**
@@ -49,7 +51,7 @@ export class ManagedProcess {
     const onData = (chunk) => {
       // Colour codes make logs unreadable once uploaded as CI artifacts, and break line matching.
       const text = partial + chunk.toString('utf8').replace(ANSI, '');
-      log.write(text.slice(partial.length));
+      if (!log.writableEnded) log.write(text.slice(partial.length));
       const parts = text.split(/\r?\n/);
       partial = parts.pop();
       for (const line of parts) this.onLine(line);
@@ -58,16 +60,34 @@ export class ManagedProcess {
     child.stderr.on('data', onData);
     child.stdin.on('error', () => {}); // writing to a process that just died is not our error
     this.exited = new Promise((resolve) => {
-      child.on('exit', (code, signal) => {
+      let status = null;
+      let grace = null;
+      const settle = () => {
+        if (this.exit !== null) return;
+        clearTimeout(grace);
         if (partial) this.onLine(partial);
-        this.exit = { code, signal };
+        partial = '';
+        this.exit = status;
         running.delete(this);
-        for (const w of this.waiters) w.reject(new Error(`${this.name} exited (${code ?? signal}) while waiting for ${w.pattern}`));
+        for (const w of this.waiters) w.reject(new Error(`${this.name} exited (${status.code ?? status.signal}) while waiting for ${w.pattern}`));
         this.waiters = [];
         // Settles once the log holds every line written, so that whoever awaits the exit reads it whole.
         log.end(() => resolve(this.exit));
+      };
+      // 'exit' can come before the last output is read (the line a process prints as it exits):
+      // 'close' comes once its pipes are drained too. Unless something the process started keeps
+      // them open: then the exit settles after a grace period.
+      child.on('exit', (code, signal) => {
+        status = { code, signal };
+        grace = setTimeout(settle, OUTPUT_GRACE_MS);
+      });
+      child.on('close', (code, signal) => {
+        status ??= { code, signal };
+        settle();
       });
       child.on('error', (e) => {
+        if (this.exit !== null) return;
+        clearTimeout(grace);
         this.exit = { code: -1, signal: null, error: e };
         running.delete(this);
         for (const w of this.waiters) w.reject(e);
