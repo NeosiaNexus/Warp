@@ -19,7 +19,9 @@ jobs:
   pitest:
     name: ${{ matrix.module }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # proxy's analysis alone takes 13 min on a quiet runner, and passed 20 with the job's setup on a
+    # busy one.
+    timeout-minutes: 30
     permissions:
       contents: read # check out the code
     strategy:
