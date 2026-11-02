@@ -76,6 +76,7 @@ import io.netty.channel.socket.ServerSocketChannel;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.util.concurrent.Future;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -468,13 +469,21 @@ public final class WarpServer implements Warp {
     }
   }
 
-  /** Shuts down boss and worker event loops. Safe to call multiple times. */
+  /**
+   * Shuts down boss and worker event loops, both at once: each waits out its quiet period (2 s)
+   * before it terminates, so shutting them down one after the other made every stop, a drain's exit
+   * included, wait twice as long. Safe to call multiple times.
+   */
   private void shutdownEventLoops() {
-    if (bossGroup != null) {
-      bossGroup.shutdownGracefully().awaitUninterruptibly();
+    MultiThreadIoEventLoopGroup bosses = bossGroup;
+    MultiThreadIoEventLoopGroup workers = workerGroup;
+    Future<?> boss = bosses != null ? bosses.shutdownGracefully() : null;
+    Future<?> worker = workers != null ? workers.shutdownGracefully() : null;
+    if (boss != null) {
+      boss.awaitUninterruptibly();
     }
-    if (workerGroup != null) {
-      workerGroup.shutdownGracefully().awaitUninterruptibly();
+    if (worker != null) {
+      worker.awaitUninterruptibly();
     }
   }
 
