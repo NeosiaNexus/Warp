@@ -42,7 +42,20 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/no-natives"
           ./gradlew :jni:jar -Pwarp.natives.dir="$RUNNER_TEMP/no-natives"
-          cp jni/build/libs/jni-"$(< version.txt)".jar "$RUNNER_TEMP/jni.jar"
+          # Named after the build's version, which is the next snapshot's outside a release
+          # (build.gradle.kts), not version.txt's: the one jar that is neither sources nor javadoc.
+          jars=()
+          for jar in jni/build/libs/jni-*.jar; do
+            case "$jar" in
+              *-sources.jar | *-javadoc.jar) ;;
+              *) jars+=("$jar") ;;
+            esac
+          done
+          if (( ${#jars[@]} != 1 )); then
+            echo "::error::Expected exactly one jni jar, found ${#jars[@]}: ${jars[*]}"
+            exit 1
+          fi
+          cp -- "${jars[0]}" "$RUNNER_TEMP/jni.jar"
 
       - name: Upload the jni jar
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
