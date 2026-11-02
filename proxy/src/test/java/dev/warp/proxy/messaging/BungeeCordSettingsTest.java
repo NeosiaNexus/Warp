@@ -25,6 +25,7 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -55,6 +56,20 @@ class BungeeCordSettingsTest {
     void unknown() {
       assertThrows(
           IllegalArgumentException.class, () -> BungeeCordSettings.parseRule(List.of("Teleport")));
+    }
+  }
+
+  @Nested
+  @DisplayName("UUID replies")
+  class UuidReplies {
+
+    @Test
+    @DisplayName("should write 32 digits without dashes, leading zeros kept")
+    void undashed() {
+      UUID uuid = UUID.fromString("0d470a25-0416-48a1-b0ec-dc1fb4f5ea9c");
+
+      assertEquals("0d470a25041648a1b0ecdc1fb4f5ea9c", BungeeCordChannel.undashed(uuid));
+      assertEquals("00000000000000000000000000000001", BungeeCordChannel.undashed(new UUID(0, 1)));
     }
   }
 

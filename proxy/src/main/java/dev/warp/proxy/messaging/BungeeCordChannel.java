@@ -696,9 +696,10 @@ public final class BungeeCordChannel {
   }
 
   /**
-   * A UUID without dashes, as BungeeCord and Velocity answer {@code UUID} and {@code UUIDOther}.
+   * A UUID without dashes, as BungeeCord and Velocity answer {@code UUID} and {@code UUIDOther}:
+   * always 32 digits, leading zeros kept (Velocity once dropped them, PaperMC/Velocity#109).
    */
-  private static String undashed(UUID uuid) {
+  static String undashed(UUID uuid) {
     return String.format(
         "%016x%016x", uuid.getMostSignificantBits(), uuid.getLeastSignificantBits());
   }
