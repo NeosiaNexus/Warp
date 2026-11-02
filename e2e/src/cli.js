@@ -62,6 +62,12 @@ Environment
   --strict                treat known-broken versions and scenarios like any other
   --direct                control run: bots connect straight to the lobby, without Warp
   --list                  print the version matrix and exit
+
+Version translation (the via plugin: ViaVersion and ViaBackwards on Warp)
+  --client VERSION        bots speak VERSION (from e2e/versions.json) to backends of --mc: Warp
+                          translates with the via plugin, installed for the run. Implies --via-plugin
+  --via-plugin            install the via plugin (built with Gradle) in every Warp instance; with bots
+                          of the backends' own version, checks that nothing is translated
 `;
 
 async function main() {
@@ -85,6 +91,8 @@ async function main() {
       cache: { type: 'string', default: process.env.WARP_E2E_CACHE ?? join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'warp-e2e') },
       strict: { type: 'boolean', default: false },
       direct: { type: 'boolean', default: false },
+      client: { type: 'string' },
+      'via-plugin': { type: 'boolean', default: false },
       list: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
     },
@@ -106,6 +114,10 @@ async function main() {
   // The bots' side of the network: Warp, or the lobby itself in a control run.
   const netem = opts.netem === undefined ? null : new Netem({ spec: opts.netem, ports: opts.direct ? [ports.lobby] : [ports.warp, ports.warpAlt] });
   const jar = opts.jar ? resolve(opts.jar) : await buildWarp();
+  // Bots of another version than the backends: Warp translates, with the via plugin.
+  const clientEntry = opts.client ? findEntry(matrix, opts.client.trim()) : null;
+  if (clientEntry && opts.direct) throw new UsageError('--client needs Warp to translate: it cannot run with --direct');
+  const viaJar = clientEntry || opts['via-plugin'] ? await buildViaPlugin() : null;
   mkdirSync(opts.out, { recursive: true });
   // Up for the whole run: it signs the bots' profile keys, which Warp and the backends trust, and
   // Warp checks online logins against it.
@@ -118,7 +130,8 @@ async function main() {
       log(`netem on 127.0.0.1:${netem.ports.join(', ')}, both ways: ${netem.spec}`);
     }
     for (const { entry, variants } of runs) {
-      results.push(await runVersion({ matrix, entry, variants: adaptVariants(entry, variants), scenarios, ports, netem, packs: packServer.packs, jar, mojang, opts }));
+      const bots = clientEntry ?? entry;
+      results.push(await runVersion({ matrix, entry, clientEntry, viaJar, variants: adaptVariants(bots, variants), scenarios, ports, netem, packs: packServer.packs, jar, mojang, opts }));
     }
   } finally {
     netem?.stop();
@@ -132,7 +145,7 @@ async function main() {
 // One version: backends per threshold and forwarding, Warp per variant
 // ---------------------------------------------------------------------------
 
-async function runVersion({ matrix, entry, variants, scenarios, ports, netem, packs, jar, mojang, opts }) {
+async function runVersion({ matrix, entry, clientEntry, viaJar, variants, scenarios, ports, netem, packs, jar, mojang, opts }) {
   const cache = opts.cache;
   const runDir = join(opts.out, entry.version);
   rmSync(runDir, { recursive: true, force: true });
@@ -152,7 +165,10 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, netem, pa
   };
   const knownBroken = Boolean(entry.knownBroken) && !opts.strict;
 
-  group(`Minecraft ${entry.version} (protocol ${entry.protocol}) on ${result.server}`);
+  if (clientEntry) result.client = { version: clientEntry.version, protocol: clientEntry.protocol };
+  if (viaJar) result.viaPlugin = basename(viaJar);
+  const bots = clientEntry ? `, bots on ${clientEntry.version} (protocol ${clientEntry.protocol}) translated by the via plugin` : '';
+  group(`Minecraft ${entry.version} (protocol ${entry.protocol}) on ${result.server}${bots}`);
   try {
     const [serverJava, warpJava, serverJar, preseeded] = await Promise.all([
       findJava(entry.java, cache),
@@ -170,7 +186,7 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, netem, pa
       const backends = await startBackends({ entry, serverJar, serverJava, preseeded, threshold: group.threshold, forwarding, packs, ports, runDir, logDir, cache, mojang, retries: result.bootRetries });
       try {
         for (const variant of group.variants) {
-          result.variants.push(await runVariant({ matrix, entry, variant, scenarios, backends, forwarding, packs, ports, netem, jar, warpJava, runDir, logDir, mojang, opts }));
+          result.variants.push(await runVariant({ matrix, entry, clientEntry, viaJar, variant, scenarios, backends, forwarding, packs, ports, netem, jar, warpJava, runDir, logDir, mojang, opts }));
         }
       } finally {
         await stopBackends(backends, result);
@@ -246,7 +262,10 @@ function skipVariant(variant, reason) {
   return { name: variant.name, settings: describeVariant(variant), status: 'skip', reason, scenarios: [], failures: [] };
 }
 
-async function runVariant({ matrix, entry, variant, scenarios, backends, forwarding, packs, ports, netem, jar, warpJava, runDir, logDir, mojang, opts }) {
+async function runVariant({ matrix, entry, clientEntry, viaJar, variant: base, scenarios, backends, forwarding, packs, ports, netem, jar, warpJava, runDir, logDir, mojang, opts }) {
+  // The bots' version: the backends' own, or another one Warp translates (--client).
+  const bots = clientEntry ?? entry;
+  const variant = clientEntry ? { ...base, name: `${base.name}-bots-${clientEntry.version}` } : base;
   const label = `${entry.version} ${variant.name}`;
   log(`variant ${variant.name}: ${describeVariant(variant)}`);
   const outcome = { name: variant.name, settings: describeVariant(variant), scenarios: [], failures: [], stacks: [], shutdown: [] };
@@ -261,6 +280,7 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, forward
     threshold: variant.threshold,
     forwarding,
     logDir,
+    plugins: viaJar ? [viaJar] : [],
   };
   // --direct: control run without Warp, to tell a proxy bug from a client or server quirk.
   const instances = opts.direct
@@ -289,10 +309,12 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, forward
   const targets = opts.direct ? { warp: ports.lobby } : { warp: ports.warp, warpAlt: ports.warpAlt };
   const ctx = {
     entry,
+    clientEntry: bots,
     variant,
     direct: opts.direct,
-    features: features(entry.protocol, { direct: opts.direct, forwarding: variant.forwarding, online: variant.online }),
-    client: connectClient(entry, { tools: matrix.tools, cache: opts.cache, java: warpJava, ports, targets: Object.values(targets), logDir, runDir }),
+    // What both sides support: a translated bot cannot use what its server lacks, nor the reverse.
+    features: features(Math.min(entry.protocol, bots.protocol), { direct: opts.direct, forwarding: variant.forwarding, online: variant.online }),
+    client: connectClient(bots, { tools: matrix.tools, cache: opts.cache, java: warpJava, ports, targets: Object.values(targets), logDir, runDir }),
     warp: { port: targets.warp, instance: instances[0] ?? null },
     warpAlt: { port: targets.warpAlt },
     lobby: backends.lobby,
@@ -342,6 +364,11 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, forward
       outcome.shutdown.push({ name: instance.name, seconds: secondsSince(stopping), forced: Boolean(exit?.forced) });
       if (exit?.forced) outcome.failures.push(`${instance.name} did not shut down within 20 s (thread dump in logs/)`);
       for (const line of instance.failures()) outcome.failures.push(`${instance.name}: ${line}`);
+      if (viaJar) {
+        for (const line of translationFailures(instance, { translated: Boolean(clientEntry) && clientEntry.protocol !== entry.protocol })) {
+          outcome.failures.push(`${instance.name}: ${line}`);
+        }
+      }
     }
   }
   if (ctx.soak?.report) outcome.soak = ctx.soak.report;
@@ -469,6 +496,30 @@ async function reservePorts(base) {
     if (!free) throw new UsageError(`port ${port} (${name}) is in use: pick other ports with --port-base`);
   }
   return ports;
+}
+
+async function buildViaPlugin() {
+  log('building the via plugin (./gradlew :via:jar)');
+  await run(join(ROOT, 'gradlew'), ['--quiet', ':via:jar'], { cwd: ROOT });
+  const version = readFileSync(join(ROOT, 'version.txt'), 'utf8').trim();
+  return join(ROOT, 'via', 'build', 'libs', `warp-via-${version}.jar`);
+}
+
+/**
+ * What the via plugin logged that contradicts the run: bots of the backends' own version must
+ * never be translated (their connections keep compression passthrough), bots of another version
+ * must be. The plugin logs "Translating players of" once per version and server.
+ */
+function translationFailures(instance, { translated }) {
+  const logFile = join(instance.logDir, `${instance.name}.log`);
+  const text = existsSync(logFile) ? readFileSync(logFile, 'utf8') : '';
+  if (!/Enabled plugin viaversion /.test(text)) return ['the via plugin was not enabled'];
+  const translating = text.split('\n').filter((line) => line.includes('Translating players of'));
+  if (translated && !translating.length && instance.name.startsWith('warp-') && !instance.name.startsWith('warp-alt')) {
+    return ['bots of another version than the backends were never translated'];
+  }
+  if (!translated && translating.length) return [`bots of the backends' own version were translated: ${translating[0].trim()}`];
+  return [];
 }
 
 async function buildWarp() {

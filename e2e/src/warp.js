@@ -1,7 +1,7 @@
 // A Warp instance under test: its own directory, generated warp.conf, private copy of the jar.
 import { randomUUID } from 'node:crypto';
 import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { ManagedProcess, run } from './proc.js';
 
@@ -45,6 +45,7 @@ export class Warp {
    *   secret the backends share, or null for none
    * @param {string} options.logDir
    * @param {string[]} [options.jvmArgs] JVM options after the defaults (the last -Xmx wins)
+   * @param {string[]} [options.plugins] plugin jars installed in its plugins directory
    */
   constructor(options) {
     Object.assign(this, options);
@@ -55,6 +56,10 @@ export class Warp {
     rmSync(this.dir, { recursive: true, force: true });
     mkdirSync(this.dir, { recursive: true });
     copyFileSync(this.jar, join(this.dir, 'warp.jar'));
+    if (this.plugins?.length) {
+      mkdirSync(join(this.dir, 'plugins'), { recursive: true });
+      for (const plugin of this.plugins) copyFileSync(plugin, join(this.dir, 'plugins', basename(plugin)));
+    }
     writeFileSync(join(this.dir, 'warp.conf'), this.config());
     if (this.profileKeySigner) writeFileSync(join(this.dir, SIGNER_FILE), this.profileKeySigner);
   }
