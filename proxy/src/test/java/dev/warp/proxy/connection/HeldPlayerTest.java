@@ -44,6 +44,7 @@ import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.login.LoginAcknowledged;
 import dev.warp.protocol.packet.login.LoginStart;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
+import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.proxy.event.PluginEventBus;
@@ -100,6 +101,9 @@ class HeldPlayerTest {
 
   /** The next state a handshake asks for to log in. */
   private static final int LOGIN_NEXT_STATE = 2;
+
+  /** The fields of a 1.20.2+ Join Game after the hardcore flag, forwarded as they are. */
+  private static final byte[] JOIN_GAME = {0x03, 0x05, 0x00, 0x01};
 
   /** The time-out the holding handler declares, as PrimeMC's fallback handler does. */
   private static final int DECLARED_TIMEOUT_SECONDS = 45;
@@ -459,6 +463,8 @@ class HeldPlayerTest {
       setup.player.setCurrentServerName(LOBBY.name());
       lobby.setSessionHandler(new BackendPlaySessionHandler(setup.player, lobby));
       setup.client.setSessionHandler(new ClientPlaySessionHandler(setup.player));
+      // The lobby's Join Game ends the configuration phase, as on a real server.
+      setup.receive(lobby, frame(version, new JoinGame(1, false, new JoinGame.Opaque(JOIN_GAME))));
     } else {
       setup.spawnOn(LOBBY);
     }
