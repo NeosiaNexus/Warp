@@ -21,6 +21,7 @@ import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.config.AcknowledgeFinishConfiguration;
 import dev.warp.protocol.packet.config.ClientInformation;
+import dev.warp.protocol.packet.cookie.CookieResponse;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 
@@ -56,7 +57,7 @@ final class ClientConfigSessionHandler implements SessionHandler {
     logger.trace(
         "Client CONFIG handle: {} for {}", packet.getClass().getSimpleName(), player.username());
     if (packet instanceof KeepAlive keepAlive) {
-      player.handleKeepAliveResponse(keepAlive.id());
+      player.keepAliveAnswered(keepAlive.id());
     } else if (packet instanceof ClientInformation clientInfo) {
       player.cacheClientSettings(clientInfo);
       backendConnection.write(clientInfo);
@@ -65,6 +66,8 @@ final class ClientConfigSessionHandler implements SessionHandler {
     } else if (packet instanceof ResourcePackResponse response) {
       // Kept for the proxy's packs; a server's go on to it, which may wait for them (Gate #1305).
       player.resourcePacks().clientAnswered(response);
+    } else if (packet instanceof CookieResponse response) {
+      player.cookies().answered(response); // to whoever asked; an unasked answer is dropped
     }
   }
 
@@ -79,7 +82,7 @@ final class ClientConfigSessionHandler implements SessionHandler {
 
   private void handleAcknowledgeFinish() {
     // Transition client side to PLAY (we are on the client event loop already).
-    player.clientConnection().setState(ProtocolState.PLAY);
+    player.clientStateChanged(ProtocolState.PLAY);
     player.clientConnection().setSessionHandler(new ClientPlaySessionHandler(player));
 
     // Schedule backend-side mutations on the backend's event loop.

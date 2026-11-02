@@ -24,10 +24,15 @@ import dev.warp.protocol.packet.PacketCodec;
 import io.netty.buffer.ByteBuf;
 
 /**
- * Server instructs the client to connect to a different server ({@code S→C}).
+ * Server instructs the client to connect to a different server ({@code S→C}), in the configuration
+ * and play states.
  *
- * <p>Introduced in 1.20.5 (protocol 766). Enables zero-downtime server transfers without
- * client-side reconnection logic.
+ * <p>Introduced in 1.20.5 (protocol 766). The client disconnects, then connects to {@code
+ * host:port} with a handshake whose intent is transfer (3), carrying over the cookies stored on it.
+ * A server only lets it in if it accepts transfers. Enables zero-downtime moves between proxies or
+ * networks without client-side reconnection logic.
+ *
+ * <p>Registered in both states though defined with the play packets, like {@link KeepAlive}.
  *
  * @param host the target server hostname
  * @param port the target server port

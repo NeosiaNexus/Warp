@@ -5,6 +5,10 @@ adventure = "5.2.0"
 brigadier = "1.3.10"
 log4j = "2.26.1"
 slf4j = "2.0.17"
+# Not a direct dependency: the lowest Guava any configuration resolves (warp.java-conventions), for
+# the libraries and build tools that bring an older one (Error Prone, Checkstyle, Velocity's
+# natives).
+guava = "33.7.2-jre"
 
 # Utilities
 caffeine = "3.3.0"
@@ -45,6 +49,8 @@ shadow = "9.6.1"
 netty-bom = { group = "io.netty", name = "netty-bom", version.ref = "netty" }
 netty-buffer = { group = "io.netty", name = "netty-buffer" }
 netty-codec = { group = "io.netty", name = "netty-codec" }
+netty-codec-http = { group = "io.netty", name = "netty-codec-http" }
+netty-codec-haproxy = { group = "io.netty", name = "netty-codec-haproxy" }
 netty-handler = { group = "io.netty", name = "netty-handler" }
 netty-transport = { group = "io.netty", name = "netty-transport" }
 netty-transport-native-epoll = { group = "io.netty", name = "netty-transport-native-epoll" }

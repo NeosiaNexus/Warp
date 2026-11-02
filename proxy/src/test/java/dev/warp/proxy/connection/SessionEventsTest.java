@@ -18,7 +18,6 @@ package dev.warp.proxy.connection;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import dev.warp.api.event.EventBus;
@@ -60,7 +59,7 @@ class SessionEventsTest {
   private final WarpEventBus bus = new WarpEventBus();
   private final EventBus events = new PluginEventBus(bus, "test", null, s -> {});
   private final PlayerRegistry registry = new PlayerRegistry();
-  private final ServerLoginContext context = mock(ServerLoginContext.class);
+  private final ServerLoginContext context = TestLoginContexts.mocked();
   private final List<EmbeddedChannel> channels = new CopyOnWriteArrayList<>();
 
   SessionEventsTest() {
@@ -160,10 +159,11 @@ class SessionEventsTest {
         .addLast(ServerChannelInitializer.CONNECTION_HANDLER, connection);
     return new ConnectedPlayer(
         connection,
-        ProtocolVersion.MINECRAFT_1_21_4,
+        version,
         new GameProfile(id, name, List.of()),
         new InetSocketAddress(InetAddress.getLoopbackAddress(), 50000),
-        context);
+        context,
+        new ClientCookies(connection, version, channel.eventLoop()));
   }
 
   /** Lets deliveries in flight finish: events with no async handler complete quickly. */

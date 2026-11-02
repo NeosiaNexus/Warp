@@ -267,8 +267,11 @@ export function library(version) {
  * account, without the session server call. On 1.19 to 1.19.2 it sends the key and its certificate
  * in Login Start, announcing their `uuid`, and signs the verify token with the key instead of
  * encrypting it. From 1.19.3 it opens a chat session with them and signs its chat.
+ *
+ * With `transfer`, the bot connects as a client that a server sent there with a Transfer packet
+ * (1.20.5+): its handshake declares the transfer intent (3) instead of the login one (2).
  */
-export function connect({ host, port, version, username, profileKeys = null, spawnTimeoutMs = 45_000 }) {
+export function connect({ host, port, version, username, profileKeys = null, transfer = false, spawnTimeoutMs = 45_000 }) {
   correctProtocolData(version);
   const createBot = legacy.isLegacy(version) ? legacy.createBot : mineflayer.createBot;
   return new Promise((resolve, reject) => {
@@ -284,10 +287,12 @@ export function connect({ host, port, version, username, profileKeys = null, spa
     });
     endTicks(bot._client, version);
     answerPacksByUuid(bot._client);
+    if (transfer) declareTransfer(bot._client);
     const handle = new Bot(bot, username, announcedProtocol(version), profileKeys !== null);
     const fail = (why) => {
       clearTimeout(timer);
-      bot.quit();
+      // The protocol client's own end: mineflayer's bot.quit() only exists once its plugins are in.
+      if (!bot._client.ended) bot._client.end('disconnect.quitting');
       reject(new Error(`${username}: ${why}`));
     };
     const timer = setTimeout(() => fail(`no spawn within ${spawnTimeoutMs / 1000}s`), spawnTimeoutMs);
@@ -295,10 +300,36 @@ export function connect({ host, port, version, username, profileKeys = null, spa
       clearTimeout(timer);
       resolve(handle);
     });
-    bot.once('kicked', (reason) => fail(`kicked before spawn: ${text(reason)}`));
+    watchKicks(bot._client, (reason) => fail(`kicked before spawn: ${text(reason)}`));
     bot.once('end', (reason) => fail(`connection ended before spawn: ${reason}`));
     bot.once('error', (e) => fail(`error before spawn: ${e?.stack ?? e}`));
   });
+}
+
+/** Handshake intent of a client a Transfer packet sent to the server it connects to (1.20.5+). */
+export const TRANSFER_INTENT = 3;
+
+/**
+ * Makes the client's handshake declare the transfer intent, as the vanilla client's does when it
+ * follows a Transfer packet. minecraft-protocol always writes the login intent; its handshake is
+ * written once connected, so the write is rewritten before then.
+ */
+export function declareTransfer(client) {
+  const write = client.write.bind(client);
+  client.write = (name, params) => write(name, name === 'set_protocol' ? { ...params, nextState: TRANSFER_INTENT } : params);
+}
+
+/**
+ * Calls `onKick` with the reason of the disconnect packet the server sends, in any state (login,
+ * configuration or play). Read from the protocol client, which reads every packet from the start,
+ * as the vanilla client does: mineflayer only turns these packets into its 'kicked' event once it
+ * has injected its plugins, a timer after createBot, and a server that refuses the player as soon
+ * as it reads the handshake can answer before that (a refused transfer). The bot then saw nothing
+ * but the connection close.
+ */
+function watchKicks(client, onKick) {
+  client.once('disconnect', (packet) => onKick(packet.reason)); // login and configuration states
+  client.once('kick_disconnect', (packet) => onKick(packet.reason)); // play state
 }
 
 /**

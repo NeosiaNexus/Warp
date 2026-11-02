@@ -21,6 +21,7 @@ import dev.warp.api.player.AudienceFeature;
 import dev.warp.api.player.ConnectionResult;
 import dev.warp.api.player.GameProfile;
 import dev.warp.api.player.Player;
+import dev.warp.api.player.TransferResult;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerConnection;
 import dev.warp.protocol.ProtocolVersion;
@@ -104,6 +105,11 @@ public final class WarpPlayer implements Player {
   }
 
   @Override
+  public boolean isTransferred() {
+    return player.isTransferred();
+  }
+
+  @Override
   public Optional<ServerConnection> currentServer() {
     BackendServer server = player.currentServer();
     return server == null
@@ -144,6 +150,16 @@ public final class WarpPlayer implements Player {
         .withStatic(Identity.UUID, player.uuid())
         .withStatic(Identity.NAME, player.username())
         .build();
+  }
+
+  @Override
+  public boolean supportsTransfers() {
+    return player.supportsTransfers();
+  }
+
+  @Override
+  public CompletableFuture<TransferResult> transfer(String host, int port) {
+    return player.requestTransfer(host, port);
   }
 
   @Override

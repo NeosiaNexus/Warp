@@ -35,6 +35,10 @@ import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.PacketRegistry;
 import dev.warp.protocol.packet.StateRegistry;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
+import dev.warp.protocol.packet.config.FinishConfiguration;
+import dev.warp.protocol.packet.cookie.CookieRequest;
+import dev.warp.protocol.packet.cookie.CookieResponse;
+import dev.warp.protocol.packet.cookie.StoreCookie;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ClearTitles;
@@ -54,6 +58,9 @@ import dev.warp.protocol.packet.play.SpawnInfo;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabListHeaderFooter;
+import dev.warp.protocol.packet.play.Transfer;
+import dev.warp.proxy.config.LoggingConfig;
+import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
@@ -71,12 +78,14 @@ import java.util.Objects;
 import java.util.UUID;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelOutboundHandlerAdapter;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.channel.local.LocalChannel;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A player, its client connection and the backends it is handed, all on embedded channels, to test
@@ -135,6 +144,8 @@ final class SwitchHarness implements AutoCloseable {
       servers.put(server.name(), server.address());
     }
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
+    when(loginContext.logging()).thenReturn(LoggingConfig.DEFAULTS);
+    when(loginContext.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
     when(loginContext.channels()).thenReturn(new ChannelRegistry());
@@ -152,7 +163,8 @@ final class SwitchHarness implements AutoCloseable {
             version,
             new GameProfile(UUID.randomUUID(), "Steve", List.of()),
             new InetSocketAddress(InetAddress.getLoopbackAddress(), 50000),
-            loginContext);
+            loginContext,
+            new ClientCookies(client, version, client.channel().eventLoop()));
   }
 
   @Override
@@ -219,6 +231,12 @@ final class SwitchHarness implements AutoCloseable {
     runPendingTasks();
   }
 
+  /** Feeds a frame from the client to the proxy, then runs what it scheduled. */
+  void fromClient(ByteBuf frame) {
+    ((EmbeddedChannel) client.channel()).writeInbound(frame);
+    runPendingTasks();
+  }
+
   void runPendingTasks() {
     for (EmbeddedChannel channel : channels) {
       channel.runPendingTasks();
@@ -271,6 +289,25 @@ final class SwitchHarness implements AutoCloseable {
       }
     }
     return sent;
+  }
+
+  /** Drains what was written on {@code connection}: each frame whole, length prefix included. */
+  List<byte[]> framesSentOn(MinecraftConnection connection) {
+    EmbeddedChannel channel = (EmbeddedChannel) connection.channel();
+    List<byte[]> frames = new ArrayList<>();
+    for (ByteBuf frame = channel.readOutbound(); frame != null; frame = channel.readOutbound()) {
+      try {
+        frames.add(ByteBufUtil.getBytes(frame));
+      } finally {
+        frame.release();
+      }
+    }
+    return frames;
+  }
+
+  /** Drains what the client received: each frame whole, length prefix included. */
+  List<byte[]> framesToClient() {
+    return framesSentOn(client);
   }
 
   /** Drains what a backend received, and returns how many packets it was. */
@@ -341,7 +378,11 @@ final class SwitchHarness implements AutoCloseable {
             dev.warp.protocol.packet.play.ResourcePackPush.class,
             dev.warp.protocol.packet.play.ResourcePackPop.class,
             dev.warp.protocol.packet.play.DeleteChat.class,
-            dev.warp.protocol.packet.play.ClearDialog.class)) {
+            dev.warp.protocol.packet.play.ClearDialog.class,
+            FinishConfiguration.class,
+            CookieRequest.class,
+            StoreCookie.class,
+            Transfer.class)) {
       try {
         if (registry.packetId(version, type) == packetId) {
           return type;
@@ -401,6 +442,60 @@ final class SwitchHarness implements AutoCloseable {
     VarInt.write(frame, VarInt.size(packetId) + body.length);
     VarInt.write(frame, packetId);
     return frame.writeBytes(body);
+  }
+
+  /** Frames a packet as the client or a server sends it in {@code state}: length, id, body. */
+  static ByteBuf frame(
+      ProtocolVersion version, ProtocolState state, PacketDirection direction, Packet packet) {
+    PacketRegistry.Encoding encoding =
+        StateRegistry.get(state, direction).encoding(version, packet.getClass());
+    @SuppressWarnings("unchecked")
+    PacketCodec<Packet> codec = (PacketCodec<Packet>) encoding.codec();
+    ByteBuf body = Unpooled.buffer();
+    try {
+      VarInt.write(body, encoding.packetId());
+      codec.encode(packet, body, version);
+      ByteBuf frame = Unpooled.buffer();
+      VarInt.write(frame, body.readableBytes());
+      return frame.writeBytes(body);
+    } finally {
+      body.release();
+    }
+  }
+
+  /**
+   * Decodes a whole frame, length prefix included, that holds one {@code type} packet sent in
+   * {@code state}.
+   */
+  static <T extends Packet> T decodeFrame(
+      byte[] frame,
+      ProtocolVersion version,
+      ProtocolState state,
+      PacketDirection direction,
+      Class<T> type) {
+    ByteBuf buf = Unpooled.wrappedBuffer(frame);
+    try {
+      assertEquals(VarInt.read(buf), buf.readableBytes(), "frame length");
+      PacketRegistry.Encoding encoding =
+          StateRegistry.get(state, direction).encoding(version, type);
+      assertEquals(encoding.packetId(), VarInt.read(buf), type.getSimpleName() + " packet id");
+      @SuppressWarnings("unchecked")
+      PacketCodec<T> codec = (PacketCodec<T>) encoding.codec();
+      return codec.decode(buf, version);
+    } finally {
+      buf.release();
+    }
+  }
+
+  /** A cookie answer from the client in {@code state}, framed. */
+  static ByteBuf cookieAnswer(
+      ProtocolVersion version, ProtocolState state, String key, byte @Nullable [] payload) {
+    return frame(version, state, PacketDirection.SERVERBOUND, new CookieResponse(key, payload));
+  }
+
+  /** A cookie request from a server in {@code state}, framed. */
+  static ByteBuf cookieQuestion(ProtocolVersion version, ProtocolState state, String key) {
+    return frame(version, state, PacketDirection.CLIENTBOUND, new CookieRequest(key));
   }
 
   /** A Join Game into the overworld, with every field of the version set (before 1.20.2). */

@@ -42,6 +42,8 @@ import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.PlayPacket;
 import dev.warp.protocol.text.ComponentCodec;
 import dev.warp.proxy.command.ProxyCommands;
+import dev.warp.proxy.config.LoggingConfig;
+import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
@@ -451,6 +453,10 @@ class ClientPlaySessionHandlerTest {
     EmbeddedChannel backend = channel(PacketDirection.CLIENTBOUND, version);
 
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
+
+    when(loginContext.logging()).thenReturn(LoggingConfig.DEFAULTS);
+
+    when(loginContext.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
     when(loginContext.channels()).thenReturn(new ChannelRegistry());
@@ -465,7 +471,8 @@ class ClientPlaySessionHandlerTest {
             version,
             new GameProfile(UUID.randomUUID(), "Steve", List.of()),
             InetSocketAddress.createUnresolved("player", 50000),
-            loginContext);
+            loginContext,
+            new ClientCookies(connection(client), version, client.eventLoop()));
     BackendConnection lobby = backendConnection(connection(backend));
     player.setBackendConnection(lobby);
     // The player plays on the lobby: the lobby counts it, and /server marks it.

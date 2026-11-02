@@ -25,15 +25,26 @@ import java.util.Objects;
 public final class LoginEventImpl implements LoginEvent {
 
   private final Player player;
-  private volatile Result result = new Allowed();
+  private volatile Result result;
+
+  /**
+   * Creates the event, proposing to let the player in.
+   *
+   * @param player the player logging in
+   */
+  public LoginEventImpl(Player player) {
+    this(player, new Allowed());
+  }
 
   /**
    * Creates the event.
    *
    * @param player the player logging in
+   * @param proposed the result handlers start from: {@link Denied} when the proxy is full
    */
-  public LoginEventImpl(Player player) {
+  public LoginEventImpl(Player player, Result proposed) {
     this.player = player;
+    this.result = Objects.requireNonNull(proposed, "proposed");
   }
 
   @Override

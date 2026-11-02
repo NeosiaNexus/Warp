@@ -41,9 +41,6 @@ import io.netty.channel.WriteBufferWaterMark;
  */
 public final class BackendConnection {
 
-  /** Default connect timeout in milliseconds. */
-  private static final int CONNECT_TIMEOUT_MS = 5_000;
-
   /** Write buffer water marks matching the server-side settings. */
   private static final WriteBufferWaterMark WRITE_BUFFER_WATER_MARK =
       new WriteBufferWaterMark(512 * 1024, 2 * 1024 * 1024);
@@ -84,29 +81,30 @@ public final class BackendConnection {
    * <p>The returned future completes when the TCP connection is established (not when the login
    * sequence finishes — that is handled by session handlers).
    *
-   * @param channelClass the socket channel class matching the transport
+   * @param context the proxy's shared state: transport, forwarding secret, timeouts, TCP Fast Open
    * @param player the connected player (used to initialise the backend pipeline)
    * @param server the backend server
-   * @param forwardingSecret the shared HMAC secret for Velocity modern forwarding
    * @return a future that completes with the backend connection
    */
   public static CompletableFuture<BackendConnection> connect(
-      Class<? extends Channel> channelClass,
-      ConnectedPlayer player,
-      ServerInfo server,
-      byte[] forwardingSecret) {
+      ServerLoginContext context, ConnectedPlayer player, ServerInfo server) {
 
     CompletableFuture<BackendConnection> future = new CompletableFuture<>();
     InetSocketAddress serverAddress = server.address();
+    byte[] forwardingSecret = context.forwardingSecret();
 
-    new Bootstrap()
+    Bootstrap bootstrap = new Bootstrap();
+    if (context.tcpFastOpen()) {
+      bootstrap.option(ChannelOption.TCP_FASTOPEN_CONNECT, true);
+    }
+    bootstrap
         .group(player.clientConnection().channel().eventLoop())
-        .channel(channelClass)
-        .handler(new BackendChannelInitializer(player))
+        .channel(context.channelClass())
+        .handler(new BackendChannelInitializer(player, context.timeouts().read()))
         .option(ChannelOption.TCP_NODELAY, true)
         .option(ChannelOption.SO_KEEPALIVE, true)
         .option(ChannelOption.IP_TOS, IP_TOS_LOW_LATENCY)
-        .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, CONNECT_TIMEOUT_MS)
+        .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, (int) context.timeouts().connect().toMillis())
         .option(ChannelOption.WRITE_BUFFER_WATER_MARK, WRITE_BUFFER_WATER_MARK)
         .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
         .connect(serverAddress)

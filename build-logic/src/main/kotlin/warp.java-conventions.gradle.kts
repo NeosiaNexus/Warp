@@ -62,3 +62,34 @@ dependencies {
     testImplementation(libs.findLibrary("mockito-core").get())
     testImplementation(libs.findLibrary("mockito-junit-jupiter").get())
 }
+
+// Guava up to 33.7.1 is vulnerable (GHSA-xxph-c9ww-hj94). It comes in through other libraries:
+// Guice for the API (whose constraint plugins see too), Velocity's natives for the benchmarks,
+// Error Prone and Checkstyle for the build. Every configuration resolves the version in the catalog
+// at least, so that none puts a vulnerable Guava in the dependency graph, even resolved on its own
+// as the dependency graph submission resolves each of them. A newer one asked for is left alone.
+val patchedGuava = libs.findVersion("guava").get().requiredVersion
+
+configurations.configureEach {
+    resolutionStrategy.eachDependency {
+        val version = requested.version
+        if (requested.group == "com.google.guava" && requested.name == "guava" &&
+            version != null && olderThan(version, patchedGuava)) {
+            useVersion(patchedGuava)
+            because("fixed by $patchedGuava: GHSA-xxph-c9ww-hj94")
+        }
+    }
+}
+
+/** Compares the numeric parts of two Guava versions (`33.7.1-jre` with `33.7.2-jre`). */
+fun olderThan(version: String, other: String): Boolean {
+    fun parts(v: String) = v.substringBefore('-').split('.').map { it.toIntOrNull() ?: 0 }
+    val a = parts(version)
+    val b = parts(other)
+    for (i in 0 until maxOf(a.size, b.size)) {
+        val x = a.getOrElse(i) { 0 }
+        val y = b.getOrElse(i) { 0 }
+        if (x != y) return x < y
+    }
+    return false
+}

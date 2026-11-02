@@ -26,6 +26,7 @@ import dev.warp.api.event.EventBus;
 import dev.warp.api.event.Subscribe;
 import dev.warp.api.event.Subscription;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -254,6 +255,80 @@ class WarpEventBusTest {
       Probe probe = new Probe();
       probe.seen.add(name);
       return probe;
+    }
+  }
+
+  @Nested
+  @DisplayName("delivery limits")
+  class Limits {
+
+    /** Delivers on the thread that fires, so that a lane frees up as soon as its event is done. */
+    private final WarpEventBus inline = new WarpEventBus(Runnable::run);
+
+    private final EventBus inlinePlugin = new PluginEventBus(inline, "test", null, s -> {});
+
+    @AfterEach
+    void closeInline() {
+      inline.close();
+    }
+
+    @Test
+    @DisplayName("should allow a delivery the time-outs of all its handlers, synchronous ones too")
+    void sumOfTimeouts() {
+      CompletableFuture<Void> gate = new CompletableFuture<>();
+      inlinePlugin.subscribeAsync(Probe.class, 0, 45, e -> gate);
+      inlinePlugin.subscribe(Probe.class, e -> {});
+
+      WarpEventBus.BoundedDelivery<Probe> delivery = inline.fireBounded(new Probe(), "steve");
+
+      assertEquals(Duration.ofSeconds(45 + 30), delivery.limit());
+      gate.complete(null);
+      assertTrue(delivery.result().isDone());
+    }
+
+    @Test
+    @DisplayName("should add the limits of the events still queued on the lane")
+    void queuedEventsCount() {
+      CompletableFuture<Void> gate = new CompletableFuture<>();
+      inlinePlugin.subscribeAsync(Probe.class, 0, 45, e -> gate);
+
+      WarpEventBus.BoundedDelivery<Probe> first = inline.fireBounded(new Probe(), "steve");
+      WarpEventBus.BoundedDelivery<Probe> second = inline.fireBounded(new Probe(), "steve");
+
+      assertEquals(Duration.ofSeconds(45), first.limit());
+      assertTrue(
+          second.limit().compareTo(Duration.ofSeconds(89)) > 0
+              && second.limit().compareTo(Duration.ofSeconds(90)) <= 0,
+          "the first event's time left, then its own: " + second.limit());
+      gate.complete(null);
+    }
+
+    @Test
+    @DisplayName("should count from now once the events before it on the lane are delivered")
+    void freedLane() {
+      CompletableFuture<Void> gate = new CompletableFuture<>();
+      inlinePlugin.subscribeAsync(Probe.class, 0, 45, e -> gate);
+      WarpEventBus.BoundedDelivery<Probe> first = inline.fireBounded(new Probe(), "steve");
+      gate.complete(null);
+      assertTrue(first.result().isDone());
+
+      WarpEventBus.BoundedDelivery<Probe> next = inline.fireBounded(new Probe(), "steve");
+
+      assertEquals(Duration.ofSeconds(45), next.limit());
+    }
+
+    @Test
+    @DisplayName("should not count the events of other lanes, nor any time when nobody listens")
+    void otherLanesAndNoHandlers() {
+      CompletableFuture<Void> gate = new CompletableFuture<>();
+      inlinePlugin.subscribeAsync(Probe.class, 0, 45, e -> gate);
+      var _ = inline.fireBounded(new Probe(), "steve");
+
+      WarpEventBus.BoundedDelivery<String> unheard = inline.fireBounded("nobody listens", "alex");
+
+      assertEquals(Duration.ZERO, unheard.limit());
+      assertTrue(unheard.result().isDone());
+      gate.complete(null);
     }
   }
 

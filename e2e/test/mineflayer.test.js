@@ -4,9 +4,10 @@
 // to its last byte.
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { createServer } from 'node:net';
 import { describe, it } from 'node:test';
 
-import { BossBars, TabList, answerPacksByUuid, correctProtocolData, endTicks, listedUuids, plainText } from '../src/clients/mineflayer.js';
+import { BossBars, TabList, answerPacksByUuid, connect, correctProtocolData, endTicks, listedUuids, plainText } from '../src/clients/mineflayer.js';
 
 const require = createRequire(import.meta.url);
 const { createDeserializer, createSerializer } = require('minecraft-protocol');
@@ -147,6 +148,48 @@ describe('mineflayer corrections', () => {
     client.write('position', {});
 
     assert.deepEqual(client.sent, ['position']);
+  });
+});
+
+describe('bots refused at login', () => {
+  /** A server that answers the handshake with a Login Disconnect and closes, as Warp refuses a transfer. */
+  async function refusingServer(reason) {
+    const json = string(JSON.stringify(reason));
+    const packet = Buffer.concat([varInt(0x00), json]);
+    const server = createServer((socket) => {
+      socket.on('error', () => {});
+      socket.once('data', () => socket.end(Buffer.concat([varInt(packet.length), packet])));
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    return server;
+  }
+
+  /**
+   * Calls `action` with mineflayer's zero-delay timers held back by `ms`: mineflayer injects its
+   * plugins, its 'kicked' event among them, on one, so that the server's answer comes first.
+   */
+  function withLatePlugins(ms, action) {
+    const { setTimeout: original } = globalThis;
+    globalThis.setTimeout = (callback, delay, ...args) => original(callback, delay ? delay : ms, ...args);
+    try {
+      return action();
+    } finally {
+      globalThis.setTimeout = original;
+    }
+  }
+
+  it('are told why, though the refusal comes before mineflayer injected its plugins', { timeout: 10_000 }, async () => {
+    const reason = { translate: 'multiplayer.disconnect.transfers_disabled' };
+    const server = await refusingServer(reason);
+    try {
+      const { port } = server.address();
+
+      const joining = withLatePlugins(300, () => connect({ host: '127.0.0.1', port, version: '1.21.4', username: 'e2e_refused' }));
+
+      await assert.rejects(joining, { message: `e2e_refused: kicked before spawn: ${JSON.stringify(reason)}` });
+    } finally {
+      server.close();
+    }
   });
 });
 
