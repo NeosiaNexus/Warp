@@ -248,8 +248,8 @@ class BackendPingerTest {
     Thread.ofVirtual()
         .start(
             () -> {
-              try (Socket client = socket.accept()) {
-                DataInputStream in = new DataInputStream(client.getInputStream());
+              try (Socket client = socket.accept();
+                  DataInputStream in = new DataInputStream(client.getInputStream())) {
                 readVarInt(in); // handshake frame length
                 readVarInt(in); // packet id 0
                 announced.complete(readVarInt(in));
