@@ -40,6 +40,10 @@ import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.Respawn;
+import dev.warp.protocol.packet.play.SetActionBarText;
+import dev.warp.protocol.packet.play.SetSubtitleText;
+import dev.warp.protocol.packet.play.SetTitleText;
+import dev.warp.protocol.packet.play.SetTitleTimes;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
@@ -48,9 +52,15 @@ import dev.warp.protocol.packet.play.TabListHeaderFooter;
 import dev.warp.protocol.packet.play.Transfer;
 import dev.warp.proxy.server.ServerRegistry;
 
-import java.util.stream.Collectors;
+import java.util.Collection;
 
 import io.netty.buffer.ByteBuf;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.TextComponent;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.event.HoverEvent;
+import net.kyori.adventure.text.format.NamedTextColor;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -138,7 +148,11 @@ final class ClientPlaySessionHandler implements SessionHandler {
           PlayerInfoRemove _,
           BossBar _,
           TabListHeaderFooter _,
-          ClearTitles _ -> {}
+          ClearTitles _,
+          SetTitleText _,
+          SetSubtitleText _,
+          SetTitleTimes _,
+          SetActionBarText _ -> {}
     }
   }
 
@@ -242,23 +256,44 @@ final class ClientPlaySessionHandler implements SessionHandler {
     ServerRegistry registry = player.loginContext().serverRegistry();
 
     if (args.isEmpty()) {
-      // List servers and current server.
-      String current = player.currentServerName();
-      String list =
-          registry.allServers().stream()
-              .map(s -> s.name().equals(current) ? "[" + s.name() + "]" : s.name())
-              .collect(Collectors.joining(", "));
-      player.sendSystemMessage("Servers: " + list);
+      player.sendMessage(serverList(registry.allServers(), player.currentServerName()));
       return;
     }
 
     ServerInfo target = registry.getServer(args);
     if (target == null) {
-      player.sendSystemMessage("Unknown server: " + args);
+      player.sendMessage(Component.text("Unknown server: " + args, NamedTextColor.RED));
       return;
     }
 
     player.switchServer(target);
+  }
+
+  /**
+   * The answer to {@code /server}: "Servers: [lobby], survival", the current server in brackets,
+   * each other one a link that moves the player there.
+   *
+   * @param servers the servers, in order
+   * @param current the server the player is on, or {@code null}
+   * @return the message
+   */
+  static Component serverList(Collection<ServerInfo> servers, @Nullable String current) {
+    TextComponent.Builder list = Component.text().content("Servers: ").color(NamedTextColor.GRAY);
+    boolean first = true;
+    for (ServerInfo server : servers) {
+      if (!first) {
+        list.append(Component.text(", ", NamedTextColor.GRAY));
+      }
+      first = false;
+      String name = server.name();
+      list.append(
+          name.equals(current)
+              ? Component.text("[" + name + "]", NamedTextColor.GREEN)
+              : Component.text(name, NamedTextColor.AQUA)
+                  .clickEvent(ClickEvent.runCommand("/" + SERVER_COMMAND + " " + name))
+                  .hoverEvent(HoverEvent.showText(Component.text("Connect to " + name))));
+    }
+    return list.build();
   }
 
   private void handleClientSettings(PlayClientSettings settings) {

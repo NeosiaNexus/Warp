@@ -19,17 +19,19 @@ package dev.warp.proxy.connection;
 import dev.warp.api.server.ServerInfo;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
-import dev.warp.protocol.packet.TextComponent;
+import dev.warp.protocol.packet.ComponentPackets;
+import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.config.ClientInformation;
-import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.KeepAlive;
-import dev.warp.protocol.packet.play.PlayDisconnect;
-import dev.warp.protocol.packet.play.SystemChatMessage;
+import dev.warp.protocol.packet.play.PlayPacket;
+import dev.warp.protocol.packet.play.StartConfiguration;
 
 import java.net.InetSocketAddress;
+import java.util.ArrayDeque;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ScheduledFuture;
@@ -38,6 +40,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.netty.channel.EventLoop;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.title.Title;
+import net.kyori.adventure.title.TitlePart;
+import net.kyori.adventure.translation.GlobalTranslator;
+import net.kyori.adventure.translation.Translator;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -573,32 +580,276 @@ public final class ConnectedPlayer {
   }
 
   /**
-   * Sends a message from the proxy to the player's chat box, on any protocol version.
-   *
-   * <p>Must be called while the client is in PLAY state.
+   * Sends a message from the proxy to the player's chat box, on any protocol version (see {@link
+   * #sendMessage(Component)}).
    *
    * @param message the plain text to show
    */
   void sendSystemMessage(String message) {
-    byte[] raw = TextComponent.plainText(message, protocolVersion);
-    clientConnection.writeAndFlush(new SystemChatMessage(raw, false));
+    sendMessage(Component.text(message));
   }
 
   /**
-   * Sends a disconnect reason to the client and then disconnects.
+   * Sends a disconnect reason to the client and then disconnects, in whatever state the client is
+   * (see {@link #disconnect(Component)}).
    *
-   * <p>Sends the appropriate disconnect packet based on the current protocol state (CONFIG or
-   * PLAY).
+   * @param reason the plain text shown to the player
    */
   void disconnectWithReason(String reason) {
-    if (clientConnection.channel().isActive()) {
-      if (clientConnection.decoder().state() == ProtocolState.CONFIGURATION) {
-        clientConnection.writeAndFlush(ConfigDisconnect.ofPlainText(reason, protocolVersion));
-      } else {
-        clientConnection.writeAndFlush(PlayDisconnect.ofPlainText(reason, protocolVersion));
+    disconnect(Component.text(reason));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Components: what the plugin API's Player delegates to
+  //
+  // Every method is safe from any thread. The component is rendered for the player's locale
+  // (GlobalTranslator) and encoded for its version on the calling thread, which keeps that work off
+  // the event loop; the packets are then written from the client's event loop.
+  //
+  // disconnect(Component) belongs here too, and sits next to disconnect() below.
+  //
+  // During a server switch: a client from 1.20.2 spends it in the configuration phase, which has
+  // none of these packets, and the client reads configuration packets from the moment the proxy
+  // sends Start Configuration (BungeeCord #3519, Velocity #1723). So the proxy's chat messages and
+  // titles wait until the client is in a game again, right after its next Join Game, as they do
+  // between the login and the first Join Game; the action bar, which a plugin refreshes and which
+  // is stale by then, is dropped. Before 1.20.2 a switch keeps the client in PLAY and they are sent
+  // at once. The header and footer are kept and sent again after every Join Game: the
+  // configuration phase blanks them, and so does the proxy before 1.20.2 (ServerLeftovers).
+  // ---------------------------------------------------------------------------
+
+  /** Most packets kept for a client that is not in a game; later ones are dropped. */
+  private static final int MAX_PENDING_PACKETS = 128;
+
+  /** Time the client has to receive its disconnect packet before the connection is closed. */
+  private static final long DISCONNECT_FLUSH_TIMEOUT_MS = 5_000;
+
+  /** Packets the proxy sent while the client was not in a game. Client event loop only. */
+  private final ArrayDeque<PlayPacket> pendingPackets = new ArrayDeque<>();
+
+  /**
+   * Whether the client is in a game: it received a Join Game, and no Start Configuration since.
+   * Client event loop only.
+   */
+  private boolean inGame;
+
+  /** Whether pending packets were dropped since the client was last in a game. */
+  private boolean droppedPending;
+
+  private volatile Component playerListHeader = Component.empty();
+  private volatile Component playerListFooter = Component.empty();
+
+  /**
+   * Shows a message in the player's chat box.
+   *
+   * @param message the message
+   * @throws IllegalArgumentException if the message is too large for the player's client
+   */
+  public void sendMessage(Component message) {
+    sendPlay(List.of(ComponentPackets.chat(render(message), protocolVersion)), false);
+  }
+
+  /**
+   * Shows a message above the player's hotbar. Nothing happens on 1.7, which has no action bar, nor
+   * while the player switches servers from 1.20.2.
+   *
+   * @param message the message
+   * @throws IllegalArgumentException if the message is too large for the player's client
+   */
+  public void sendActionBar(Component message) {
+    PlayPacket packet = ComponentPackets.actionBar(render(message), protocolVersion);
+    if (packet != null) {
+      sendPlay(List.of(packet), true);
+    }
+  }
+
+  /**
+   * Shows a title: its times, its subtitle, then the title. Nothing happens on 1.7.
+   *
+   * @param title the title
+   * @throws IllegalArgumentException if a component is too large for the player's client
+   */
+  public void showTitle(Title title) {
+    Title rendered = Title.title(render(title.title()), render(title.subtitle()), title.times());
+    sendPlay(ComponentPackets.title(rendered, protocolVersion), false);
+  }
+
+  /**
+   * Sets one part of the title: the title itself, which shows it, the subtitle or the times.
+   * Nothing happens on 1.7.
+   *
+   * @param part the part
+   * @param value its value
+   * @param <T> the type of the part
+   * @throws IllegalArgumentException if a component is too large for the player's client, or the
+   *     part is unknown
+   */
+  public <T> void sendTitlePart(TitlePart<T> part, T value) {
+    @SuppressWarnings("unchecked") // a Component part takes a Component
+    T rendered = value instanceof Component component ? (T) render(component) : value;
+    PlayPacket packet = ComponentPackets.titlePart(part, rendered, protocolVersion);
+    if (packet != null) {
+      sendPlay(List.of(packet), false);
+    }
+  }
+
+  /** Hides the title on screen, keeping its times. Nothing happens on 1.7. */
+  public void clearTitle() {
+    sendPlay(ComponentPackets.clearTitle(protocolVersion), false);
+  }
+
+  /** Hides the title and resets its times to their defaults. Nothing happens on 1.7. */
+  public void resetTitle() {
+    sendPlay(ComponentPackets.resetTitle(protocolVersion), false);
+  }
+
+  /**
+   * Sets the text above and below the player's tab list. They stay across server switches: the
+   * proxy shows them again after each Join Game, until they are set again; a server may show its
+   * own in the meantime. Nothing happens on 1.7.
+   *
+   * @param header the header, empty to hide it
+   * @param footer the footer, empty to hide it
+   * @throws IllegalArgumentException if a component is too large for the player's client
+   */
+  public void sendPlayerListHeaderAndFooter(Component header, Component footer) {
+    PlayPacket packet =
+        ComponentPackets.headerAndFooter(render(header), render(footer), protocolVersion);
+    playerListHeader = header;
+    playerListFooter = footer;
+    if (packet != null) {
+      sendPlay(List.of(packet), true);
+    }
+  }
+
+  /**
+   * Returns the header the proxy last set above the player's tab list.
+   *
+   * @return the header, empty if none
+   */
+  public Component playerListHeader() {
+    return playerListHeader;
+  }
+
+  /**
+   * Returns the footer the proxy last set below the player's tab list.
+   *
+   * @return the footer, empty if none
+   */
+  public Component playerListFooter() {
+    return playerListFooter;
+  }
+
+  /**
+   * Called on the client event loop once the client has received a Join Game: it is in a game, so
+   * the packets kept for it are sent, then the header and footer the proxy set.
+   */
+  void joinedGame() {
+    inGame = true;
+    if (droppedPending) {
+      logger.debug("Dropped proxy messages to {} beyond {}", username, MAX_PENDING_PACKETS);
+      droppedPending = false;
+    }
+    for (PlayPacket packet = pendingPackets.poll();
+        packet != null;
+        packet = pendingPackets.poll()) {
+      clientConnection.write(packet);
+    }
+    Component header = playerListHeader;
+    Component footer = playerListFooter;
+    if (!header.equals(Component.empty()) || !footer.equals(Component.empty())) {
+      PlayPacket packet = headerAndFooterOrNull(header, footer);
+      if (packet != null) {
+        clientConnection.write(packet);
       }
     }
-    disconnect();
+    clientConnection.flush();
+  }
+
+  /**
+   * Sends Start Configuration (1.20.2+), which takes the client out of its game into the
+   * configuration phase: a bundle it is in is closed first ("Terminal message received in bundle",
+   * Velocity #1384), and from then on the proxy writes configuration packets to it, as the client
+   * reads them from the moment it receives this one. Called on the client event loop.
+   */
+  void startConfiguration() {
+    closeBundle();
+    inGame = false;
+    clientConnection.writeAndFlush(new StartConfiguration());
+    clientConnection.encoder().setState(ProtocolState.CONFIGURATION);
+  }
+
+  /** Renders the translations plugins registered, in the player's language. */
+  private Component render(Component component) {
+    ClientInformation settings = cachedClientSettings;
+    Locale locale = settings == null ? null : Translator.parseLocale(settings.locale());
+    return GlobalTranslator.render(component, locale != null ? locale : Locale.US);
+  }
+
+  /**
+   * Writes PLAY packets to the client from its event loop: at once while it is in a game, kept for
+   * its next Join Game otherwise, unless {@code ephemeral}.
+   */
+  private void sendPlay(List<PlayPacket> packets, boolean ephemeral) {
+    if (packets.isEmpty()) {
+      return;
+    }
+    onEventLoop(
+        () -> {
+          if (disconnected.get() || !clientConnection.channel().isActive()) {
+            return;
+          }
+          if (inGame) {
+            packets.forEach(clientConnection::write);
+            clientConnection.flush();
+          } else if (!ephemeral) {
+            for (PlayPacket packet : packets) {
+              if (pendingPackets.size() < MAX_PENDING_PACKETS) {
+                pendingPackets.add(packet);
+              } else {
+                droppedPending = true;
+              }
+            }
+          }
+        });
+  }
+
+  private @Nullable PlayPacket headerAndFooterOrNull(Component header, Component footer) {
+    try {
+      return ComponentPackets.headerAndFooter(render(header), render(footer), protocolVersion);
+    } catch (IllegalArgumentException tooLarge) {
+      return null; // refused when they were set
+    }
+  }
+
+  /** Sends the disconnect packet of the client's state, then disconnects. Client event loop. */
+  private void disconnectWith(Component reason) {
+    if (disconnected.get()) {
+      return;
+    }
+    if (!clientConnection.channel().isActive()) {
+      disconnect();
+      return;
+    }
+    // What the proxy writes is what the client reads: the encoder moves to the configuration state
+    // as Login Success (1.20.2+) and Start Configuration go out, the decoder only when the client
+    // acknowledges them.
+    ProtocolState state = clientConnection.encoder().state();
+    Packet packet;
+    try {
+      packet = ComponentPackets.disconnect(reason, state, protocolVersion);
+    } catch (IllegalArgumentException tooLarge) {
+      logger.warn("Disconnect reason for {} too large for its client: {}", username, tooLarge);
+      packet = ComponentPackets.disconnect(Component.text("Disconnected"), state, protocolVersion);
+    }
+    if (packet == null) {
+      disconnect();
+      return;
+    }
+    if (state == ProtocolState.PLAY) {
+      closeBundle();
+    }
+    closeAfter(packet);
   }
 
   // ---------------------------------------------------------------------------
@@ -759,12 +1010,47 @@ public final class ConnectedPlayer {
 
   /** Disconnects the player from both client and backend. Idempotent and thread-safe. */
   public void disconnect() {
+    closeAfter(null);
+  }
+
+  /**
+   * Disconnects the player with a reason, in whatever state its client is: a login disconnect, JSON
+   * in every version, until the client has received its Login Success; a configuration disconnect
+   * from then on in 1.20.2+, including the moment the proxy still reads the client in the login
+   * state, and during a switch's configuration phase; a play disconnect otherwise, after closing an
+   * open bundle (a disconnect inside one is "Terminal message received in bundle"). A reason too
+   * large for the client is replaced by a short one: the player is disconnected regardless.
+   *
+   * @param reason the reason shown to the player
+   */
+  public void disconnect(Component reason) {
+    Component rendered = render(reason);
+    onEventLoop(() -> disconnectWith(rendered));
+  }
+
+  /**
+   * Disconnects the player from both client and backend, the client after {@code last} when there
+   * is one: its connection closes once the packet is flushed ({@link
+   * MinecraftConnection#writeAndClose}), within {@value #DISCONNECT_FLUSH_TIMEOUT_MS} ms at most.
+   * Idempotent and thread-safe.
+   */
+  private void closeAfter(@Nullable Packet last) {
     if (!disconnected.compareAndSet(false, true)) {
       return;
     }
     cancelKeepAliveTask();
     cancelSwitchTimeout();
-    clientConnection.close();
+    if (last == null) {
+      clientConnection.close();
+    } else {
+      clientConnection.writeAndClose(last);
+      var _ =
+          clientConnection
+              .channel()
+              .eventLoop()
+              .schedule(
+                  clientConnection::close, DISCONNECT_FLUSH_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
     BackendConnection backend = this.backendConnection;
     if (backend != null) {
       backend.disconnect();

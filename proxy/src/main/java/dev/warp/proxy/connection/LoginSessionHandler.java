@@ -432,6 +432,10 @@ final class LoginSessionHandler implements SessionHandler {
         connection.channel().remoteAddress());
 
     if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
+      // The client reads configuration packets from Login Success on, though it is still read in
+      // the login state until it acknowledges: anything sent to it from now on, a disconnect above
+      // all, is a configuration packet (BungeeCord #3525).
+      connection.encoder().setState(ProtocolState.CONFIGURATION);
       // Wait for LoginAcknowledged before transitioning.
       state = LoginState.AWAITING_LOGIN_ACKNOWLEDGED;
     } else {
@@ -531,11 +535,11 @@ final class LoginSessionHandler implements SessionHandler {
         username != null ? username : "unknown",
         connection.channel().remoteAddress(),
         reason);
-    // The disconnect packet of the client's current state: LoginAcknowledged moves it to
-    // CONFIGURATION, completeLogin (before 1.20.2) to PLAY. The login reason is JSON in every
-    // version; the configuration and play reasons follow the client's version.
+    // The disconnect packet of the state the client reads: Login Success moves it to CONFIGURATION
+    // from 1.20.2, to PLAY before. The login reason is JSON in every version; the configuration and
+    // play reasons follow the client's version.
     Packet disconnectPacket =
-        switch (connection.decoder().state()) {
+        switch (connection.encoder().state()) {
           case HANDSHAKE, STATUS, LOGIN -> LoginDisconnect.ofPlainText(reason);
           case CONFIGURATION -> ConfigDisconnect.ofPlainText(reason, clientVersion());
           case PLAY -> PlayDisconnect.ofPlainText(reason, clientVersion());

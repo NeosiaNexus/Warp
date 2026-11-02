@@ -49,12 +49,9 @@ final class ReconfigurationSwitch implements ServerSwitch {
 
   @Override
   public void start(ServerInfo target) {
-    // Sending a terminal packet inside an open bundle crashes the client with "Terminal message
-    // received in bundle" (Velocity #1384).
-    player.closeBundle();
     // From here on the client leaves PLAY: the current server's packets must not reach it.
     player.playOn(null);
-    player.clientConnection().writeAndFlush(new StartConfiguration());
+    player.startConfiguration();
   }
 
   /**

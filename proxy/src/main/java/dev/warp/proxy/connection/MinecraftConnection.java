@@ -31,6 +31,7 @@ import dev.warp.protocol.packet.PacketDirection;
 import java.io.IOException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NotYetConnectedException;
+import java.util.concurrent.TimeUnit;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
@@ -81,6 +82,11 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
    * answers keep-alives, a server sends keep-alives.
    */
   static final int READ_TIMEOUT_SECONDS = 30;
+
+  /**
+   * How long a 1.7 client keeps its connection after a final packet (see {@link #writeAndClose}).
+   */
+  static final long LEGACY_CLOSE_DELAY_MS = 250;
 
   private final Channel channel;
   private final FrameForwarder forwarder;
@@ -258,9 +264,21 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
    * flush finishes at the socket level, not just after the pipeline processing. This is the
    * idiomatic Netty pattern for "send-then-close".
    *
+   * <p>A 1.7 client handles packets on its main thread, after its network thread saw the connection
+   * close: closed too soon, it shows "End of stream" instead of the reason it has just received.
+   * Its connection closes {@value #LEGACY_CLOSE_DELAY_MS} ms after the packet, as Velocity's {@code
+   * closeWith} does, and is no longer read meanwhile.
+   *
    * @param packet the final packet to send before closing
    */
   public void writeAndClose(Packet packet) {
+    if (encoder().version().isOlderThan(ProtocolVersion.MINECRAFT_1_8)) {
+      setAutoRead(false);
+      var _ = channel.writeAndFlush(packet, channel.voidPromise());
+      var _ =
+          channel.eventLoop().schedule(this::close, LEGACY_CLOSE_DELAY_MS, TimeUnit.MILLISECONDS);
+      return;
+    }
     channel.writeAndFlush(packet).addListener(ChannelFutureListener.CLOSE);
   }
 

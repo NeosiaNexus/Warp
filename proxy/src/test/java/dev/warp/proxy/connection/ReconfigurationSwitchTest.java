@@ -66,6 +66,7 @@ class ReconfigurationSwitchTest {
     setup.player.setCurrentServerName(LOBBY.name());
     lobby.setSessionHandler(new BackendPlaySessionHandler(setup.player, lobby));
     setup.client.setSessionHandler(new ClientPlaySessionHandler(setup.player));
+    setup.player.joinedGame(); // its Join Game has reached the client
     return setup;
   }
 
