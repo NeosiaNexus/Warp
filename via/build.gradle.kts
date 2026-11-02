@@ -4,7 +4,7 @@ plugins {
     id("warp.checkstyle-conventions")
 }
 
-description = "Warp Via: ViaVersion and ViaBackwards as a Warp plugin"
+description = "Warp Via: ViaVersion, ViaBackwards and ViaRewind as a Warp plugin"
 
 dependencies {
     // The proxy provides the API at run time; the processor writes warp-plugin.json.
@@ -18,11 +18,12 @@ dependencies {
     compileOnly(libs.netty.transport)
 
     // Bundled into the plugin jar. ViaVersion and ViaBackwards already relocate the libraries they
-    // ship (fastutil, Gson, SnakeYAML, MCStructs); Guava is expected from the platform, which Warp
-    // does not provide, so the plugin carries it too. The plugin's own class loader keeps all of
-    // them away from the proxy and from other plugins.
+    // ship (fastutil, Gson, SnakeYAML, MCStructs); ViaRewind (1.7 and 1.8 players) ships none;
+    // Guava is expected from the platform, which Warp does not provide, so the plugin carries it
+    // too. The plugin's own class loader keeps all of them away from the proxy and other plugins.
     implementation(libs.viaversion.common)
     implementation(libs.viabackwards.common)
+    implementation(libs.viarewind.common)
     implementation(libs.guava)
 
     testImplementation(project(":api"))
@@ -34,6 +35,8 @@ dependencies {
     "integrationTestImplementation"(project(":protocol"))
     "integrationTestImplementation"(project(":proxy"))
     "integrationTestImplementation"(libs.viaversion.common)
+    "integrationTestImplementation"(libs.viabackwards.common)
+    "integrationTestImplementation"(libs.viarewind.common)
     "integrationTestImplementation"(platform(libs.netty.bom))
     "integrationTestImplementation"(libs.bundles.netty)
     "integrationTestImplementation"(libs.mockito.core)
@@ -73,8 +76,8 @@ tasks.jar {
         }
     }) {
         into("META-INF/licenses")
-        // ViaVersion and ViaBackwards are both GPLv3 and ship the same licence text.
-        rename { "ViaVersion-ViaBackwards-LICENSE.txt" }
+        // ViaVersion, ViaBackwards and ViaRewind are all GPLv3 and ship the same licence text.
+        rename { "ViaVersion-ViaBackwards-ViaRewind-LICENSE.txt" }
     }
     from(rootProject.file("LICENSE")) {
         into("META-INF/licenses")

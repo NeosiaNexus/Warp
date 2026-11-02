@@ -34,20 +34,21 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 
 /**
- * ViaVersion and ViaBackwards on Warp: players of other versions than their backend's join it.
+ * ViaVersion, ViaBackwards and ViaRewind on Warp: players of other versions than their backend's
+ * join it, from 1.7 up.
  *
  * <p>The plugin declares the network pipeline capability: ViaVersion's handlers go on the backend
- * connections that need translation through Warp's pipeline API. It reads three files in its data
- * directory: {@code config.yml} (ViaVersion's settings), {@code viabackwards.yml} (ViaBackwards')
- * and {@code servers.yml} (each backend's version).
+ * connections that need translation through Warp's pipeline API. It reads four files in its data
+ * directory: {@code config.yml} (ViaVersion's settings), {@code viabackwards.yml} (ViaBackwards'),
+ * {@code viarewind.yml} (ViaRewind's) and {@code servers.yml} (each backend's version).
  */
 @Plugin(
     id = WarpVia.ID,
     name = "ViaVersion",
     version = VersionInfo.VERSION,
     description =
-        "Lets players of other Minecraft versions join each backend: ViaVersion and ViaBackwards"
-            + " on Warp",
+        "Lets players of other Minecraft versions join each backend: ViaVersion, ViaBackwards and"
+            + " ViaRewind on Warp",
     url = "https://viaversion.com",
     authors = {
       "_MylesC",
@@ -110,10 +111,12 @@ public final class WarpVia implements WarpPlugin {
     this.manager = viaManager;
     config.reload();
 
-    // ViaBackwards registers its protocols once ViaVersion has its own, as on every platform.
+    // ViaBackwards registers its protocols once ViaVersion has its own, as on every platform, and
+    // ViaRewind (1.7 and 1.8 players) after ViaBackwards, as its own plugins do.
     ViaBackwardsHost backwards = new ViaBackwardsHost(viaLogger, dataFolder);
     viaManager.addEnableListener(backwards::initialize);
     viaManager.addPostEnableListener(backwards::enable);
+    viaManager.addEnableListener(new ViaRewindHost(viaLogger, dataFolder)::initialize);
 
     viaManager.init();
     viaManager.onServerLoaded();

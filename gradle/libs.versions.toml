@@ -13,9 +13,11 @@ gson = "2.14.0"
 configurate = "4.2.0"
 jspecify = "1.0.0"
 
-# Via plugin: ViaVersion and ViaBackwards, and the Guava they expect their platform to provide
+# Via plugin: ViaVersion, ViaBackwards, ViaRewind, and the Guava they expect their platform to provide.
+# ViaRewind 4.2.0 is the release built for ViaVersion 5.12 (compiled against 5.12.0).
 viaversion = "5.12.2"
 viabackwards = "5.12.2"
+viarewind = "4.2.0"
 guava = "33.7.2-jre"
 
 # Native
@@ -87,6 +89,7 @@ configurate-hocon = { group = "org.spongepowered", name = "configurate-hocon", v
 # Via plugin
 viaversion-common = { group = "com.viaversion", name = "viaversion-common", version.ref = "viaversion" }
 viabackwards-common = { group = "com.viaversion", name = "viabackwards-common", version.ref = "viabackwards" }
+viarewind-common = { group = "com.viaversion", name = "viarewind-common", version.ref = "viarewind" }
 guava = { group = "com.google.guava", name = "guava", version.ref = "guava" }
 
 # Annotations

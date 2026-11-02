@@ -255,6 +255,78 @@ class ViaTranslationTest {
   }
 
   @Test
+  @DisplayName("should let ViaRewind log a 1.8 player in to a newer backend")
+  void legacyPlayerTranslated() {
+    ProtocolVersion legacy = ProtocolVersion.MINECRAFT_1_8;
+    MinecraftConnection backend = backend(legacy);
+    EmbeddedChannel channel = (EmbeddedChannel) backend.channel();
+    Recorder received = new Recorder(backend);
+
+    boolean set = PIPELINES.initializeBackend(backend, legacy.protocol(), player, LOBBY_SERVER);
+    backend.setSessionHandler(received);
+    backend.setState(ProtocolState.HANDSHAKE);
+    backend.writeAndFlush(new Handshake(legacy.protocol(), "lobby", 25566, 2));
+    backend.setState(ProtocolState.LOGIN);
+    backend.writeAndFlush(new LoginStart("Notch", UUID.randomUUID()));
+    Handshake handshake =
+        sentToBackend(channel, ProtocolState.HANDSHAKE, Handshake.class, false).getFirst();
+    receive(channel, ProtocolState.LOGIN, new SetCompression(THRESHOLD), false);
+    receive(
+        channel,
+        ProtocolState.LOGIN,
+        new LoginSuccess(UUID.randomUUID(), "Notch", List.of(), false, null),
+        true);
+
+    // Set up within the contract, the handshake announces the backend's version, and the 1.8
+    // login (Set Compression included, 1.8 has it) goes straight to PLAY: ViaBackwards
+    // acknowledges it to the backend itself.
+    assertTrue(set);
+    assertEquals(BACKEND.protocol(), handshake.protocolVersion());
+    assertEquals(new SetCompression(THRESHOLD), received.packets.getFirst());
+    assertEquals("Notch", assertInstanceOf(LoginSuccess.class, received.packets.get(1)).username());
+    assertFalse(
+        sentToBackend(channel, ProtocolState.LOGIN, LoginAcknowledged.class, true).isEmpty());
+  }
+
+  @Test
+  @DisplayName("should let ViaRewind compress for a 1.7 player, who has no compression")
+  void compressionlessPlayerTranslated() {
+    ProtocolVersion legacy = ProtocolVersion.MINECRAFT_1_7_6;
+    MinecraftConnection backend = backend(legacy);
+    EmbeddedChannel channel = (EmbeddedChannel) backend.channel();
+    Recorder received = new Recorder(backend);
+
+    PIPELINES.initializeBackend(backend, legacy.protocol(), player, LOBBY_SERVER);
+    backend.setSessionHandler(received);
+    backend.setState(ProtocolState.HANDSHAKE);
+    backend.writeAndFlush(new Handshake(legacy.protocol(), "lobby", 25566, 2));
+    backend.setState(ProtocolState.LOGIN);
+    backend.writeAndFlush(new LoginStart("Herobrine", UUID.randomUUID()));
+    drain(channel);
+    receive(channel, ProtocolState.LOGIN, new SetCompression(THRESHOLD), false);
+    receive(
+        channel,
+        ProtocolState.LOGIN,
+        new LoginSuccess(UUID.randomUUID(), "Herobrine", List.of(), false, null),
+        true);
+
+    // ViaRewind drops Set Compression and compresses below ViaVersion with handlers of its own,
+    // named after the plugin, never Warp's: Warp's layers stay uncompressed, as for any 1.7 player.
+    LoginSuccess success = assertInstanceOf(LoginSuccess.class, received.packets.getFirst());
+    assertEquals("Herobrine", success.username());
+    assertFalse(backend.isCompressed());
+    assertEquals(
+        List.of(
+            "viaversion:rewind-decompressor",
+            "viaversion:decoder",
+            "viaversion:rewind-compressor",
+            "viaversion:encoder"),
+        backend.pluginHandlers(PipelinePosition.PACKET));
+    assertFalse(
+        sentToBackend(channel, ProtocolState.LOGIN, LoginAcknowledged.class, true).isEmpty());
+  }
+
+  @Test
   @DisplayName("should give each backend connection of a switch its own translation")
   void switchTranslatesEachConnection() {
     MinecraftConnection first = backend(CLIENT);
