@@ -135,21 +135,6 @@ public final class FrameForwarder {
   }
 
   /**
-   * Forwards a bare packet, {@code [Packet ID][Payload]}, received on a connection in packet input
-   * (see {@link MinecraftDecoder#usePacketInput()}): it is framed, and compressed at or above the
-   * threshold, by this connection's outbound pipeline. Does not flush.
-   *
-   * @param packet the packet bytes from the reader index; ownership is transferred
-   */
-  public void forwardPacket(ByteBuf packet) {
-    if (!channel.isActive()) {
-      packet.release();
-      return;
-    }
-    writePacket(packet);
-  }
-
-  /**
    * Forwards a frame received on another connection. Does not flush.
    *
    * @param frame the complete frame (reader index at the length prefix); ownership is transferred
@@ -203,6 +188,21 @@ public final class FrameForwarder {
       packet = source.inflate(channel.alloc(), frame, dataLength);
     } finally {
       frame.release();
+    }
+    writePacket(packet);
+  }
+
+  /**
+   * Forwards a bare packet, {@code [Packet ID][Payload]}, received on a connection in packet input
+   * (see {@link MinecraftDecoder#usePacketInput()}): it is framed, and compressed at or above the
+   * threshold, by this connection's outbound pipeline. Does not flush.
+   *
+   * @param packet the packet bytes from the reader index; ownership is transferred
+   */
+  public void forwardPacket(ByteBuf packet) {
+    if (!channel.isActive()) {
+      packet.release();
+      return;
     }
     writePacket(packet);
   }
