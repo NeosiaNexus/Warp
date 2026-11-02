@@ -75,11 +75,15 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 .github/scripts/coverage-summary.py >> "$GITHUB_STEP_SUMMARY"
 
+      # With the audience probe plugin `build` also assembles: the E2E matrix loads it (--plugin),
+      # or skips the audience scenario.
       - name: Upload Warp jar
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: warp-jar
-          path: proxy/build/libs/warp-*.jar
+          path: |
+            proxy/build/libs/warp-*.jar
+            e2e/plugin/build/libs/e2e-audience-probe.jar
           if-no-files-found: error
           retention-days: ${{ github.event_name == 'push' && 30 || 7 }}
 
