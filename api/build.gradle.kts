@@ -4,6 +4,7 @@ plugins {
     id("warp.checkstyle-conventions")
     id("warp.jacoco-conventions")
     id("warp.publish-conventions")
+    id("warp.api-release-conventions")
 }
 
 description = "Warp API — public plugin API for the Warp Minecraft proxy"
