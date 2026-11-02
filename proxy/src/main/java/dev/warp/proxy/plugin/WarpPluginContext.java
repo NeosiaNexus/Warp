@@ -17,8 +17,11 @@
 package dev.warp.proxy.plugin;
 
 import dev.warp.api.Warp;
+import dev.warp.api.event.EventBus;
 import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginContext;
+import dev.warp.proxy.event.PluginEventBus;
+import dev.warp.proxy.event.WarpEventBus;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -40,11 +43,14 @@ final class WarpPluginContext implements PluginContext {
   private final Warp proxy;
   private final Logger pluginLogger;
   private final List<AutoCloseable> registrations = new CopyOnWriteArrayList<>();
+  private final PluginEventBus events;
 
-  WarpPluginContext(WarpPluginContainer plugin, Warp proxy) {
+  WarpPluginContext(WarpPluginContainer plugin, Warp proxy, WarpEventBus bus) {
     this.plugin = plugin;
     this.proxy = proxy;
     this.pluginLogger = LoggerFactory.getLogger(plugin.description().id());
+    this.events =
+        new PluginEventBus(bus, plugin.description().id(), plugin.classLoader(), this::track);
   }
 
   @Override
@@ -65,6 +71,11 @@ final class WarpPluginContext implements PluginContext {
   @Override
   public Path dataDirectory() {
     return plugin.dataDirectory();
+  }
+
+  @Override
+  public EventBus events() {
+    return events;
   }
 
   /**

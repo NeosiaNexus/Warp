@@ -27,6 +27,7 @@ import static org.mockito.Mockito.mock;
 import dev.warp.api.Warp;
 import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginState;
+import dev.warp.proxy.event.WarpEventBus;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -51,17 +52,20 @@ class WarpPluginManagerTest {
   @TempDir private Path root;
 
   private Path plugins;
+  private WarpEventBus events;
   private WarpPluginManager manager;
 
   @BeforeEach
   void setUp() {
     plugins = root.resolve("plugins");
-    manager = new WarpPluginManager(mock(Warp.class), plugins);
+    events = new WarpEventBus();
+    manager = new WarpPluginManager(mock(Warp.class), events, plugins);
   }
 
   @AfterEach
   void tearDown() {
     manager.disableAll();
+    events.close();
     System.getProperties().keySet().removeIf(key -> key.toString().startsWith(PROBE));
   }
 
@@ -503,6 +507,64 @@ class WarpPluginManagerTest {
 
       assertEquals(PluginState.DISABLED, manager.plugin("angry").orElseThrow().state());
       assertEquals(PluginState.DISABLED, manager.plugin("calm").orElseThrow().state());
+    }
+  }
+
+  @Nested
+  @DisplayName("event subscriptions")
+  class EventSubscriptions {
+
+    @Test
+    @DisplayName(
+        "should keep a plugin's subscriptions while it is enabled and drop them on disable")
+    void droppedOnDisable() throws IOException {
+      TestPluginJars.build(
+          plugins,
+          "listener.jar",
+          Map.of(
+              "listener/Main.java",
+              """
+              package listener;
+              import dev.warp.api.event.EventBus;
+              @dev.warp.api.plugin.Plugin(id = "listener")
+              public final class Main {
+                public Main(EventBus events) {
+                  events.subscribe(StringBuilder.class, builder -> builder.append("heard"));
+                }
+              }
+              """));
+      manager.loadAll();
+      assertTrue(events.hasHandlers(StringBuilder.class));
+
+      manager.disableAll();
+
+      assertFalse(events.hasHandlers(StringBuilder.class));
+    }
+
+    @Test
+    @DisplayName("should drop the subscriptions of a plugin that fails after subscribing")
+    void droppedOnFailure() throws IOException {
+      TestPluginJars.build(
+          plugins,
+          "flaky.jar",
+          Map.of(
+              "flaky/Main.java",
+              """
+              package flaky;
+              import dev.warp.api.plugin.*;
+              @Plugin(id = "flaky")
+              public final class Main implements WarpPlugin {
+                public Main(PluginContext context) {
+                  context.events().subscribe(StringBuilder.class, builder -> builder.append("x"));
+                }
+                @Override public void enable() { throw new IllegalStateException("config missing"); }
+              }
+              """));
+
+      manager.loadAll();
+
+      assertEquals(PluginState.FAILED, manager.plugin("flaky").orElseThrow().state());
+      assertFalse(events.hasHandlers(StringBuilder.class));
     }
   }
 
