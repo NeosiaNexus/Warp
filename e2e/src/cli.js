@@ -63,11 +63,12 @@ Environment
   --direct                control run: bots connect straight to the lobby, without Warp
   --list                  print the version matrix and exit
 
-Version translation (the via plugin: ViaVersion and ViaBackwards on Warp)
+Version translation (the via plugin: ViaVersion, ViaBackwards and ViaRewind on Warp)
   --client VERSION        bots speak VERSION (from e2e/versions.json) to backends of --mc: Warp
                           translates with the via plugin, installed for the run. Implies --via-plugin
   --via-plugin            install the via plugin (built with Gradle) in every Warp instance; with bots
                           of the backends' own version, checks that nothing is translated
+  --via-jar PATH          via plugin jar to install (default: build it with Gradle). Implies --via-plugin
   --survival VERSION      the survival backend runs VERSION instead of --mc's: switches go between
                           backends of two versions (with --client or --via-plugin, one may be the bots')
 `;
@@ -95,6 +96,7 @@ async function main() {
       direct: { type: 'boolean', default: false },
       client: { type: 'string' },
       'via-plugin': { type: 'boolean', default: false },
+      'via-jar': { type: 'string' },
       survival: { type: 'string' },
       list: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
@@ -120,7 +122,8 @@ async function main() {
   // Bots of another version than the backends: Warp translates, with the via plugin.
   const clientEntry = opts.client ? findEntry(matrix, opts.client.trim()) : null;
   if (clientEntry && opts.direct) throw new UsageError('--client needs Warp to translate: it cannot run with --direct');
-  const viaJar = clientEntry || opts['via-plugin'] ? await buildViaPlugin() : null;
+  const viaPlugin = Boolean(clientEntry || opts['via-plugin'] || opts['via-jar']);
+  const viaJar = !viaPlugin ? null : opts['via-jar'] ? resolve(opts['via-jar']) : await buildViaPlugin();
   // The survival backend on another version: switches cross versions.
   const survivalEntry = opts.survival ? findEntry(matrix, opts.survival.trim()) : null;
   mkdirSync(opts.out, { recursive: true });

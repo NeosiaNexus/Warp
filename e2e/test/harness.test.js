@@ -7,7 +7,7 @@ import { BACKEND_PROTOCOL_ERRORS, backendGroups } from '../src/backend.js';
 import { connectClient } from '../src/clients/index.js';
 import { announcedProtocol } from '../src/clients/mineflayer.js';
 import { LOBBY_MODE, QUIRKS, SCENARIOS, SURVIVAL_MODE, checkServerList, checkStatus, checkStayed, checkTabLists, features, fromSurvival, plainText } from '../src/scenarios.js';
-import { findEntry, jobsForTier, loadMatrix, resolveVariant } from '../src/versions.js';
+import { findEntry, jobsForTier, loadMatrix, resolveVariant, translationsForTier, translator } from '../src/versions.js';
 import { WARP_FAILURES } from '../src/warp.js';
 
 const matrix = loadMatrix();
@@ -104,6 +104,34 @@ describe('versions.json', () => {
         assert.ok(full.get(job.mc)?.has(variant), `${job.mc} ${variant} runs on pull requests but not in the full tier`);
       }
     }
+  });
+
+  it('only schedules translation runs that translate, on variants their backends can run', () => {
+    for (const tier of Object.keys(matrix.tiers)) {
+      for (const job of translationsForTier(matrix, tier)) {
+        assert.notEqual(job.client, job.mc, `${tier} ${job.id}`);
+        const variants = job.variants.split(',').map((name) => resolveVariant(matrix, name));
+        for (const group of backendGroups(findEntry(matrix, job.mc), variants)) assert.equal(group.skip, null, `${tier} ${job.id}: ${group.skip}`);
+      }
+    }
+  });
+
+  it('translates a newer player and a 1.8 player on pull requests: ViaVersion and ViaRewind', () => {
+    const translators = translationsForTier(matrix, 'pr').map((job) => job.translator);
+    assert.ok(translators.includes('ViaVersion'), 'no newer player');
+    assert.ok(translators.includes('ViaRewind'), 'no 1.8 player');
+  });
+
+  it('runs on main every translation a pull request runs', () => {
+    const full = new Set(translationsForTier(matrix, 'full').map((job) => `${job.id} ${job.variants}`));
+    for (const job of translationsForTier(matrix, 'pr')) assert.ok(full.has(`${job.id} ${job.variants}`), job.id);
+  });
+
+  it('names the part of the via plugin that translates a pair of versions', () => {
+    assert.equal(translator(5, 769), 'ViaRewind');
+    assert.equal(translator(47, 769), 'ViaRewind');
+    assert.equal(translator(340, 769), 'ViaBackwards');
+    assert.equal(translator(772, 769), 'ViaVersion');
   });
 
   it('works around only the server quirks the scenarios know, each with its issue', () => {

@@ -137,8 +137,9 @@ Those versions, and a `--direct` run, skip the variant and say why in the report
 ## Translation
 
 `--client VERSION` boots the backends of `--mc` and bots of another version of the matrix, and
-installs the via plugin (`via/`, ViaVersion and ViaBackwards on Warp, built with Gradle) in every
-Warp instance: the scenarios then run on connections Warp translates. The scenarios only use what
+installs the via plugin (`via/`, ViaVersion, ViaBackwards and ViaRewind on Warp, built with Gradle,
+or the jar `--via-jar` names) in every Warp instance: the scenarios then run on connections Warp
+translates, from 1.7.10 and 1.8.8 bots (ViaRewind) to bots newer than the backends. The scenarios only use what
 both versions support (the older one's features). `--via-plugin` installs the plugin with bots of
 the backends' own version, the control run of translation: their connections must keep blind
 forwarding and compression passthrough.
@@ -151,6 +152,12 @@ The plugin logs `Translating players of <version> for <server>` once per version
 fails if bots of another version were never translated, or if bots of the backends' own version
 were. A bridged client version (`via` in `versions.json`) still goes through ViaProxy, which then
 speaks the client version to Warp.
+
+CI runs the `translations` of each tier of `versions.json` as jobs of their own (`1.8.8 bots on
+1.21.4 · ViaRewind`), with the plugin jar the build uploads: on pull requests a newer player
+(ViaVersion) and a 1.8 player (ViaRewind); in the full tier also an older one on PrimeMC's 1.21.8
+(ViaBackwards), a 1.12.2 player with modern forwarding, a 1.7.10 player and switches between a
+translated backend and an untranslated one.
 
 ## Soak
 
