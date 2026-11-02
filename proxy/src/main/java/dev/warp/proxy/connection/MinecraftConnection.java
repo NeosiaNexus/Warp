@@ -515,8 +515,8 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   /**
    * Marks the client logged in: it no longer counts among the connections not logged in, and no
-   * deadline or limit of those applies to it any more, the frame limits included. Those must go
-   * now rather than when the state changes: a 1.20.2+ client stays in the LOGIN state until it
+   * deadline or limit of those applies to it any more, the frame limits included. Those must go now
+   * rather than when the state changes: a 1.20.2+ client stays in the LOGIN state until it
    * acknowledges its Login Success, and does so in a compressed frame, whose first byte is the
    * uncompressed length rather than the packet identifier.
    */
