@@ -20,7 +20,8 @@ import java.net.InetSocketAddress;
 import java.util.Optional;
 
 /**
- * A client connection that has not become a player yet: it is logging in.
+ * A client connection that has not become a player yet: it is logging in, or asking for the server
+ * list entry.
  *
  * <p>Implemented by the proxy; plugins must not implement it.
  */
@@ -43,9 +44,11 @@ public interface InboundConnection {
   Optional<String> virtualHost();
 
   /**
-   * Returns the protocol version the client speaks.
+   * Returns the protocol version the client speaks, as its handshake announced it: during a server
+   * list ping, it may be one the proxy does not support.
    *
-   * @return the protocol version number, such as 769 for Minecraft 1.21.4
+   * @return the protocol version number, such as 769 for Minecraft 1.21.4; {@code -1} for the
+   *     legacy server list ping of Minecraft 1.6 and older, which predates these numbers
    */
   int protocolVersion();
 
@@ -55,4 +58,13 @@ public interface InboundConnection {
    * @return {@code true} while connected
    */
   boolean isActive();
+
+  /**
+   * Returns whether the client arrived by a transfer: a server sent it here with a Transfer packet,
+   * and its handshake said so (Minecraft 1.20.5 and newer). Such a client may carry cookies the
+   * server that sent it stored; a client can also forge them.
+   *
+   * @return {@code true} if the client was transferred here
+   */
+  boolean isTransferred();
 }

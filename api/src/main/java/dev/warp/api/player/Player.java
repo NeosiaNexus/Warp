@@ -115,6 +115,31 @@ public interface Player extends InboundConnection, CommandSource, Identified {
   CompletableFuture<ConnectionResult> connect(RegisteredServer server);
 
   /**
+   * Returns whether the client can be sent to another server with {@link #transfer}: Minecraft
+   * 1.20.5 and newer.
+   *
+   * @return {@code true} if the client supports transfers
+   */
+  boolean supportsTransfers();
+
+  /**
+   * Sends the player to another server with a Transfer packet (Minecraft 1.20.5 and newer): the
+   * client leaves the proxy and connects to {@code host:port} by itself, with the cookies stored on
+   * it. The target must accept transfers ({@code accepts-transfers} on a Warp or on a vanilla
+   * server). Point it at a public address, such as the network's load balancer, never at a backend.
+   *
+   * <p>The packet is written as soon as the client can read it: right away when it plays or is
+   * being configured, or once a state change in progress completes.
+   *
+   * @param host the host name or address the client connects to; the client resolves it itself
+   * @param port the port, 1 to 65535
+   * @return completed with the outcome once known; never completes exceptionally
+   * @throws IllegalArgumentException if {@code host} is blank or longer than 32767 characters, or
+   *     {@code port} is not 1 to 65535
+   */
+  CompletableFuture<TransferResult> transfer(String host, int port);
+
+  /**
    * Sends a plugin message to the player's client.
    *
    * @param channel the channel

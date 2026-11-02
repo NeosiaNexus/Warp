@@ -29,6 +29,8 @@ package dev.warp.protocol.packet;
  *   <li>{@link dev.warp.protocol.packet.login.LoginPacket LoginPacket}
  *   <li>{@link dev.warp.protocol.packet.config.ConfigPacket ConfigPacket}
  *   <li>{@link dev.warp.protocol.packet.play.PlayPacket PlayPacket}
+ *   <li>{@link dev.warp.protocol.packet.cookie.CookiePacket CookiePacket}, the cookie packets that
+ *       span the login, configuration and play states
  * </ul>
  *
  * <p>Those sealed interfaces guarantee exhaustive pattern matching within each state, while this

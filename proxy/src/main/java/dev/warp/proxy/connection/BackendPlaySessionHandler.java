@@ -18,6 +18,7 @@ package dev.warp.proxy.connection;
 
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
+import dev.warp.protocol.packet.cookie.CookieRequest;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
@@ -118,6 +119,14 @@ final class BackendPlaySessionHandler implements SessionHandler {
 
   @Override
   public void handle(Packet packet) {
+    if (packet instanceof CookieRequest request) {
+      // Relayed in turn with the frames around it, by the backend the client plays on only; the
+      // client's answer comes back to this backend.
+      if (player.isPlayingOn(backendConnection)) {
+        player.cookies().relay(backendConnection, request);
+      }
+      return;
+    }
     if (!(packet instanceof PlayPacket playPacket)) {
       logger.warn(
           "Unexpected packet in backend PLAY handler: {}", packet.getClass().getSimpleName());

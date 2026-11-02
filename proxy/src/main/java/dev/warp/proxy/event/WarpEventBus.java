@@ -24,6 +24,7 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -90,7 +91,28 @@ public final class WarpEventBus implements AutoCloseable {
   private final Map<Class<?>, Handler[]> resolved = new ConcurrentHashMap<>();
   private final AtomicLong generation = new AtomicLong();
   private final AtomicLong order = new AtomicLong();
-  private final Map<Object, CompletableFuture<?>> lanes = new ConcurrentHashMap<>();
+  private final Map<Object, Lane> lanes = new ConcurrentHashMap<>();
+
+  /**
+   * The last event fired on a lane.
+   *
+   * @param tail completed once that event is delivered
+   * @param deadlineNanos when its delivery ends at the latest if every handler keeps to its
+   *     time-out, on {@link System#nanoTime()}'s clock
+   */
+  private record Lane(CompletableFuture<?> tail, long deadlineNanos) {}
+
+  /**
+   * An event delivered on a lane, with the longest its delivery may take.
+   *
+   * @param result completed with the event once every handler is done with it; never exceptionally
+   * @param limit how long, from the moment the event was fired, its delivery takes at most when
+   *     every handler of the events queued before it on its lane, then every handler of its own,
+   *     holds an event no longer than its time-out ({@link Subscribe#timeoutSeconds()}); a
+   *     synchronous handler counts its time-out too
+   * @param <E> the event type
+   */
+  public record BoundedDelivery<E>(CompletableFuture<E> result, Duration limit) {}
 
   /** Creates a bus delivering events on virtual threads. */
   public WarpEventBus() {
@@ -151,11 +173,36 @@ public final class WarpEventBus implements AutoCloseable {
    * @return completed with the event once every handler is done with it; never exceptionally
    */
   public <E> CompletableFuture<E> fire(E event, Object lane) {
+    return fireBounded(event, lane).result();
+  }
+
+  /**
+   * Delivers an event after every event fired earlier on the same lane was delivered, as {@link
+   * #fire(Object, Object)} does, and tells how long that takes at most: the proxy holds a player
+   * that waits for such an event (which server it joins, where it goes after losing one) that long,
+   * and no longer.
+   *
+   * <p>The limit adds up the time-outs of the handlers of every event still queued on the lane,
+   * then of this one's, from the moment it is fired. An asynchronous handler is skipped once its
+   * time-out expires, so the delivery ends within the limit unless a synchronous handler blocks
+   * longer than its own time-out, which nothing can interrupt.
+   *
+   * @param event the event
+   * @param lane the lane, such as a player's UUID
+   * @param <E> the event type
+   * @return the delivery: its result, and the longest it may take
+   */
+  public <E> BoundedDelivery<E> fireBounded(E event, Object lane) {
     CompletableFuture<E> result = new CompletableFuture<>();
+    long now = System.nanoTime();
+    long own = TimeUnit.SECONDS.toNanos(timeoutSum(handlersFor(event.getClass())));
+    Lane[] queuedNow = new Lane[1];
     lanes.compute(
         lane,
-        (_, tail) -> {
-          CompletableFuture<?> previous = tail == null ? DONE : tail;
+        (_, queued) -> {
+          CompletableFuture<?> previous = queued == null ? DONE : queued.tail();
+          long start =
+              queued != null && queued.deadlineNanos() - now > 0 ? queued.deadlineNanos() : now;
           // Asynchronously, so that nothing completes inside compute.
           var _ =
               previous.whenCompleteAsync(
@@ -163,10 +210,23 @@ public final class WarpEventBus implements AutoCloseable {
                     var _ = fire(event).thenAccept(result::complete);
                   },
                   executor);
-          return result;
+          queuedNow[0] = new Lane(result, start + own);
+          return queuedNow[0];
         });
-    var _ = result.whenComplete((_, _) -> lanes.remove(lane, result));
-    return result;
+    Lane queued = queuedNow[0];
+    var _ = result.whenComplete((_, _) -> lanes.remove(lane, queued));
+    return new BoundedDelivery<>(result, Duration.ofNanos(queued.deadlineNanos() - now));
+  }
+
+  /** Adds up the time-outs of the active handlers, in seconds. */
+  private static long timeoutSum(Handler[] handlers) {
+    long sum = 0;
+    for (Handler handler : handlers) {
+      if (handler.isActive()) {
+        sum += handler.timeoutSeconds;
+      }
+    }
+    return sum;
   }
 
   /** One event being delivered to its handlers, one after another. */

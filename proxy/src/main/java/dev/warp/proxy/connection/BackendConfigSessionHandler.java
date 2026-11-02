@@ -21,6 +21,7 @@ import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.config.FinishConfiguration;
+import dev.warp.protocol.packet.cookie.CookieRequest;
 import dev.warp.protocol.packet.play.KeepAlive;
 
 import io.netty.buffer.ByteBuf;
@@ -85,11 +86,15 @@ final class BackendConfigSessionHandler implements SessionHandler {
                 return;
               }
               logger.debug("Installing ClientConfigSessionHandler for {}", player.username());
+              if (clientConn.sessionHandler() instanceof SwitchWaitSessionHandler waiting) {
+                // What the client sent while it waited between two servers is for this one.
+                waiting.forwardHeldTo(backendConnection);
+              }
               clientConn.setSessionHandler(
                   new ClientConfigSessionHandler(player, backendConnection));
-              // Ensure auto-read is enabled. During a server switch, auto-read is paused
-              // while waiting for the new backend to reach CONFIG. This is idempotent for
-              // initial connections where auto-read was never paused.
+              // Ensure auto-read is enabled: a client that sent too much while it waited for
+              // this server had its reads paused (SwitchWaitSessionHandler). Idempotent
+              // otherwise.
               clientConn.setAutoRead(true);
             });
   }
@@ -109,6 +114,9 @@ final class BackendConfigSessionHandler implements SessionHandler {
     } else if (packet instanceof ConfigDisconnect disconnect) {
       player.recordKick(backendConnection, disconnect.decodedReason(player.protocolVersion()));
       handleDisconnect();
+    } else if (packet instanceof CookieRequest request) {
+      // Relayed in turn with the frames around it; the client's answer comes back here.
+      player.cookies().relay(backendConnection, request);
     }
   }
 
@@ -134,7 +142,8 @@ final class BackendConfigSessionHandler implements SessionHandler {
               if (!clientConn.channel().isActive()) {
                 return;
               }
-              clientConn.writeAndFlush(new FinishConfiguration());
+              // The client reads what follows in the play state, before it acknowledges.
+              clientConn.writeTerminal(new FinishConfiguration());
             });
   }
 

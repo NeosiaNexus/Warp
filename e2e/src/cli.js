@@ -20,7 +20,7 @@ import { Netem } from './netem.js';
 import { startPackServer } from './packs.js';
 import { killAll, run, sleep } from './proc.js';
 import { signerPem } from './profile-keys.js';
-import { SCENARIOS, features, startKeepAlive } from './scenarios.js';
+import { ALT_MAX_PLAYERS, SCENARIOS, STATUS_MOTD, features, startKeepAlive } from './scenarios.js';
 import { SOAK, soakJvmArgs, soakMarkdown } from './soak.js';
 import { variantStatus, versionNotes, versionStatus } from './status.js';
 import { E2E_DIR, FORWARDING_MODES, findEntry, loadMatrix, resolveVariant } from './versions.js';
@@ -293,6 +293,9 @@ async function runVariant({ matrix, entry, clientEntry, viaJar, variant: base, s
           port: ports.warp,
           servers: { lobby: ports.lobby, survival: ports.survival },
           fallbackOrder: ['lobby', 'survival'],
+          // The transfer scenario comes back through this one, and is refused by warp-alt.
+          acceptsTransfers: true,
+          status: { motd: STATUS_MOTD },
           // The JVM resolves the recording against its own directory: the path must be absolute.
           jvmArgs: opts.soak === undefined ? [] : soakJvmArgs(resolve(logDir, `warp-${variant.name}.jfr`)),
         }),
@@ -304,6 +307,8 @@ async function runVariant({ matrix, entry, clientEntry, viaJar, variant: base, s
           port: ports.warpAlt,
           servers: { unreachable: ports.closed, survival: ports.survival },
           fallbackOrder: ['unreachable', 'survival'],
+          // One player at most: player-limit fills it, and checks that the next one is refused.
+          status: { motd: STATUS_MOTD, maxPlayers: ALT_MAX_PLAYERS },
         }),
       ];
   const targets = opts.direct ? { warp: ports.lobby } : { warp: ports.warp, warpAlt: ports.warpAlt };
@@ -313,10 +318,16 @@ async function runVariant({ matrix, entry, clientEntry, viaJar, variant: base, s
     variant,
     direct: opts.direct,
     // What both sides support: a translated bot cannot use what its server lacks, nor the reverse.
-    features: features(Math.min(entry.protocol, bots.protocol), { direct: opts.direct, forwarding: variant.forwarding, online: variant.online }),
+    features: features(Math.min(entry.protocol, bots.protocol), {
+      direct: opts.direct,
+      forwarding: variant.forwarding,
+      online: variant.online,
+      bridged: bots.via !== undefined,
+    }),
     client: connectClient(bots, { tools: matrix.tools, cache: opts.cache, java: warpJava, ports, targets: Object.values(targets), logDir, runDir }),
     warp: { port: targets.warp, instance: instances[0] ?? null },
     warpAlt: { port: targets.warpAlt },
+    ports,
     lobby: backends.lobby,
     survival: backends.survival,
     packs,
@@ -488,7 +499,20 @@ function selectScenarios(list) {
 
 /** Fixed ports from `base`; fails early if one is taken (a dev testbed, another run…). */
 async function reservePorts(base) {
-  const ports = { lobby: base, survival: base + 1, warp: base + 2, warpAlt: base + 3, mojang: base + 4, closed: base + 5, via: base + 6, viaAlt: base + 7 };
+  const ports = {
+    lobby: base,
+    survival: base + 1,
+    warp: base + 2,
+    warpAlt: base + 3,
+    mojang: base + 4,
+    closed: base + 5,
+    via: base + 6,
+    viaAlt: base + 7,
+    // The drain scenario's own Warp, its management server and its HAProxy agent check.
+    drain: base + 8,
+    drainHttp: base + 9,
+    drainAgent: base + 10,
+  };
   for (const [name, port] of Object.entries(ports)) {
     const free = await new Promise((done) => {
       const probe = createServer().once('error', () => done(false)).listen(port, '127.0.0.1', () => probe.close(() => done(true)));

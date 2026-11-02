@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.server.Favicon;
 import dev.warp.api.server.ServerInfo;
 import dev.warp.api.server.ServerPing;
 import dev.warp.protocol.ProtocolState;
@@ -235,8 +236,13 @@ public final class BackendPinger implements ServerPinger {
         descriptionElement == null
             ? Component.empty()
             : GsonComponentSerializer.gson().deserializeFromTree(descriptionElement);
-    @Nullable String favicon = root.has("favicon") ? string(root, "favicon") : null;
-    return new ServerPing(version, players, description, favicon);
+    return new ServerPing(version, players, description, favicon(root));
+  }
+
+  /** Reads the icon, if any: one that is no PNG data URI is dropped, as clients drop it. */
+  private static @Nullable Favicon favicon(JsonObject root) {
+    String uri = root.has("favicon") ? string(root, "favicon") : "";
+    return uri.startsWith(Favicon.URI_PREFIX) ? new Favicon(uri) : null;
   }
 
   private static String string(JsonObject object, String key) {

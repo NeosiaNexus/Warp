@@ -29,6 +29,7 @@ import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.packet.PacketDirection;
+import dev.warp.protocol.packet.cookie.StoreCookie;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.KeepAlive;
@@ -205,6 +206,20 @@ class MinecraftEncoderTest {
       assertTrue(msg.contains("STATUS"));
 
       ch.finish();
+    }
+
+    @Test
+    @DisplayName("should tell which packets it can write in its current state")
+    void canEncode() {
+      MinecraftEncoder encoder =
+          new MinecraftEncoder(
+              PacketDirection.CLIENTBOUND, ProtocolVersion.MINECRAFT_1_21_4, ProtocolState.PLAY);
+
+      boolean storeInPlay = encoder.canEncode(StoreCookie.class);
+      encoder.setState(ProtocolState.LOGIN);
+
+      assertTrue(storeInPlay);
+      assertFalse(encoder.canEncode(StoreCookie.class), "the login state has no Store Cookie");
     }
   }
 

@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import { BACKEND_PROTOCOL_ERRORS, backendGroups } from '../src/backend.js';
 import { connectClient } from '../src/clients/index.js';
 import { announcedProtocol } from '../src/clients/mineflayer.js';
-import { LOBBY_MODE, QUIRKS, SCENARIOS, SURVIVAL_MODE, checkServerList, checkStatus, checkStayed, checkTabLists, features, fromSurvival } from '../src/scenarios.js';
+import { LOBBY_MODE, QUIRKS, SCENARIOS, SURVIVAL_MODE, checkServerList, checkStatus, checkStayed, checkTabLists, features, fromSurvival, plainText } from '../src/scenarios.js';
 import { findEntry, jobsForTier, loadMatrix, resolveVariant } from '../src/versions.js';
 import { WARP_FAILURES } from '../src/warp.js';
 
@@ -186,6 +186,20 @@ describe('scenario features', () => {
     assert.equal(features(758).profileKeys, 'only 1.19 to 1.19.2 clients send a profile key in Login Start');
   });
 
+  it('transfers from 1.20.5, with a bot that opens its own handshake to Warp', () => {
+    assert.equal(features(765).transfers, 'no Transfer packet before 1.20.5');
+    assert.equal(features(766).transfers, true);
+    assert.equal(features(777).transfers, true);
+    assert.equal(features(777, { bridged: true }).transfers, 'through ViaProxy, Warp sees the bridge’s handshake, not the bot’s');
+    assert.equal(features(769, { direct: true }).transfers, 'no proxy in a control run');
+  });
+
+  it('drains on every version a bot reaches without a bridge, transferring from 1.20.5', () => {
+    for (const protocol of [47, 763, 765, 766, 777]) assert.equal(features(protocol).drain, true, String(protocol));
+    assert.equal(features(5, { bridged: true }).drain, 'through ViaProxy, the bridges only lead to warp and warp-alt');
+    assert.equal(features(769, { direct: true }).drain, 'no proxy in a control run');
+  });
+
   it('signs chat from 1.20, whose servers take the keys that verify chat sessions from the mock', () => {
     assert.equal(features(47).signedChat, "before 1.20 a server trusts only Mojang's own key to verify chat");
     assert.notEqual(features(762).signedChat, true); // 1.19.4: Mojang's key is bundled in authlib
@@ -228,6 +242,29 @@ describe('status scenario', () => {
 
   it('fails when Warp advertises another protocol, which lists it as incompatible (#49)', () => {
     assert.throws(() => checkStatus(answer('Warp 26.1.1', 775), { direct: false, protocol: 769 }), /advertised protocol 775 to a client of protocol 769/);
+  });
+
+  it('checks the configured message of the day by its text, whatever its colors became', () => {
+    const description = { text: '', extra: [{ text: 'warp-e2e', color: 'aqua' }, { text: ' status', color: 'gray' }] };
+    const answered = { ...answer('Warp 1.7.2-26.3', 47), description, players: { max: 500, online: 2 } };
+    const expected = { direct: false, protocol: 47, motd: 'warp-e2e status', maxPlayers: 500 };
+    assert.equal(checkStatus(answered, expected), 'answered as "Warp 1.7.2-26.3" (protocol 47), 2/500 players in 1 ms');
+    assert.throws(() => checkStatus({ ...answered, description: 'A Warp Proxy' }, expected), /description "A Warp Proxy" instead of the configured "warp-e2e status"/);
+  });
+
+  it('checks the configured player limit and a player count', () => {
+    const answered = { ...answer('Warp 1.7.2-26.3', 47), description: 'warp-e2e status', players: { max: 20, online: 0 } };
+    const expected = { direct: false, protocol: 47, motd: 'warp-e2e status', maxPlayers: 500 };
+    assert.throws(() => checkStatus(answered, expected), /instead of a maximum of 500/);
+    assert.throws(() => checkStatus({ ...answered, players: undefined }, expected), /instead of a maximum of 500/);
+    assert.doesNotThrow(() => checkStatus({ ...answered, players: { max: 500, online: 0 } }, expected));
+  });
+
+  it('reads the text of a description in every form a status answer gives it', () => {
+    assert.equal(plainText('plain'), 'plain');
+    assert.equal(plainText({ text: 'a', extra: ['b', { text: 'c', extra: [{ text: 'd' }] }] }), 'abcd');
+    assert.equal(plainText([{ text: 'a' }, 'b']), 'ab');
+    assert.equal(plainText(undefined), '');
   });
 
   it('fails on an answer that is not Warp’s, except in a control run', () => {
