@@ -38,7 +38,13 @@ tasks.withType<Javadoc>().configureEach {
 
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()
-    jvmArgs("-XX:+EnableDynamicAgentLoading")
+    // Native libraries (libdeflate through the FFM API, Netty's transports) load without warnings,
+    // as they do from the shadow jar, whose manifest enables native access.
+    jvmArgs("-XX:+EnableDynamicAgentLoading", "--enable-native-access=ALL-UNNAMED")
+    // Native libraries install into the build directory rather than the user's cache, and with
+    // -Pwarp.natives.required=true (CI) a test needing native compression fails instead of skipping.
+    systemProperty("warp.natives.dir", layout.buildDirectory.dir("tmp/natives").get().asFile.absolutePath)
+    systemProperty("warp.natives.required", providers.gradleProperty("warp.natives.required").getOrElse("false"))
 }
 
 testing {
