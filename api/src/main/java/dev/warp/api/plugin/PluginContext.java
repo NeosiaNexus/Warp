@@ -17,6 +17,7 @@
 package dev.warp.api.plugin;
 
 import dev.warp.api.Warp;
+import dev.warp.api.event.EventBus;
 
 import java.nio.file.Path;
 
@@ -34,6 +35,7 @@ import org.slf4j.Logger;
  *   <li>{@link Logger}: a logger named after the plugin's identifier;
  *   <li>{@link PluginContainer} and {@link PluginDescription}: the plugin itself;
  *   <li>{@link PluginManager}: every plugin;
+ *   <li>{@link EventBus}: the plugin's event bus;
  *   <li>{@link Path} annotated with {@link DataDirectory}: the plugin's data directory.
  * </ul>
  *
@@ -71,4 +73,12 @@ public interface PluginContext {
    * @return the data directory
    */
   Path dataDirectory();
+
+  /**
+   * Returns the plugin's event bus. Everything registered through it belongs to the plugin and is
+   * removed when the plugin is disabled or fails.
+   *
+   * @return the event bus
+   */
+  EventBus events();
 }

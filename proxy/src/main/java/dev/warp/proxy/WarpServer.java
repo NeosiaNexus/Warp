@@ -18,6 +18,8 @@ package dev.warp.proxy;
 
 import dev.warp.api.Warp;
 import dev.warp.api.WarpProvider;
+import dev.warp.api.event.proxy.ProxyReadyEvent;
+import dev.warp.api.event.proxy.ProxyShutdownEvent;
 import dev.warp.api.plugin.PluginManager;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
@@ -26,6 +28,7 @@ import dev.warp.proxy.connection.ConnectedPlayer;
 import dev.warp.proxy.connection.PlaySession;
 import dev.warp.proxy.connection.ServerChannelInitializer;
 import dev.warp.proxy.connection.ServerLoginContext;
+import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.plugin.WarpPluginManager;
 import dev.warp.proxy.server.ServerRegistry;
@@ -37,6 +40,9 @@ import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
 import java.security.spec.InvalidKeySpecException;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.PooledByteBufAllocator;
@@ -89,6 +95,9 @@ public final class WarpServer implements Warp {
    */
   private static final int RSA_KEY_SIZE = 1024;
 
+  /** How long shutdown waits for the handlers of {@link ProxyShutdownEvent}. */
+  private static final long SHUTDOWN_EVENT_TIMEOUT_SECONDS = 30;
+
   // ---------------------------------------------------------------------------
   // Instance fields
   // ---------------------------------------------------------------------------
@@ -97,6 +106,9 @@ public final class WarpServer implements Warp {
 
   /** The players connected to the proxy. */
   private final PlayerRegistry playerRegistry = new PlayerRegistry();
+
+  /** The event bus plugins subscribe to. */
+  private final WarpEventBus events = new WarpEventBus();
 
   /** The plugins of the proxy's {@code plugins} directory. */
   private final WarpPluginManager pluginManager;
@@ -126,7 +138,7 @@ public final class WarpServer implements Warp {
    */
   public WarpServer(WarpConfig config, Path directory) {
     this.config = config;
-    this.pluginManager = new WarpPluginManager(this, directory.resolve("plugins"));
+    this.pluginManager = new WarpPluginManager(this, events, directory.resolve("plugins"));
   }
 
   // ---------------------------------------------------------------------------
@@ -196,6 +208,7 @@ public final class WarpServer implements Warp {
 
     this.running = true;
     logger.info("Warp is listening on {}", config.bind());
+    var _ = events.fire(new ProxyReadyEvent(serverChannel.localAddress()));
   }
 
   /** Gracefully shuts down the server channel and Netty event loops. */
@@ -210,7 +223,9 @@ public final class WarpServer implements Warp {
       serverChannel.close().awaitUninterruptibly();
     }
     disconnectPlayers();
+    awaitShutdownHandlers();
     pluginManager.disableAll();
+    events.close();
     shutdownEventLoops();
 
     if (sessionService != null) {
@@ -229,6 +244,17 @@ public final class WarpServer implements Warp {
     logger.info("Disconnecting {} players", players.size());
     for (ConnectedPlayer player : players) {
       player.disconnectShutdown();
+    }
+  }
+
+  /** Fires {@link ProxyShutdownEvent} and waits a bounded time for its handlers. */
+  private void awaitShutdownHandlers() {
+    try {
+      events.fire(new ProxyShutdownEvent()).get(SHUTDOWN_EVENT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    } catch (ExecutionException | TimeoutException e) {
+      logger.warn("Shutdown handlers did not finish within {} s", SHUTDOWN_EVENT_TIMEOUT_SECONDS);
     }
   }
 

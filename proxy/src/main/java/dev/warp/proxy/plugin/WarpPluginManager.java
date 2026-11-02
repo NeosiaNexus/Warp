@@ -17,6 +17,7 @@
 package dev.warp.proxy.plugin;
 
 import dev.warp.api.Warp;
+import dev.warp.api.event.EventBus;
 import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginContext;
 import dev.warp.api.plugin.PluginDependency;
@@ -24,6 +25,7 @@ import dev.warp.api.plugin.PluginDescription;
 import dev.warp.api.plugin.PluginManager;
 import dev.warp.api.plugin.PluginState;
 import dev.warp.api.plugin.WarpPlugin;
+import dev.warp.proxy.event.WarpEventBus;
 
 import java.io.IOException;
 import java.net.MalformedURLException;
@@ -51,6 +53,7 @@ public final class WarpPluginManager implements PluginManager {
   private static final Logger logger = LoggerFactory.getLogger(WarpPluginManager.class);
 
   private final Warp proxy;
+  private final WarpEventBus events;
   private final Path directory;
   private final ApiClassLoader apiLoader;
 
@@ -61,10 +64,12 @@ public final class WarpPluginManager implements PluginManager {
    * Creates a manager for a plugins directory.
    *
    * @param proxy the proxy given to plugins
+   * @param events the proxy's event bus, of which each plugin gets its own view
    * @param directory the plugins directory, created if missing
    */
-  public WarpPluginManager(Warp proxy, Path directory) {
+  public WarpPluginManager(Warp proxy, WarpEventBus events, Path directory) {
     this.proxy = proxy;
+    this.events = events;
     this.directory = directory;
     this.apiLoader = new ApiClassLoader(WarpPluginManager.class.getClassLoader());
   }
@@ -216,7 +221,7 @@ public final class WarpPluginManager implements PluginManager {
       return;
     }
     container.setClassLoader(loader);
-    WarpPluginContext context = new WarpPluginContext(container, proxy);
+    WarpPluginContext context = new WarpPluginContext(container, proxy, events);
     container.setContext(context);
 
     try {
@@ -251,6 +256,7 @@ public final class WarpPluginManager implements PluginManager {
     injectables.put(PluginContainer.class, context.plugin());
     injectables.put(PluginDescription.class, context.plugin().description());
     injectables.put(PluginManager.class, this);
+    injectables.put(EventBus.class, context.events());
     return injectables;
   }
 
