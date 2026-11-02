@@ -20,6 +20,7 @@ import dev.warp.api.Warp;
 import dev.warp.api.command.CommandManager;
 import dev.warp.api.event.EventBus;
 import dev.warp.api.lifecycle.ReadinessHold;
+import dev.warp.api.logging.LogSinks;
 import dev.warp.api.messaging.Messaging;
 import dev.warp.api.permission.Permissions;
 
@@ -43,6 +44,7 @@ import org.slf4j.Logger;
  *   <li>{@link Messaging}: the plugin's plugin message channels;
  *   <li>{@link CommandManager}: the plugin's commands;
  *   <li>{@link Permissions}: the plugin's permission providers;
+ *   <li>{@link LogSinks}: the plugin's log sinks;
  *   <li>{@link Path} annotated with {@link DataDirectory}: the plugin's data directory.
  * </ul>
  *
@@ -54,9 +56,9 @@ import org.slf4j.Logger;
  * <p>Everything a plugin registers through its context belongs to it and is released when the
  * plugin is disabled or fails to load, whether or not the plugin cleans up: event subscriptions
  * (drain policies too: they are {@link dev.warp.api.event.player.PlayerDrainEvent} handlers),
- * plugin message channels, commands, permission providers and readiness holds. What the plugin
- * registers once it is gone, from a task still running, is undone at once and refused with an
- * {@link IllegalStateException}.
+ * plugin message channels, commands, permission providers, log sinks and readiness holds. What the
+ * plugin registers once it is gone, from a task still running, is undone at once and refused with
+ * an {@link IllegalStateException}.
  *
  * <p>Backend servers are not owned: a server registered through {@link Warp#servers()} stays
  * registered when its plugin goes, as players may be playing on it and another plugin may have
@@ -125,6 +127,14 @@ public interface PluginContext {
    * @return the permission registrar
    */
   Permissions permissions();
+
+  /**
+   * Returns the plugin's log sinks, which receive the proxy's log records to forward them elsewhere
+   * (Sentry, Loki). Sinks registered through it are removed when the plugin is disabled or fails.
+   *
+   * @return the log sink registrar
+   */
+  LogSinks logSinks();
 
   /**
    * Holds the proxy's readiness until the hold is released, or until the plugin is disabled or

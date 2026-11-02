@@ -25,7 +25,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.mock;
 
 import dev.warp.api.player.TransferResult;
 import dev.warp.protocol.ProtocolState;
@@ -119,7 +118,7 @@ class TransferTest {
               VERSION,
               new GameProfile(UUID.randomUUID(), "Steve", List.of()),
               new InetSocketAddress(InetAddress.getLoopbackAddress(), 50000),
-              mock(ServerLoginContext.class),
+              TestLoginContexts.mocked(),
               new ClientCookies(connection, VERSION, channel.eventLoop()));
       channel.finishAndReleaseAll();
       return player;

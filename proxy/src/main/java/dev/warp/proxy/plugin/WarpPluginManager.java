@@ -19,6 +19,7 @@ package dev.warp.proxy.plugin;
 import dev.warp.api.Warp;
 import dev.warp.api.command.CommandManager;
 import dev.warp.api.event.EventBus;
+import dev.warp.api.logging.LogSinks;
 import dev.warp.api.messaging.Messaging;
 import dev.warp.api.permission.Permissions;
 import dev.warp.api.plugin.PluginContainer;
@@ -30,6 +31,7 @@ import dev.warp.api.plugin.PluginState;
 import dev.warp.api.plugin.WarpPlugin;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.logging.LogSinkRegistry;
 import dev.warp.proxy.management.ReadinessHolds;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
@@ -65,6 +67,7 @@ public final class WarpPluginManager implements PluginManager {
   private final WarpCommandManager commands;
   private final PermissionRegistry permissions;
   private final ReadinessHolds readinessHolds;
+  private final LogSinkRegistry logSinks;
   private final Path directory;
   private final ApiClassLoader apiLoader;
 
@@ -80,6 +83,7 @@ public final class WarpPluginManager implements PluginManager {
    * @param commands the proxy's commands
    * @param permissions the proxy's permission providers
    * @param readinessHolds the holds plugins keep on the proxy's readiness
+   * @param logSinks the proxy's log sinks
    * @param directory the plugins directory, created if missing
    */
   public WarpPluginManager(
@@ -89,6 +93,7 @@ public final class WarpPluginManager implements PluginManager {
       WarpCommandManager commands,
       PermissionRegistry permissions,
       ReadinessHolds readinessHolds,
+      LogSinkRegistry logSinks,
       Path directory) {
     this.proxy = proxy;
     this.events = events;
@@ -96,6 +101,7 @@ public final class WarpPluginManager implements PluginManager {
     this.commands = commands;
     this.permissions = permissions;
     this.readinessHolds = readinessHolds;
+    this.logSinks = logSinks;
     this.directory = directory;
     this.apiLoader = new ApiClassLoader(WarpPluginManager.class.getClassLoader());
   }
@@ -249,7 +255,7 @@ public final class WarpPluginManager implements PluginManager {
     container.setClassLoader(loader);
     WarpPluginContext context =
         new WarpPluginContext(
-            container, proxy, events, channels, commands, permissions, readinessHolds);
+            container, proxy, events, channels, commands, permissions, readinessHolds, logSinks);
     container.setContext(context);
 
     try {
@@ -288,6 +294,7 @@ public final class WarpPluginManager implements PluginManager {
     injectables.put(Messaging.class, context.messaging());
     injectables.put(CommandManager.class, context.commands());
     injectables.put(Permissions.class, context.permissions());
+    injectables.put(LogSinks.class, context.logSinks());
     return injectables;
   }
 

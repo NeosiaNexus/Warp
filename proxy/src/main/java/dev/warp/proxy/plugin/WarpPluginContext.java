@@ -21,6 +21,7 @@ import dev.warp.api.command.CommandManager;
 import dev.warp.api.event.EventBus;
 import dev.warp.api.event.Subscription;
 import dev.warp.api.lifecycle.ReadinessHold;
+import dev.warp.api.logging.LogSinks;
 import dev.warp.api.messaging.Messaging;
 import dev.warp.api.permission.Permissions;
 import dev.warp.api.plugin.PluginContainer;
@@ -29,6 +30,8 @@ import dev.warp.proxy.command.PluginCommandManager;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.logging.LogSinkRegistry;
+import dev.warp.proxy.logging.PluginLogSinks;
 import dev.warp.proxy.management.ReadinessHolds;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.messaging.PluginMessaging;
@@ -47,7 +50,7 @@ import org.slf4j.LoggerFactory;
  * A plugin's view of the proxy. Everything the plugin registers through it is tracked, so that it
  * can be removed when the plugin fails or is disabled, whether or not the plugin cleans up: event
  * subscriptions (drain policies included: they are {@code PlayerDrainEvent} handlers), plugin
- * message channels, commands, permission providers and readiness holds.
+ * message channels, commands, permission providers, log sinks and readiness holds.
  *
  * <p>Once the plugin is gone, what it registers late (from a task still running) is undone at once
  * and refused with an {@link IllegalStateException}. Registrations the plugin undid itself are
@@ -67,6 +70,7 @@ final class WarpPluginContext implements PluginContext {
   private final PluginMessaging messaging;
   private final PluginCommandManager commands;
   private final PluginPermissions permissions;
+  private final PluginLogSinks logSinks;
 
   /** Set once the plugin is gone: nothing more may be registered. */
   private volatile boolean closed;
@@ -78,7 +82,8 @@ final class WarpPluginContext implements PluginContext {
       ChannelRegistry channels,
       WarpCommandManager commandManager,
       PermissionRegistry permissionRegistry,
-      ReadinessHolds readinessHolds) {
+      ReadinessHolds readinessHolds,
+      LogSinkRegistry logSinkRegistry) {
     this.plugin = plugin;
     this.proxy = proxy;
     this.pluginLogger = LoggerFactory.getLogger(plugin.description().id());
@@ -90,6 +95,9 @@ final class WarpPluginContext implements PluginContext {
         new PluginCommandManager(commandManager, plugin.description().id(), this::track);
     this.permissions =
         new PluginPermissions(permissionRegistry, plugin.description().id(), this::track);
+    this.logSinks =
+        new PluginLogSinks(
+            logSinkRegistry, plugin.description().id(), plugin.classLoader(), this::track);
   }
 
   @Override
@@ -130,6 +138,11 @@ final class WarpPluginContext implements PluginContext {
   @Override
   public Permissions permissions() {
     return permissions;
+  }
+
+  @Override
+  public LogSinks logSinks() {
+    return logSinks;
   }
 
   @Override
