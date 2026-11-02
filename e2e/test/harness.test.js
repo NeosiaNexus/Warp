@@ -186,6 +186,14 @@ describe('scenario features', () => {
     assert.equal(features(758).profileKeys, 'only 1.19 to 1.19.2 clients send a profile key in Login Start');
   });
 
+  it('transfers from 1.20.5, with a bot that opens its own handshake to Warp', () => {
+    assert.equal(features(765).transfers, 'no Transfer packet before 1.20.5');
+    assert.equal(features(766).transfers, true);
+    assert.equal(features(777).transfers, true);
+    assert.equal(features(777, { bridged: true }).transfers, 'through ViaProxy, Warp sees the bridge’s handshake, not the bot’s');
+    assert.equal(features(769, { direct: true }).transfers, 'no proxy in a control run');
+  });
+
   it('signs chat from 1.20, whose servers take the keys that verify chat sessions from the mock', () => {
     assert.equal(features(47).signedChat, "before 1.20 a server trusts only Mojang's own key to verify chat");
     assert.notEqual(features(762).signedChat, true); // 1.19.4: Mojang's key is bundled in authlib

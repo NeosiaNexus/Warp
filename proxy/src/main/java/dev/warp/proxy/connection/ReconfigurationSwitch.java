@@ -216,7 +216,8 @@ final class ReconfigurationSwitch implements ServerSwitch {
       player.closeBundle();
       // From here on the current server's packets must not reach the client.
       player.playOn(null);
-      player.clientConnection().writeAndFlush(new StartConfiguration());
+      // The client reads what follows in the configuration state, before it acknowledges.
+      player.clientConnection().writeTerminal(new StartConfiguration());
       return;
     }
     configure(backend);

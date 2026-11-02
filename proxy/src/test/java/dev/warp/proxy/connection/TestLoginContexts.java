@@ -109,7 +109,26 @@ final class TestLoginContexts {
         new MojangSessionService(),
         ProfileKeys.mojang(),
         DuplicateLoginPolicy.AUTO,
-        events);
+        events,
+        false);
+  }
+
+  /**
+   * Returns {@link #offline()}, letting in the players a Transfer packet sends to the proxy if
+   * {@code acceptsTransfers}.
+   *
+   * @param acceptsTransfers the {@code accepts-transfers} setting
+   * @return the context
+   */
+  static ServerLoginContext offlineAcceptingTransfers(boolean acceptsTransfers) {
+    return context(
+        false,
+        -1,
+        new MojangSessionService(),
+        ProfileKeys.mojang(),
+        DuplicateLoginPolicy.AUTO,
+        EVENTS,
+        acceptsTransfers);
   }
 
   /**
@@ -138,7 +157,8 @@ final class TestLoginContexts {
       MojangSessionService sessionService,
       ProfileKeys profileKeys,
       DuplicateLoginPolicy policy) {
-    return context(onlineMode, compressionThreshold, sessionService, profileKeys, policy, EVENTS);
+    return context(
+        onlineMode, compressionThreshold, sessionService, profileKeys, policy, EVENTS, false);
   }
 
   private static ServerLoginContext context(
@@ -147,7 +167,8 @@ final class TestLoginContexts {
       MojangSessionService sessionService,
       ProfileKeys profileKeys,
       DuplicateLoginPolicy policy,
-      WarpEventBus events) {
+      WarpEventBus events,
+      boolean acceptsTransfers) {
     ServerRegistry registry =
         new ServerRegistry(
             Map.of("lobby", new InetSocketAddress(InetAddress.getLoopbackAddress(), 1)),
@@ -170,7 +191,8 @@ final class TestLoginContexts {
         commands(registry),
         ForwardingMode.NONE,
         new byte[0],
-        NioSocketChannel.class);
+        NioSocketChannel.class,
+        acceptsTransfers);
   }
 
   private static KeyPair generateKeyPair() {

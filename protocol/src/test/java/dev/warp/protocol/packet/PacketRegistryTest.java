@@ -17,10 +17,12 @@
 package dev.warp.protocol.packet;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
@@ -30,6 +32,7 @@ import dev.warp.protocol.packet.login.LoginStart;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.ClearTitles;
+import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
@@ -277,6 +280,33 @@ class PacketRegistryTest {
     void negativeId() {
       PacketRegistry registry = PacketRegistry.builder().build();
       assertNull(registry.lookup(ProtocolVersion.MINECRAFT_1_21_4, -1));
+    }
+
+    @Test
+    @DisplayName("should tell, without throwing, whether a packet type can be written at a version")
+    void canEncode() {
+      PacketRegistry registry =
+          PacketRegistry.builder()
+              .register(
+                  KeepAlive.class,
+                  KeepAlive.CODEC,
+                  VersionMapping.map(0x1F, ProtocolVersion.MINECRAFT_1_9))
+              .registerWatched(
+                  PlayerInfoUpdate.class,
+                  PlayerInfoUpdate.WATCH,
+                  VersionMapping.map(0x3A, ProtocolVersion.MINECRAFT_1_19_4))
+              .build();
+
+      assertTrue(registry.canEncode(ProtocolVersion.MINECRAFT_1_9, KeepAlive.class));
+      assertFalse(registry.canEncode(ProtocolVersion.MINECRAFT_1_8, KeepAlive.class));
+      assertFalse(registry.canEncode(ProtocolVersion.MINECRAFT_1_9, StatusRequest.class));
+      assertFalse(
+          registry.canEncode(ProtocolVersion.MINECRAFT_1_20_1, PlayerInfoUpdate.class),
+          "watched without a codec");
+      assertFalse(
+          PacketRegistry.builder()
+              .build()
+              .canEncode(ProtocolVersion.MINECRAFT_1_21_4, KeepAlive.class));
     }
   }
 

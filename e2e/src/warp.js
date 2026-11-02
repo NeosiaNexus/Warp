@@ -41,6 +41,8 @@ export class Warp {
    * @param {number} options.threshold `compression.threshold`
    * @param {Record<string, number>} options.servers name → port of each backend
    * @param {string[]} options.fallbackOrder first entry is the default server
+   * @param {boolean} [options.acceptsTransfers] `accepts-transfers`: lets in the players a Transfer
+   *   packet sends to it (1.20.5+)
    * @param {{mode: string, secret: string}|null} options.forwarding player info forwarding, with the
    *   secret the backends share, or null for none
    * @param {string} options.logDir
@@ -71,6 +73,7 @@ ${servers}
 }
 default-server = "${this.fallbackOrder[0]}"
 fallback-order = [${this.fallbackOrder.map((s) => `"${s}"`).join(', ')}]
+accepts-transfers = ${this.acceptsTransfers ?? false}
 forwarding {
   mode = "${this.forwarding?.mode ?? 'none'}"
 }

@@ -273,6 +273,8 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, forward
           port: ports.warp,
           servers: { lobby: ports.lobby, survival: ports.survival },
           fallbackOrder: ['lobby', 'survival'],
+          // The transfer scenario comes back through this one, and is refused by warp-alt.
+          acceptsTransfers: true,
           // The JVM resolves the recording against its own directory: the path must be absolute.
           jvmArgs: opts.soak === undefined ? [] : soakJvmArgs(resolve(logDir, `warp-${variant.name}.jfr`)),
         }),
@@ -291,7 +293,12 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, forward
     entry,
     variant,
     direct: opts.direct,
-    features: features(entry.protocol, { direct: opts.direct, forwarding: variant.forwarding, online: variant.online }),
+    features: features(entry.protocol, {
+      direct: opts.direct,
+      forwarding: variant.forwarding,
+      online: variant.online,
+      bridged: entry.via !== undefined,
+    }),
     client: connectClient(entry, { tools: matrix.tools, cache: opts.cache, java: warpJava, ports, targets: Object.values(targets), logDir, runDir }),
     warp: { port: targets.warp, instance: instances[0] ?? null },
     warpAlt: { port: targets.warpAlt },

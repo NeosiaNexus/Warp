@@ -17,6 +17,12 @@ const BRANDS = { paper: /Paper/, vanilla: /vanilla/ };
 /** First protocol (1.20) whose servers can be made to trust the mock Mojang's key (see mojang.js). */
 export const SIGNED_CHAT = 763;
 
+/** The first protocol with transfers: 1.20.5. */
+export const TRANSFER_PROTOCOL = 766;
+
+/** Vanilla's reason for refusing a transfer, which Warp gives when `accepts-transfers` is off. */
+const TRANSFERS_DISABLED = 'multiplayer.disconnect.transfers_disabled';
+
 /**
  * What a run offers the scenarios that require it: `true`, or why the run lacks it, which the
  * skipped scenario reports. `proxy` and `forwarding` depend on the run, the others on the protocol.
@@ -25,7 +31,7 @@ export const SIGNED_CHAT = 763;
  *   without Warp; `forwarding` and `online`: the variant's forwarding mode and online mode
  * @returns {Record<string, true|string>}
  */
-export function features(protocol, { direct = false, forwarding = 'none', online = false } = {}) {
+export function features(protocol, { direct = false, forwarding = 'none', online = false, bridged = false } = {}) {
   const proxy = direct ? 'no proxy in a control run' : true;
   return {
     proxy,
@@ -46,6 +52,13 @@ export function features(protocol, { direct = false, forwarding = 'none', online
     // the services host, which the harness mocks. Before, it only trusts Mojang's own key, bundled in
     // authlib, so no bot can open a chat session there.
     signedChat: protocol >= SIGNED_CHAT || "before 1.20 a server trusts only Mojang's own key to verify chat",
+    // Transfers arrived in 1.20.5. The bot declares the transfer intent in its own handshake, which
+    // a bridge would replace with the one it opens to Warp.
+    transfers: all(
+      proxy,
+      protocol >= TRANSFER_PROTOCOL || 'no Transfer packet before 1.20.5',
+      !bridged || 'through ViaProxy, Warp sees the bridge’s handshake, not the bot’s',
+    ),
   };
 }
 
@@ -83,8 +96,8 @@ async function proxyReportsServer(ctx, bot, expected) {
   if (current !== expected) throw new Error(`/server says ${current}, expected ${expected}`);
 }
 
-async function joinWarp(ctx, username, target = ctx.warp, profileKeys = null) {
-  return ctx.client.connect({ host: '127.0.0.1', port: target.port, username, profileKeys });
+async function joinWarp(ctx, username, target = ctx.warp, profileKeys = null, transfer = false) {
+  return ctx.client.connect({ host: '127.0.0.1', port: target.port, username, profileKeys, transfer });
 }
 
 /** Moves the bot to survival with Warp's /server, and waits until it plays there. */
@@ -516,6 +529,54 @@ async function switchRefused(ctx) {
   }
 }
 
+/**
+ * Transfers, as a proxy drained for a restart sends its players to the next one: the lobby sends a
+ * player away with its own Transfer packet, which must reach the client through Warp exactly as
+ * sent; the client comes back with a transfer handshake, which Warp lets in (`accepts-transfers` is
+ * on for warp) onto the lobby. warp-alt, where it is off, refuses such a player with vanilla's
+ * translated reason.
+ */
+async function transfer(ctx) {
+  await expectTransferRefused(ctx, 'e2e_tr_refused');
+
+  const bot = await joinWarp(ctx, 'e2e_transfer');
+  let sent;
+  try {
+    const received = new Promise((resolve) => bot.bot._client.once('transfer', resolve));
+    await ctx.lobby.command(`transfer 127.0.0.1 ${ctx.warp.port} e2e_transfer`, /Transferring/i);
+    sent = await Promise.race([received, sleep(10_000).then(() => null)]);
+    if (sent === null) throw new Error('the lobby transferred the player, but no Transfer packet reached it');
+    if (sent.host !== '127.0.0.1' || sent.port !== ctx.warp.port) {
+      throw new Error(`Transfer packet altered: ${JSON.stringify(sent)}, sent to 127.0.0.1:${ctx.warp.port}`);
+    }
+  } finally {
+    await bot.quit();
+  }
+
+  const back = await joinWarp(ctx, 'e2e_transfer', ctx.warp, null, true);
+  try {
+    await back.waitForGameMode(LOBBY_MODE, 10_000);
+    await proxyReportsServer(ctx, back, 'lobby');
+    back.healthy();
+    return `lobby's Transfer to ${sent.host}:${sent.port} reached the player as sent; it came back by transfer onto the lobby; warp-alt refused one with ${TRANSFERS_DISABLED}`;
+  } finally {
+    back.quit();
+  }
+}
+
+/** Joins warp-alt, whose `accepts-transfers` is off, by transfer, and expects vanilla's refusal. */
+async function expectTransferRefused(ctx, username) {
+  let bot;
+  try {
+    bot = await joinWarp(ctx, username, ctx.warpAlt, null, true);
+  } catch (e) {
+    if (String(e.message).includes(`"translate":"${TRANSFERS_DISABLED}"`)) return;
+    throw new Error(`expected warp-alt to refuse a transfer with ${TRANSFERS_DISABLED}, got: ${e.message}`);
+  }
+  bot.quit();
+  throw new Error('warp-alt let a transferred player in with accepts-transfers off');
+}
+
 const DAY_MS = 86_400_000;
 /**
  * Warp's reason for every refused key: the only profile key reason that 1.19, 1.19.1 and 1.19.2
@@ -642,4 +703,5 @@ export const SCENARIOS = [
   { name: 'fallback-unreachable', run: fallbackUnreachable, requires: 'proxy' },
   { name: 'fallback-rejected', run: fallbackRejected, requires: 'proxy' },
   { name: 'switch-refused', run: switchRefused, requires: 'switching' },
+  { name: 'transfer', run: transfer, requires: 'transfers' },
 ];

@@ -64,6 +64,7 @@ public final class WarpConfig {
   private static final int DEFAULT_COMPRESSION_LEVEL = -1;
   private static final boolean DEFAULT_COMPRESSION_PASSTHROUGH = true;
   private static final String DEFAULT_DUPLICATE_LOGIN = "auto";
+  private static final boolean DEFAULT_ACCEPTS_TRANSFERS = false;
 
   /** Characters used for auto-generated forwarding secret. */
   private static final String SECRET_CHARS =
@@ -86,6 +87,7 @@ public final class WarpConfig {
   private final int compressionThreshold;
   private final int compressionLevel;
   private final boolean compressionPassthrough;
+  private final boolean acceptsTransfers;
 
   // ---------------------------------------------------------------------------
   // Constructor (private — use load())
@@ -102,7 +104,8 @@ public final class WarpConfig {
       byte[] forwardingSecret,
       int compressionThreshold,
       int compressionLevel,
-      boolean compressionPassthrough) {
+      boolean compressionPassthrough,
+      boolean acceptsTransfers) {
     this.bind = bind;
     this.onlineMode = onlineMode;
     this.servers = Map.copyOf(servers);
@@ -114,6 +117,7 @@ public final class WarpConfig {
     this.compressionThreshold = compressionThreshold;
     this.compressionLevel = compressionLevel;
     this.compressionPassthrough = compressionPassthrough;
+    this.acceptsTransfers = acceptsTransfers;
   }
 
   // ---------------------------------------------------------------------------
@@ -175,6 +179,8 @@ public final class WarpConfig {
     boolean compressionPassthrough =
         root.node("compression", "passthrough").getBoolean(DEFAULT_COMPRESSION_PASSTHROUGH);
 
+    boolean acceptsTransfers = root.node("accepts-transfers").getBoolean(DEFAULT_ACCEPTS_TRANSFERS);
+
     // ---------------------------------------------------------------------------
     // Validate
     // ---------------------------------------------------------------------------
@@ -200,7 +206,8 @@ public final class WarpConfig {
             forwardingSecret,
             compressionThreshold,
             compressionLevel,
-            compressionPassthrough);
+            compressionPassthrough,
+            acceptsTransfers);
 
     logConfig(config);
     return config;
@@ -312,6 +319,17 @@ public final class WarpConfig {
    */
   public boolean compressionPassthrough() {
     return compressionPassthrough;
+  }
+
+  /**
+   * Returns whether players that a Transfer packet sends to the proxy (handshake intent 3, clients
+   * 1.20.5 and newer) may log in. Off by default, as on vanilla servers and Velocity: a client is
+   * then refused with vanilla's translated "transfers disabled" reason.
+   *
+   * @return {@code true} if transferred players may log in
+   */
+  public boolean acceptsTransfers() {
+    return acceptsTransfers;
   }
 
   // ---------------------------------------------------------------------------
@@ -541,6 +559,11 @@ public final class WarpConfig {
         # The server players are sent to when they first connect.
         default-server = "lobby"
 
+        # Let in the players a server sends here with a Transfer packet (Minecraft 1.20.5+):
+        # another proxy draining for a restart, or a server of another network. Off, they are
+        # refused with the game's own "transfers disabled" message, as on a vanilla server.
+        accepts-transfers = false
+
         # Servers tried in order when a player is kicked from their current server.
         # The failed server is skipped. If all fail, the player is disconnected.
         # Defaults to [default-server] if omitted.
@@ -605,6 +628,7 @@ public final class WarpConfig {
     logger.info(
         "  duplicate-login: {}",
         config.duplicateLoginPolicy.name().toLowerCase(Locale.ROOT).replace('_', '-'));
+    logger.info("  accepts-transfers: {}", config.acceptsTransfers);
     logger.info("  forwarding: {}", config.forwardingMode.name().toLowerCase(Locale.ROOT));
     logger.info(
         "  compression: threshold={}, level={}, passthrough={}",

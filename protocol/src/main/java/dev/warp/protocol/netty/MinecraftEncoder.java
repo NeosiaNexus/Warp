@@ -192,4 +192,16 @@ public final class MinecraftEncoder extends MessageToByteEncoder<Packet> {
   public ProtocolVersion version() {
     return version;
   }
+
+  /**
+   * Returns whether this encoder can write packets of {@code type} in its current state and
+   * version. Writing one it cannot fails the write and, through the pipeline's exception handler,
+   * usually the connection.
+   *
+   * @param type the packet class
+   * @return {@code true} if the type is registered with a codec for the current state and version
+   */
+  public boolean canEncode(Class<? extends Packet> type) {
+    return registry.canEncode(version, type);
+  }
 }

@@ -405,7 +405,8 @@ public final class WarpServer implements Warp {
         commands,
         config.forwardingMode(),
         config.forwardingSecret(),
-        transport.clientChannelClass());
+        transport.clientChannelClass(),
+        config.acceptsTransfers());
   }
 
   /**

@@ -136,6 +136,22 @@ public final class PacketRegistry {
     return encoding;
   }
 
+  /**
+   * Returns whether {@link #encoding} can write the given packet type at the given protocol
+   * version, without throwing when it cannot.
+   *
+   * @param version the protocol version of the connection
+   * @param type the packet class to write
+   * @return {@code true} if the type is registered at this version with a codec
+   */
+  public boolean canEncode(ProtocolVersion version, Class<? extends Packet> type) {
+    int protocol = version.protocol();
+    Map<Class<? extends Packet>, Registered> types =
+        protocol >= 0 && protocol < typeByProtocol.length ? typeByProtocol[protocol] : null;
+    Registered registered = types == null ? null : types.get(type);
+    return registered != null && registered.encoding() != null;
+  }
+
   private Registered registered(ProtocolVersion version, Class<? extends Packet> type) {
     int protocol = version.protocol();
     Map<Class<? extends Packet>, Registered> types =

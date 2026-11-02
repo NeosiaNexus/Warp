@@ -25,11 +25,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
+import dev.warp.protocol.packet.StateRegistry;
+import dev.warp.protocol.packet.cookie.CookieRequest;
+import dev.warp.protocol.packet.cookie.StoreCookie;
+import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.status.StatusRequest;
 
 import java.io.IOException;
@@ -230,6 +235,104 @@ class MinecraftConnectionTest {
       assertEquals(ProtocolVersion.MINECRAFT_1_8, decoder.version());
       assertEquals(ProtocolVersion.MINECRAFT_1_8, encoder.version());
       ch.finishAndReleaseAll();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Writes across a state change
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("writes across a state change")
+  class StateChangeWrites {
+
+    private static final ProtocolVersion VERSION = ProtocolVersion.MINECRAFT_1_21_4;
+
+    @Test
+    @DisplayName("should write the proxy's own packets at once when no state change is pending")
+    void writesAtOnce() {
+      EmbeddedChannel ch = createChannel();
+      MinecraftConnection conn = getConnection(ch);
+      conn.setState(ProtocolState.PLAY);
+
+      conn.writeWhenSettled(new CookieRequest("primemc:session"));
+
+      assertEquals(packetId(ProtocolState.PLAY, CookieRequest.class), nextPacketId(ch));
+      assertFalse(conn.isStateChangePending());
+      ch.finishAndReleaseAll();
+    }
+
+    @Test
+    @DisplayName("should hold them after a terminal packet, and write them in the next state")
+    void holdsUntilStateChange() {
+      EmbeddedChannel ch = createChannel();
+      MinecraftConnection conn = getConnection(ch);
+      conn.setState(ProtocolState.PLAY);
+
+      conn.writeTerminal(new StartConfiguration());
+      conn.writeWhenSettled(new CookieRequest("primemc:session"));
+      conn.writeWhenSettled(new StoreCookie("primemc:session", new byte[] {1}));
+      int startConfiguration = nextPacketId(ch);
+      boolean heldWhilePending = ch.outboundMessages().isEmpty();
+      conn.setState(ProtocolState.CONFIGURATION);
+
+      assertEquals(packetId(ProtocolState.PLAY, StartConfiguration.class), startConfiguration);
+      assertTrue(heldWhilePending);
+      assertEquals(packetId(ProtocolState.CONFIGURATION, CookieRequest.class), nextPacketId(ch));
+      assertEquals(packetId(ProtocolState.CONFIGURATION, StoreCookie.class), nextPacketId(ch));
+      assertFalse(conn.isStateChangePending());
+      ch.finishAndReleaseAll();
+    }
+
+    @Test
+    @DisplayName("should drop a held packet that does not exist in the state the peer moved to")
+    void dropsWhatTheNextStateLacks() {
+      EmbeddedChannel ch = createChannel();
+      MinecraftConnection conn = getConnection(ch);
+      conn.setState(ProtocolState.PLAY);
+      conn.writeTerminal(new StartConfiguration());
+      var _ = nextPacketId(ch);
+      conn.writeWhenSettled(new StoreCookie("primemc:session", new byte[] {1}));
+
+      try (LogCapture log = new LogCapture(MinecraftConnection.class)) {
+        conn.setState(ProtocolState.STATUS);
+
+        assertTrue(ch.outboundMessages().isEmpty());
+        assertTrue(ch.isOpen(), "a packet it cannot encode must not fail the connection");
+        assertEquals(Level.WARN, assertOne(log.events()).getLevel());
+      }
+      ch.finishAndReleaseAll();
+    }
+
+    @Test
+    @DisplayName("should forget held packets when the connection closes")
+    void forgetsOnClose() {
+      EmbeddedChannel ch = createChannel();
+      MinecraftConnection conn = getConnection(ch);
+      conn.setState(ProtocolState.PLAY);
+      conn.writeTerminal(new StartConfiguration());
+      var _ = nextPacketId(ch);
+      conn.writeWhenSettled(new CookieRequest("primemc:session"));
+
+      ch.close();
+      conn.setState(ProtocolState.CONFIGURATION);
+
+      assertTrue(ch.outboundMessages().isEmpty());
+      ch.finishAndReleaseAll();
+    }
+
+    private static int nextPacketId(EmbeddedChannel ch) {
+      ByteBuf packet = ch.readOutbound();
+      assertNotNull(packet, "expected a packet");
+      try {
+        return VarInt.read(packet);
+      } finally {
+        packet.release();
+      }
+    }
+
+    private static int packetId(ProtocolState state, Class<? extends Packet> type) {
+      return StateRegistry.get(state, PacketDirection.CLIENTBOUND).packetId(VERSION, type);
     }
   }
 

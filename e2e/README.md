@@ -59,11 +59,13 @@ a closed port) and run the scenarios:
 | `fallback-unreachable` | Default server down: the player lands on the next one |
 | `fallback-rejected` | Lobby refuses the login (whitelist): the player lands on survival |
 | `switch-refused` | Survival refuses a `/server survival` (whitelist): the player stays on the lobby, told why, never disconnected |
+| `transfer` | From 1.20.5, bots speaking the version natively: the lobby sends the player away with its own Transfer packet (`/transfer` to Warp's address), which reaches it through Warp exactly as sent; the player comes back with a transfer handshake (intent 3), which Warp lets in onto the lobby (`accepts-transfers` on). warp-alt, where it is off, refuses one with vanilla's `multiplayer.disconnect.transfers_disabled` |
 
 A scenario a run cannot hold is skipped and says why: `forwarding` without forwarding or offline
 (Warp then forwards the UUID a backend derives itself, so nothing tells them apart), `switching`
 and the fallbacks in a `--direct` run, `resource-pack` before 1.8 (offers were a plugin message,
-without the SHA-1). The features are in `features()` in `src/scenarios.js`.
+without the SHA-1), `transfer` before 1.20.5 and through ViaProxy (Warp would see the bridge's
+handshake, not the bot's). The features are in `features()` in `src/scenarios.js`.
 
 A run fails if a scenario fails, and also if:
 

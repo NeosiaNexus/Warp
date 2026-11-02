@@ -158,10 +158,11 @@ class SessionEventsTest {
         .addLast(ServerChannelInitializer.CONNECTION_HANDLER, connection);
     return new ConnectedPlayer(
         connection,
-        ProtocolVersion.MINECRAFT_1_21_4,
+        version,
         new GameProfile(id, name, List.of()),
         new InetSocketAddress(InetAddress.getLoopbackAddress(), 50000),
-        context);
+        context,
+        new ClientCookies(connection, version, channel.eventLoop()));
   }
 
   /** Lets deliveries in flight finish: events with no async handler complete quickly. */

@@ -441,7 +441,8 @@ class ClientPlaySessionHandlerTest {
             version,
             new GameProfile(UUID.randomUUID(), "Steve", List.of()),
             InetSocketAddress.createUnresolved("player", 50000),
-            loginContext);
+            loginContext,
+            new ClientCookies(connection(client), version, client.eventLoop()));
     BackendConnection lobby = backendConnection(connection(backend));
     player.setBackendConnection(lobby);
     // The player plays on the lobby: the lobby counts it, and /server marks it.

@@ -31,6 +31,8 @@ import dev.warp.protocol.packet.PacketDirection;
 import java.io.IOException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NotYetConnectedException;
+import java.util.ArrayDeque;
+import java.util.Queue;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
@@ -60,7 +62,10 @@ import org.slf4j.LoggerFactory;
  * <ul>
  *   <li><b>I/O</b> — write, flush, close, and verbatim forwarding of frames from the player's other
  *       connection ({@link #forward})
+ *   <li><b>Writes across a state change</b>: the proxy's own packets wait for the peer to
+ *       acknowledge a state change ({@link #writeTerminal}, {@link #writeWhenSettled})
  *   <li><b>Pipeline access</b> — state, version and compression transitions on decoder/encoder
+ *   <li><b>Handshake intent</b>: why the client connected ({@link #handshakeIntent})
  *   <li><b>Dispatch</b> — forward messages to the active {@link SessionHandler}
  * </ul>
  *
@@ -92,6 +97,18 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   private @Nullable MinecraftDecoder decoder;
   private @Nullable MinecraftEncoder encoder;
+
+  /** Why the client connected, once its handshake is read; always {@code null} for a backend. */
+  private @Nullable HandshakeIntent handshakeIntent;
+
+  /**
+   * Whether a packet that moves the peer to another state was written ({@link #writeTerminal}) and
+   * the peer has not confirmed the change yet ({@link #setState}).
+   */
+  private boolean stateChangePending;
+
+  /** Packets of the proxy's own held until the pending state change completes. */
+  private final Queue<Packet> heldUntilStateChange = new ArrayDeque<>();
 
   // ---------------------------------------------------------------------------
   // Constructor
@@ -140,6 +157,7 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   @Override
   public void channelInactive(ChannelHandlerContext ctx) {
+    heldUntilStateChange.clear();
     if (sessionHandler != null) {
       sessionHandler.disconnected();
     }
@@ -283,6 +301,72 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
     forwarder.forward(frame, source.decoder());
   }
 
+  // ---------------------------------------------------------------------------
+  // Writes across a state change
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Writes and flushes a packet that moves the peer to another protocol state as soon as it reads
+   * it: Login Success (from 1.20.2), Finish Configuration, Start Configuration.
+   *
+   * <p>The peer reads whatever follows in the new state, while this connection's encoder keeps the
+   * current one until the peer acknowledges and {@link #setState} follows. Until then, packets
+   * written with {@link #writeWhenSettled} are held: encoded in the old state, the peer would read
+   * them as other packets of the new one (in configuration, a play Cookie Request id is a Bundle
+   * Delimiter).
+   *
+   * @param packet the packet that ends the current state for the peer
+   */
+  public void writeTerminal(Packet packet) {
+    writeAndFlush(packet);
+    stateChangePending = true;
+  }
+
+  /**
+   * Writes and flushes a packet the proxy sends of its own accord, such as a cookie request or a
+   * transfer, once the peer reads this connection's packets in the encoder's state: right away, or
+   * when {@link #setState} completes a pending state change, in the order they were written.
+   *
+   * <p>A held packet that does not exist in the state the peer moved to is dropped and logged.
+   *
+   * @param packet the packet to write
+   */
+  public void writeWhenSettled(Packet packet) {
+    if (stateChangePending) {
+      heldUntilStateChange.add(packet);
+    } else {
+      writeAndFlush(packet);
+    }
+  }
+
+  /**
+   * Returns whether a packet that moves the peer to another state was written and the peer has not
+   * confirmed the change yet: {@link #writeWhenSettled} holds packets meanwhile.
+   *
+   * @return {@code true} between {@link #writeTerminal} and the next {@link #setState}
+   */
+  public boolean isStateChangePending() {
+    return stateChangePending;
+  }
+
+  private void releaseHeldPackets() {
+    stateChangePending = false;
+    MinecraftEncoder enc = encoder();
+    for (Packet packet = heldUntilStateChange.poll();
+        packet != null;
+        packet = heldUntilStateChange.poll()) {
+      if (enc.canEncode(packet.getClass())) {
+        writeAndFlush(packet);
+      } else {
+        logger.warn(
+            "Dropped {} held for {}: it does not exist in {}",
+            packet.getClass().getSimpleName(),
+            channel.remoteAddress(),
+            enc.state());
+      }
+    }
+  }
+
   /** Flushes the channel. Called from {@code readComplete()} for write batching. */
   public void flush() {
     channel.flush();
@@ -334,13 +418,17 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
   // ---------------------------------------------------------------------------
 
   /**
-   * Updates the protocol state on both the decoder and encoder.
+   * Updates the protocol state on both the decoder and encoder, then writes the packets {@link
+   * #writeWhenSettled} held during the state change, if one was pending.
    *
    * @param state the new protocol state
    */
   public void setState(ProtocolState state) {
     decoder().setState(state);
     encoder().setState(state);
+    if (stateChangePending) {
+      releaseHeldPackets();
+    }
   }
 
   /**
@@ -386,6 +474,28 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
             new CompressionEncoder(threshold, new JavaCompressor(level)));
     forwarder.compressionEnabled(threshold);
     forwarder.setVerbatimEnabled(passthrough);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Handshake intent
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns why the client opened this connection, as its handshake declared.
+   *
+   * @return the intent, or {@code null} before the handshake and on a backend connection
+   */
+  public @Nullable HandshakeIntent handshakeIntent() {
+    return handshakeIntent;
+  }
+
+  /**
+   * Records why the client opened this connection. Called once, by the handshake.
+   *
+   * @param intent the intent its handshake declared
+   */
+  void setHandshakeIntent(HandshakeIntent intent) {
+    this.handshakeIntent = intent;
   }
 
   // ---------------------------------------------------------------------------
