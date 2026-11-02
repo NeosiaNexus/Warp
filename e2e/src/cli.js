@@ -15,6 +15,7 @@ import { Backend, backendGroups, fetchPreseeded, fetchServerJar, serverCacheDir 
 import { connectClient } from './clients/index.js';
 import { library } from './clients/mineflayer.js';
 import { findJava } from './java.js';
+import { buildProbePlugin } from './probe-plugin.js';
 import { startMockMojang } from './mojang.js';
 import { Netem } from './netem.js';
 import { startPackServer } from './packs.js';
@@ -107,6 +108,8 @@ async function main() {
   const netem = opts.netem === undefined ? null : new Netem({ spec: opts.netem, ports: opts.direct ? [ports.lobby] : [ports.warp, ports.warpAlt] });
   const jar = opts.jar ? resolve(opts.jar) : await buildWarp();
   mkdirSync(opts.out, { recursive: true });
+  // The Paper plugin of the bungeecord scenario, which every Paper backend loads.
+  const probePlugin = await buildProbePlugin(opts.out);
   // Up for the whole run: it signs the bots' profile keys, which Warp and the backends trust, and
   // Warp checks online logins against it.
   const mojang = await startMockMojang(ports.mojang);
@@ -118,7 +121,7 @@ async function main() {
       log(`netem on 127.0.0.1:${netem.ports.join(', ')}, both ways: ${netem.spec}`);
     }
     for (const { entry, variants } of runs) {
-      results.push(await runVersion({ matrix, entry, variants: adaptVariants(entry, variants), scenarios, ports, netem, packs: packServer.packs, jar, mojang, opts }));
+      results.push(await runVersion({ matrix, entry, variants: adaptVariants(entry, variants), scenarios, ports, netem, packs: packServer.packs, jar, mojang, probePlugin, opts }));
     }
   } finally {
     netem?.stop();
@@ -132,7 +135,7 @@ async function main() {
 // One version: backends per threshold and forwarding, Warp per variant
 // ---------------------------------------------------------------------------
 
-async function runVersion({ matrix, entry, variants, scenarios, ports, netem, packs, jar, mojang, opts }) {
+async function runVersion({ matrix, entry, variants, scenarios, ports, netem, packs, jar, mojang, probePlugin, opts }) {
   const cache = opts.cache;
   const runDir = join(opts.out, entry.version);
   rmSync(runDir, { recursive: true, force: true });
@@ -167,7 +170,7 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, netem, pa
       }
       // A fresh secret for each boot of forwarding backends, shared with the Warp instances.
       const forwarding = group.forwarding && { ...group.forwarding, secret: randomBytes(16).toString('hex') };
-      const backends = await startBackends({ entry, serverJar, serverJava, preseeded, threshold: group.threshold, forwarding, packs, ports, runDir, logDir, cache, mojang, retries: result.bootRetries });
+      const backends = await startBackends({ entry, serverJar, serverJava, preseeded, threshold: group.threshold, forwarding, packs, ports, runDir, logDir, cache, mojang, probePlugin, retries: result.bootRetries });
       try {
         for (const variant of group.variants) {
           result.variants.push(await runVariant({ matrix, entry, variant, scenarios, backends, forwarding, packs, ports, netem, jar, warpJava, runDir, logDir, mojang, opts }));
@@ -187,7 +190,7 @@ async function runVersion({ matrix, entry, variants, scenarios, ports, netem, pa
   return result;
 }
 
-async function startBackends({ entry, serverJar, serverJava, preseeded, threshold, forwarding, packs, ports, runDir, logDir, cache, mojang, retries }) {
+async function startBackends({ entry, serverJar, serverJava, preseeded, threshold, forwarding, packs, ports, runDir, logDir, cache, mojang, probePlugin, retries }) {
   const template = join(serverCacheDir(entry.server, cache), 'template');
   const backends = ['lobby', 'survival'].map(
     (name, i) =>
@@ -207,6 +210,7 @@ async function startBackends({ entry, serverJar, serverJava, preseeded, threshol
         logSuffix: `t${threshold}${forwarding ? `-${forwarding.mode}-${forwarding.online ? 'online' : 'offline'}` : ''}`,
         // Only where the bots sign chat: older servers ignore the hosts or keep Mojang's bundled key.
         mojangHost: features(entry.protocol).signedChat === true ? mojang.host : null,
+        plugins: entry.server.type === 'paper' && probePlugin ? [probePlugin] : [],
       }),
   );
   const accepting = forwarding ? `, ${forwarding.mode} forwarding from an ${forwarding.online ? 'online' : 'offline'} proxy` : '';
@@ -301,6 +305,7 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, forward
       forwarding: variant.forwarding,
       online: variant.online,
       bridged: entry.via !== undefined,
+      paper: entry.server.type === 'paper',
     }),
     client: connectClient(entry, { tools: matrix.tools, cache: opts.cache, java: warpJava, ports, targets: Object.values(targets), logDir, runDir }),
     warp: { port: targets.warp, instance: instances[0] ?? null },

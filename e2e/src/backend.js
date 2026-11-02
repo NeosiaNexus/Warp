@@ -1,7 +1,7 @@
 // Minecraft backend servers (Paper, or vanilla where Paper never shipped a build): download,
 // configure, start, drive through the console, stop.
 import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { download } from './download.js';
 import { ManagedProcess } from './proc.js';
@@ -161,6 +161,7 @@ export class Backend {
    *   threshold and forwarding)
    * @param {string|null} options.mojangHost mock Mojang (see mojang.js) the server takes its
    *   services keys from, or null to keep Mojang's
+   * @param {string[]} [options.plugins] plugin jars a Paper server loads (see probe-plugin.js)
    */
   constructor(options) {
     Object.assign(this, options);
@@ -194,6 +195,7 @@ export class Backend {
       // it. Its -Dcom.mojang.eula.agree=true would skip the notice too, but that path also skips
       // the server's setup and crashes it (Spigot's DedicatedServer#init).
       writeFileSync(join(this.dir, '.eula-lock'), '');
+      for (const plugin of this.plugins ?? []) cpSync(plugin, join(this.dir, 'plugins', basename(plugin)));
     }
     if (this.forwarding) {
       const { file, yaml } = paperForwardingConfig(this.protocol, this.forwarding);
@@ -275,11 +277,15 @@ export class Backend {
     return this.process.stop({ graceMs: 5_000 });
   }
 
-  /** Runs a console command and waits until the server acknowledges it with a matching line. */
+  /**
+   * Runs a console command and waits until the server acknowledges it with a matching line.
+   * @returns {Promise<string|null>} the acknowledging line, or null without `acknowledgement`
+   */
   async command(line, acknowledgement, timeoutMs = 10_000) {
     const from = this.process.mark();
     this.process.send(line);
-    if (acknowledgement) await this.process.waitFor(acknowledgement, timeoutMs, from);
+    if (acknowledgement) return this.process.waitFor(acknowledgement, timeoutMs, from);
+    return null;
   }
 
   stop() {
