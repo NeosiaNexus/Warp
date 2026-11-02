@@ -201,15 +201,57 @@ compression {
   passthrough = true
 }
 
+player-limit = -1                  # enforced at login; -1 (the default) for no limit
+
 status {
   motd = ["<#38bdf8>A Warp Proxy", "<gray>Two lines at most"] # MiniMessage
   favicon = "server-icon.png"                                # a 64x64 PNG
-  max-players = 500                                          # enforced at login; -1 for no limit
+  # max-players = 500                                        # only shown; defaults to player-limit
+}
+
+timeouts {
+  connect = 5s                     # opening a connection to a backend
+  read = 25s                       # a logged-in connection that sends nothing is closed
+}
+tcp-fast-open = false              # Linux (epoll) only
+
+logging {
+  format = text                    # or json; the WARP_LOG_FORMAT variable takes precedence
+  connections = true               # logins, departures, server switches
+  pings = false                    # each server list ping
+  commands = false                 # each command a player sends
 }
 ```
 
-`max-players` is a real limit, not only what the server list shows: a player beyond it is refused
-with "The server is full.", unless a plugin lets it in from `LoginEvent`.
+The server list's `max-players` is only shown, as Velocity's `show-max-players`. The limit players
+actually meet is `player-limit`, off by default: a player beyond it is refused with "The server is
+full.", unless a plugin lets it in from `LoginEvent`. With a limit and no `max-players`, the server
+list shows the limit.
+
+Durations take a unit everywhere (`200ms`, `30s`, `5m`, `1h`, `30d`); a bare number other than `0`
+is refused rather than guessed.
+
+Any value can come from the environment with HOCON's optional substitution, which replaces the value
+only when the variable is set:
+
+```hocon
+bind = "0.0.0.0:25577"
+bind = ${?WARP_BIND}
+drain { transfer-to = ${?WARP_PUBLIC_ADDRESS} }   # alone: the default when unset
+```
+
+Secrets never go in `warp.conf`: the forwarding secret comes from `forwarding.secret-file` or
+`WARP_FORWARDING_SECRET`, the management token from `management.token-file` or
+`WARP_MANAGEMENT_TOKEN`.
+
+With `logging.format = json` (or `WARP_LOG_FORMAT=json`), standard output carries one JSON object
+per line, from the very first line: `timestamp` (UTC), `level`, `logger`, `thread`, `message`,
+`exception` (the stack trace) and `context` (such as `player` and `session` on the lines about a
+player), the last two only when present. Plugin loggers go through the same pipeline. The log files
+under `logs/` stay in text. A plugin that forwards records elsewhere (Sentry, Loki) registers a
+`LogSink` through `PluginContext.logSinks()`: it receives structured records on its own thread,
+from a bounded queue that drops (and counts) records rather than slow down logging, and is removed
+with its plugin.
 
 On each backend, set `online-mode=false` in `server.properties` and keep
 `network-compression-threshold` equal to Warp's threshold (256). For Velocity forwarding, enable

@@ -32,6 +32,8 @@ import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.play.PlayClientSettings;
+import dev.warp.proxy.config.LoggingConfig;
+import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
@@ -81,6 +83,8 @@ class ClientSettingsCacheTest {
 
     GameProfile profile = new GameProfile(UUID.randomUUID(), "TestPlayer", List.of());
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
+    when(loginContext.logging()).thenReturn(LoggingConfig.DEFAULTS);
+    when(loginContext.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
     when(loginContext.channels()).thenReturn(new ChannelRegistry());

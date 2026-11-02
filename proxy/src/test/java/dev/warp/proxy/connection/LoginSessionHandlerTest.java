@@ -38,6 +38,7 @@ import dev.warp.api.event.player.GameProfileRequestEvent;
 import dev.warp.api.event.player.LoginEvent;
 import dev.warp.api.event.player.PostLoginEvent;
 import dev.warp.api.event.player.PreLoginEvent;
+import dev.warp.api.logging.LogRecord;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McString;
@@ -62,8 +63,12 @@ import dev.warp.proxy.auth.AuthenticationException;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.config.DuplicateLoginPolicy;
+import dev.warp.proxy.config.LogFormat;
+import dev.warp.proxy.config.LoggingConfig;
+import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.logging.LogCapture;
 import dev.warp.proxy.status.StatusSettings;
 
 import java.math.BigInteger;
@@ -103,6 +108,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.handler.timeout.IdleStateHandler;
 import net.kyori.adventure.text.Component;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -1190,7 +1196,7 @@ class LoginSessionHandlerTest {
   // ---------------------------------------------------------------------------
 
   @Nested
-  @DisplayName("player limit (status.max-players)")
+  @DisplayName("player limit (player-limit)")
   class PlayerLimit {
 
     private static final ProtocolVersion VERSION = ProtocolVersion.MINECRAFT_1_21_4;
@@ -1337,12 +1343,13 @@ class LoginSessionHandlerTest {
       }
     }
 
-    private StatusSettings limit(int maxPlayers) {
+    private StatusSettings limit(int playerLimit) {
       StatusSettings defaults = StatusSettings.defaults();
       return new StatusSettings(
           defaults.motd(),
           null,
-          maxPlayers,
+          defaults.maxPlayers(),
+          playerLimit,
           defaults.showPlayerCount(),
           defaults.sampleSize(),
           defaults.versionName());
@@ -1356,6 +1363,85 @@ class LoginSessionHandlerTest {
         when(player.username()).thenReturn("Player" + i);
         context.playerRegistry().register(player, false);
       }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Logged-in connection settings
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("logged-in connection (timeouts.read, logging.connections)")
+  class LoggedIn {
+
+    private static final ProtocolVersion VERSION = ProtocolVersion.MINECRAFT_1_21_4;
+
+    @Test
+    @DisplayName("should replace the pre-login read timeout with timeouts.read once logged in")
+    void readTimeout() {
+      ServerLoginContext context =
+          TestLoginContexts.with(
+              TestLoginContexts.offline(),
+              new TimeoutsConfig(Duration.ofSeconds(5), Duration.ofSeconds(7)),
+              LoggingConfig.DEFAULTS);
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        assertEquals(30_000, readTimeoutMillis(channel));
+
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+        assertEquals(7_000, readTimeoutMillis(channel));
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should log the login with the player and its session as the record's context")
+    void loggedWithContext() throws Exception {
+      try (LogCapture logs = new LogCapture()) {
+        EmbeddedChannel channel = loginChannel(VERSION, TestLoginContexts.offline());
+        try {
+          sendLoginStart(channel, "Logan", VERSION);
+          channel.runPendingTasks();
+
+          LogRecord login = logs.await(record -> record.message().startsWith("Player Logan "));
+          assertEquals("Logan", login.context().get(ConnectedPlayer.LOG_PLAYER));
+          assertTrue(login.context().containsKey(ConnectedPlayer.LOG_SESSION), login::toString);
+        } finally {
+          channel.finishAndReleaseAll();
+        }
+      }
+    }
+
+    @Test
+    @DisplayName("should not log the login when logging.connections is off")
+    void notLogged() throws Exception {
+      ServerLoginContext context =
+          TestLoginContexts.with(
+              TestLoginContexts.offline(),
+              TimeoutsConfig.DEFAULTS,
+              new LoggingConfig(LogFormat.TEXT, false, false, false));
+      try (LogCapture logs = new LogCapture()) {
+        EmbeddedChannel channel = loginChannel(VERSION, context);
+        try {
+          sendLoginStart(channel, "Quiet", VERSION);
+          channel.runPendingTasks();
+          nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+
+          assertFalse(
+              logs.anyAfterSettling(record -> record.message().startsWith("Player Quiet ")));
+        } finally {
+          channel.finishAndReleaseAll();
+        }
+      }
+    }
+
+    private long readTimeoutMillis(EmbeddedChannel channel) {
+      return ((IdleStateHandler) channel.pipeline().get(ServerChannelInitializer.READ_TIMEOUT))
+          .getReaderIdleTimeInMillis();
     }
   }
 
