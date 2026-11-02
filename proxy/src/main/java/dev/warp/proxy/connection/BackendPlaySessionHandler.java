@@ -38,13 +38,16 @@ import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.Respawn;
+import dev.warp.protocol.packet.play.SetActionBarText;
+import dev.warp.protocol.packet.play.SetSubtitleText;
+import dev.warp.protocol.packet.play.SetTitleText;
+import dev.warp.protocol.packet.play.SetTitleTimes;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
 import dev.warp.protocol.packet.play.TabListHeaderFooter;
 import dev.warp.protocol.packet.play.Transfer;
-import dev.warp.proxy.text.Reasons;
 
 import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
@@ -141,8 +144,13 @@ final class BackendPlaySessionHandler implements SessionHandler {
       case PlayerInfoUpdate update -> track(update);
       case PlayerInfoRemove remove -> track(remove);
       case BossBar bossBar -> track(bossBar);
+      // Encode-only: never decoded, forwarded as frames.
       case TabListHeaderFooter headerFooter -> forwardToClient(headerFooter);
       case ClearTitles clearTitles -> forwardToClient(clearTitles);
+      case SetTitleText title -> forwardToClient(title);
+      case SetSubtitleText subtitle -> forwardToClient(subtitle);
+      case SetTitleTimes times -> forwardToClient(times);
+      case SetActionBarText actionBar -> forwardToClient(actionBar);
       // Serverbound packets should never arrive from a backend: a protocol violation, ignored.
       case ChatCommand _,
           ChatAcknowledgement _,
@@ -214,12 +222,14 @@ final class BackendPlaySessionHandler implements SessionHandler {
     // offline behind the proxy: the client must see the proxy's mode instead, as before 26.2.
     forwardToClient(
         joinGame.withOnlineMode(player.loginContext().onlineMode(), player.protocolVersion()));
+    if (player.isPlayingOn(backendConnection)) {
+      player.joinedGame(); // the proxy's messages kept during the configuration phase follow it
+    }
   }
 
   private void handleDisconnect(PlayDisconnect disconnect) {
     logger.info("Backend kicked player {} during play", player.username());
-    player.recordKick(
-        backendConnection, Reasons.fromWire(disconnect.rawReason(), player.protocolVersion()));
+    player.recordKick(backendConnection, disconnect.decodedReason(player.protocolVersion()));
     player.scheduleBackendFailure(backendConnection);
   }
 
@@ -227,7 +237,7 @@ final class BackendPlaySessionHandler implements SessionHandler {
     // Backend requests reconfiguration (e.g. registry reload).
     // Forward to client — the AcknowledgeConfiguration from the client will be
     // forwarded back to the backend via ClientPlaySessionHandler.
-    player.clientConnection().writeAndFlush(new StartConfiguration());
+    player.startConfiguration();
   }
 
   private void handleBundleDelimiter(BundleDelimiter delimiter) {

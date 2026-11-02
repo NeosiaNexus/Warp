@@ -23,15 +23,20 @@ import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerRegistry;
 
 import java.util.Comparator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
-import java.util.stream.Collectors;
 
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.TextComponent;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.event.HoverEvent;
+import net.kyori.adventure.text.format.NamedTextColor;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The commands the proxy itself offers: {@code /server}. A plugin removes them with {@link
@@ -59,13 +64,12 @@ public final class ProxyCommands {
             context -> {
               Player player = (Player) context.getSource();
               String current = player.currentServer().map(c -> c.server().name()).orElse(null);
-              String list =
+              List<String> names =
                   servers.servers().stream()
                       .map(RegisteredServer::name)
                       .sorted(Comparator.naturalOrder())
-                      .map(name -> name.equals(current) ? "[" + name + "]" : name)
-                      .collect(Collectors.joining(", "));
-              player.sendMessage(Component.text("Servers: " + list));
+                      .toList();
+              player.sendMessage(serverList(names, current));
               return Command.SINGLE_SUCCESS;
             })
         .then(
@@ -87,7 +91,8 @@ public final class ProxyCommands {
                       String name = StringArgumentType.getString(context, "server");
                       Optional<RegisteredServer> target = servers.server(name);
                       if (target.isEmpty()) {
-                        player.sendMessage(Component.text("Unknown server: " + name));
+                        player.sendMessage(
+                            Component.text("Unknown server: " + name, NamedTextColor.RED));
                         return 0;
                       }
                       var _ =
@@ -116,5 +121,31 @@ public final class ProxyCommands {
                                   });
                       return Command.SINGLE_SUCCESS;
                     }));
+  }
+
+  /**
+   * The answer to {@code /server}: "Servers: [lobby], survival", the current server in brackets,
+   * each other one a link that moves the player there.
+   *
+   * @param names the servers' names, in order
+   * @param current the server the player is on, or {@code null}
+   * @return the message
+   */
+  public static Component serverList(List<String> names, @Nullable String current) {
+    TextComponent.Builder list = Component.text().content("Servers: ").color(NamedTextColor.GRAY);
+    boolean first = true;
+    for (String name : names) {
+      if (!first) {
+        list.append(Component.text(", ", NamedTextColor.GRAY));
+      }
+      first = false;
+      list.append(
+          name.equals(current)
+              ? Component.text("[" + name + "]", NamedTextColor.GREEN)
+              : Component.text(name, NamedTextColor.AQUA)
+                  .clickEvent(ClickEvent.runCommand("/server " + name))
+                  .hoverEvent(HoverEvent.showText(Component.text("Connect to " + name))));
+    }
+    return list.build();
   }
 }

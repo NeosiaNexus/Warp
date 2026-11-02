@@ -25,6 +25,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
+import net.kyori.adventure.identity.Identified;
 import net.kyori.adventure.text.Component;
 
 /**
@@ -33,9 +34,16 @@ import net.kyori.adventure.text.Component;
  * <p>Every method is safe to call from any thread. Methods that send something to the client take
  * effect on its connection's thread, in the order they were called.
  *
+ * <p>As an Adventure {@link net.kyori.adventure.audience.Audience}, a player receives messages,
+ * action bars, titles and tab list header and footer, encoded for its client's version and
+ * translated for its language. Chat messages and titles sent while it switches servers are kept
+ * until it is in a game again; action bars are dropped then. Audience methods Warp does not support
+ * yet (sounds, boss bars, books, resource packs, dialogs, signed messages) throw {@link
+ * UnsupportedOperationException}: none of them silently does nothing.
+ *
  * <p>Implemented by the proxy; plugins must not implement it.
  */
-public interface Player extends InboundConnection, CommandSource {
+public interface Player extends InboundConnection, CommandSource, Identified {
 
   /**
    * Returns the player's UUID: Mojang's in online mode, derived from the name in offline mode, or

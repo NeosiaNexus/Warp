@@ -31,7 +31,6 @@ import dev.warp.protocol.packet.login.LoginPluginResponse;
 import dev.warp.protocol.packet.login.LoginStart;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.login.SetCompression;
-import dev.warp.proxy.text.Reasons;
 
 import java.net.InetSocketAddress;
 import java.util.Set;
@@ -210,7 +209,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
         serverAddress,
         player.username(),
         packet.reason());
-    player.recordKick(backendConnection, Reasons.fromJson(packet.reason()));
+    player.recordKick(backendConnection, packet.decodedReason());
     player.scheduleBackendFailure(backendConnection);
   }
 }

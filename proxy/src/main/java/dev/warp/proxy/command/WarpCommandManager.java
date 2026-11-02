@@ -336,9 +336,8 @@ public final class WarpCommandManager implements AutoCloseable {
   public CompletableFuture<Suggestions> suggest(CommandSource source, String typed) {
     String commandLine = normalize(typed);
     CommandDispatcher<CommandSource> current = dispatcher;
-    return CompletableFuture.supplyAsync(
-            () -> current.getCompletionSuggestions(current.parse(commandLine, source)), executor)
-        .thenCompose(future -> future);
+    return CompletableFuture.supplyAsync(() -> current.parse(commandLine, source), executor)
+        .thenCompose(current::getCompletionSuggestions);
   }
 
   /**

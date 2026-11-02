@@ -23,7 +23,6 @@ import dev.warp.protocol.command.ArgumentTypes;
 import dev.warp.protocol.command.CommandTree;
 
 import java.util.IdentityHashMap;
-import java.util.Map;
 
 import com.mojang.brigadier.arguments.ArgumentType;
 import com.mojang.brigadier.arguments.BoolArgumentType;
@@ -60,7 +59,7 @@ final class BrigadierTrees {
   static CommandTree treeFor(
       RootCommandNode<CommandSource> root, CommandSource source, ProtocolVersion version) {
     CommandTree.Builder builder = CommandTree.builder();
-    Map<CommandNode<CommandSource>, Integer> indices = new IdentityHashMap<>();
+    IdentityHashMap<CommandNode<CommandSource>, Integer> indices = new IdentityHashMap<>();
     indices.put(root, builder.root());
     for (CommandNode<CommandSource> child : root.getChildren()) {
       add(builder, indices, builder.root(), child, source, version);
@@ -78,7 +77,7 @@ final class BrigadierTrees {
 
   private static void add(
       CommandTree.Builder builder,
-      Map<CommandNode<CommandSource>, Integer> indices,
+      IdentityHashMap<CommandNode<CommandSource>, Integer> indices,
       int parent,
       CommandNode<CommandSource> node,
       CommandSource source,
@@ -149,7 +148,7 @@ final class BrigadierTrees {
   }
 
   private static boolean isFallback(ArgumentType<?> type, ArgumentParser parser) {
-    return parser == FREE_TEXT && !(type instanceof StringArgumentType);
+    return parser.equals(FREE_TEXT) && !(type instanceof StringArgumentType);
   }
 
   /** What a client sees for an argument type it does not know: a word the proxy completes. */

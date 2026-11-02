@@ -132,7 +132,7 @@ final class RespawnSwitch implements ServerSwitch {
       client.write(joinGame);
     }
     backend.setSessionHandler(new BackendPlaySessionHandler(player, backend));
-    client.flush();
+    player.joinedGame(); // flushes, with the proxy's messages kept until the client had a world
     player.switchComplete();
   }
 

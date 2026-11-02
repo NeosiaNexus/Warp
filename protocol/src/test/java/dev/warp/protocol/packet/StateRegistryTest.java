@@ -69,6 +69,10 @@ import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.Respawn;
+import dev.warp.protocol.packet.play.SetActionBarText;
+import dev.warp.protocol.packet.play.SetSubtitleText;
+import dev.warp.protocol.packet.play.SetTitleText;
+import dev.warp.protocol.packet.play.SetTitleTimes;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
@@ -202,7 +206,15 @@ class StateRegistryTest {
             new PacketName(PLAY, CLIENTBOUND, Transfer.class, "minecraft:transfer"),
             new PacketName(
                 PLAY, CLIENTBOUND, TabCompleteResponse.class, "minecraft:command_suggestions"),
-            new PacketName(PLAY, CLIENTBOUND, DeclareCommands.class, "minecraft:commands"));
+            new PacketName(PLAY, CLIENTBOUND, DeclareCommands.class, "minecraft:commands"),
+            new PacketName(PLAY, CLIENTBOUND, TabListHeaderFooter.class, "minecraft:tab_list"),
+            new PacketName(PLAY, CLIENTBOUND, ClearTitles.class, "minecraft:clear_titles"),
+            new PacketName(PLAY, CLIENTBOUND, SetTitleText.class, "minecraft:set_title_text"),
+            new PacketName(PLAY, CLIENTBOUND, SetSubtitleText.class, "minecraft:set_subtitle_text"),
+            new PacketName(
+                PLAY, CLIENTBOUND, SetTitleTimes.class, "minecraft:set_titles_animation"),
+            new PacketName(
+                PLAY, CLIENTBOUND, SetActionBarText.class, "minecraft:set_action_bar_text"));
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("auditedProtocols")
@@ -388,6 +400,35 @@ class StateRegistryTest {
                 CLIENTBOUND,
                 ClearTitles.class,
                 "clear_titles",
+                ProtocolVersion.MINECRAFT_1_17),
+            // Up to 1.16.5 the actions of the single Title packet.
+            new PacketName(PLAY, CLIENTBOUND, SetTitleText.class, "title"),
+            new PacketName(
+                PLAY,
+                CLIENTBOUND,
+                SetTitleText.class,
+                "set_title_text",
+                ProtocolVersion.MINECRAFT_1_17),
+            new PacketName(PLAY, CLIENTBOUND, SetSubtitleText.class, "title"),
+            new PacketName(
+                PLAY,
+                CLIENTBOUND,
+                SetSubtitleText.class,
+                "set_title_subtitle",
+                ProtocolVersion.MINECRAFT_1_17),
+            new PacketName(PLAY, CLIENTBOUND, SetTitleTimes.class, "title"),
+            new PacketName(
+                PLAY,
+                CLIENTBOUND,
+                SetTitleTimes.class,
+                "set_title_time",
+                ProtocolVersion.MINECRAFT_1_17),
+            new PacketName(PLAY, CLIENTBOUND, SetActionBarText.class, "title"),
+            new PacketName(
+                PLAY,
+                CLIENTBOUND,
+                SetActionBarText.class,
+                "action_bar",
                 ProtocolVersion.MINECRAFT_1_17));
 
     @ParameterizedTest(name = "{0}")

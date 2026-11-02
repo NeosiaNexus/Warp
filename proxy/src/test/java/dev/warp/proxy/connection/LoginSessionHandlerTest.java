@@ -51,6 +51,7 @@ import dev.warp.protocol.packet.login.LoginAcknowledged;
 import dev.warp.protocol.packet.login.LoginDisconnect;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.play.PlayDisconnect;
+import dev.warp.protocol.text.ComponentCodec;
 import dev.warp.proxy.auth.AuthenticationException;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
@@ -162,8 +163,14 @@ class LoginSessionHandlerTest {
 
         nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version);
         byte[] reason = nextPacket(channel, ProtocolState.PLAY, PlayDisconnect.class, version);
+        // Plain text is a bare string before 1.9, as vanilla writes it.
+        String text = "\"Could not connect to any available server.\"";
         assertArrayEquals(
-            jsonString("{\"text\":\"Could not connect to any available server.\"}"), reason);
+            jsonString(
+                version.isOlderThan(ProtocolVersion.MINECRAFT_1_9)
+                    ? text
+                    : "{\"text\":" + text + "}"),
+            reason);
         assertClosed(channel);
       } finally {
         channel.finishAndReleaseAll();
@@ -195,6 +202,28 @@ class LoginSessionHandlerTest {
         byte[] reason =
             nextPacket(channel, ProtocolState.CONFIGURATION, ConfigDisconnect.class, version);
         assertArrayEquals(nbtString("Could not connect to any available server."), reason);
+        assertClosed(channel);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versionsFrom1203")
+    @DisplayName(
+        "should refuse in the configuration state a client that received Login Success, still read"
+            + " in the login state (BungeeCord #3525)")
+    void configurationStateBeforeAcknowledgement(ProtocolVersion version) {
+      EmbeddedChannel channel = loginChannel(version);
+      try {
+        sendLoginStart(channel, "Steve", version);
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version);
+
+        sendLoginStart(channel, "Steve", version); // out of order: refused
+
+        byte[] reason =
+            nextPacket(channel, ProtocolState.CONFIGURATION, ConfigDisconnect.class, version);
+        assertArrayEquals(nbtString("Unexpected LoginStart"), reason);
         assertClosed(channel);
       } finally {
         channel.finishAndReleaseAll();
@@ -259,8 +288,14 @@ class LoginSessionHandlerTest {
         // Plain frames: a length then the packet id, no data length for a compressed frame.
         nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version);
         byte[] reason = nextPacket(channel, ProtocolState.PLAY, PlayDisconnect.class, version);
+        // Plain text is a bare string before 1.9, as vanilla writes it.
+        String text = "\"Could not connect to any available server.\"";
         assertArrayEquals(
-            jsonString("{\"text\":\"Could not connect to any available server.\"}"), reason);
+            jsonString(
+                version.isOlderThan(ProtocolVersion.MINECRAFT_1_9)
+                    ? text
+                    : "{\"text\":" + text + "}"),
+            reason);
       } finally {
         channel.finishAndReleaseAll();
       }
@@ -950,7 +985,8 @@ class LoginSessionHandlerTest {
         channel.runPendingTasks();
 
         byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
-        assertArrayEquals(jsonString("{\"text\":\"Maintenance\"}"), reason);
+        assertArrayEquals(
+            jsonString(ComponentCodec.json(Component.text("Maintenance"), VERSION)), reason);
         assertEquals("Steve", fired.getFirst().username());
         assertEquals(0, context.playerRegistry().count());
       } finally {
@@ -1018,7 +1054,8 @@ class LoginSessionHandlerTest {
         channel.runPendingTasks();
 
         byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
-        assertArrayEquals(jsonString("{\"text\":\"Banned\"}"), reason);
+        assertArrayEquals(
+            jsonString(ComponentCodec.json(Component.text("Banned"), VERSION)), reason);
         assertClosed(channel);
         channel.runPendingTasks();
         assertEquals(0, context.playerRegistry().count());
@@ -1163,6 +1200,9 @@ class LoginSessionHandlerTest {
 
   private void assertClosed(EmbeddedChannel channel) {
     channel.runPendingTasks();
+    // A 1.7 client keeps its connection a moment after the reason (MinecraftConnection).
+    channel.advanceTimeBy(MinecraftConnection.LEGACY_CLOSE_DELAY_MS, TimeUnit.MILLISECONDS);
+    channel.runScheduledPendingTasks();
     assertFalse(channel.isOpen(), "the connection must close after the reason");
   }
 

@@ -29,7 +29,21 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
+import net.kyori.adventure.audience.MessageType;
+import net.kyori.adventure.bossbar.BossBar;
+import net.kyori.adventure.chat.ChatType;
+import net.kyori.adventure.chat.SignedMessage;
+import net.kyori.adventure.dialog.DialogLike;
+import net.kyori.adventure.identity.Identified;
+import net.kyori.adventure.identity.Identity;
+import net.kyori.adventure.inventory.Book;
+import net.kyori.adventure.pointer.Pointers;
+import net.kyori.adventure.resource.ResourcePackRequest;
+import net.kyori.adventure.sound.Sound;
+import net.kyori.adventure.sound.SoundStop;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.title.Title;
+import net.kyori.adventure.title.TitlePart;
 
 /** A player as plugins see it: a view of the proxy's {@link ConnectedPlayer}. */
 public final class WarpPlayer implements Player {
@@ -111,9 +125,165 @@ public final class WarpPlayer implements Player {
     return player.requestConnection(backend, false);
   }
 
+  // ---------------------------------------------------------------------------
+  // Audience
+  // ---------------------------------------------------------------------------
+
+  @Override
+  public Identity identity() {
+    return Identity.identity(player.uuid());
+  }
+
+  @Override
+  public Pointers pointers() {
+    return Pointers.builder()
+        .withStatic(Identity.UUID, player.uuid())
+        .withStatic(Identity.NAME, player.username())
+        .build();
+  }
+
   @Override
   public void sendMessage(Component message) {
     player.sendMessage(message);
+  }
+
+  @Override
+  public void sendMessage(Component message, ChatType.Bound boundChatType) {
+    // The proxy cannot write player chat for a backend's chat types: shown as a system message.
+    player.sendMessage(message);
+  }
+
+  @Override
+  @SuppressWarnings("deprecation") // Adventure's identity overloads, still part of Audience
+  public void sendMessage(Identified source, Component message, MessageType type) {
+    player.sendMessage(message);
+  }
+
+  @Override
+  @SuppressWarnings("deprecation") // Adventure's identity overloads, still part of Audience
+  public void sendMessage(Identity source, Component message, MessageType type) {
+    player.sendMessage(message);
+  }
+
+  @Override
+  public void sendMessage(SignedMessage signedMessage, ChatType.Bound boundChatType) {
+    throw unsupported("signed messages (only a backend can write them)");
+  }
+
+  @Override
+  public void sendActionBar(Component message) {
+    player.sendActionBar(message);
+  }
+
+  @Override
+  public void showTitle(Title title) {
+    player.showTitle(title);
+  }
+
+  @Override
+  public <T> void sendTitlePart(TitlePart<T> part, T value) {
+    player.sendTitlePart(part, value);
+  }
+
+  @Override
+  public void clearTitle() {
+    player.clearTitle();
+  }
+
+  @Override
+  public void resetTitle() {
+    player.resetTitle();
+  }
+
+  @Override
+  public void sendPlayerListHeaderAndFooter(Component header, Component footer) {
+    player.sendPlayerListHeaderAndFooter(header, footer);
+  }
+
+  @Override
+  public void sendPlayerListHeader(Component header) {
+    player.sendPlayerListHeaderAndFooter(header, player.playerListFooter());
+  }
+
+  @Override
+  public void sendPlayerListFooter(Component footer) {
+    player.sendPlayerListHeaderAndFooter(player.playerListHeader(), footer);
+  }
+
+  // Not supported yet: refused explicitly rather than silently ignored.
+
+  @Override
+  public void deleteMessage(SignedMessage.Signature signature) {
+    throw unsupported("deleting signed messages");
+  }
+
+  @Override
+  public void playSound(Sound sound) {
+    throw unsupported("sounds");
+  }
+
+  @Override
+  public void playSound(Sound sound, double x, double y, double z) {
+    throw unsupported("sounds");
+  }
+
+  @Override
+  public void playSound(Sound sound, Sound.Emitter emitter) {
+    throw unsupported("sounds");
+  }
+
+  @Override
+  public void stopSound(SoundStop stop) {
+    throw unsupported("sounds");
+  }
+
+  @Override
+  public void openBook(Book book) {
+    throw unsupported("books");
+  }
+
+  @Override
+  public void showBossBar(BossBar bar) {
+    throw unsupported("boss bars");
+  }
+
+  @Override
+  public void hideBossBar(BossBar bar) {
+    throw unsupported("boss bars");
+  }
+
+  @Override
+  public void sendResourcePacks(ResourcePackRequest request) {
+    throw unsupported("resource packs");
+  }
+
+  @Override
+  public void removeResourcePacks(ResourcePackRequest request) {
+    throw unsupported("resource packs");
+  }
+
+  @Override
+  public void removeResourcePacks(Iterable<UUID> ids) {
+    throw unsupported("resource packs");
+  }
+
+  @Override
+  public void clearResourcePacks() {
+    throw unsupported("resource packs");
+  }
+
+  @Override
+  public void showDialog(DialogLike dialog) {
+    throw unsupported("dialogs");
+  }
+
+  @Override
+  public void closeDialog() {
+    throw unsupported("dialogs");
+  }
+
+  private static UnsupportedOperationException unsupported(String what) {
+    return new UnsupportedOperationException("Warp does not send " + what + " to players yet");
   }
 
   @Override

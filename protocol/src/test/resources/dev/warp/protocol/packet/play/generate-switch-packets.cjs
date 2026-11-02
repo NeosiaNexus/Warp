@@ -183,7 +183,9 @@ for (const v of VERSIONS) {
   out(protocol, 'respawn', body(ser, 'respawn', respawn(v, data)))
 
   if (at(data, '1.8')) {
-    out(protocol, 'header_footer_empty', body(ser, 'playerlist_header', { header: '{"text":""}', footer: '{"text":""}' }))
+    // 1.8 writes empty text as a bare string, as vanilla does before 1.9.
+    const empty = at(data, '1.9') ? '{"text":""}' : '""'
+    out(protocol, 'header_footer_empty', body(ser, 'playerlist_header', { header: empty, footer: empty }))
   }
   if (has('title')) {
     const reset = at(data, '1.11') ? 5 : 4

@@ -570,6 +570,7 @@ class PlayPacketsTest {
 
     static Stream<ProtocolVersion> jsonVersions() {
       return ProtocolVersion.values().stream()
+          .filter(version -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_9))
           .filter(version -> version.isOlderThan(ProtocolVersion.MINECRAFT_1_20_3));
     }
 

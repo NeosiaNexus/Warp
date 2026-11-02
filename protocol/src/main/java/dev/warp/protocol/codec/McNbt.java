@@ -25,8 +25,9 @@ import io.netty.handler.codec.DecoderException;
  *
  * <p>Before 1.20.2 the protocol writes a root tag the way a file does: a type ID, a name (an
  * unsigned short length and modified UTF-8 bytes), then the payload. A lone {@code TAG_End} type ID
- * stands for "no tag". 1.20.2 drops the root name; this class reads the named form, the only one
- * the proxy needs (registries and dimension types in Join Game and Respawn before 1.20.2).
+ * stands for "no tag". 1.20.2 drops the root name (network NBT): the named form carries registries
+ * and dimension types in Join Game and Respawn before 1.20.2, the nameless form text components
+ * from 1.20.3.
  *
  * <p>Skipping walks the tag structure without allocating. Nesting is limited to {@value #MAX_DEPTH}
  * levels, like vanilla, and every length is checked against the readable bytes before the reader
@@ -92,6 +93,22 @@ public final class McNbt {
     return tag;
   }
 
+  /**
+   * Reads one nameless root tag (network NBT, since 1.20.2) and returns its exact bytes (type ID
+   * and payload), ready to be written back with {@link ByteBuf#writeBytes(byte[])}.
+   *
+   * @param buf the buffer to read from
+   * @return the encoded tag
+   * @throws DecoderException if the tag is malformed, truncated or nested too deeply
+   */
+  public static byte[] readNameless(ByteBuf buf) {
+    int start = buf.readerIndex();
+    skipNameless(buf);
+    byte[] tag = new byte[buf.readerIndex() - start];
+    buf.getBytes(start, tag);
+    return tag;
+  }
+
   // ---------------------------------------------------------------------------
   // Skip
   // ---------------------------------------------------------------------------
@@ -109,6 +126,20 @@ public final class McNbt {
     }
     skipString(buf);
     skipPayload(buf, type, 0);
+  }
+
+  /**
+   * Advances the reader index past one nameless root tag (network NBT, since 1.20.2) without
+   * decoding it.
+   *
+   * @param buf the buffer to skip in
+   * @throws DecoderException if the tag is malformed, truncated or nested too deeply
+   */
+  public static void skipNameless(ByteBuf buf) {
+    int type = readType(buf);
+    if (type != TAG_END) {
+      skipPayload(buf, type, 0);
+    }
   }
 
   // ---------------------------------------------------------------------------

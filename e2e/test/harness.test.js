@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import { BACKEND_PROTOCOL_ERRORS, backendGroups } from '../src/backend.js';
 import { connectClient } from '../src/clients/index.js';
 import { announcedProtocol } from '../src/clients/mineflayer.js';
-import { LOBBY_MODE, QUIRKS, SCENARIOS, SURVIVAL_MODE, checkStatus, checkStayed, checkTabLists, features, fromSurvival } from '../src/scenarios.js';
+import { LOBBY_MODE, QUIRKS, SCENARIOS, SURVIVAL_MODE, checkServerList, checkStatus, checkStayed, checkTabLists, features, fromSurvival } from '../src/scenarios.js';
 import { findEntry, jobsForTier, loadMatrix, resolveVariant } from '../src/versions.js';
 import { WARP_FAILURES } from '../src/warp.js';
 
@@ -276,5 +276,32 @@ describe('failure patterns', () => {
     assert.ok(matches(BACKEND_PROTOCOL_ERRORS, '[13:42:37 INFO]: e2e_chat lost connection: Chat message validation failure'));
     assert.ok(!matches(BACKEND_PROTOCOL_ERRORS, '[12:00:00 INFO]: e2e_login lost connection: Disconnected'));
     assert.ok(!matches(BACKEND_PROTOCOL_ERRORS, '[12:00:00 INFO]: e2e_login lost connection: Timed out'));
+  });
+});
+
+describe('checkServerList', () => {
+  const json = {
+    color: 'gray',
+    extra: [
+      { color: 'green', text: '[lobby]' },
+      { color: 'gray', text: ', ' },
+      { color: 'aqua', text: 'survival', clickEvent: { action: 'run_command', value: '/server survival' } },
+    ],
+    text: 'Servers: ',
+  };
+
+  it('accepts the current server in green and links to the others, before and after 1.21.5', () => {
+    checkServerList(json, 'lobby');
+    const snake = structuredClone(json);
+    snake.extra[2] = { text: 'survival', color: 'aqua', click_event: { action: 'run_command', command: '/server survival' } };
+    checkServerList(snake, 'lobby');
+  });
+
+  it('refuses a plain answer, or a link elsewhere', () => {
+    assert.throws(() => checkServerList({ text: 'Servers: [lobby], survival' }, 'lobby'), /not green/);
+    assert.throws(() => checkServerList({ text: 'Servers: ', extra: [{ text: '[lobby]', color: 'green' }] }, 'lobby'), /no other server/);
+    const elsewhere = structuredClone(json);
+    elsewhere.extra[2].clickEvent.value = '/server lobby';
+    assert.throws(() => checkServerList(elsewhere, 'lobby'), /does not link/);
   });
 });

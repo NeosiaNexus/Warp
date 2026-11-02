@@ -16,6 +16,7 @@
  */
 package dev.warp.protocol.packet;
 
+import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_11;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_12;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_12_1;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_13;
@@ -83,6 +84,10 @@ import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.Respawn;
+import dev.warp.protocol.packet.play.SetActionBarText;
+import dev.warp.protocol.packet.play.SetSubtitleText;
+import dev.warp.protocol.packet.play.SetTitleText;
+import dev.warp.protocol.packet.play.SetTitleTimes;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
@@ -295,8 +300,9 @@ public final class StateRegistry {
   //
   // Before 1.20.2 a server switch keeps the client's tab list, boss bars and titles: the proxy
   // also watches the packets that fill them (it reads their UUIDs in place and forwards their
-  // frames untouched), and sends the ones that clear them, up to 1.20.1 only. From 1.20.2 the
-  // configuration phase resets the client and those packets stay opaque.
+  // frames untouched), and sends the ones that clear them. From 1.20.2 the configuration phase
+  // resets the client and those packets stay opaque. Titles, the action bar and the tab list header
+  // and footer are registered in every version they exist in, for the proxy's own messages.
   // ---------------------------------------------------------------------------
 
   private static void registerPlay() {
@@ -594,7 +600,17 @@ public final class StateRegistry {
                     map(0x60, MINECRAFT_1_19),
                     map(0x63, MINECRAFT_1_19_1),
                     map(0x61, MINECRAFT_1_19_3),
-                    map(0x65, MINECRAFT_1_19_4, MINECRAFT_1_20_1))
+                    map(0x65, MINECRAFT_1_19_4),
+                    map(0x68, MINECRAFT_1_20_2),
+                    map(0x6A, MINECRAFT_1_20_3),
+                    map(0x6D, MINECRAFT_1_20_5),
+                    map(0x74, MINECRAFT_1_21_2),
+                    map(0x73, MINECRAFT_1_21_5),
+                    map(0x78, MINECRAFT_1_21_9),
+                    map(0x7A, MINECRAFT_26_1),
+                    map(0x7D, MINECRAFT_26_3))
+                // Titles. Up to 1.16.5 the four records below and the action bar are the actions
+                // of one Title packet, sharing its id (LegacyTitle); 1.17 gave each its own packet.
                 .registerEncodeOnly(
                     ClearTitles.class,
                     ClearTitles.CODEC,
@@ -608,7 +624,103 @@ public final class StateRegistry {
                     map(0x10, MINECRAFT_1_17),
                     map(0x0D, MINECRAFT_1_19),
                     map(0x0C, MINECRAFT_1_19_3),
-                    map(0x0E, MINECRAFT_1_19_4, MINECRAFT_1_20_1))
+                    map(0x0E, MINECRAFT_1_19_4),
+                    map(0x0F, MINECRAFT_1_20_2),
+                    map(0x0E, MINECRAFT_1_21_5))
+                .registerEncodeOnly(
+                    SetTitleText.class,
+                    SetTitleText.CODEC,
+                    map(0x45, MINECRAFT_1_8),
+                    map(0x47, MINECRAFT_1_12),
+                    map(0x48, MINECRAFT_1_12_1),
+                    map(0x4B, MINECRAFT_1_13),
+                    map(0x4F, MINECRAFT_1_14),
+                    map(0x50, MINECRAFT_1_15),
+                    map(0x4F, MINECRAFT_1_16),
+                    map(0x59, MINECRAFT_1_17),
+                    map(0x5A, MINECRAFT_1_18),
+                    map(0x5D, MINECRAFT_1_19_1),
+                    map(0x5B, MINECRAFT_1_19_3),
+                    map(0x5F, MINECRAFT_1_19_4),
+                    map(0x61, MINECRAFT_1_20_2),
+                    map(0x63, MINECRAFT_1_20_3),
+                    map(0x65, MINECRAFT_1_20_5),
+                    map(0x6C, MINECRAFT_1_21_2),
+                    map(0x6B, MINECRAFT_1_21_5),
+                    map(0x70, MINECRAFT_1_21_9),
+                    map(0x72, MINECRAFT_26_1),
+                    map(0x74, MINECRAFT_26_3))
+                .registerEncodeOnly(
+                    SetSubtitleText.class,
+                    SetSubtitleText.CODEC,
+                    map(0x45, MINECRAFT_1_8),
+                    map(0x47, MINECRAFT_1_12),
+                    map(0x48, MINECRAFT_1_12_1),
+                    map(0x4B, MINECRAFT_1_13),
+                    map(0x4F, MINECRAFT_1_14),
+                    map(0x50, MINECRAFT_1_15),
+                    map(0x4F, MINECRAFT_1_16),
+                    map(0x57, MINECRAFT_1_17),
+                    map(0x58, MINECRAFT_1_18),
+                    map(0x5B, MINECRAFT_1_19_1),
+                    map(0x59, MINECRAFT_1_19_3),
+                    map(0x5D, MINECRAFT_1_19_4),
+                    map(0x5F, MINECRAFT_1_20_2),
+                    map(0x61, MINECRAFT_1_20_3),
+                    map(0x63, MINECRAFT_1_20_5),
+                    map(0x6A, MINECRAFT_1_21_2),
+                    map(0x69, MINECRAFT_1_21_5),
+                    map(0x6E, MINECRAFT_1_21_9),
+                    map(0x70, MINECRAFT_26_1),
+                    map(0x72, MINECRAFT_26_3))
+                .registerEncodeOnly(
+                    SetTitleTimes.class,
+                    SetTitleTimes.CODEC,
+                    map(0x45, MINECRAFT_1_8),
+                    map(0x47, MINECRAFT_1_12),
+                    map(0x48, MINECRAFT_1_12_1),
+                    map(0x4B, MINECRAFT_1_13),
+                    map(0x4F, MINECRAFT_1_14),
+                    map(0x50, MINECRAFT_1_15),
+                    map(0x4F, MINECRAFT_1_16),
+                    map(0x5A, MINECRAFT_1_17),
+                    map(0x5B, MINECRAFT_1_18),
+                    map(0x5E, MINECRAFT_1_19_1),
+                    map(0x5C, MINECRAFT_1_19_3),
+                    map(0x60, MINECRAFT_1_19_4),
+                    map(0x62, MINECRAFT_1_20_2),
+                    map(0x64, MINECRAFT_1_20_3),
+                    map(0x66, MINECRAFT_1_20_5),
+                    map(0x6D, MINECRAFT_1_21_2),
+                    map(0x6C, MINECRAFT_1_21_5),
+                    map(0x71, MINECRAFT_1_21_9),
+                    map(0x73, MINECRAFT_26_1),
+                    map(0x75, MINECRAFT_26_3))
+                // The Title packet's action bar from 1.11; before, a chat message at the game info
+                // position (SystemChatMessage).
+                .registerEncodeOnly(
+                    SetActionBarText.class,
+                    SetActionBarText.CODEC,
+                    map(0x45, MINECRAFT_1_11),
+                    map(0x47, MINECRAFT_1_12),
+                    map(0x48, MINECRAFT_1_12_1),
+                    map(0x4B, MINECRAFT_1_13),
+                    map(0x4F, MINECRAFT_1_14),
+                    map(0x50, MINECRAFT_1_15),
+                    map(0x4F, MINECRAFT_1_16),
+                    map(0x41, MINECRAFT_1_17),
+                    map(0x40, MINECRAFT_1_19),
+                    map(0x43, MINECRAFT_1_19_1),
+                    map(0x42, MINECRAFT_1_19_3),
+                    map(0x46, MINECRAFT_1_19_4),
+                    map(0x48, MINECRAFT_1_20_2),
+                    map(0x4A, MINECRAFT_1_20_3),
+                    map(0x4C, MINECRAFT_1_20_5),
+                    map(0x51, MINECRAFT_1_21_2),
+                    map(0x50, MINECRAFT_1_21_5),
+                    map(0x55, MINECRAFT_1_21_9),
+                    map(0x57, MINECRAFT_26_1),
+                    map(0x59, MINECRAFT_26_3))
                 .registerEncodeOnly(
                     SystemChatMessage.class,
                     SystemChatMessage.CODEC,

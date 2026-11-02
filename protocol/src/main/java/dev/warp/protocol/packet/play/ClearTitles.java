@@ -16,7 +16,6 @@
  */
 package dev.warp.protocol.packet.play;
 
-import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_11;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_17;
 
 import dev.warp.protocol.ProtocolVersion;
@@ -33,11 +32,11 @@ import io.netty.handler.codec.DecoderException;
  * player switches, as Velocity does. From 1.17 this is the Clear Titles packet and a boolean: the
  * client hides the title and subtitle, and also resets the fade times when it is set. Up to 1.16.5
  * it is the Title packet with its hide or reset action, a VarInt whose value moved in 1.11 when the
- * action bar took action 2 (hide 3 then 4, reset 4 then 5). The reset action alone does not hide
- * the subtitle there: the 1.8.9 client blanks the title and shows the last subtitle under it for a
- * whole title duration, so a clear takes the hide action, then the reset (Velocity's {@code
- * LegacyTitlePacket} and {@code TitleClearPacket}, minecraft-data's {@code packet_title} and {@code
- * packet_clear_titles}).
+ * action bar took action 2 (hide 3 then 4, reset 4 then 5, see {@link LegacyTitle}). The reset
+ * action alone does not hide the subtitle there: the 1.8.9 client blanks the title and shows the
+ * last subtitle under it for a whole title duration, so a clear takes the hide action, then the
+ * reset (Velocity's {@code LegacyTitlePacket} and {@code TitleClearPacket}, minecraft-data's {@code
+ * packet_title} and {@code packet_clear_titles}).
  *
  * @param reset {@code true} to also reset the fade times to their defaults (the reset action up to
  *     1.16.5), {@code false} to only hide the text (the hide action)
@@ -53,7 +52,7 @@ public record ClearTitles(boolean reset) implements PlayPacket {
             return new ClearTitles(buf.readBoolean());
           }
           int action = VarInt.read(buf);
-          int hide = hideAction(version);
+          int hide = LegacyTitle.hide(version);
           if (action != hide && action != hide + 1) {
             throw new DecoderException("Title action " + action + " does not clear the title");
           }
@@ -65,13 +64,9 @@ public record ClearTitles(boolean reset) implements PlayPacket {
           if (version.isAtLeast(MINECRAFT_1_17)) {
             buf.writeBoolean(packet.reset());
           } else {
-            VarInt.write(buf, packet.reset() ? hideAction(version) + 1 : hideAction(version));
+            int hide = LegacyTitle.hide(version);
+            VarInt.write(buf, packet.reset() ? hide + 1 : hide);
           }
         }
       };
-
-  /** The Title packet's hide action, up to 1.16.5; reset is the next one. */
-  private static int hideAction(ProtocolVersion version) {
-    return version.isAtLeast(MINECRAFT_1_11) ? 4 : 3;
-  }
 }

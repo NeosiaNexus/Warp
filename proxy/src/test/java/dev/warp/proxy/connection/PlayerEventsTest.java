@@ -41,7 +41,6 @@ import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.server.BackendServer;
-import dev.warp.proxy.text.Reasons;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -50,6 +49,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -96,7 +96,10 @@ class PlayerEventsTest {
 
       KickedFromServerEvent event = fired.getFirst();
       assertEquals(KickedFromServerEvent.Cause.KICKED, event.cause());
-      assertEquals("Restarting", Reasons.plain(event.serverKickReason().orElseThrow()));
+      assertEquals(
+          "Restarting",
+          PlainTextComponentSerializer.plainText()
+              .serialize(event.serverKickReason().orElseThrow()));
       assertEquals("lobby", event.server().name());
       assertFalse(event.kickedDuringServerConnect());
       assertInstanceOf(KickedFromServerEvent.Redirect.class, event.result(), "proposed fallback");
@@ -156,7 +159,9 @@ class PlayerEventsTest {
       assertInstanceOf(KickedFromServerEvent.Notify.class, event.result());
       ConnectionResult.Failed failed =
           assertInstanceOf(ConnectionResult.Failed.class, result.join());
-      assertEquals("You are not whitelisted", Reasons.plain(failed.serverReason().orElseThrow()));
+      assertEquals(
+          "You are not whitelisted",
+          PlainTextComponentSerializer.plainText().serialize(failed.serverReason().orElseThrow()));
       assertEquals(List.of(SystemChatMessage.class), types(setup.sentToClient()));
       assertFalse(setup.player.isSwitching());
       assertTrue(setup.client.channel().isOpen());
@@ -279,6 +284,8 @@ class PlayerEventsTest {
     setup.player.setCurrentServerName(LOBBY.name());
     lobby.setSessionHandler(new BackendPlaySessionHandler(setup.player, lobby));
     setup.client.setSessionHandler(new ClientPlaySessionHandler(setup.player));
+    // In a game, as after its Join Game: the proxy's messages go out at once.
+    setup.player.joinedGame();
     return setup;
   }
 

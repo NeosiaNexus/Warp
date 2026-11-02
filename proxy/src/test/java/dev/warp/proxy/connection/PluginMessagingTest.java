@@ -248,6 +248,8 @@ class PluginMessagingTest {
     setup.player.setCurrentServerName(LOBBY.name());
     lobby.setSessionHandler(new BackendPlaySessionHandler(setup.player, lobby));
     setup.client.setSessionHandler(new ClientPlaySessionHandler(setup.player));
+    // In a game, as after its Join Game: the proxy's messages go out at once.
+    setup.player.joinedGame();
     return setup;
   }
 }

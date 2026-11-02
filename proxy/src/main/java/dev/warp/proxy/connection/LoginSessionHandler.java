@@ -47,7 +47,6 @@ import dev.warp.proxy.event.player.GameProfileRequestEventImpl;
 import dev.warp.proxy.event.player.LoginEventImpl;
 import dev.warp.proxy.event.player.PreLoginEventImpl;
 import dev.warp.proxy.player.PlayerRegistry;
-import dev.warp.proxy.text.Reasons;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -65,6 +64,7 @@ import javax.crypto.spec.SecretKeySpec;
 
 import io.netty.channel.ChannelPipeline;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -231,7 +231,7 @@ final class LoginSessionHandler implements SessionHandler {
                   }
                   switch (event.result()) {
                     case PreLoginEvent.Denied(Component reason) -> {
-                      disconnect(Reasons.plain(reason));
+                      disconnect(reason);
                       return;
                     }
                     case PreLoginEvent.ForceOnlineMode() -> onlineMode = true;
@@ -515,7 +515,7 @@ final class LoginSessionHandler implements SessionHandler {
                     // No session started: no disconnect event for this player.
                     this.player = null;
                     loginContext.playerRegistry().unregister(joining);
-                    disconnect(Reasons.plain(reason));
+                    disconnect(reason);
                     return;
                   }
                   succeedLogin(profile);
@@ -545,6 +545,10 @@ final class LoginSessionHandler implements SessionHandler {
         connection.channel().remoteAddress());
 
     if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
+      // The client reads configuration packets from Login Success on, though it is still read in
+      // the login state until it acknowledges: anything sent to it from now on, a disconnect above
+      // all, is a configuration packet (BungeeCord #3525).
+      connection.encoder().setState(ProtocolState.CONFIGURATION);
       // Wait for LoginAcknowledged before transitioning.
       state = LoginState.AWAITING_LOGIN_ACKNOWLEDGED;
     } else {
@@ -639,17 +643,32 @@ final class LoginSessionHandler implements SessionHandler {
     connection.writeAndClose(LoginDisconnect.ofTranslation(ProfileKeys.REFUSAL_REASON));
   }
 
+  private void disconnect(Component reason) {
+    logger.warn(
+        "Disconnecting {} from {}: {}",
+        username != null ? username : "unknown",
+        connection.channel().remoteAddress(),
+        PlainTextComponentSerializer.plainText().serialize(reason));
+    Packet disconnectPacket =
+        switch (connection.encoder().state()) {
+          case HANDSHAKE, STATUS, LOGIN -> LoginDisconnect.of(reason, clientVersion());
+          case CONFIGURATION -> ConfigDisconnect.of(reason, clientVersion());
+          case PLAY -> PlayDisconnect.of(reason, clientVersion());
+        };
+    connection.writeAndClose(disconnectPacket);
+  }
+
   private void disconnect(String reason) {
     logger.warn(
         "Disconnecting {} from {}: {}",
         username != null ? username : "unknown",
         connection.channel().remoteAddress(),
         reason);
-    // The disconnect packet of the client's current state: LoginAcknowledged moves it to
-    // CONFIGURATION, completeLogin (before 1.20.2) to PLAY. The login reason is JSON in every
-    // version; the configuration and play reasons follow the client's version.
+    // The disconnect packet of the state the client reads: Login Success moves it to CONFIGURATION
+    // from 1.20.2, to PLAY before. The login reason is JSON in every version; the configuration and
+    // play reasons follow the client's version.
     Packet disconnectPacket =
-        switch (connection.decoder().state()) {
+        switch (connection.encoder().state()) {
           case HANDSHAKE, STATUS, LOGIN -> LoginDisconnect.ofPlainText(reason);
           case CONFIGURATION -> ConfigDisconnect.ofPlainText(reason, clientVersion());
           case PLAY -> PlayDisconnect.ofPlainText(reason, clientVersion());

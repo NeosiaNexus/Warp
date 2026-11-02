@@ -213,10 +213,9 @@ final class ReconfigurationSwitch implements ServerSwitch {
       // Sending a terminal packet inside an open bundle crashes the client with "Terminal message
       // received in bundle" (Velocity #1384).
       phase = Phase.AWAITING_ACKNOWLEDGEMENT;
-      player.closeBundle();
       // From here on the current server's packets must not reach the client.
       player.playOn(null);
-      player.clientConnection().writeAndFlush(new StartConfiguration());
+      player.startConfiguration();
       return;
     }
     configure(backend);

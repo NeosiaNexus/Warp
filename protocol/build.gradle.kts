@@ -22,6 +22,13 @@ dependencies {
     // Gson for protocol serialization
     implementation(libs.gson)
 
+    // NBT values carried by components (item hover data components, custom click payloads), parsed
+    // from the SNBT Adventure holds them in
+    implementation(libs.adventure.nbt)
+
+    // Reads the JSON components backends send (disconnect reasons)
+    implementation(libs.adventure.text.serializer.gson)
+
     // Competitor baseline for benchmarks only: Velocity's libdeflate and OpenSSL natives, measured
     // against the exact Netty version Warp ships.
     jmh(libs.velocity.native) {

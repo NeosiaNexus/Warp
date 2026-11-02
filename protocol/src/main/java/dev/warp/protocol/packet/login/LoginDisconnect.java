@@ -20,8 +20,10 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.packet.PacketCodec;
 import dev.warp.protocol.packet.TextComponent;
+import dev.warp.protocol.text.ComponentCodec;
 
 import io.netty.buffer.ByteBuf;
+import net.kyori.adventure.text.Component;
 
 /**
  * Server disconnects the client during login ({@code S→C, ID 0x00}).
@@ -52,6 +54,36 @@ public record LoginDisconnect(String reason) implements LoginPacket {
           McString.write(buf, packet.reason(), maxReasonLength(version));
         }
       };
+
+  /**
+   * Returns the reason as a component: what a backend that refuses a login wrote, JSON in every
+   * version, read without failing (see {@link ComponentCodec#decodeJson(String)}).
+   *
+   * @return the reason, {@link Component#empty()} when the backend gave none
+   */
+  public Component decodedReason() {
+    return ComponentCodec.decodeJson(reason);
+  }
+
+  /**
+   * Creates a login disconnect whose reason is {@code reason}, as the JSON a client of {@code
+   * version} reads: the login state keeps JSON in every version, in the dialect of the version
+   * (snake case events from 1.21.5, for instance).
+   *
+   * @param reason the reason shown to the player
+   * @param version the client's protocol version
+   * @return the packet
+   * @throws IllegalArgumentException if the reason is longer than the client reads
+   */
+  public static LoginDisconnect of(Component reason, ProtocolVersion version) {
+    String json = ComponentCodec.json(reason, version);
+    int max = maxReasonLength(version);
+    if (json.length() > max) {
+      throw new IllegalArgumentException(
+          "Login disconnect reason too long: " + json.length() + " characters (max " + max + ")");
+    }
+    return new LoginDisconnect(json);
+  }
 
   /**
    * Creates a login disconnect whose reason is plain text.

@@ -52,7 +52,23 @@ class TextComponentTest {
 
     static Stream<ProtocolVersion> jsonVersions() {
       return ProtocolVersion.values().stream()
+          .filter(version -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_9))
           .filter(version -> version.isOlderThan(ProtocolVersion.MINECRAFT_1_20_3));
+    }
+
+    /** The versions before 1.9, which write plain text as a bare JSON string. */
+    static Stream<ProtocolVersion> legacyVersions() {
+      return ProtocolVersion.values().stream()
+          .filter(version -> version.isOlderThan(ProtocolVersion.MINECRAFT_1_9));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("legacyVersions")
+    @DisplayName("should write a bare JSON string before 1.9, as vanilla does")
+    void bareJsonString(ProtocolVersion version) {
+      byte[] encoded = TextComponent.plainText("Kicked", version);
+
+      assertArrayEquals(concat(new byte[] {0x08}, utf8("\"Kicked\"")), encoded);
     }
 
     @ParameterizedTest(name = "{0}")
@@ -81,7 +97,7 @@ class TextComponentTest {
       ByteBuf buf =
           Unpooled.wrappedBuffer(
               TextComponent.plainText(
-                  "Could not connect to backend server", ProtocolVersion.MINECRAFT_1_8));
+                  "Could not connect to backend server", ProtocolVersion.MINECRAFT_1_9));
 
       assertEquals("{\"text\":\"Could not connect to backend server\"}", McString.read(buf));
       assertFalse(buf.isReadable(), "nothing may follow the string");

@@ -16,21 +16,15 @@
  */
 package dev.warp.api.command;
 
-import net.kyori.adventure.text.Component;
+import net.kyori.adventure.audience.Audience;
 
 /**
- * Who runs a command: a player, or the console.
+ * Who runs a command: a player, or the console. It is an Adventure {@link Audience}: {@code
+ * sendMessage} writes to the player's chat, or the console's log.
  *
  * <p>Implemented by the proxy; plugins must not implement it.
  */
-public interface CommandSource {
-
-  /**
-   * Sends a message to the source: the player's chat, or the console's log.
-   *
-   * @param message the message
-   */
-  void sendMessage(Component message);
+public interface CommandSource extends Audience {
 
   /**
    * Returns whether the source has a permission. The console has every permission; a player has

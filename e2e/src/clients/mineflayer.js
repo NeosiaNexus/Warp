@@ -272,6 +272,8 @@ class Bot {
     this.keyed = keyed;
     this.stats = { packets: 0, chunks: 0, signedChat: 0, lastPacket: Date.now(), errors: [], kicked: null, ended: null };
     this.messages = [];
+    // The component of each chat line, as the bot's chat library parsed it (JSON, or NBT turned into JSON).
+    this.components = [];
     /**
      * What the servers it played on said, in order: brands (with the protocol state and game mode
      * the bot was in when each arrived), resource pack offers, the UUIDs it was listed under.
@@ -306,7 +308,10 @@ class Bot {
     bot.on('error', (e) => this.stats.errors.push(String(e?.stack ?? e)));
     bot.on('kicked', (reason) => { this.stats.kicked = text(reason); });
     bot.on('end', (reason) => { if (!this.quitting) this.stats.ended = String(reason ?? 'unknown'); });
-    bot.on('message', (message) => this.messages.push(message.toString()));
+    bot.on('message', (message) => {
+      this.messages.push(message.toString());
+      this.components.push(message.json);
+    });
   }
 
   /** The UUID the proxy gave the player in its Login Success. */
@@ -384,6 +389,12 @@ class Bot {
 
   chat(message) {
     this.bot.chat(message);
+  }
+
+  /** The component of the last chat line that reads `text`, or undefined. */
+  componentOf(text) {
+    const index = this.messages.lastIndexOf(text);
+    return index < 0 ? undefined : this.components[index];
   }
 
   /**

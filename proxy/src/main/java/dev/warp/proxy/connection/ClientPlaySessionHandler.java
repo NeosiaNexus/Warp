@@ -41,6 +41,10 @@ import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.Respawn;
+import dev.warp.protocol.packet.play.SetActionBarText;
+import dev.warp.protocol.packet.play.SetSubtitleText;
+import dev.warp.protocol.packet.play.SetTitleText;
+import dev.warp.protocol.packet.play.SetTitleTimes;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
@@ -136,7 +140,11 @@ final class ClientPlaySessionHandler implements SessionHandler {
           BossBar _,
           TabListHeaderFooter _,
           ClearTitles _,
-          DeclareCommands _ -> {}
+          DeclareCommands _,
+          SetTitleText _,
+          SetSubtitleText _,
+          SetTitleTimes _,
+          SetActionBarText _ -> {}
     }
   }
 

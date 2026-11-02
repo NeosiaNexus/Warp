@@ -46,6 +46,10 @@ import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
 import dev.warp.protocol.packet.play.Respawn;
+import dev.warp.protocol.packet.play.SetActionBarText;
+import dev.warp.protocol.packet.play.SetSubtitleText;
+import dev.warp.protocol.packet.play.SetTitleText;
+import dev.warp.protocol.packet.play.SetTitleTimes;
 import dev.warp.protocol.packet.play.SpawnInfo;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SystemChatMessage;
@@ -57,7 +61,9 @@ import dev.warp.proxy.server.ServerRegistry;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -67,6 +73,9 @@ import java.util.UUID;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelOutboundHandlerAdapter;
+import io.netty.channel.ChannelPromise;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.channel.local.LocalChannel;
 
@@ -95,6 +104,9 @@ final class SwitchHarness implements AutoCloseable {
   /** The client's encoder, kept to know its state once the connection is closed. */
   private final MinecraftEncoder clientEncoder;
 
+  /** The client encoder's state at each write, in the order the frames come out. */
+  private final Deque<ProtocolState> clientWriteStates = new ArrayDeque<>();
+
   private int nextEntityId = 1;
 
   /**
@@ -106,6 +118,19 @@ final class SwitchHarness implements AutoCloseable {
     this.version = version;
     this.client = connection(PacketDirection.SERVERBOUND, clientState);
     this.clientEncoder = client.encoder();
+    client
+        .channel()
+        .pipeline()
+        .addBefore(
+            ServerChannelInitializer.CONNECTION_HANDLER,
+            "write-states",
+            new ChannelOutboundHandlerAdapter() {
+              @Override
+              public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+                clientWriteStates.add(clientEncoder.state());
+                ctx.write(msg, promise);
+              }
+            });
     Map<String, InetSocketAddress> servers = new LinkedHashMap<>();
     for (ServerInfo server : List.of(LOBBY, SURVIVAL, CREATIVE)) {
       servers.put(server.name(), server.address());
@@ -230,10 +255,12 @@ final class SwitchHarness implements AutoCloseable {
   /** Drains what the client received, naming each packet with the client's current state. */
   List<Sent> sentToClient() {
     EmbeddedChannel channel = (EmbeddedChannel) client.channel();
-    ProtocolState state = clientEncoder.state();
-    PacketRegistry registry = StateRegistry.get(state, PacketDirection.CLIENTBOUND);
     List<Sent> sent = new ArrayList<>();
     for (ByteBuf frame = channel.readOutbound(); frame != null; frame = channel.readOutbound()) {
+      // The state the packet was written in: the encoder moves on with Start Configuration.
+      ProtocolState written = clientWriteStates.poll();
+      ProtocolState state = written != null ? written : clientEncoder.state();
+      PacketRegistry registry = StateRegistry.get(state, PacketDirection.CLIENTBOUND);
       try {
         VarInt.read(frame);
         int packetId = VarInt.read(frame);
@@ -274,6 +301,10 @@ final class SwitchHarness implements AutoCloseable {
             BossBar.class,
             TabListHeaderFooter.class,
             ClearTitles.class,
+            SetActionBarText.class,
+            SetTitleText.class,
+            SetSubtitleText.class,
+            SetTitleTimes.class,
             PlayDisconnect.class,
             SystemChatMessage.class,
             StartConfiguration.class,
