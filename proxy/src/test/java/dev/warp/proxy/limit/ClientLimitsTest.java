@@ -308,7 +308,10 @@ class ClientLimitsTest {
         d.maxConcurrentLoginsPerAddress(),
         d.maxConcurrentAuthentications(),
         d.loginTimeout(),
-        d.reportInterval());
+        d.reportInterval(),
+        d.maxPendingConnections(),
+        d.handshakeTimeout(),
+        d.statusTimeout());
   }
 
   private static LimitsConfig withLogins(LimitsConfig.Rate logins, int maxInProgress) {
@@ -322,7 +325,10 @@ class ClientLimitsTest {
         maxInProgress,
         d.maxConcurrentAuthentications(),
         d.loginTimeout(),
-        d.reportInterval());
+        d.reportInterval(),
+        d.maxPendingConnections(),
+        d.handshakeTimeout(),
+        d.statusTimeout());
   }
 
   private static LimitsConfig withAuthentications(int max) {
@@ -336,7 +342,10 @@ class ClientLimitsTest {
         d.maxConcurrentLoginsPerAddress(),
         max,
         d.loginTimeout(),
-        d.reportInterval());
+        d.reportInterval(),
+        d.maxPendingConnections(),
+        d.handshakeTimeout(),
+        d.statusTimeout());
   }
 
   private static InetSocketAddress socket(String literal) {

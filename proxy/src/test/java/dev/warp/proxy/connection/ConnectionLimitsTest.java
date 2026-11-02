@@ -35,6 +35,7 @@ import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.config.LimitsConfig;
 import dev.warp.proxy.config.ProxyProtocolConfig;
 import dev.warp.proxy.limit.ClientLimits;
+import dev.warp.proxy.limit.Refusal;
 import dev.warp.proxy.network.CidrRanges;
 
 import java.net.InetAddress;
@@ -46,10 +47,12 @@ import java.security.KeyFactory;
 import java.security.PublicKey;
 import java.security.spec.X509EncodedKeySpec;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 
 import javax.crypto.Cipher;
 
@@ -283,7 +286,8 @@ class ConnectionLimitsTest {
       assertFalse(stalled.isActive());
       startOnlineLogin(initializer);
       limits.report();
-      assertEquals(List.of("Limits over the last 60 s: logins timed out: 1"), info(limitsLog));
+      assertEquals(
+          List.of("Refused before login over the last 60 s: logins timed out: 1"), info(limitsLog));
     }
 
     @Test
@@ -384,6 +388,73 @@ class ConnectionLimitsTest {
       thread.join(10_000);
       assertTrue(limits.admitOnlineLogin(), "released when the session server answered");
     }
+
+    @Test
+    @DisplayName("should count forged encryption responses instead of logging each one")
+    void forgedResponses() {
+      ClientLimits limits = limits(withLogins(LimitsConfig.Rate.UNLIMITED, 0, 1, HOUR));
+      ServerChannelInitializer initializer =
+          onlineInitializer(limits, mock(MojangSessionService.class));
+
+      for (int i = 0; i < 20; i++) {
+        EmbeddedChannel channel = startOnlineLogin(initializer).channel();
+        // Bytes no RSA key decrypts: what a fake-authentication flood sends.
+        channel.writeInbound(encryptionResponse(new byte[128], new byte[128]));
+        assertFalse(channel.isActive());
+      }
+
+      assertEquals(20, limits.refusals(Refusal.AUTHENTICATION_FAILED));
+      assertTrue(
+          warningsAndInfo(loginLog).isEmpty(), () -> String.valueOf(warningsAndInfo(loginLog)));
+      assertTrue(limits.admitOnlineLogin(), "every slot given back");
+    }
+
+    @Test
+    @DisplayName("should count players the session server denies instead of logging each one")
+    void deniedByTheSessionServer() throws Exception {
+      ClientLimits limits = limits(withLogins(LimitsConfig.Rate.UNLIMITED, 0, 1, HOUR));
+      MojangSessionService sessionService = mock(MojangSessionService.class);
+      CountDownLatch denied = new CountDownLatch(3);
+      when(sessionService.hasJoined(eq("Steve"), anyString()))
+          .thenAnswer(
+              invocation -> {
+                denied.countDown();
+                throw AuthenticationException.notJoined("did not join");
+              });
+      ServerChannelInitializer initializer = onlineInitializer(limits, sessionService);
+
+      List<EmbeddedChannel> channels = new ArrayList<>();
+      for (int i = 0; i < 3; i++) {
+        OnlineLogin login = startOnlineLogin(initializer);
+        EncryptionRequest request = login.encryptionRequest();
+        login
+            .channel()
+            .writeInbound(
+                encryptionResponse(
+                    rsaEncrypt(request, new byte[16]), rsaEncrypt(request, request.verifyToken())));
+        channels.add(login.channel());
+        // One at a time: the only slot comes back once the session server answered.
+        assertTrue(waitFor(() -> limits.admitOnlineLogin()), "the slot came back");
+      }
+      assertTrue(denied.await(10, TimeUnit.SECONDS));
+      channels.forEach(EmbeddedChannel::runPendingTasks);
+
+      assertEquals(3, limits.refusals(Refusal.AUTHENTICATION_FAILED));
+      assertTrue(
+          warningsAndInfo(loginLog).isEmpty(), () -> String.valueOf(warningsAndInfo(loginLog)));
+    }
+  }
+
+  /** Waits up to 10 s for a condition another thread makes true. */
+  private static boolean waitFor(BooleanSupplier condition) throws InterruptedException {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (!condition.getAsBoolean()) {
+      if (System.nanoTime() - deadline > 0) {
+        return false;
+      }
+      Thread.sleep(5);
+    }
+    return true;
   }
 
   // ---------------------------------------------------------------------------
@@ -403,7 +474,10 @@ class ConnectionLimitsTest {
     limits.report();
     limits.report();
 
-    assertEquals(List.of("Limits over the last 60 s: connections refused: 41"), info(limitsLog));
+    assertEquals(
+        List.of(
+            "Refused before login over the last 60 s: connections over their address's rate: 41"),
+        info(limitsLog));
   }
 
   // ---------------------------------------------------------------------------
@@ -473,7 +547,10 @@ class ConnectionLimitsTest {
         0,
         0,
         Duration.ZERO,
-        d.reportInterval());
+        d.reportInterval(),
+        d.maxPendingConnections(),
+        d.handshakeTimeout(),
+        d.statusTimeout());
   }
 
   private static LimitsConfig withLogins(
@@ -487,7 +564,10 @@ class ConnectionLimitsTest {
         perAddress,
         authentications,
         timeout,
-        LimitsConfig.DEFAULTS.reportInterval());
+        LimitsConfig.DEFAULTS.reportInterval(),
+        LimitsConfig.DEFAULTS.maxPendingConnections(),
+        LimitsConfig.DEFAULTS.handshakeTimeout(),
+        LimitsConfig.DEFAULTS.statusTimeout());
   }
 
   private static List<String> info(LogCapture log) {

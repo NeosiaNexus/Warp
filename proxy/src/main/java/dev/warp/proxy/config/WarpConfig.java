@@ -868,6 +868,19 @@ public final class WarpConfig {
       throw new ConfigurationException(
           "limits.report-interval must be at least 1s, got " + LimitsConfig.format(reportInterval));
     }
+    int maxPending =
+        parseCount(
+            section.node("max-pending-connections"),
+            "limits.max-pending-connections",
+            defaults.maxPendingConnections());
+    Duration handshakeTimeout =
+        parseDuration(
+            section.node("handshake-timeout"),
+            "limits.handshake-timeout",
+            defaults.handshakeTimeout());
+    Duration statusTimeout =
+        parseDuration(
+            section.node("status-timeout"), "limits.status-timeout", defaults.statusTimeout());
     return new LimitsConfig(
         enabled,
         exempt,
@@ -877,7 +890,10 @@ public final class WarpConfig {
         perAddress,
         authentications,
         loginTimeout,
-        reportInterval);
+        reportInterval,
+        maxPending,
+        handshakeTimeout,
+        statusTimeout);
   }
 
   /** Parses the {@code burst} and {@code interval} of a token bucket section. */
@@ -1185,6 +1201,19 @@ public final class WarpConfig {
             interval = 200ms
           }
 
+          # Connections that have not logged in yet (server list pings, logins in progress,
+          # connections that sent nothing), for the whole proxy, whatever their address: what a
+          # botnet of many addresses can hold at once. Over it, new connections are refused before
+          # Warp reads anything from them. 0 for no limit.
+          max-pending-connections = 8192
+
+          # The longest a connection may take to send its handshake (the PROXY protocol header
+          # included), counted from the moment it connects, and the longest a server list ping may
+          # take, from its handshake to its answer. A game sends both at once; bytes trickled in do
+          # not extend them. 0 for no timeout.
+          handshake-timeout = 5s
+          status-timeout = 5s
+
           # Server list pings, counted apart from logins: refreshing the server list never locks
           # a player out. A refused ping gets no answer.
           status-pings {
@@ -1213,7 +1242,9 @@ public final class WarpConfig {
             timeout = 30s
           }
 
-          # How often the counts of refused connections and logins are logged, when not zero.
+          # How often the counts of connections refused before login are logged, by reason (limits,
+          # time-outs, invalid packets, failed authentications), when not zero. Warp never logs
+          # these one connection at a time: anyone can cause them, as fast as they like.
           report-interval = 1m
         }
         """
@@ -1285,6 +1316,16 @@ public final class WarpConfig {
               ? "any number of"
               : limits.maxConcurrentAuthentications(),
           limits.loginTimeout().isZero() ? "never" : LimitsConfig.format(limits.loginTimeout()));
+      logger.info(
+          "  limits: {} connections not logged in at once, handshakes within {}, server list pings"
+              + " within {}",
+          limits.maxPendingConnections() == 0 ? "any number of" : limits.maxPendingConnections(),
+          limits.handshakeTimeout().isZero()
+              ? "any time"
+              : LimitsConfig.format(limits.handshakeTimeout()),
+          limits.statusTimeout().isZero()
+              ? "any time"
+              : LimitsConfig.format(limits.statusTimeout()));
     } else {
       logger.info("  limits: disabled");
     }

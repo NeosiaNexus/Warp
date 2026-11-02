@@ -1117,11 +1117,28 @@ class LoginSessionHandlerTest {
     }
 
     @Test
-    @DisplayName(
-        "should refuse a client that answers a cookie request nobody sent, as vanilla does")
+    @DisplayName("should close, unread, a client that answers a cookie request before any was sent")
     void refusesUnaskedAnswer() {
       EmbeddedChannel channel = loginChannel(VERSION);
       try {
+        send(channel, ProtocolState.LOGIN, new CookieResponse("primemc:session", null), VERSION);
+
+        // Refused from the frame's header, as the login state allows no answer yet.
+        assertNull(channel.readOutbound());
+        assertClosed(channel);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName(
+        "should refuse a client that answers a cookie request nobody sent, as vanilla does")
+    void refusesAnswerToAnotherKey() {
+      EmbeddedChannel channel = loginChannel(VERSION);
+      try {
+        var _ = loginHandler(channel).cookies().request("primemc:asked", Duration.ofSeconds(10));
+        nextPacket(channel, ProtocolState.LOGIN, CookieRequest.class, VERSION);
         send(channel, ProtocolState.LOGIN, new CookieResponse("primemc:session", null), VERSION);
 
         byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);

@@ -24,11 +24,55 @@ package dev.warp.proxy.auth;
  */
 public final class AuthenticationException extends Exception {
 
+  private static final long serialVersionUID = 1L;
+
+  /** Whether the session server failed, rather than deny that the player joined. */
+  private final boolean serverFault;
+
+  /**
+   * Creates the exception of a session server that failed: an unexpected answer.
+   *
+   * @param message what went wrong
+   */
   public AuthenticationException(String message) {
-    super(message);
+    this(message, true);
   }
 
+  /**
+   * Creates the exception of a session server that could not be reached or understood.
+   *
+   * @param message what went wrong
+   * @param cause the failure
+   */
   public AuthenticationException(String message, Throwable cause) {
     super(message, cause);
+    this.serverFault = true;
+  }
+
+  private AuthenticationException(String message, boolean serverFault) {
+    super(message);
+    this.serverFault = serverFault;
+  }
+
+  /**
+   * Creates the exception of a player the session server says did not join: a cracked client, or a
+   * forged login.
+   *
+   * @param message what went wrong
+   * @return the exception
+   */
+  public static AuthenticationException notJoined(String message) {
+    return new AuthenticationException(message, false);
+  }
+
+  /**
+   * Returns whether the session server failed (unreachable, an error status such as 429, an answer
+   * that does not parse), rather than deny that the player joined: while it fails, no player can
+   * log in, which an operator must hear about.
+   *
+   * @return {@code true} for a fault of the session server
+   */
+  public boolean serverFault() {
+    return serverFault;
   }
 }

@@ -36,6 +36,13 @@ import java.util.List;
  *     once, RSA decryption included; 0 for no limit
  * @param loginTimeout the longest a login may take before the player is logged in; zero for none
  * @param reportInterval how often the counts of refusals are logged
+ * @param maxPendingConnections connections that are not logged in yet (server list pings, logins in
+ *     progress, connections that sent nothing) the whole proxy holds at once, whatever their
+ *     address; 0 for no limit
+ * @param handshakeTimeout the longest a connection may take to send its handshake, PROXY protocol
+ *     header included, counted from the accept whatever it sends meanwhile; zero for none
+ * @param statusTimeout the longest a server list ping may take, from its handshake to its pong;
+ *     zero for none
  */
 public record LimitsConfig(
     boolean enabled,
@@ -46,7 +53,10 @@ public record LimitsConfig(
     int maxConcurrentLoginsPerAddress,
     int maxConcurrentAuthentications,
     Duration loginTimeout,
-    Duration reportInterval) {
+    Duration reportInterval,
+    int maxPendingConnections,
+    Duration handshakeTimeout,
+    Duration statusTimeout) {
 
   /** The limits Warp applies when the configuration does not say otherwise. */
   public static final LimitsConfig DEFAULTS =
@@ -59,7 +69,10 @@ public record LimitsConfig(
           2,
           256,
           Duration.ofSeconds(30),
-          Duration.ofMinutes(1));
+          Duration.ofMinutes(1),
+          8192,
+          Duration.ofSeconds(5),
+          Duration.ofSeconds(5));
 
   /** No limit at all. */
   public static final LimitsConfig DISABLED =
@@ -72,7 +85,10 @@ public record LimitsConfig(
           0,
           0,
           Duration.ZERO,
-          Duration.ofMinutes(1));
+          Duration.ofMinutes(1),
+          0,
+          Duration.ZERO,
+          Duration.ZERO);
 
   /**
    * Checks the values.
@@ -81,11 +97,19 @@ public record LimitsConfig(
    *     is not positive
    */
   public LimitsConfig {
-    if (maxConcurrentLoginsPerAddress < 0 || maxConcurrentAuthentications < 0) {
+    if (maxConcurrentLoginsPerAddress < 0
+        || maxConcurrentAuthentications < 0
+        || maxPendingConnections < 0) {
       throw new IllegalArgumentException("concurrency limits must not be negative");
     }
-    if (loginTimeout.isNegative()) {
-      throw new IllegalArgumentException("loginTimeout must not be negative, got " + loginTimeout);
+    if (loginTimeout.isNegative() || handshakeTimeout.isNegative() || statusTimeout.isNegative()) {
+      throw new IllegalArgumentException(
+          "timeouts must not be negative, got "
+              + loginTimeout
+              + ", "
+              + handshakeTimeout
+              + ", "
+              + statusTimeout);
     }
     if (reportInterval.isNegative() || reportInterval.isZero()) {
       throw new IllegalArgumentException("reportInterval must be positive, got " + reportInterval);

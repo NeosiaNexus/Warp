@@ -27,6 +27,7 @@ import dev.warp.protocol.packet.status.StatusRequest;
 import dev.warp.protocol.packet.status.StatusResponse;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.event.proxy.ProxyPingEventImpl;
+import dev.warp.proxy.limit.Refusal;
 import dev.warp.proxy.status.ServerList;
 
 import java.util.function.Consumer;
@@ -112,8 +113,7 @@ final class StatusSessionHandler implements SessionHandler {
       return; // Requests that arrived with the refused handshake.
     }
     if (!(packet instanceof StatusPacket statusPacket)) {
-      logger.warn("Unexpected packet in STATUS state: {}", packet.getClass().getSimpleName());
-      connection.close();
+      unexpected(packet);
       return;
     }
 
@@ -122,8 +122,19 @@ final class StatusSessionHandler implements SessionHandler {
       case StatusRequest _ -> handleStatusRequest();
       case PingRequest ping -> handlePingRequest(ping);
       // Clientbound packets should never arrive from a client.
-      case StatusResponse _, PongResponse _ -> connection.close();
+      case StatusResponse _, PongResponse _ -> unexpected(packet);
     }
+  }
+
+  /** Closes a ping that sent what no client sends: counted, never logged one by one. */
+  private void unexpected(Packet packet) {
+    refused = true;
+    context.limits().refused(Refusal.UNEXPECTED_PACKET);
+    logger.debug(
+        "Unexpected {} in STATUS from {}",
+        packet.getClass().getSimpleName(),
+        connection.remoteAddress());
+    connection.reset();
   }
 
   private void handleStatusRequest() {
@@ -157,7 +168,7 @@ final class StatusSessionHandler implements SessionHandler {
   private void handlePingRequest(PingRequest ping) {
     switch (state) {
       // A ping before any request: a protocol violation.
-      case AWAITING_REQUEST -> connection.close();
+      case AWAITING_REQUEST -> unexpected(ping);
       case ANSWERING -> {
         if (pendingPing == null) {
           pendingPing = ping;

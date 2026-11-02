@@ -25,6 +25,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
@@ -49,16 +50,23 @@ import org.slf4j.LoggerFactory;
  *   <li><b>Authentications in flight</b>, for the whole proxy: the RSA decryption and the session
  *       server request of an online-mode login. Counted from the encryption response only, so that
  *       bots stalling earlier in the login hold none of them.
+ *   <li><b>Connections not logged in</b>, for the whole proxy: what a botnet of many addresses can
+ *       hold at once, which per-address limits cannot bound. Over the cap, a new connection is
+ *       reset before anything is read from it.
+ *   <li><b>Deadlines</b> before login: {@link #handshakeTimeout()} from the accept to the
+ *       handshake, {@link #statusTimeout()} for a whole server list ping, {@link #loginTimeout()}
+ *       for a login. They are absolute: trickling bytes does not extend them.
  * </ul>
  *
  * <p>Addresses count IPv4 by address and IPv6 by /64 ({@link AddressKey}). Exempt addresses, and
  * the trusted proxies themselves (whose own connections are health checks), are never limited; nor
  * is a connection whose address is not an IP address, which a TCP listener never accepts.
  *
- * <p>Refusals are counted, never logged one by one: {@link #report()} logs the counts at most once
- * per report interval, so that a flood cannot flood the logs. Every method is thread-safe and
- * lock-free; the per-address checks allocate a boxed key and the address bytes, once per
- * connection.
+ * <p>Refusals are counted by {@link Refusal}, never logged one by one: {@link #report()} logs the
+ * counts at most once per report interval, so that a flood cannot flood the logs. The rest of the
+ * proxy counts its own refusals of clients that are not logged in here too ({@link
+ * #refused(Refusal)}). Every method is thread-safe and lock-free; the per-address checks allocate a
+ * boxed key and the address bytes, once per connection.
  */
 public final class ClientLimits {
 
@@ -78,15 +86,18 @@ public final class ClientLimits {
   private final @Nullable ConcurrencyLimiter loginsInProgress;
   private final int maxAuthentications;
   private final AtomicInteger authentications = new AtomicInteger();
+  private final int maxPending;
+  private final AtomicInteger pending = new AtomicInteger();
   private final Duration loginTimeout;
+  private final Duration handshakeTimeout;
+  private final Duration statusTimeout;
   private final Duration reportInterval;
 
-  private final LongAdder refusedConnections = new LongAdder();
-  private final LongAdder refusedStatusPings = new LongAdder();
-  private final LongAdder refusedLoginsTooFast = new LongAdder();
-  private final LongAdder refusedLoginsInProgress = new LongAdder();
-  private final LongAdder refusedAuthentications = new LongAdder();
-  private final LongAdder timedOutLogins = new LongAdder();
+  /** Refusals since the start, by reason; filled once, then only read. */
+  private final EnumMap<Refusal, LongAdder> refusals = new EnumMap<>(Refusal.class);
+
+  /** The totals of the previous report; read and written by {@link #report()} only. */
+  private final EnumMap<Refusal, Long> reported = new EnumMap<>(Refusal.class);
 
   // ---------------------------------------------------------------------------
   // Construction
@@ -123,8 +134,15 @@ public final class ClientLimits {
             ? new ConcurrencyLimiter(config.maxConcurrentLoginsPerAddress())
             : null;
     this.maxAuthentications = enabled ? config.maxConcurrentAuthentications() : 0;
+    this.maxPending = enabled ? config.maxPendingConnections() : 0;
     this.loginTimeout = enabled ? config.loginTimeout() : Duration.ZERO;
+    this.handshakeTimeout = enabled ? config.handshakeTimeout() : Duration.ZERO;
+    this.statusTimeout = enabled ? config.statusTimeout() : Duration.ZERO;
     this.reportInterval = config.reportInterval();
+    for (Refusal reason : Refusal.values()) {
+      refusals.put(reason, new LongAdder());
+      reported.put(reason, 0L);
+    }
   }
 
   /**
@@ -156,8 +174,48 @@ public final class ClientLimits {
     if (admit(connections, client)) {
       return true;
     }
-    refusedConnections.increment();
+    refused(Refusal.CONNECTION_RATE);
     return false;
+  }
+
+  /**
+   * Counts a connection the proxy accepted among those not logged in yet, if it holds fewer than
+   * the cap. Every successful call must be followed by exactly one {@link #endPending()}, once the
+   * client is logged in or the connection closed.
+   *
+   * @return {@code false}, counted as a refusal, to reset the connection without reading it
+   */
+  public boolean tryStartPending() {
+    int now = pending.incrementAndGet();
+    if (maxPending != 0 && now > maxPending) {
+      pending.decrementAndGet();
+      refused(Refusal.PENDING_CONNECTIONS);
+      return false;
+    }
+    return true;
+  }
+
+  /** Ends the count of a connection started by {@link #tryStartPending()}. */
+  public void endPending() {
+    pending.decrementAndGet();
+  }
+
+  /**
+   * Returns how many connections are not logged in yet.
+   *
+   * @return the count
+   */
+  public int pendingConnections() {
+    return pending.get();
+  }
+
+  /**
+   * Returns the most connections not logged in the proxy holds at once.
+   *
+   * @return the cap, or 0 for none
+   */
+  public int maxPendingConnections() {
+    return maxPending;
   }
 
   /**
@@ -170,7 +228,7 @@ public final class ClientLimits {
     if (admit(statusPings, client)) {
       return true;
     }
-    refusedStatusPings.increment();
+    refused(Refusal.STATUS_RATE);
     return false;
   }
 
@@ -191,7 +249,7 @@ public final class ClientLimits {
     // Logins in progress first: that check can be undone, a token of the rate limiter cannot.
     ConcurrencyLimiter inProgress = loginsInProgress;
     if (inProgress != null && !inProgress.tryAcquire(key)) {
-      refusedLoginsInProgress.increment();
+      refused(Refusal.LOGINS_IN_PROGRESS);
       return TOO_MANY_IN_PROGRESS;
     }
     RateLimiter rate = logins;
@@ -200,7 +258,7 @@ public final class ClientLimits {
       if (inProgress != null) {
         inProgress.release(key);
       }
-      refusedLoginsTooFast.increment();
+      refused(Refusal.LOGIN_RATE);
       return new LoginAdmission.TooFast(Duration.ofNanos(wait));
     }
     return inProgress == null
@@ -220,7 +278,7 @@ public final class ClientLimits {
     if (maxAuthentications == 0 || authentications.get() < maxAuthentications) {
       return true;
     }
-    refusedAuthentications.increment();
+    refused(Refusal.AUTHENTICATION_BUSY);
     return false;
   }
 
@@ -237,7 +295,7 @@ public final class ClientLimits {
     while (true) {
       int current = authentications.get();
       if (current >= maxAuthentications) {
-        refusedAuthentications.increment();
+        refused(Refusal.AUTHENTICATION_BUSY);
         return false;
       }
       if (authentications.compareAndSet(current, current + 1)) {
@@ -262,9 +320,54 @@ public final class ClientLimits {
     return loginTimeout;
   }
 
-  /** Counts a login closed for taking longer than {@link #loginTimeout()}. */
-  public void loginTimedOut() {
-    timedOutLogins.increment();
+  /**
+   * Returns the longest a connection may take to send its handshake, from the accept.
+   *
+   * @return the timeout, or {@link Duration#ZERO} for none
+   */
+  public Duration handshakeTimeout() {
+    return handshakeTimeout;
+  }
+
+  /**
+   * Returns the longest a server list ping may take, from its handshake.
+   *
+   * @return the timeout, or {@link Duration#ZERO} for none
+   */
+  public Duration statusTimeout() {
+    return statusTimeout;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Refusals
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Counts a connection the proxy closed before its client logged in, for the report and the
+   * metrics, instead of a log line.
+   *
+   * @param reason why
+   */
+  public void refused(Refusal reason) {
+    counter(reason).increment();
+  }
+
+  /**
+   * Returns how many connections were refused for a reason since the proxy started.
+   *
+   * @param reason the reason
+   * @return the count
+   */
+  public long refusals(Refusal reason) {
+    return counter(reason).sum();
+  }
+
+  private LongAdder counter(Refusal reason) {
+    LongAdder counter = refusals.get(reason);
+    if (counter == null) {
+      throw new AssertionError("every reason has a counter: " + reason);
+    }
+    return counter;
   }
 
   // ---------------------------------------------------------------------------
@@ -281,27 +384,24 @@ public final class ClientLimits {
   }
 
   /**
-   * Logs, at INFO, what the limits refused since the previous report, in one line, and nothing if
-   * they refused nothing.
+   * Logs, at INFO, the connections refused before login since the previous report, in one line by
+   * reason, and nothing if there were none. Called from one thread at a time.
    */
   public void report() {
-    List<String> counts = new ArrayList<>(6);
-    count(counts, "connections refused", refusedConnections);
-    count(counts, "server list pings refused", refusedStatusPings);
-    count(counts, "logins refused as too fast", refusedLoginsTooFast);
-    count(counts, "logins refused as too many in progress per address", refusedLoginsInProgress);
-    count(counts, "logins refused as too many authenticating", refusedAuthentications);
-    count(counts, "logins timed out", timedOutLogins);
+    List<String> counts = new ArrayList<>();
+    for (Refusal reason : Refusal.values()) {
+      long total = counter(reason).sum();
+      Long previous = reported.put(reason, total);
+      long count = total - (previous == null ? 0 : previous);
+      if (count > 0) {
+        counts.add(reason.description() + ": " + count);
+      }
+    }
     if (!counts.isEmpty()) {
       logger.info(
-          "Limits over the last {} s: {}", reportInterval.toSeconds(), String.join(", ", counts));
-    }
-  }
-
-  private static void count(List<String> counts, String what, LongAdder counter) {
-    long count = counter.sumThenReset();
-    if (count > 0) {
-      counts.add(what + ": " + count);
+          "Refused before login over the last {} s: {}",
+          reportInterval.toSeconds(),
+          String.join(", ", counts));
     }
   }
 

@@ -51,6 +51,7 @@ import dev.warp.proxy.event.player.PreLoginEventImpl;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.limit.LoginAdmission;
 import dev.warp.proxy.limit.LoginSlot;
+import dev.warp.proxy.limit.Refusal;
 import dev.warp.proxy.player.PlayerRegistry;
 
 import java.net.InetSocketAddress;
@@ -143,6 +144,9 @@ final class LoginSessionHandler implements SessionHandler {
 
   /** Told to a player whose login took longer than the login timeout. */
   static final String TIMED_OUT_REASON = "Login timed out";
+
+  /** Warnings that the session server fails, shared by every login: one a minute at most. */
+  private static final LogThrottle SESSION_SERVER_WARNINGS = new LogThrottle(Duration.ofMinutes(1));
 
   // ---------------------------------------------------------------------------
   // State machine
@@ -283,8 +287,13 @@ final class LoginSessionHandler implements SessionHandler {
         // (SwitchWaitSessionHandler), which keeps the client's brand and settings for its server.
         return;
       }
-      logger.warn("Unexpected packet in LOGIN state: {}", packet.getClass().getSimpleName());
-      connection.close();
+      loginContext.limits().refused(Refusal.UNEXPECTED_PACKET);
+      logger.debug(
+          "Unexpected {} in LOGIN from {}",
+          packet.getClass().getSimpleName(),
+          connection.remoteAddress());
+      state = LoginState.REFUSED;
+      connection.reset();
       return;
     }
 
@@ -317,24 +326,26 @@ final class LoginSessionHandler implements SessionHandler {
    */
   private void handleCookieResponse(CookieResponse response) {
     if (!cookies.answered(response) && state != LoginState.COMPLETE) {
-      logger.warn(
+      loginContext.limits().refused(Refusal.UNEXPECTED_PACKET);
+      logger.debug(
           "Disconnecting {} from {}: cookie {} sent unasked",
           username != null ? username : "unknown",
           connection.remoteAddress(),
           response.key());
+      state = LoginState.REFUSED;
       connection.writeAndClose(LoginDisconnect.ofTranslation(UNEXPECTED_QUERY_RESPONSE));
     }
   }
 
   private void handleLoginStart(LoginStart packet) {
     if (state != LoginState.AWAITING_LOGIN_START) {
-      disconnect("Unexpected LoginStart");
+      deny(Refusal.UNEXPECTED_PACKET, "Unexpected LoginStart");
       return;
     }
 
     String name = packet.name();
     if (!USERNAME_PATTERN.matcher(name).matches()) {
-      disconnect("Invalid username");
+      deny(Refusal.INVALID_LOGIN, "Invalid username");
       return;
     }
 
@@ -356,7 +367,7 @@ final class LoginSessionHandler implements SessionHandler {
                   }
                   switch (event.result()) {
                     case PreLoginEvent.Denied(Component reason) -> {
-                      disconnect(reason);
+                      deny(Refusal.DENIED_BY_PLUGIN, reason);
                       return;
                     }
                     case PreLoginEvent.ForceOnlineMode() -> onlineMode = true;
@@ -409,7 +420,7 @@ final class LoginSessionHandler implements SessionHandler {
 
   private void handleEncryptionResponse(EncryptionResponse packet) {
     if (state != LoginState.AWAITING_ENCRYPTION_RESPONSE) {
-      disconnect("Unexpected EncryptionResponse");
+      deny(Refusal.UNEXPECTED_PACKET, "Unexpected EncryptionResponse");
       return;
     }
 
@@ -445,14 +456,14 @@ final class LoginSessionHandler implements SessionHandler {
       switch (packet.verifyToken()) {
         case EncryptedToken(byte[] encrypted) -> {
           if (playerKey != null || !MessageDigest.isEqual(token, rsaCipher.doFinal(encrypted))) {
-            disconnect("Verify token mismatch");
+            deny(Refusal.AUTHENTICATION_FAILED, "Verify token mismatch");
             return;
           }
         }
         case SignedToken(long salt, byte[] signature) -> {
           if (playerKey == null
               || !ProfileKeys.signsVerifyToken(playerKey, token, salt, signature)) {
-            disconnect("Invalid verify token signature");
+            deny(Refusal.AUTHENTICATION_FAILED, "Invalid verify token signature");
             return;
           }
         }
@@ -462,7 +473,7 @@ final class LoginSessionHandler implements SessionHandler {
 
       // Validate shared secret length.
       if (decryptedSharedSecret.length != SHARED_SECRET_LENGTH) {
-        disconnect("Invalid shared secret length");
+        deny(Refusal.AUTHENTICATION_FAILED, "Invalid shared secret length");
         return;
       }
 
@@ -474,8 +485,8 @@ final class LoginSessionHandler implements SessionHandler {
       requested = authenticateAsync(decryptedSharedSecret);
 
     } catch (GeneralSecurityException e) {
-      logger.warn("Encryption error for {} from {}", username, connection.remoteAddress(), e);
-      disconnect("Encryption error");
+      // Bytes that do not decrypt (a padding error): what a forged encryption response produces.
+      deny(Refusal.AUTHENTICATION_FAILED, "Encryption error: " + e);
     } finally {
       if (!requested) {
         limits.endAuthentication();
@@ -484,9 +495,9 @@ final class LoginSessionHandler implements SessionHandler {
   }
 
   private void handleLoginAcknowledged() {
-    logger.info("LoginAcknowledged received from {}, state={}", username, state);
+    logger.debug("LoginAcknowledged received from {}, state={}", username, state);
     if (state != LoginState.AWAITING_LOGIN_ACKNOWLEDGED) {
-      disconnect("Unexpected LoginAcknowledged");
+      deny(Refusal.UNEXPECTED_PACKET, "Unexpected LoginAcknowledged");
       return;
     }
 
@@ -507,12 +518,15 @@ final class LoginSessionHandler implements SessionHandler {
     if (state == LoginState.REFUSED) {
       return; // Counted by the limits: a flood must not write a line per connection.
     }
-    logger.info("Client disconnected during login: {} (state={})", username, state);
     ConnectedPlayer loggedIn = this.player;
-    if (loggedIn != null) {
-      // Logged in but not on a server yet: drop the backend it is joining.
-      loggedIn.disconnect();
+    if (loggedIn == null) {
+      // Not logged in: anyone can open logins and drop them, so never a line per connection.
+      logger.debug("Client disconnected during login: {} (state={})", username, state);
+      return;
     }
+    logger.info("Client disconnected during login: {} (state={})", username, state);
+    // Logged in but not on a server yet: drop the backend it is joining.
+    loggedIn.disconnect();
   }
 
   // ---------------------------------------------------------------------------
@@ -601,12 +615,19 @@ final class LoginSessionHandler implements SessionHandler {
                           if (!connection.channel().isActive()) {
                             return;
                           }
-                          logger.info(
-                              "Authentication failed for {} from {}: {}",
-                              playerName,
-                              connection.remoteAddress(),
-                              e.getMessage());
-                          disconnect("Authentication failed");
+                          if (e.serverFault()) {
+                            // No player can log in while the session server fails: worth a
+                            // warning, once a minute at most, whoever triggers it.
+                            long more = SESSION_SERVER_WARNINGS.tryAcquire();
+                            if (more >= 0) {
+                              logger.warn(
+                                  "The session server failed to authenticate {}: {}{}",
+                                  playerName,
+                                  e.getMessage(),
+                                  LogThrottle.suffix(more, "session server failures"));
+                            }
+                          }
+                          deny(Refusal.AUTHENTICATION_FAILED, "Authentication failed");
                         });
               } finally {
                 limits.endAuthentication();
@@ -655,7 +676,8 @@ final class LoginSessionHandler implements SessionHandler {
     boolean kickExisting = loginContext.duplicateLoginPolicy().kicksExisting(onlineMode);
     if (!(loginContext.playerRegistry().register(joining, kickExisting)
         instanceof PlayerRegistry.Registration.Registered(int place))) {
-      disconnect("You are already connected to this proxy.");
+      // Counted, not logged: in offline mode anyone can claim the name of a player online.
+      deny(Refusal.DUPLICATE_LOGIN, "You are already connected to this proxy.");
       return;
     }
     this.player = joining;
@@ -690,7 +712,11 @@ final class LoginSessionHandler implements SessionHandler {
                     // No session started: no disconnect event for this player.
                     this.player = null;
                     loginContext.playerRegistry().unregister(joining);
-                    disconnect(reason);
+                    deny(
+                        proposed instanceof LoginEvent.Denied
+                            ? Refusal.SERVER_FULL
+                            : Refusal.DENIED_BY_PLUGIN,
+                        reason);
                     return;
                   }
                   succeedLogin(profile);
@@ -702,7 +728,7 @@ final class LoginSessionHandler implements SessionHandler {
   private void refuseFull(ConnectedPlayer joining) {
     this.player = null;
     loginContext.playerRegistry().unregister(joining);
-    disconnect(SERVER_FULL);
+    deny(Refusal.SERVER_FULL, SERVER_FULL);
   }
 
   /** Tells the client its login succeeded. */
@@ -732,6 +758,8 @@ final class LoginSessionHandler implements SessionHandler {
         profile.uuid(),
         connection.remoteAddress(),
         connection.handshakeIntent() == HandshakeIntent.TRANSFER ? ", transferred" : "");
+    // No longer among the connections not logged in, nor under their deadlines.
+    connection.loggedIn();
 
     if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
       // The client reads configuration packets from Login Success on, though it is still read in
@@ -834,7 +862,7 @@ final class LoginSessionHandler implements SessionHandler {
     if (!connection.channel().isActive()) {
       return;
     }
-    loginContext.limits().loginTimedOut();
+    loginContext.limits().refused(Refusal.LOGIN_TIMEOUT);
     logger.debug("Login of {} from {} timed out", username, connection.remoteAddress());
     refuse(TIMED_OUT_REASON);
   }
@@ -872,44 +900,74 @@ final class LoginSessionHandler implements SessionHandler {
    * translated, and the log says what is wrong. Only called in the login state.
    */
   private void refuseProfileKey(ProfileKeys.Problem problem) {
-    logger.warn(
+    loginContext.limits().refused(Refusal.INVALID_LOGIN);
+    logger.debug(
         "Disconnecting {} from {}: invalid profile public key, {}",
         username != null ? username : "unknown",
         connection.remoteAddress(),
         problem.description());
+    state = LoginState.REFUSED;
+    endOfLogin();
     connection.writeAndClose(LoginDisconnect.ofTranslation(ProfileKeys.REFUSAL_REASON));
   }
 
-  private void disconnect(Component reason) {
-    logger.warn(
-        "Disconnecting {} from {}: {}",
-        username != null ? username : "unknown",
-        connection.remoteAddress(),
-        PlainTextComponentSerializer.plainText().serialize(reason));
+  /**
+   * Refuses a login for a reason its client can bring about at will, telling the client: counted
+   * under {@code reason} and logged at DEBUG only, so that a flood of them cannot fill the logs.
+   */
+  private void deny(Refusal reason, Component message) {
+    countDenial(reason, PlainTextComponentSerializer.plainText().serialize(message));
     Packet disconnectPacket =
         switch (connection.encoder().state()) {
-          case HANDSHAKE, STATUS, LOGIN -> LoginDisconnect.of(reason, clientVersion());
-          case CONFIGURATION -> ConfigDisconnect.of(reason, clientVersion());
-          case PLAY -> PlayDisconnect.of(reason, clientVersion());
+          case HANDSHAKE, STATUS, LOGIN -> LoginDisconnect.of(message, clientVersion());
+          case CONFIGURATION -> ConfigDisconnect.of(message, clientVersion());
+          case PLAY -> PlayDisconnect.of(message, clientVersion());
         };
     connection.writeAndClose(disconnectPacket);
   }
 
+  /** Refuses a login as {@link #deny(Refusal, Component)} does, with a plain text reason. */
+  private void deny(Refusal reason, String message) {
+    countDenial(reason, message);
+    connection.writeAndClose(plainDisconnect(message));
+  }
+
+  private void countDenial(Refusal reason, String message) {
+    loginContext.limits().refused(reason);
+    logger.debug(
+        "Disconnecting {} from {} ({}): {}",
+        username != null ? username : "unknown",
+        connection.remoteAddress(),
+        reason.label(),
+        message);
+    state = LoginState.REFUSED;
+    endOfLogin();
+  }
+
+  /**
+   * Disconnects the client over something that may reveal a bug in the proxy: logged at WARN.
+   *
+   * @param reason the reason, shown to the client
+   */
   private void disconnect(String reason) {
     logger.warn(
         "Disconnecting {} from {}: {}",
         username != null ? username : "unknown",
         connection.remoteAddress(),
         reason);
-    // The disconnect packet of the state the client reads: Login Success moves it to CONFIGURATION
-    // from 1.20.2, to PLAY before. The login reason is JSON in every version; the configuration and
-    // play reasons follow the client's version.
-    Packet disconnectPacket =
-        switch (connection.encoder().state()) {
-          case HANDSHAKE, STATUS, LOGIN -> LoginDisconnect.ofPlainText(reason);
-          case CONFIGURATION -> ConfigDisconnect.ofPlainText(reason, clientVersion());
-          case PLAY -> PlayDisconnect.ofPlainText(reason, clientVersion());
-        };
-    connection.writeAndClose(disconnectPacket);
+    connection.writeAndClose(plainDisconnect(reason));
+  }
+
+  /**
+   * The disconnect packet of the state the client reads: Login Success moves it to CONFIGURATION
+   * from 1.20.2, to PLAY before. The login reason is JSON in every version; the configuration and
+   * play reasons follow the client's version.
+   */
+  private Packet plainDisconnect(String reason) {
+    return switch (connection.encoder().state()) {
+      case HANDSHAKE, STATUS, LOGIN -> LoginDisconnect.ofPlainText(reason);
+      case CONFIGURATION -> ConfigDisconnect.ofPlainText(reason, clientVersion());
+      case PLAY -> PlayDisconnect.ofPlainText(reason, clientVersion());
+    };
   }
 }

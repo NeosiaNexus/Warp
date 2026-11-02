@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
@@ -39,6 +40,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 import io.netty.buffer.ByteBuf;
@@ -131,11 +133,71 @@ class HandshakeSessionHandlerTest {
     }
 
     @Test
-    @DisplayName("should close a transfer from an unknown protocol, as a login from one")
-    void closesUnknownProtocol() {
+    @DisplayName("should tell a transfer from an unknown protocol its version, as a login from one")
+    void refusesUnknownProtocol() {
       EmbeddedChannel channel = channel(false);
       try {
         writeHandshake(channel, 99_999, TRANSFER);
+
+        String reason = reason(channel);
+        assertTrue(reason.contains(HandshakeSessionHandler.OUTDATED_SERVER_KEY), reason);
+        assertClosed(channel);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Unsupported versions and invalid handshakes
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("unsupported versions and invalid handshakes")
+  class Refusals {
+
+    @Test
+    @DisplayName("should tell a newer client the server is outdated, with the versions that join")
+    void newerClient() {
+      EmbeddedChannel channel = channel(false);
+      try {
+        writeHandshake(channel, 99_999, LOGIN);
+
+        String reason = reason(channel);
+        assertTrue(reason.contains(HandshakeSessionHandler.OUTDATED_SERVER_KEY), reason);
+        assertTrue(reason.contains(HandshakeSessionHandler.SUPPORTED_VERSIONS), reason);
+        assertClosed(channel);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should tell an older client it is outdated, with the versions that join")
+    void olderClient() {
+      EmbeddedChannel channel = channel(false);
+      try {
+        writeHandshake(channel, 3, LOGIN);
+
+        String reason = reason(channel);
+        assertTrue(reason.contains(HandshakeSessionHandler.OUTDATED_CLIENT_KEY), reason);
+        assertTrue(reason.contains(HandshakeSessionHandler.SUPPORTED_VERSIONS), reason);
+        // Read as the oldest version, a 1.7 client, which keeps its connection a little longer.
+        channel.advanceTimeBy(MinecraftConnection.LEGACY_CLOSE_DELAY_MS, TimeUnit.MILLISECONDS);
+        channel.runScheduledPendingTasks();
+        assertClosed(channel);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @ParameterizedTest(name = "next state {0}")
+    @ValueSource(ints = {0, 4, -1})
+    @DisplayName("should reset a handshake with an unknown next state, unanswered")
+    void unknownIntent(int nextState) {
+      EmbeddedChannel channel = channel(false);
+      try {
+        writeHandshake(channel, ProtocolVersion.latest().protocol(), nextState);
 
         assertNull(channel.readOutbound());
         assertClosed(channel);
@@ -226,6 +288,19 @@ class HandshakeSessionHandlerTest {
   }
 
   /** Writes a Handshake as a client does: id 0, protocol, host, port, next state. */
+  /** Reads the Login Disconnect the proxy wrote and returns its JSON reason. */
+  private String reason(EmbeddedChannel channel) {
+    ByteBuf reason =
+        Unpooled.wrappedBuffer(
+            nextPacket(
+                channel, ProtocolState.LOGIN, LoginDisconnect.class, ProtocolVersion.latest()));
+    try {
+      return McString.read(reason);
+    } finally {
+      reason.release();
+    }
+  }
+
   private void writeHandshake(EmbeddedChannel channel, int protocol, int nextState) {
     ByteBuf body = Unpooled.buffer();
     VarInt.write(body, 0x00);

@@ -208,7 +208,8 @@ class ProxyProtocolTest {
 
       assertNull(channel.pipeline().get(ServerChannelInitializer.PROXY_PROTOCOL_DECODER));
       assertNull(channel.pipeline().get(ServerChannelInitializer.PROXY_PROTOCOL_HANDLER));
-      assertEquals(ServerChannelInitializer.READ_TIMEOUT, channel.pipeline().names().getFirst());
+      assertEquals(
+          ServerChannelInitializer.LEGACY_PING_DECODER, channel.pipeline().names().getFirst());
       assertTrue(channel.isActive());
     }
 
