@@ -16,6 +16,8 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.proxy.limit.ClientLimits;
+
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
@@ -53,8 +55,11 @@ import org.slf4j.LoggerFactory;
  *   <li><b>UDP and UNIX sockets</b>: not a Minecraft connection; refused.
  * </ul>
  *
- * <p>Refusals are logged at WARN, at most one line per minute and per kind with the count of the
- * others, as {@link ServerChannelInitializer} shares one {@link LogThrottle} between connections.
+ * <p>The client address of a TCP header counts against its connection limit at once: a connection
+ * over the limit is reset without a word, and counted rather than logged, like any connection over
+ * its limit. Refusals over the header itself are logged at WARN, at most one line per minute with
+ * the count of the others, as {@link ServerChannelInitializer} shares one {@link LogThrottle}
+ * between connections.
  */
 final class ProxyProtocolHandler extends ChannelInboundHandlerAdapter {
 
@@ -67,6 +72,7 @@ final class ProxyProtocolHandler extends ChannelInboundHandlerAdapter {
   static final Duration HEADER_TIMEOUT = Duration.ofSeconds(5);
 
   private final MinecraftConnection connection;
+  private final ClientLimits limits;
   private final LogThrottle warnings;
 
   private @Nullable ScheduledFuture<?> timeout;
@@ -78,10 +84,12 @@ final class ProxyProtocolHandler extends ChannelInboundHandlerAdapter {
    * Creates the handler of one connection.
    *
    * @param connection the connection whose address the header sets
+   * @param limits the limits the client address of the header counts against
    * @param warnings the throttle of refusal warnings, shared by every connection
    */
-  ProxyProtocolHandler(MinecraftConnection connection, LogThrottle warnings) {
+  ProxyProtocolHandler(MinecraftConnection connection, ClientLimits limits, LogThrottle warnings) {
     this.connection = connection;
+    this.limits = limits;
     this.warnings = warnings;
   }
 
@@ -164,6 +172,13 @@ final class ProxyProtocolHandler extends ChannelInboundHandlerAdapter {
           }
           connection.setProxiedAddress(client);
           logger.debug("{}: client {} (PROXY protocol)", ctx.channel(), client);
+          if (!limits.admitConnection(client)) {
+            // Over its connection limit: dropped like any other, counted by the limits.
+            refused = true;
+            cancelTimeout();
+            ServerChannelInitializer.reset(ctx.channel());
+            return;
+          }
         }
         case UNKNOWN ->
             logger.debug(

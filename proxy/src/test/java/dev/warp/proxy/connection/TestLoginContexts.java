@@ -19,6 +19,7 @@ package dev.warp.proxy.connection;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.config.ForwardingMode;
+import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.server.ServerRegistry;
 
 import java.net.InetAddress;
@@ -113,11 +114,35 @@ final class TestLoginContexts {
         NioSocketChannel.class);
   }
 
+  /**
+   * Returns {@link #offline()}, or its online-mode form authenticating with {@code sessionService},
+   * whose connections count against {@code limits}.
+   *
+   * @param onlineMode whether players authenticate
+   * @param sessionService the session service, usually a mock
+   * @param limits the limits on client addresses
+   * @return the context
+   */
+  static ServerLoginContext limited(
+      boolean onlineMode, MojangSessionService sessionService, ClientLimits limits) {
+    return context(onlineMode, -1, sessionService, ProfileKeys.mojang(), limits);
+  }
+
   private static ServerLoginContext context(
       boolean onlineMode,
       int compressionThreshold,
       MojangSessionService sessionService,
       ProfileKeys profileKeys) {
+    return context(
+        onlineMode, compressionThreshold, sessionService, profileKeys, ClientLimits.unlimited());
+  }
+
+  private static ServerLoginContext context(
+      boolean onlineMode,
+      int compressionThreshold,
+      MojangSessionService sessionService,
+      ProfileKeys profileKeys,
+      ClientLimits limits) {
     ServerRegistry registry =
         new ServerRegistry(
             Map.of("lobby", new InetSocketAddress(InetAddress.getLoopbackAddress(), 1)),
@@ -135,7 +160,8 @@ final class TestLoginContexts {
         registry,
         ForwardingMode.NONE,
         new byte[0],
-        NioSocketChannel.class);
+        NioSocketChannel.class,
+        limits);
   }
 
   private static KeyPair generateKeyPair() {

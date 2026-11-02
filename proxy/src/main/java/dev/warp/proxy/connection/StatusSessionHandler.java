@@ -24,6 +24,7 @@ import dev.warp.protocol.packet.status.PongResponse;
 import dev.warp.protocol.packet.status.StatusPacket;
 import dev.warp.protocol.packet.status.StatusRequest;
 import dev.warp.protocol.packet.status.StatusResponse;
+import dev.warp.proxy.limit.ClientLimits;
 
 import java.util.Objects;
 
@@ -46,6 +47,9 @@ import org.slf4j.LoggerFactory;
  *
  * <p>The handler enforces ordering: a {@link StatusRequest} must be received before any {@link
  * PingRequest}, and duplicate requests are ignored to prevent abuse.
+ *
+ * <p>A ping counts against its address's server list ping limit, apart from its logins: an address
+ * over the limit is closed without an answer, and can still log in.
  */
 final class StatusSessionHandler implements SessionHandler {
 
@@ -65,6 +69,7 @@ final class StatusSessionHandler implements SessionHandler {
   private static final @Nullable String[] STATUS_JSON_BY_PROTOCOL = buildStatusJsonByProtocol();
 
   private final MinecraftConnection connection;
+  private final ClientLimits limits;
 
   /** The JSON this client gets, advertising its own protocol when Warp supports it. */
   private final String statusJson;
@@ -72,20 +77,40 @@ final class StatusSessionHandler implements SessionHandler {
   /** Guards against duplicate StatusRequest packets. */
   private boolean sentResponse;
 
+  /** Whether the ping was over its address's limit: closing, whatever follows is dropped. */
+  private boolean refused;
+
   /**
-   * Creates the handler of one server list ping.
+   * Creates the handler of one server list ping, counted against {@code limits}.
    *
    * @param connection the client connection
    * @param clientVersion the version the client announced in its handshake, or {@code null} when
    *     Warp does not support it
+   * @param limits the limits the ping counts against
    */
-  StatusSessionHandler(MinecraftConnection connection, @Nullable ProtocolVersion clientVersion) {
+  StatusSessionHandler(
+      MinecraftConnection connection,
+      @Nullable ProtocolVersion clientVersion,
+      ClientLimits limits) {
     this.connection = connection;
+    this.limits = limits;
     this.statusJson = statusJson(clientVersion);
   }
 
   @Override
+  public void activated() {
+    if (!limits.admitStatusPing(connection.remoteAddress())) {
+      // Over the limit: no answer, and no work. Counted by the limits, never logged one by one.
+      refused = true;
+      connection.close();
+    }
+  }
+
+  @Override
   public void handle(Packet packet) {
+    if (refused) {
+      return; // Requests that arrived with the refused handshake.
+    }
     if (!(packet instanceof StatusPacket statusPacket)) {
       logger.warn("Unexpected packet in STATUS state: {}", packet.getClass().getSimpleName());
       connection.close();

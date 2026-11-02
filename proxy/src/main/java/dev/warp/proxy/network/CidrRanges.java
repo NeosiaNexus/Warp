@@ -20,6 +20,8 @@ import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * An immutable list of {@link CidrRange}s, matched as one: an address is in the list when any of
  * its ranges contains it.
@@ -108,6 +110,16 @@ public final class CidrRanges {
    */
   public List<CidrRange> ranges() {
     return ranges;
+  }
+
+  @Override
+  public boolean equals(@Nullable Object other) {
+    return other instanceof CidrRanges list && ranges.equals(list.ranges);
+  }
+
+  @Override
+  public int hashCode() {
+    return ranges.hashCode();
   }
 
   /**

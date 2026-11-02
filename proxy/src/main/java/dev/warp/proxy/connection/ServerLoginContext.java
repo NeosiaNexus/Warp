@@ -20,6 +20,7 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.config.ForwardingMode;
+import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.server.ServerRegistry;
 
 import java.security.KeyPair;
@@ -47,6 +48,7 @@ import io.netty.channel.Channel;
  * @param forwardingMode the player info forwarding mode
  * @param forwardingSecret the shared HMAC secret for Velocity modern forwarding
  * @param channelClass the socket channel class matching the detected transport
+ * @param limits the limits on what one client address may do, applied to every connection
  */
 @SuppressWarnings("ArrayRecordComponent") // forwardingSecret is treated as immutable
 public record ServerLoginContext(
@@ -61,7 +63,54 @@ public record ServerLoginContext(
     ServerRegistry serverRegistry,
     ForwardingMode forwardingMode,
     byte[] forwardingSecret,
-    Class<? extends Channel> channelClass) {
+    Class<? extends Channel> channelClass,
+    ClientLimits limits) {
+
+  /**
+   * Creates a context without limits on client addresses, as tests and tools that drive a single
+   * connection need.
+   *
+   * @param rsaKeyPair the RSA keypair for encryption handshake
+   * @param onlineMode whether to authenticate players with Mojang
+   * @param compressionThreshold the compression threshold in bytes, or {@code -1} to disable
+   * @param compressionLevel the zlib compression level (0 to 9, or {@code -1} for the default)
+   * @param compressionPassthrough whether uninspected packets keep their original compressed form
+   * @param sessionService the Mojang session service for online-mode authentication
+   * @param profileKeys the checker of the profile public keys of 1.19 to 1.19.2 clients
+   * @param playSession the play session of the proxy
+   * @param serverRegistry the registry of backend servers
+   * @param forwardingMode the player info forwarding mode
+   * @param forwardingSecret the shared HMAC secret for Velocity modern forwarding
+   * @param channelClass the socket channel class matching the detected transport
+   */
+  public ServerLoginContext(
+      KeyPair rsaKeyPair,
+      boolean onlineMode,
+      int compressionThreshold,
+      int compressionLevel,
+      boolean compressionPassthrough,
+      MojangSessionService sessionService,
+      ProfileKeys profileKeys,
+      PlaySession playSession,
+      ServerRegistry serverRegistry,
+      ForwardingMode forwardingMode,
+      byte[] forwardingSecret,
+      Class<? extends Channel> channelClass) {
+    this(
+        rsaKeyPair,
+        onlineMode,
+        compressionThreshold,
+        compressionLevel,
+        compressionPassthrough,
+        sessionService,
+        profileKeys,
+        playSession,
+        serverRegistry,
+        forwardingMode,
+        forwardingSecret,
+        channelClass,
+        ClientLimits.unlimited());
+  }
 
   /** Validates configuration invariants. */
   public ServerLoginContext {

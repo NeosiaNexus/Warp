@@ -25,11 +25,14 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -73,6 +76,12 @@ public final class WarpConfig {
 
   private static final int SECRET_LENGTH = 12;
 
+  /** A whole number of zero or more, for counts. */
+  private static final Pattern COUNT = Pattern.compile("\\d{1,10}");
+
+  /** A duration: digits and an optional unit, milliseconds without one. */
+  private static final Pattern DURATION = Pattern.compile("(\\d{1,15})\\s*(ms|s|m|h)?");
+
   // ---------------------------------------------------------------------------
   // Fields
   // ---------------------------------------------------------------------------
@@ -88,6 +97,7 @@ public final class WarpConfig {
   private final int compressionLevel;
   private final boolean compressionPassthrough;
   private final ProxyProtocolConfig proxyProtocol;
+  private final LimitsConfig limits;
 
   // ---------------------------------------------------------------------------
   // Constructor (private — use load())
@@ -104,7 +114,8 @@ public final class WarpConfig {
       int compressionThreshold,
       int compressionLevel,
       boolean compressionPassthrough,
-      ProxyProtocolConfig proxyProtocol) {
+      ProxyProtocolConfig proxyProtocol,
+      LimitsConfig limits) {
     this.bind = bind;
     this.onlineMode = onlineMode;
     this.servers = Map.copyOf(servers);
@@ -116,6 +127,7 @@ public final class WarpConfig {
     this.compressionLevel = compressionLevel;
     this.compressionPassthrough = compressionPassthrough;
     this.proxyProtocol = proxyProtocol;
+    this.limits = limits;
   }
 
   // ---------------------------------------------------------------------------
@@ -182,6 +194,7 @@ public final class WarpConfig {
         root.node("compression", "passthrough").getBoolean(DEFAULT_COMPRESSION_PASSTHROUGH);
 
     ProxyProtocolConfig proxyProtocol = parseProxyProtocol(root);
+    LimitsConfig limits = parseLimits(root);
 
     // ---------------------------------------------------------------------------
     // Validate
@@ -208,7 +221,8 @@ public final class WarpConfig {
             compressionThreshold,
             compressionLevel,
             compressionPassthrough,
-            proxyProtocol);
+            proxyProtocol,
+            limits);
 
     logConfig(config);
     return config;
@@ -322,6 +336,16 @@ public final class WarpConfig {
     return proxyProtocol;
   }
 
+  /**
+   * Returns the limits on what one client address may do, and on the authentications the proxy runs
+   * at once.
+   *
+   * @return the limits
+   */
+  public LimitsConfig limits() {
+    return limits;
+  }
+
   // ---------------------------------------------------------------------------
   // Internals
   // ---------------------------------------------------------------------------
@@ -432,27 +456,8 @@ public final class WarpConfig {
     CommentedConfigurationNode section = root.node("proxy-protocol");
     boolean enabled = section.node("enabled").getBoolean(false);
 
-    CommentedConfigurationNode trustedNode = section.node("trusted-proxies");
-    if (!trustedNode.virtual() && !trustedNode.isList()) {
-      throw new ConfigurationException(
-          "proxy-protocol.trusted-proxies must be a list of addresses or CIDR ranges, such as"
-              + " [\"10.0.0.0/8\", \"2001:db8::/32\"]");
-    }
-    List<String> values = new ArrayList<>();
-    for (CommentedConfigurationNode child : trustedNode.childrenList()) {
-      String value = child.getString();
-      if (value == null || value.isBlank()) {
-        throw new ConfigurationException(
-            "proxy-protocol.trusted-proxies holds an empty entry: list addresses or CIDR ranges");
-      }
-      values.add(value.strip());
-    }
-    CidrRanges trusted;
-    try {
-      trusted = CidrRanges.parse(values);
-    } catch (IllegalArgumentException e) {
-      throw new ConfigurationException("proxy-protocol.trusted-proxies: " + e.getMessage(), e);
-    }
+    CidrRanges trusted =
+        parseCidrRanges(section.node("trusted-proxies"), "proxy-protocol.trusted-proxies");
 
     if (!enabled) {
       return new ProxyProtocolConfig(false, trusted);
@@ -475,6 +480,144 @@ public final class WarpConfig {
       }
     }
     return new ProxyProtocolConfig(true, trusted);
+  }
+
+  /** Parses a list of addresses or CIDR ranges; an absent list is empty. */
+  private static CidrRanges parseCidrRanges(CommentedConfigurationNode node, String key)
+      throws ConfigurationException {
+    if (!node.virtual() && !node.isList()) {
+      throw new ConfigurationException(
+          key
+              + " must be a list of addresses or CIDR ranges, such as"
+              + " [\"10.0.0.0/8\", \"2001:db8::/32\"]");
+    }
+    List<String> values = new ArrayList<>();
+    for (CommentedConfigurationNode child : node.childrenList()) {
+      String value = child.getString();
+      if (value == null || value.isBlank()) {
+        throw new ConfigurationException(
+            key + " holds an empty entry: list addresses or CIDR ranges");
+      }
+      values.add(value.strip());
+    }
+    try {
+      return CidrRanges.parse(values);
+    } catch (IllegalArgumentException e) {
+      throw new ConfigurationException(key + ": " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Parses the {@code limits} section, each absent key taking its value from {@link
+   * LimitsConfig#DEFAULTS}.
+   */
+  private static LimitsConfig parseLimits(CommentedConfigurationNode root)
+      throws ConfigurationException {
+    LimitsConfig defaults = LimitsConfig.DEFAULTS;
+    CommentedConfigurationNode section = root.node("limits");
+    CommentedConfigurationNode exemptNode = section.node("exempt");
+    CommentedConfigurationNode loginsNode = section.node("logins");
+
+    boolean enabled = section.node("enabled").getBoolean(defaults.enabled());
+    CidrRanges exempt =
+        exemptNode.virtual() ? defaults.exempt() : parseCidrRanges(exemptNode, "limits.exempt");
+    LimitsConfig.Rate connections =
+        parseRate(section.node("connections"), "limits.connections", defaults.connections());
+    LimitsConfig.Rate statusPings =
+        parseRate(section.node("status-pings"), "limits.status-pings", defaults.statusPings());
+    LimitsConfig.Rate logins = parseRate(loginsNode, "limits.logins", defaults.logins());
+    int perAddress =
+        parseCount(
+            loginsNode.node("max-concurrent-per-address"),
+            "limits.logins.max-concurrent-per-address",
+            defaults.maxConcurrentLoginsPerAddress());
+    int authentications =
+        parseCount(
+            loginsNode.node("max-concurrent-authentications"),
+            "limits.logins.max-concurrent-authentications",
+            defaults.maxConcurrentAuthentications());
+    Duration loginTimeout =
+        parseDuration(loginsNode.node("timeout"), "limits.logins.timeout", defaults.loginTimeout());
+    Duration reportInterval =
+        parseDuration(
+            section.node("report-interval"), "limits.report-interval", defaults.reportInterval());
+    if (reportInterval.compareTo(Duration.ofSeconds(1)) < 0) {
+      throw new ConfigurationException(
+          "limits.report-interval must be at least 1s, got " + LimitsConfig.format(reportInterval));
+    }
+    return new LimitsConfig(
+        enabled,
+        exempt,
+        connections,
+        statusPings,
+        logins,
+        perAddress,
+        authentications,
+        loginTimeout,
+        reportInterval);
+  }
+
+  /** Parses the {@code burst} and {@code interval} of a token bucket section. */
+  private static LimitsConfig.Rate parseRate(
+      CommentedConfigurationNode node, String key, LimitsConfig.Rate defaults)
+      throws ConfigurationException {
+    int burst = parseCount(node.node("burst"), key + ".burst", defaults.burst());
+    if (burst < 1) {
+      throw new ConfigurationException(
+          key + ".burst must be at least 1 (set interval = 0 for no limit), got " + burst);
+    }
+    Duration interval =
+        parseDuration(node.node("interval"), key + ".interval", defaults.interval());
+    return new LimitsConfig.Rate(burst, interval);
+  }
+
+  /** Parses a whole number, zero or more; an absent key takes {@code defaultValue}. */
+  private static int parseCount(CommentedConfigurationNode node, String key, int defaultValue)
+      throws ConfigurationException {
+    if (node.virtual()) {
+      return defaultValue;
+    }
+    String value = String.valueOf(node.getString()).strip();
+    if (!COUNT.matcher(value).matches()) {
+      throw new ConfigurationException(
+          key + " must be a whole number, 0 or more, got '" + value + "'");
+    }
+    try {
+      return Integer.parseInt(value);
+    } catch (NumberFormatException e) {
+      throw new ConfigurationException(key + " is too large: " + value, e);
+    }
+  }
+
+  /**
+   * Parses a duration: a whole number followed by {@code ms}, {@code s}, {@code m} or {@code h}, or
+   * a bare number of milliseconds, as Velocity's {@code login-ratelimit = 3000}. An absent key
+   * takes {@code defaultValue}.
+   */
+  static Duration parseDuration(CommentedConfigurationNode node, String key, Duration defaultValue)
+      throws ConfigurationException {
+    if (node.virtual()) {
+      return defaultValue;
+    }
+    String value = String.valueOf(node.getString()).strip();
+    Matcher matcher = DURATION.matcher(value);
+    if (!matcher.matches()) {
+      throw new ConfigurationException(
+          key + " must be a duration such as 200ms, 3s or 1m, got '" + value + "'");
+    }
+    long amount;
+    try {
+      amount = Long.parseLong(matcher.group(1));
+    } catch (NumberFormatException e) {
+      throw new ConfigurationException(key + " is too large: " + value, e);
+    }
+    String unit = matcher.group(2);
+    return switch (unit == null ? "ms" : unit) {
+      case "s" -> Duration.ofSeconds(amount);
+      case "m" -> Duration.ofMinutes(amount);
+      case "h" -> Duration.ofHours(amount);
+      default -> Duration.ofMillis(amount);
+    };
   }
 
   private static byte[] loadForwardingSecret(Path directory, String secretPath, ForwardingMode mode)
@@ -599,6 +742,59 @@ public final class WarpConfig {
           # players can connect from: whoever sends the header chooses the address Warp sees.
           trusted-proxies = []
         }
+
+        # Limits on what one client address may do, against connection floods and bot attacks.
+        # An address is an IPv4 address, or an IPv6 /64 network (what an ISP gives one customer).
+        # Behind the PROXY protocol, limits count the players' real addresses, never the load
+        # balancer's. Refusals are not logged one by one: their counts are, at most once per
+        # report-interval. Rates are token buckets: `burst` at once, then one every `interval`;
+        # an interval of 0 lifts that limit. Durations take ms, s, m or h (a bare number is ms).
+        limits {
+          # Set to false to lift every limit, e.g. behind a DDoS protection that already does it.
+          enabled = true
+
+          # Addresses or CIDR ranges never limited. Loopback by default: local tools, and local
+          # tunnels or sidecars that hide the real clients, where per-address limits would
+          # throttle every player at once. The trusted proxies are never limited either.
+          exempt = ["127.0.0.0/8", "::1/128"]
+
+          # New TCP connections, refused before Warp reads anything from them.
+          connections {
+            burst = 10
+            interval = 200ms
+          }
+
+          # Server list pings, counted apart from logins: refreshing the server list never locks
+          # a player out. A refused ping gets no answer.
+          status-pings {
+            burst = 10
+            interval = 1s
+          }
+
+          # Login attempts. A refused player is told to wait. One every 3s matches Velocity's
+          # login-ratelimit = 3000; the burst of 2 lets two players behind one address (a
+          # household) join together. Set burst = 1 for Velocity's exact behaviour.
+          logins {
+            burst = 2
+            interval = 3s
+
+            # Logins in progress at once from one address, from its handshake until the player is
+            # logged in. 0 for no limit.
+            max-concurrent-per-address = 2
+
+            # Online mode: logins Warp authenticates at once, for the whole proxy (the RSA
+            # decryption and the request to Mojang's session server). Only logins that sent their
+            # encryption response count, so bots that stall earlier take none. 0 for no limit.
+            max-concurrent-authentications = 256
+
+            # A login that takes longer is closed, with its place among its address's logins in
+            # progress. 0 for no timeout.
+            timeout = 30s
+          }
+
+          # How often the counts of refused connections and logins are logged, when not zero.
+          report-interval = 1m
+        }
         """;
 
     try {
@@ -630,6 +826,27 @@ public final class WarpConfig {
           config.proxyProtocol.trustedProxies());
     } else {
       logger.info("  proxy-protocol: disabled");
+    }
+    LimitsConfig limits = config.limits;
+    if (limits.enabled()) {
+      logger.info(
+          "  limits per address: connections {}, server list pings {}, logins {} with {} in"
+              + " progress at most; exempt {}",
+          limits.connections(),
+          limits.statusPings(),
+          limits.logins(),
+          limits.maxConcurrentLoginsPerAddress() == 0
+              ? "any number"
+              : limits.maxConcurrentLoginsPerAddress(),
+          limits.exempt());
+      logger.info(
+          "  limits: {} authentications at once, logins time out after {}",
+          limits.maxConcurrentAuthentications() == 0
+              ? "any number of"
+              : limits.maxConcurrentAuthentications(),
+          limits.loginTimeout().isZero() ? "never" : LimitsConfig.format(limits.loginTimeout()));
+    } else {
+      logger.info("  limits: disabled");
     }
   }
 }

@@ -56,6 +56,13 @@ import org.slf4j.LoggerFactory;
  * → [proxy-protocol]}, which apply the header and remove themselves (see {@link
  * ProxyProtocolHandler}).
  *
+ * <h3>Connection limit</h3>
+ *
+ * <p>Every new connection counts against its client address's connection limit ({@link
+ * dev.warp.proxy.limit.ClientLimits}) before anything is read from it: here, from the socket's
+ * peer, or, behind the PROXY protocol, from the address of the header once it is applied. A
+ * connection over the limit is reset with no handler installed.
+ *
  * <p>Encryption handlers are inserted during login. Compression needs no extra inbound handler: the
  * {@link MinecraftDecoder} decompresses only the frames it inspects (see {@link
  * MinecraftConnection#enableCompression}), and the compression encoder replaces the frame encoder.
@@ -168,7 +175,13 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
 
   @Override
   protected void initChannel(Channel ch) {
-    if (proxyProtocol.enabled() && !fromTrustedProxy(ch)) {
+    if (proxyProtocol.enabled()) {
+      if (!fromTrustedProxy(ch)) {
+        return;
+      }
+      // The connection limit applies to the client address of the header, once it is known.
+    } else if (!loginContext.limits().admitConnection(ch.remoteAddress())) {
+      reset(ch);
       return;
     }
 
@@ -190,7 +203,8 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
       pipeline
           .addLast(PROXY_PROTOCOL_DECODER, new ProxyProtocolDecoder())
           .addLast(
-              PROXY_PROTOCOL_HANDLER, new ProxyProtocolHandler(connection, proxyHeaderWarnings));
+              PROXY_PROTOCOL_HANDLER,
+              new ProxyProtocolHandler(connection, loginContext.limits(), proxyHeaderWarnings));
     }
 
     pipeline
