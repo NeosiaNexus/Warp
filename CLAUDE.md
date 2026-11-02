@@ -20,7 +20,7 @@ Shadow JAR output: `proxy/build/libs/warp-<version>.jar`
 api/        Public plugin API (Adventure, Guice, Configurate, SLF4J)
 protocol/   Minecraft protocol codec and packet definitions (Netty)
 proxy/      Core proxy implementation (entry point: WarpBootstrap)
-jni/        Native bindings for compression and cryptography
+jni/        Native compression (bundled libdeflate) through the FFM API
 build-logic/ Gradle convention plugins (java, spotless, publish)
 ```
 
@@ -29,7 +29,7 @@ build-logic/ Gradle convention plugins (java, spotless, publish)
 - **api/** is the public contract. No internal types leak here. Plugins depend only on this.
 - **protocol/** owns packet definitions and codec. Depends on api/.
 - **proxy/** is the implementation. Depends on everything. Produces the shadow JAR.
-- **jni/** is standalone native bindings. No dependency on api/ or protocol/.
+- **jni/** is standalone native code access (FFM, no JNI glue). No dependency on api/ or protocol/.
 - Cross-module dependency direction: `api <- protocol <- proxy`, `jni <- proxy`
 
 ## Code Conventions
