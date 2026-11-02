@@ -66,8 +66,15 @@ class ManagementServerTest {
       new InetSocketAddress(InetAddress.getLoopbackAddress(), 0);
 
   private final FakeHealth health = new FakeHealth();
-  private final HttpClient client =
-      HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+
+  /**
+   * The longest the tests wait for an answer: far more than a local one takes, and less than the
+   * time-out PIT gives a test (its usual time plus 4 s), so that a mutant that never answers fails
+   * the test instead of hanging it until PIT kills the JVM running it, which costs a restart.
+   */
+  private static final Duration ANSWER_TIMEOUT = Duration.ofSeconds(3);
+
+  private final HttpClient client = HttpClient.newBuilder().connectTimeout(ANSWER_TIMEOUT).build();
   private @Nullable ManagementServer server;
 
   @AfterEach
@@ -98,7 +105,7 @@ class ManagementServerTest {
     InetSocketAddress address = running.httpAddress();
     HttpRequest.Builder request =
         HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + address.getPort() + path))
-            .timeout(Duration.ofSeconds(10))
+            .timeout(ANSWER_TIMEOUT)
             .method(method, HttpRequest.BodyPublishers.noBody());
     if (token != null) {
       request.header("Authorization", "Bearer " + token);
@@ -123,7 +130,7 @@ class ManagementServerTest {
     InetSocketAddress agent = running.agentCheckAddress();
     assertNotNull(agent);
     try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), agent.getPort())) {
-      socket.setSoTimeout(5_000);
+      socket.setSoTimeout((int) ANSWER_TIMEOUT.toMillis());
       BufferedReader reader =
           new BufferedReader(
               new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII));
@@ -387,7 +394,7 @@ class ManagementServerTest {
       assertFalse(response.isDone(), "the drain is not over");
 
       health.finish(DrainOutcome.DRAINED);
-      HttpResponse<String> done = response.get(10, TimeUnit.SECONDS);
+      HttpResponse<String> done = response.get(ANSWER_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
 
       assertEquals(200, done.statusCode());
       assertEquals("drained", json(done).get("outcome").getAsString());
@@ -562,7 +569,7 @@ class ManagementServerTest {
     }
 
     void awaitDrain() throws Exception {
-      asked.get(10, TimeUnit.SECONDS);
+      asked.get(ANSWER_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
     }
 
     void finish(DrainOutcome outcome) {
