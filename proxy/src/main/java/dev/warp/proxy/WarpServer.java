@@ -24,6 +24,7 @@ import dev.warp.proxy.config.WarpConfig;
 import dev.warp.proxy.connection.PlaySession;
 import dev.warp.proxy.connection.ServerChannelInitializer;
 import dev.warp.proxy.connection.ServerLoginContext;
+import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 
 import java.io.IOException;
@@ -88,6 +89,9 @@ public final class WarpServer implements Warp {
   // ---------------------------------------------------------------------------
 
   private final WarpConfig config;
+
+  /** The players connected to the proxy. */
+  private final PlayerRegistry playerRegistry = new PlayerRegistry();
 
   /** Netty boss group — accepts incoming connections. */
   private @Nullable MultiThreadIoEventLoopGroup bossGroup;
@@ -292,6 +296,8 @@ public final class WarpServer implements Warp {
         profileKeys,
         new PlaySession(),
         serverRegistry,
+        playerRegistry,
+        config.duplicateLoginPolicy(),
         config.forwardingMode(),
         config.forwardingSecret(),
         transport.clientChannelClass());

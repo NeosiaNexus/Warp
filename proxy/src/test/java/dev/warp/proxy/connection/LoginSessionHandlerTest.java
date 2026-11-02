@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -47,6 +48,7 @@ import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.proxy.auth.AuthenticationException;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
+import dev.warp.proxy.config.DuplicateLoginPolicy;
 
 import java.math.BigInteger;
 import java.net.InetAddress;
@@ -799,13 +801,13 @@ class LoginSessionHandlerTest {
     @Test
     @DisplayName("should share one ID among the players online together, and draw a new one after")
     void sharedUntilEmpty() {
-      EmbeddedChannel first = loggedIn(ProtocolVersion.MINECRAFT_26_2);
-      EmbeddedChannel second = loggedIn(ProtocolVersion.MINECRAFT_26_3);
+      EmbeddedChannel first = loggedIn("Steve", ProtocolVersion.MINECRAFT_26_2);
+      EmbeddedChannel second = loggedIn("Alex", ProtocolVersion.MINECRAFT_26_3);
       first.finishAndReleaseAll();
-      EmbeddedChannel third = loggedIn(ProtocolVersion.MINECRAFT_26_2);
+      EmbeddedChannel third = loggedIn("Notch", ProtocolVersion.MINECRAFT_26_2);
       second.finishAndReleaseAll();
       third.finishAndReleaseAll();
-      EmbeddedChannel later = loggedIn(ProtocolVersion.MINECRAFT_26_3);
+      EmbeddedChannel later = loggedIn("Jeb", ProtocolVersion.MINECRAFT_26_3);
       later.finishAndReleaseAll();
 
       UUID sessionId = sessionIds.getFirst();
@@ -814,10 +816,10 @@ class LoginSessionHandlerTest {
       assertNotEquals(sessionId, sessionIds.get(3), "the first player once the proxy emptied");
     }
 
-    /** Logs {@code Steve} in, records the play session ID of its Login Success, and returns it. */
-    private EmbeddedChannel loggedIn(ProtocolVersion version) {
+    /** Logs a player in, records the play session ID of its Login Success, and returns it. */
+    private EmbeddedChannel loggedIn(String name, ProtocolVersion version) {
       EmbeddedChannel channel = loginChannel(version, context);
-      sendLoginStart(channel, "Steve", version);
+      sendLoginStart(channel, name, version);
       ByteBuf body =
           Unpooled.wrappedBuffer(
               nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version));
@@ -827,6 +829,82 @@ class LoginSessionHandlerTest {
         return channel;
       } finally {
         body.release();
+      }
+    }
+  }
+
+  @Nested
+  @DisplayName("duplicate logins")
+  class DuplicateLogins {
+
+    private static final ProtocolVersion VERSION = ProtocolVersion.MINECRAFT_1_21_4;
+
+    @Test
+    @DisplayName("should refuse a second session of a name in offline mode and keep the first")
+    void offlineRefusesNewcomer() {
+      ServerLoginContext context = TestLoginContexts.offline();
+      EmbeddedChannel first = loginChannel(VERSION, context);
+      EmbeddedChannel second = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(first, "Steve", VERSION);
+        nextPacket(first, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+
+        sendLoginStart(second, "Steve", VERSION);
+
+        byte[] reason = nextPacket(second, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
+        assertArrayEquals(
+            jsonString("{\"text\":\"You are already connected to this proxy.\"}"), reason);
+        assertClosed(second);
+        assertTrue(first.isOpen());
+        assertEquals(1, context.playerRegistry().count());
+      } finally {
+        first.finishAndReleaseAll();
+        second.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should kick the existing session and let the newcomer in when the policy says so")
+    void kickExistingLetsNewcomerIn() {
+      ServerLoginContext context = TestLoginContexts.offline(DuplicateLoginPolicy.KICK_EXISTING);
+      EmbeddedChannel first = loginChannel(VERSION, context);
+      EmbeddedChannel second = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(first, "Steve", VERSION);
+        nextPacket(first, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+
+        sendLoginStart(second, "Steve", VERSION);
+        first.runPendingTasks();
+
+        nextPacket(second, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+        // The first client got its Login Success and is in the configuration state.
+        nextPacket(first, ProtocolState.CONFIGURATION, ConfigDisconnect.class, VERSION);
+        assertClosed(first);
+        assertTrue(second.isOpen());
+        assertEquals(1, context.playerRegistry().count());
+      } finally {
+        first.finishAndReleaseAll();
+        second.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should let a name log in again as soon as its previous session closed")
+    void sameNameAfterLeaving() {
+      ServerLoginContext context = TestLoginContexts.offline();
+      EmbeddedChannel first = loginChannel(VERSION, context);
+      sendLoginStart(first, "Steve", VERSION);
+      nextPacket(first, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+      first.finishAndReleaseAll();
+
+      EmbeddedChannel second = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(second, "Steve", VERSION);
+
+        nextPacket(second, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+        assertEquals(1, context.playerRegistry().count());
+      } finally {
+        second.finishAndReleaseAll();
       }
     }
   }

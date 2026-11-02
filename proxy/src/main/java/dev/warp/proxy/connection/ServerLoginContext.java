@@ -19,7 +19,9 @@ package dev.warp.proxy.connection;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
+import dev.warp.proxy.config.DuplicateLoginPolicy;
 import dev.warp.proxy.config.ForwardingMode;
+import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 
 import java.security.KeyPair;
@@ -44,6 +46,9 @@ import io.netty.channel.Channel;
  *     online mode
  * @param playSession the play session of the proxy, whose ID 26.2+ clients receive on login
  * @param serverRegistry the registry of backend servers
+ * @param playerRegistry the registry of connected players
+ * @param duplicateLoginPolicy what happens when a player logs in while a session with its UUID is
+ *     still connected
  * @param forwardingMode the player info forwarding mode
  * @param forwardingSecret the shared HMAC secret for Velocity modern forwarding
  * @param channelClass the socket channel class matching the detected transport
@@ -59,6 +64,8 @@ public record ServerLoginContext(
     ProfileKeys profileKeys,
     PlaySession playSession,
     ServerRegistry serverRegistry,
+    PlayerRegistry playerRegistry,
+    DuplicateLoginPolicy duplicateLoginPolicy,
     ForwardingMode forwardingMode,
     byte[] forwardingSecret,
     Class<? extends Channel> channelClass) {

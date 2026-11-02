@@ -63,6 +63,7 @@ public final class WarpConfig {
   private static final int DEFAULT_COMPRESSION_THRESHOLD = 256;
   private static final int DEFAULT_COMPRESSION_LEVEL = -1;
   private static final boolean DEFAULT_COMPRESSION_PASSTHROUGH = true;
+  private static final String DEFAULT_DUPLICATE_LOGIN = "auto";
 
   /** Characters used for auto-generated forwarding secret. */
   private static final String SECRET_CHARS =
@@ -77,8 +78,9 @@ public final class WarpConfig {
   private final InetSocketAddress bind;
   private final boolean onlineMode;
   private final Map<String, InetSocketAddress> servers;
-  private final String defaultServer;
+  private final @Nullable String defaultServer;
   private final List<String> fallbackOrder;
+  private final DuplicateLoginPolicy duplicateLoginPolicy;
   private final ForwardingMode forwardingMode;
   private final byte[] forwardingSecret;
   private final int compressionThreshold;
@@ -93,8 +95,9 @@ public final class WarpConfig {
       InetSocketAddress bind,
       boolean onlineMode,
       Map<String, InetSocketAddress> servers,
-      String defaultServer,
+      @Nullable String defaultServer,
       List<String> fallbackOrder,
+      DuplicateLoginPolicy duplicateLoginPolicy,
       ForwardingMode forwardingMode,
       byte[] forwardingSecret,
       int compressionThreshold,
@@ -105,6 +108,7 @@ public final class WarpConfig {
     this.servers = Map.copyOf(servers);
     this.defaultServer = defaultServer;
     this.fallbackOrder = List.copyOf(fallbackOrder);
+    this.duplicateLoginPolicy = duplicateLoginPolicy;
     this.forwardingMode = forwardingMode;
     this.forwardingSecret = forwardingSecret;
     this.compressionThreshold = compressionThreshold;
@@ -153,15 +157,11 @@ public final class WarpConfig {
 
     // Parse server list.
     Map<String, InetSocketAddress> servers = parseServers(root);
-    String defaultServer =
-        root.node("default-server").getString(DEFAULT_SERVER_NAME).toLowerCase(Locale.ROOT);
-
-    if (!servers.containsKey(defaultServer)) {
-      throw new ConfigurationException(
-          "default-server '" + defaultServer + "' not found in servers list: " + servers.keySet());
-    }
-
+    @Nullable String defaultServer = parseDefaultServer(root, servers);
     List<String> fallbackOrder = parseFallbackOrder(root, servers, defaultServer);
+
+    DuplicateLoginPolicy duplicateLoginPolicy =
+        parseDuplicateLoginPolicy(root.node("duplicate-login").getString(DEFAULT_DUPLICATE_LOGIN));
 
     String modeStr = root.node("forwarding", "mode").getString(DEFAULT_FORWARDING_MODE);
     ForwardingMode forwardingMode = parseForwardingMode(modeStr);
@@ -195,6 +195,7 @@ public final class WarpConfig {
             servers,
             defaultServer,
             fallbackOrder,
+            duplicateLoginPolicy,
             forwardingMode,
             forwardingSecret,
             compressionThreshold,
@@ -239,10 +240,20 @@ public final class WarpConfig {
   /**
    * Returns the name of the default server players connect to on join.
    *
-   * @return the default server name
+   * @return the default server name, or {@code null} when no static server is configured (servers
+   *     are then registered at runtime, and plugins pick each player's server)
    */
-  public String defaultServer() {
+  public @Nullable String defaultServer() {
     return defaultServer;
+  }
+
+  /**
+   * Returns what happens when a player logs in while a session with its UUID is still connected.
+   *
+   * @return the duplicate login policy
+   */
+  public DuplicateLoginPolicy duplicateLoginPolicy() {
+    return duplicateLoginPolicy;
   }
 
   /**
@@ -331,6 +342,12 @@ public final class WarpConfig {
     CommentedConfigurationNode serversNode = root.node("servers");
     Map<String, InetSocketAddress> servers = new LinkedHashMap<>();
 
+    if (!serversNode.virtual() && !serversNode.isMap() && !serversNode.empty()) {
+      throw new ConfigurationException(
+          "servers must be a block of named servers, for example servers { lobby { address ="
+              + " \"localhost:25565\" } }");
+    }
+
     if (!serversNode.virtual() && serversNode.isMap()) {
       for (var entry : serversNode.childrenMap().entrySet()) {
         String name = entry.getKey().toString().toLowerCase(Locale.ROOT);
@@ -341,6 +358,11 @@ public final class WarpConfig {
         }
         servers.put(name, parseAddress(addressStr, "servers." + name + ".address"));
       }
+    }
+
+    // An explicit empty block means no static server: servers are registered at runtime.
+    if (!serversNode.virtual()) {
+      return servers;
     }
 
     // Fallback: if no servers block, check legacy backend.address.
@@ -361,15 +383,45 @@ public final class WarpConfig {
     return servers;
   }
 
+  private static @Nullable String parseDefaultServer(
+      CommentedConfigurationNode root, Map<String, InetSocketAddress> servers)
+      throws ConfigurationException {
+    CommentedConfigurationNode node = root.node("default-server");
+    if (servers.isEmpty()) {
+      String configured = node.getString();
+      if (configured != null && !configured.isBlank()) {
+        throw new ConfigurationException(
+            "default-server '"
+                + configured
+                + "' is set but no server is configured: remove default-server, or add the server"
+                + " to the servers block");
+      }
+      return null;
+    }
+    String defaultServer = node.getString(DEFAULT_SERVER_NAME).toLowerCase(Locale.ROOT);
+    if (!servers.containsKey(defaultServer)) {
+      throw new ConfigurationException(
+          "default-server '" + defaultServer + "' not found in servers list: " + servers.keySet());
+    }
+    return defaultServer;
+  }
+
   private static List<String> parseFallbackOrder(
       CommentedConfigurationNode root,
       Map<String, InetSocketAddress> servers,
-      String defaultServer) {
+      @Nullable String defaultServer) {
     CommentedConfigurationNode fallbackNode = root.node("fallback-order");
+
+    if (defaultServer == null) {
+      if (!fallbackNode.virtual() && !fallbackNode.childrenList().isEmpty()) {
+        logger.warn("fallback-order is ignored: no server is configured");
+      }
+      return List.of();
+    }
 
     if (fallbackNode.virtual()
         || (fallbackNode.isList() && fallbackNode.childrenList().isEmpty())) {
-      // Not configured — default to [defaultServer].
+      // Not configured: default to [defaultServer].
       return List.of(defaultServer);
     }
 
@@ -392,6 +444,16 @@ public final class WarpConfig {
       return List.of(defaultServer);
     }
     return result;
+  }
+
+  private static DuplicateLoginPolicy parseDuplicateLoginPolicy(String value)
+      throws ConfigurationException {
+    try {
+      return DuplicateLoginPolicy.valueOf(value.toUpperCase(Locale.ROOT).replace('-', '_'));
+    } catch (IllegalArgumentException e) {
+      throw new ConfigurationException(
+          "duplicate-login must be one of auto, kick-existing, refuse-new; got '" + value + "'", e);
+    }
   }
 
   private static ForwardingMode parseForwardingMode(String value) throws ConfigurationException {
@@ -468,6 +530,8 @@ public final class WarpConfig {
 
         # Backend servers. Each entry has a unique name and an address.
         # Players connect to the default-server on join.
+        # Leave the block empty (servers {}) to only use servers that plugins register at runtime,
+        # and remove default-server and fallback-order in that case.
         servers {
           lobby {
             address = "localhost:25565"
@@ -481,6 +545,13 @@ public final class WarpConfig {
         # The failed server is skipped. If all fail, the player is disconnected.
         # Defaults to [default-server] if omitted.
         fallback-order = ["lobby"]
+
+        # A player who logs in while a session with the same UUID is still connected:
+        #   auto           online mode kicks the existing session (the newcomer proved it owns the
+        #                  account), offline mode refuses the newcomer (anyone can claim a name)
+        #   kick-existing  always kick the existing session (what a vanilla server does)
+        #   refuse-new     always refuse the newcomer
+        duplicate-login = "auto"
 
         # How the proxy forwards player identity to the backend.
         # The backend must be configured to accept this forwarding mode.
@@ -522,11 +593,18 @@ public final class WarpConfig {
     logger.info("Configuration loaded:");
     logger.info("  bind: {}", config.bind);
     logger.info("  online-mode: {}", config.onlineMode);
-    logger.info("  default-server: {}", config.defaultServer);
-    for (var entry : config.servers.entrySet()) {
-      logger.info("  server '{}': {}", entry.getKey(), entry.getValue());
+    if (config.servers.isEmpty()) {
+      logger.info("  servers: none configured, registered at runtime by plugins");
+    } else {
+      logger.info("  default-server: {}", config.defaultServer);
+      for (var entry : config.servers.entrySet()) {
+        logger.info("  server '{}': {}", entry.getKey(), entry.getValue());
+      }
+      logger.info("  fallback-order: {}", config.fallbackOrder);
     }
-    logger.info("  fallback-order: {}", config.fallbackOrder);
+    logger.info(
+        "  duplicate-login: {}",
+        config.duplicateLoginPolicy.name().toLowerCase(Locale.ROOT).replace('_', '-'));
     logger.info("  forwarding: {}", config.forwardingMode.name().toLowerCase(Locale.ROOT));
     logger.info(
         "  compression: threshold={}, level={}, passthrough={}",

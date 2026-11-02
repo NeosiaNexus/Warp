@@ -46,6 +46,7 @@ import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
 import dev.warp.protocol.packet.play.TabListHeaderFooter;
 import dev.warp.protocol.packet.play.Transfer;
+import dev.warp.proxy.server.BackendServer;
 import dev.warp.proxy.server.ServerRegistry;
 
 import java.util.stream.Collectors;
@@ -252,13 +253,13 @@ final class ClientPlaySessionHandler implements SessionHandler {
       return;
     }
 
-    ServerInfo target = registry.getServer(args);
+    BackendServer target = registry.getServer(args);
     if (target == null) {
       player.sendSystemMessage("Unknown server: " + args);
       return;
     }
 
-    player.switchServer(target);
+    player.switchServer(target.info());
   }
 
   private void handleClientSettings(PlayClientSettings settings) {

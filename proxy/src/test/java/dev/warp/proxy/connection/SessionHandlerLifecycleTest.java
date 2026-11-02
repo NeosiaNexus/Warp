@@ -36,6 +36,7 @@ import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.PacketDirection;
+import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 
 import java.net.InetSocketAddress;
@@ -105,6 +106,7 @@ class SessionHandlerLifecycleTest {
 
     GameProfile profile = new GameProfile(UUID.randomUUID(), "TestPlayer", List.of());
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
+    when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     // Provide a real ServerRegistry with empty fallback so handleBackendFailure disconnects.
     ServerRegistry registry =
         new ServerRegistry(

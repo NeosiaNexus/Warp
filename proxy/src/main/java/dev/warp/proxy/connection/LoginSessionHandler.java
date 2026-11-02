@@ -40,6 +40,7 @@ import dev.warp.proxy.auth.AuthenticationException;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.auth.ServerHash;
+import dev.warp.proxy.player.PlayerRegistry;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -118,12 +119,11 @@ final class LoginSessionHandler implements SessionHandler {
 
   private LoginState state = LoginState.AWAITING_LOGIN_START;
 
-  /** The player once logged in, until the client enters its first server. */
+  /** The player once authenticated and registered, until the client enters its first server. */
   private @Nullable ConnectedPlayer player;
 
   private @Nullable String username;
   private byte @Nullable [] verifyToken;
-  private @Nullable GameProfile authenticatedProfile;
 
   /**
    * The profile key a 1.19 to 1.19.2 client sent, once accepted; {@code null} if it sent none, and
@@ -295,13 +295,7 @@ final class LoginSessionHandler implements SessionHandler {
 
     state = LoginState.COMPLETE;
     connection.setState(ProtocolState.CONFIGURATION);
-
-    GameProfile profile = this.authenticatedProfile;
-    if (profile == null) {
-      disconnect("Internal error");
-      return;
-    }
-    initiateBackendConnection(profile);
+    initiateBackendConnection();
   }
 
   @Override
@@ -410,7 +404,23 @@ final class LoginSessionHandler implements SessionHandler {
   }
 
   private void completeLogin(GameProfile profile) {
-    this.authenticatedProfile = profile;
+    // Register before the client hears its login succeeded, so that a refused duplicate still gets
+    // a login disconnect it can show.
+    ConnectedPlayer joining =
+        new ConnectedPlayer(
+            connection,
+            clientVersion(),
+            profile,
+            (InetSocketAddress) connection.channel().remoteAddress(),
+            loginContext);
+    boolean kickExisting =
+        loginContext.duplicateLoginPolicy().kicksExisting(loginContext.onlineMode());
+    if (loginContext.playerRegistry().register(joining, kickExisting)
+        == PlayerRegistry.Registration.REFUSED) {
+      disconnect("You are already connected to this proxy.");
+      return;
+    }
+    this.player = joining;
 
     // Enable compression (must send SetCompression BEFORE installing handlers).
     enableCompression();
@@ -438,7 +448,7 @@ final class LoginSessionHandler implements SessionHandler {
       // Pre-1.20.2: transition directly to PLAY.
       state = LoginState.COMPLETE;
       connection.setState(ProtocolState.PLAY);
-      initiateBackendConnection(profile);
+      initiateBackendConnection();
     }
   }
 
@@ -491,16 +501,17 @@ final class LoginSessionHandler implements SessionHandler {
   // ---------------------------------------------------------------------------
 
   /**
-   * Creates the {@link ConnectedPlayer} and connects it to the default server.
+   * Connects the logged-in player to its initial server.
    *
-   * <p>The backend connection runs asynchronously. A default server that cannot be reached or
+   * <p>The backend connection runs asynchronously. An initial server that cannot be reached or
    * refuses the player sends it down the fallback order, whatever its version.
    */
-  private void initiateBackendConnection(GameProfile profile) {
-    InetSocketAddress remoteAddr = (InetSocketAddress) connection.channel().remoteAddress();
-    ConnectedPlayer joining =
-        new ConnectedPlayer(connection, clientVersion(), profile, remoteAddr, loginContext);
-    this.player = joining;
+  private void initiateBackendConnection() {
+    ConnectedPlayer joining = this.player;
+    if (joining == null) {
+      disconnect("Internal error");
+      return;
+    }
     joining.join();
   }
 

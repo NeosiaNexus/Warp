@@ -41,6 +41,7 @@ import dev.warp.protocol.packet.TextComponent;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.PlayPacket;
+import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 
 import java.io.ByteArrayOutputStream;
@@ -423,6 +424,7 @@ class ClientPlaySessionHandlerTest {
     EmbeddedChannel backend = channel(PacketDirection.CLIENTBOUND, version);
 
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
+    when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     when(loginContext.serverRegistry()).thenReturn(new ServerRegistry(servers, "lobby", List.of()));
     ConnectedPlayer player =
         new ConnectedPlayer(
