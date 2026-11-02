@@ -32,6 +32,7 @@ import java.util.zip.Deflater;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
+import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.EncoderException;
@@ -459,6 +460,23 @@ class CompressionEncoderTest {
       ByteBuf out = ch.readOutbound();
       assertEquals(3 + VarInt.size(THRESHOLD) + 200, out.readableBytes());
       assertEquals(3 + VarInt.size(THRESHOLD) + reference.deflateBound(THRESHOLD), out.capacity());
+      out.release();
+      ch.finish();
+    }
+
+    @Test
+    @DisplayName("should write frames into direct memory, as the socket wants them")
+    void directFrames() {
+      // given
+      EmbeddedChannel ch = encoderChannel();
+      ch.config().setAllocator(PooledByteBufAllocator.DEFAULT);
+
+      // when
+      ch.writeOutbound(Unpooled.wrappedBuffer(new byte[THRESHOLD - 1]));
+
+      // then
+      ByteBuf out = ch.readOutbound();
+      assertTrue(out.isDirect());
       out.release();
       ch.finish();
     }
