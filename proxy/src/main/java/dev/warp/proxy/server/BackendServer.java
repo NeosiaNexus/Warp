@@ -107,6 +107,11 @@ public final class BackendServer implements RegisteredServer {
     return registry.pinger().ping(info);
   }
 
+  @Override
+  public CompletableFuture<ServerPing> ping(int protocolVersion) {
+    return registry.pinger().ping(info, protocolVersion);
+  }
+
   /**
    * Counts a player on this server.
    *

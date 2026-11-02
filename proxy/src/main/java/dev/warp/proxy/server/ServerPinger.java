@@ -33,4 +33,16 @@ public interface ServerPinger {
    *     in time
    */
   CompletableFuture<ServerPing> ping(ServerInfo server);
+
+  /**
+   * Pings a server, announcing a protocol version in the handshake.
+   *
+   * @param server the server
+   * @param protocolVersion the protocol version number to announce, {@code -1} for none
+   * @return completed with its answer, or exceptionally if it cannot be reached or does not answer
+   *     in time
+   */
+  default CompletableFuture<ServerPing> ping(ServerInfo server, int protocolVersion) {
+    return ping(server);
+  }
 }

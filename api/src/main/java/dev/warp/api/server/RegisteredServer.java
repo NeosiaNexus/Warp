@@ -75,4 +75,19 @@ public interface RegisteredServer {
    *     answer in time
    */
   CompletableFuture<ServerPing> ping();
+
+  /**
+   * Asks the server for its server list entry, announcing a protocol version in the handshake.
+   *
+   * <p>A vanilla server answers with its own version whatever it is asked. A server that translates
+   * versions itself (ViaVersion installed on the backend) answers with the version it is asked for
+   * whenever it can translate it: to learn the version it really runs, ask with {@code -1}, a
+   * version no client has, as Velocity's own ping does. {@link #ping()} announces the newest
+   * version the proxy supports.
+   *
+   * @param protocolVersion the protocol version number to announce, or {@code -1} for none
+   * @return completed with the answer, or exceptionally if the server cannot be reached or does not
+   *     answer in time
+   */
+  CompletableFuture<ServerPing> ping(int protocolVersion);
 }

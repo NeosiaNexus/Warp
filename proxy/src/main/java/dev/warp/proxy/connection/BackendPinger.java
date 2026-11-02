@@ -79,6 +79,17 @@ public final class BackendPinger implements ServerPinger {
 
   @Override
   public CompletableFuture<ServerPing> ping(ServerInfo server) {
+    return ping(server, ProtocolVersion.latest().protocol());
+  }
+
+  /**
+   * {@inheritDoc}
+   *
+   * <p>The packets are encoded as the newest version does (the status packets have not changed
+   * since 1.7); only the handshake announces {@code protocolVersion}.
+   */
+  @Override
+  public CompletableFuture<ServerPing> ping(ServerInfo server, int protocolVersion) {
     CompletableFuture<ServerPing> result = new CompletableFuture<>();
     ProtocolVersion version = ProtocolVersion.latest();
     var _ =
@@ -123,7 +134,7 @@ public final class BackendPinger implements ServerPinger {
                       MinecraftConnection connection =
                           channel.pipeline().get(MinecraftConnection.class);
                       connection.setSessionHandler(
-                          new PingSessionHandler(connection, server, version, result));
+                          new PingSessionHandler(connection, server, protocolVersion, result));
                       var _ =
                           channel
                               .closeFuture()
@@ -141,17 +152,17 @@ public final class BackendPinger implements ServerPinger {
 
     private final MinecraftConnection connection;
     private final ServerInfo server;
-    private final ProtocolVersion version;
+    private final int protocolVersion;
     private final CompletableFuture<ServerPing> result;
 
     PingSessionHandler(
         MinecraftConnection connection,
         ServerInfo server,
-        ProtocolVersion version,
+        int protocolVersion,
         CompletableFuture<ServerPing> result) {
       this.connection = connection;
       this.server = server;
-      this.version = version;
+      this.protocolVersion = protocolVersion;
       this.result = result;
     }
 
@@ -159,7 +170,7 @@ public final class BackendPinger implements ServerPinger {
     public void activated() {
       InetSocketAddress address = server.address();
       connection.writeAndFlush(
-          new Handshake(version.protocol(), address.getHostString(), address.getPort(), 1));
+          new Handshake(protocolVersion, address.getHostString(), address.getPort(), 1));
       connection.setState(ProtocolState.STATUS);
       connection.writeAndFlush(new StatusRequest());
     }
