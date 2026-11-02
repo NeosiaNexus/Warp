@@ -346,4 +346,47 @@ class McNbtTest {
       assertArrayEquals(tag, readWithTrailer(tag));
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Nameless root (network NBT, since 1.20.2)
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("readNameless")
+  class ReadNameless {
+
+    @Test
+    @DisplayName("should read a type and its payload, without a name, and stop after it")
+    void namelessRoot() {
+      byte[] tag = {STRING, 0x00, 0x02, 'h', 'i'};
+      ByteBuf buf = Unpooled.buffer().writeBytes(tag).writeByte(0x7F);
+
+      assertArrayEquals(tag, McNbt.readNameless(buf));
+      assertEquals(0x7F, buf.readByte());
+    }
+
+    @Test
+    @DisplayName("should read a lone TAG_End as an absent tag")
+    void absent() {
+      ByteBuf buf = Unpooled.wrappedBuffer(new byte[] {END, 0x7F});
+
+      assertArrayEquals(new byte[] {END}, McNbt.readNameless(buf));
+      assertEquals(1, buf.readableBytes());
+    }
+
+    @Test
+    @DisplayName("should skip a compound and refuse a truncated one")
+    void compounds() {
+      byte[] compound = {COMPOUND, BYTE, 0x00, 0x01, 'a', 0x01, END};
+      ByteBuf buf = Unpooled.wrappedBuffer(compound);
+
+      McNbt.skipNameless(buf);
+
+      assertFalse(buf.isReadable());
+      assertThrows(
+          DecoderException.class,
+          () -> McNbt.skipNameless(Unpooled.wrappedBuffer(new byte[] {COMPOUND, BYTE, 0x00})));
+      assertThrows(DecoderException.class, () -> McNbt.skipNameless(Unpooled.buffer()));
+    }
+  }
 }
