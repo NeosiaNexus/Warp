@@ -442,6 +442,18 @@ public final class ConnectedPlayer {
     return cachedClientSettings;
   }
 
+  /**
+   * Returns whether the player lets servers list its name, in the sample of the server list: the
+   * "Allow Server Listings" option of 1.18+ clients, always on before. {@code false} until the
+   * client sent its settings, as vanilla servers assume.
+   *
+   * @return {@code true} if the name may be listed
+   */
+  public boolean allowsServerListing() {
+    ClientInformation settings = cachedClientSettings;
+    return settings != null && settings.allowServerListings();
+  }
+
   // ---------------------------------------------------------------------------
   // Switch state
   // ---------------------------------------------------------------------------

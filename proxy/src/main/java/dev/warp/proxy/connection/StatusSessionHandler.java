@@ -16,7 +16,7 @@
  */
 package dev.warp.proxy.connection;
 
-import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.legacy.LegacyPing;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.status.PingRequest;
@@ -24,64 +24,63 @@ import dev.warp.protocol.packet.status.PongResponse;
 import dev.warp.protocol.packet.status.StatusPacket;
 import dev.warp.protocol.packet.status.StatusRequest;
 import dev.warp.protocol.packet.status.StatusResponse;
+import dev.warp.proxy.status.ServerList;
 
-import java.util.Objects;
-
+import io.netty.channel.ChannelFutureListener;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Handles the server list ping (SLP) flow after a handshake with {@code nextState = 1}.
+ * Handles the server list ping (SLP) flow after a handshake with {@code nextState = 1}, and answers
+ * legacy pings ({@link #answerLegacy}).
  *
  * <p>Expected packet flow:
  *
  * <pre>{@code
- * C → S: StatusRequest        (empty — triggers response)
- * S → C: StatusResponse       (JSON with version, players, MOTD)
- * C → S: PingRequest          (long payload — client timestamp)
+ * C → S: StatusRequest        (empty: asks for the entry)
+ * S → C: StatusResponse       (JSON with version, players, MOTD, icon)
+ * C → S: PingRequest          (long payload: client timestamp)
  * S → C: PongResponse         (echo payload)
  *        [connection closes]
  * }</pre>
  *
- * <p>The handler enforces ordering: a {@link StatusRequest} must be received before any {@link
- * PingRequest}, and duplicate requests are ignored to prevent abuse.
+ * <p>The entry comes from {@link ServerList}, which caches its answer. A {@link StatusRequest} must
+ * come before any {@link PingRequest}; duplicate requests are ignored.
  */
 final class StatusSessionHandler implements SessionHandler {
 
   private static final Logger logger = LoggerFactory.getLogger(StatusSessionHandler.class);
 
-  /**
-   * The version name every client sees: the range of versions Warp supports. A client only shows it
-   * when the advertised protocol is not its own, as the reason it cannot join.
-   */
-  static final String VERSION_NAME =
-      "Warp " + ProtocolVersion.oldest().name() + "-" + ProtocolVersion.latest().name();
-
-  /**
-   * The JSON status response for each supported protocol, indexed by protocol number. Built once,
-   * so that answering a ping builds no string (Velocity builds a fresh JSON string per ping).
-   */
-  private static final @Nullable String[] STATUS_JSON_BY_PROTOCOL = buildStatusJsonByProtocol();
+  private enum State {
+    AWAITING_REQUEST,
+    ANSWERING,
+    ANSWERED
+  }
 
   private final MinecraftConnection connection;
+  private final ServerLoginContext context;
 
-  /** The JSON this client gets, advertising its own protocol when Warp supports it. */
-  private final String statusJson;
+  /** The protocol the client's handshake announced, supported or not. */
+  private final int clientProtocol;
 
-  /** Guards against duplicate StatusRequest packets. */
-  private boolean sentResponse;
+  private State state = State.AWAITING_REQUEST;
+
+  /** A ping that arrived while the handlers held the entry, answered after it. */
+  private @Nullable PingRequest pendingPing;
 
   /**
    * Creates the handler of one server list ping.
    *
    * @param connection the client connection
-   * @param clientVersion the version the client announced in its handshake, or {@code null} when
-   *     Warp does not support it
+   * @param context the proxy's shared state, whose server list answers
+   * @param clientProtocol the protocol the client's handshake announced, supported or not
    */
-  StatusSessionHandler(MinecraftConnection connection, @Nullable ProtocolVersion clientVersion) {
+  StatusSessionHandler(
+      MinecraftConnection connection, ServerLoginContext context, int clientProtocol) {
     this.connection = connection;
-    this.statusJson = statusJson(clientVersion);
+    this.context = context;
+    this.clientProtocol = clientProtocol;
   }
 
   @Override
@@ -102,68 +101,60 @@ final class StatusSessionHandler implements SessionHandler {
   }
 
   private void handleStatusRequest() {
-    if (sentResponse) {
-      // Duplicate — ignore silently per protocol convention.
-      return;
+    if (state != State.AWAITING_REQUEST) {
+      return; // A duplicate: ignored, as vanilla does.
     }
-    sentResponse = true;
+    state = State.ANSWERING;
+    answer(context.serverList().json(clientProtocol));
+  }
 
-    connection.writeAndFlush(new StatusResponse(statusJson));
+  private void answer(String json) {
+    state = State.ANSWERED;
+    connection.writeAndFlush(new StatusResponse(json));
+    PingRequest pending = this.pendingPing;
+    if (pending != null) {
+      this.pendingPing = null;
+      connection.writeAndClose(new PongResponse(pending.payload()));
+    }
   }
 
   private void handlePingRequest(PingRequest ping) {
-    if (!sentResponse) {
-      // PingRequest without a prior StatusRequest — protocol violation.
-      connection.close();
-      return;
+    switch (state) {
+      // A ping before any request: a protocol violation.
+      case AWAITING_REQUEST -> connection.close();
+      case ANSWERING -> {
+        if (pendingPing == null) {
+          pendingPing = ping;
+        }
+      }
+      // Echo the payload and close after the write reaches the socket.
+      case ANSWERED -> connection.writeAndClose(new PongResponse(ping.payload()));
     }
-
-    // Echo the payload and close after the write reaches the socket.
-    connection.writeAndClose(new PongResponse(ping.payload()));
   }
 
-  /**
-   * Returns the status JSON for a client: it advertises the client's own protocol when Warp
-   * supports it, so that the server list shows Warp as compatible, and the latest one otherwise, as
-   * Velocity does.
-   *
-   * @param clientVersion the client's version, or {@code null} when Warp does not support it
-   * @return the JSON status response
-   */
-  static String statusJson(@Nullable ProtocolVersion clientVersion) {
-    ProtocolVersion advertised = clientVersion != null ? clientVersion : ProtocolVersion.latest();
-    return Objects.requireNonNull(STATUS_JSON_BY_PROTOCOL[advertised.protocol()]);
-  }
+  // ---------------------------------------------------------------------------
+  // Legacy ping
+  // ---------------------------------------------------------------------------
 
   /**
-   * Builds the JSON status response of every supported protocol.
+   * Answers a legacy server list ping (Minecraft 1.6 and older, and load balancer health checks)
+   * with the proxy's entry, then closes the connection.
    *
-   * <p>Format follows the Minecraft protocol specification:
-   *
-   * <pre>{@code
-   * {
-   *   "version": { "name": "Warp <oldest>-<latest>", "protocol": <protocol> },
-   *   "players": { "max": 0, "online": 0 },
-   *   "description": { "text": "A Warp Proxy" }
-   * }
-   * }</pre>
+   * @param connection the client connection
+   * @param context the proxy's shared state
+   * @param ping the ping
    */
-  private static @Nullable String[] buildStatusJsonByProtocol() {
-    int maxProtocol =
-        ProtocolVersion.values().stream().mapToInt(ProtocolVersion::protocol).max().orElseThrow();
-    @Nullable String[] json = new String[maxProtocol + 1];
-    for (ProtocolVersion version : ProtocolVersion.values()) {
-      json[version.protocol()] =
-          "{"
-              + "\"version\":{\"name\":\""
-              + VERSION_NAME
-              + "\",\"protocol\":"
-              + version.protocol()
-              + "},"
-              + "\"players\":{\"max\":0,\"online\":0},"
-              + "\"description\":{\"text\":\"A Warp Proxy\"}"
-              + "}";
+  static void answerLegacy(
+      MinecraftConnection connection, ServerLoginContext context, LegacyPing ping) {
+    String host = ping.host();
+    if (host != null) {
+      connection.setVirtualHost(host);
     }
-    return json;
+    ServerList serverList = context.serverList();
+    var _ =
+        connection
+            .channel()
+            .writeAndFlush(serverList.legacyAnswer(serverList.legacyProposal(), ping.format()))
+            .addListener(ChannelFutureListener.CLOSE);
   }
 }

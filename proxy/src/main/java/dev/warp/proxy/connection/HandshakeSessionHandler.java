@@ -18,11 +18,15 @@ package dev.warp.proxy.connection;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.legacy.LegacyDisconnect;
+import dev.warp.protocol.legacy.LegacyLogin;
+import dev.warp.protocol.legacy.LegacyPing;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.handshake.HandshakePacket;
 
+import io.netty.channel.ChannelFutureListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,6 +36,10 @@ import org.slf4j.LoggerFactory;
  * <p>The client sends a single {@link Handshake} packet declaring the protocol version and intended
  * next state (status or login). This handler validates the request, updates the decoder/encoder
  * state, and transitions to the appropriate session handler.
+ *
+ * <p>Before any handshake, a client of Minecraft 1.6 or older sends a legacy ping or login, which
+ * {@link dev.warp.protocol.legacy.LegacyPingDecoder} recognizes: a ping is answered with the server
+ * list entry, a login with the versions the proxy speaks.
  *
  * <p>Supported transitions:
  *
@@ -51,6 +59,13 @@ final class HandshakeSessionHandler implements SessionHandler {
   /** Handshake nextState value for login. */
   private static final int LOGIN_NEXT_STATE = 2;
 
+  /** What a client of Minecraft 1.6 or older is told when it tries to join. */
+  static final String OUTDATED_CLIENT =
+      "Outdated client: this server supports Minecraft "
+          + ProtocolVersion.oldest().name()
+          + " to "
+          + ProtocolVersion.latest().name();
+
   private final MinecraftConnection connection;
   private final ServerLoginContext loginContext;
 
@@ -61,6 +76,14 @@ final class HandshakeSessionHandler implements SessionHandler {
 
   @Override
   public void handle(Packet packet) {
+    if (packet instanceof LegacyPing ping) {
+      StatusSessionHandler.answerLegacy(connection, loginContext, ping);
+      return;
+    }
+    if (packet instanceof LegacyLogin) {
+      refuseLegacyLogin();
+      return;
+    }
     if (!(packet instanceof HandshakePacket handshakePacket)) {
       logger.warn("Unexpected packet in HANDSHAKE state: {}", packet.getClass().getSimpleName());
       connection.close();
@@ -71,6 +94,20 @@ final class HandshakeSessionHandler implements SessionHandler {
     switch (handshakePacket) {
       case Handshake handshake -> handleHandshake(handshake);
     }
+  }
+
+  /**
+   * Tells a client of Minecraft 1.6 or older, trying to join, which versions the proxy speaks: it
+   * shows the reason on its disconnect screen, rather than a lost connection.
+   */
+  private void refuseLegacyLogin() {
+    logger.debug(
+        "Refusing a Minecraft 1.6 or older client from {}", connection.channel().remoteAddress());
+    var _ =
+        connection
+            .channel()
+            .writeAndFlush(new LegacyDisconnect(OUTDATED_CLIENT))
+            .addListener(ChannelFutureListener.CLOSE);
   }
 
   private void handleHandshake(Handshake handshake) {
@@ -86,7 +123,8 @@ final class HandshakeSessionHandler implements SessionHandler {
     switch (handshake.nextState()) {
       case STATUS_NEXT_STATE -> {
         connection.setState(ProtocolState.STATUS);
-        connection.setSessionHandler(new StatusSessionHandler(connection, version));
+        connection.setSessionHandler(
+            new StatusSessionHandler(connection, loginContext, handshake.protocolVersion()));
       }
       case LOGIN_NEXT_STATE -> {
         if (version == null) {

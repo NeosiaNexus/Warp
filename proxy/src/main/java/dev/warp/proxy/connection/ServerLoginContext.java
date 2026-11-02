@@ -25,6 +25,7 @@ import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
+import dev.warp.proxy.status.ServerList;
 
 import java.security.KeyPair;
 
@@ -49,6 +50,7 @@ import io.netty.channel.Channel;
  * @param playSession the play session of the proxy, whose ID 26.2+ clients receive on login
  * @param serverRegistry the registry of backend servers
  * @param playerRegistry the registry of connected players
+ * @param serverList the proxy's server list entry, which also holds the player limit
  * @param duplicateLoginPolicy what happens when a player logs in while a session with its UUID is
  *     still connected
  * @param events the event bus plugins subscribe to
@@ -69,6 +71,7 @@ public record ServerLoginContext(
     PlaySession playSession,
     ServerRegistry serverRegistry,
     PlayerRegistry playerRegistry,
+    ServerList serverList,
     DuplicateLoginPolicy duplicateLoginPolicy,
     WarpEventBus events,
     ChannelRegistry channels,

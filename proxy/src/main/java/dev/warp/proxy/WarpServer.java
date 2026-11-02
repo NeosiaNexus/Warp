@@ -35,6 +35,7 @@ import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.plugin.WarpPluginManager;
 import dev.warp.proxy.server.ServerRegistry;
+import dev.warp.proxy.status.ServerList;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -392,6 +393,7 @@ public final class WarpServer implements Warp {
         new PlaySession(),
         serverRegistry,
         playerRegistry,
+        new ServerList(config.status(), playerRegistry),
         config.duplicateLoginPolicy(),
         events,
         channels,

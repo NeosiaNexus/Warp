@@ -30,7 +30,11 @@ import dev.warp.proxy.connection.ConnectedPlayer;
 import dev.warp.proxy.player.PlayerRegistry.Registration;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Random;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -119,7 +123,7 @@ class PlayerRegistryTest {
       }
       ExecutorService pool = Executors.newFixedThreadPool(threads);
       CountDownLatch start = new CountDownLatch(1);
-      List<Registration> results = java.util.Collections.synchronizedList(new ArrayList<>());
+      List<Registration> results = Collections.synchronizedList(new ArrayList<>());
       try {
         for (ConnectedPlayer session : sessions) {
           pool.execute(
@@ -141,6 +145,64 @@ class PlayerRegistryTest {
 
       assertEquals(1, results.stream().filter(r -> r == Registration.REGISTERED).count());
       assertEquals(1, registry.count());
+    }
+  }
+
+  @Nested
+  @DisplayName("randomSample()")
+  class RandomSample {
+
+    @Test
+    @DisplayName("should return every player when there are fewer than asked")
+    void everyone() {
+      ConnectedPlayer steve = player(UUID.randomUUID(), "Steve");
+      ConnectedPlayer alex = player(UUID.randomUUID(), "Alex");
+      registry.register(steve, false);
+      registry.register(alex, false);
+
+      List<ConnectedPlayer> sample = registry.randomSample(12, new Random(1));
+
+      assertEquals(Set.of(steve, alex), Set.copyOf(sample));
+    }
+
+    @Test
+    @DisplayName("should return as many distinct players as asked when there are more")
+    void bounded() {
+      for (int i = 0; i < 50; i++) {
+        registry.register(player(UUID.randomUUID(), "Player" + i), false);
+      }
+
+      List<ConnectedPlayer> sample = registry.randomSample(12, new Random(1));
+
+      assertEquals(12, sample.size());
+      assertEquals(12, Set.copyOf(sample).size());
+    }
+
+    @Test
+    @DisplayName("should give every player a chance to be listed")
+    void fair() {
+      List<ConnectedPlayer> everyone = new ArrayList<>();
+      for (int i = 0; i < 20; i++) {
+        ConnectedPlayer player = player(UUID.randomUUID(), "Player" + i);
+        everyone.add(player);
+        registry.register(player, false);
+      }
+      Random random = new Random(7);
+      Set<ConnectedPlayer> listed = new HashSet<>();
+
+      for (int draw = 0; draw < 200; draw++) {
+        listed.addAll(registry.randomSample(3, random));
+      }
+
+      assertEquals(Set.copyOf(everyone), listed);
+    }
+
+    @Test
+    @DisplayName("should return nobody for a size of zero")
+    void none() {
+      registry.register(player(UUID.randomUUID(), "Steve"), false);
+
+      assertTrue(registry.randomSample(0, new Random(1)).isEmpty());
     }
   }
 

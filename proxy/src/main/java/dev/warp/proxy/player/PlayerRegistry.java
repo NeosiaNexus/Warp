@@ -18,11 +18,14 @@ package dev.warp.proxy.player;
 
 import dev.warp.proxy.connection.ConnectedPlayer;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.random.RandomGenerator;
 
 import org.jspecify.annotations.Nullable;
 
@@ -120,6 +123,35 @@ public final class PlayerRegistry {
    */
   public int count() {
     return byId.size();
+  }
+
+  /**
+   * Returns a few connected players picked at random, without copying them all: one pass of
+   * reservoir sampling over the registry.
+   *
+   * @param size the most players returned
+   * @param random the source of randomness
+   * @return up to {@code size} players, in random order, modifiable
+   */
+  public List<ConnectedPlayer> randomSample(int size, RandomGenerator random) {
+    if (size <= 0) {
+      return new ArrayList<>();
+    }
+    List<ConnectedPlayer> sample = new ArrayList<>(Math.max(0, Math.min(size, byId.size())));
+    int seen = 0;
+    for (ConnectedPlayer player : byId.values()) {
+      seen++;
+      if (sample.size() < size) {
+        sample.add(player);
+      } else {
+        int slot = random.nextInt(seen);
+        if (slot < size) {
+          sample.set(slot, player);
+        }
+      }
+    }
+    Collections.shuffle(sample, random);
+    return sample;
   }
 
   private static String key(String username) {

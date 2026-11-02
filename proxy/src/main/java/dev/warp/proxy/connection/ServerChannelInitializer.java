@@ -18,6 +18,8 @@ package dev.warp.proxy.connection;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.legacy.LegacyDisconnectEncoder;
+import dev.warp.protocol.legacy.LegacyPingDecoder;
 import dev.warp.protocol.netty.FrameDecoder;
 import dev.warp.protocol.netty.FrameEncoder;
 import dev.warp.protocol.netty.MinecraftDecoder;
@@ -36,9 +38,14 @@ import io.netty.handler.timeout.ReadTimeoutHandler;
  * <p>Pipeline layout (inbound top → bottom, outbound bottom → top):
  *
  * <pre>{@code
- * Inbound:  [read-timeout] → [frame-decoder] → [minecraft-decoder] → [connection-handler]
- * Outbound: [connection-handler] → [minecraft-encoder] → [frame-encoder]
+ * Inbound:  [read-timeout] → [legacy-ping-decoder] → [frame-decoder] → [minecraft-decoder]
+ *           → [connection-handler]
+ * Outbound: [connection-handler] → [minecraft-encoder] → [frame-encoder] → [legacy-ping-encoder]
  * }</pre>
+ *
+ * <p>The legacy ping handlers answer the server list ping of Minecraft 1.6 and older; on the first
+ * bytes of any other connection they remove themselves, so that a session's packets never pass
+ * through them.
  *
  * <p>Encryption handlers are inserted during login. Compression needs no extra inbound handler: the
  * {@link MinecraftDecoder} decompresses only the frames it inspects (see {@link
@@ -63,6 +70,12 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
 
   /** Cipher encoder — AES/CFB8 stream encryption, installed during login. */
   public static final String CIPHER_ENCODER = "cipher-encoder";
+
+  /** Legacy ping decoder: recognizes the legacy ping and login of 1.6 and older, then leaves. */
+  public static final String LEGACY_PING_DECODER = "legacy-ping-decoder";
+
+  /** Legacy ping encoder: writes the legacy kick packet answering them, then leaves. */
+  public static final String LEGACY_PING_ENCODER = "legacy-ping-encoder";
 
   /** Frame decoder — splits TCP stream into VarInt-length-prefixed frames. */
   public static final String FRAME_DECODER = "frame-decoder";
@@ -123,6 +136,8 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
         .addLast(
             READ_TIMEOUT,
             new ReadTimeoutHandler(MinecraftConnection.READ_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+        .addLast(LEGACY_PING_DECODER, new LegacyPingDecoder())
+        .addLast(LEGACY_PING_ENCODER, LegacyDisconnectEncoder.INSTANCE)
         .addLast(FRAME_DECODER, new FrameDecoder())
         .addLast(MINECRAFT_DECODER, decoder)
         // Outbound: handler → packet encode → frame prepend
