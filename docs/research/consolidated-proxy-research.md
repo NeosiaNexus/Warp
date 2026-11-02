@@ -22,7 +22,7 @@ Les problemes identifies se repartissent en **4 niveaux de gravite** :
 
 ### 1.1 Compression/decompression gaspillee (Velocity #594)
 - **Probleme** : Chaque paquet est decompresse -> deserialise -> reserialise -> recompresse, meme quand le proxy n'a rien a inspecter (~90% des paquets en PLAY state)
-- **Impact** : Principale source de CPU sur un proxy Velocity. *(Correction cycle #5 : le « 4-5x » de #594 est le rapport de cout compression/decompression, pas un gain estime du passthrough — voir `compression-passthrough-prior-art.md`.)*
+- **Impact** : Principale source de CPU sur un proxy Velocity. *(Correction cycle #5 : le « 4-5x » de #594 est le rapport de cout compression/decompression, pas un gain estime du passthrough : voir `compression-passthrough-prior-art.md`.)*
 - **Etat** : Issue ouverte depuis 2021, zero progression en 4 ans
 - **Solution Warp** : Blind forwarding. Les paquets non-enregistres par un plugin passent en raw bytes sans decompression
 
@@ -45,6 +45,7 @@ Les problemes identifies se repartissent en **4 niveaux de gravite** :
 - **Solution Warp** : Machine a etats rigoureuse Handshake -> Login -> Configuration -> Play. Pas de packet queue bricolee
 
 ### 1.5 BungeeCord cesse d'accepter les connexions aleatoirement (BungeeCord #3358 + 6 issues liees)
+- **Correction (2026-11-02)** : #3358 est un rapport utilisateur jamais diagnostique (erreurs du plugin LockLogin dans les logs, cause non identifiee). Ce n'est pas la preuve d'un gel d'event loop dans BungeeCord. Les six autres issues n'ont pas ete reverifiees
 - **Probleme** : Le proxy devient "gele" : joueurs connectes restent, aucune nouvelle connexion acceptee. Pas de log, pas d'erreur. Reproduit meme sans plugins
 - **Impact** : Issues #171, #1959, #2271, #2644, #2984, #3276 sur plusieurs annees
 - **Solution Warp** : Watchdog thread detectant les event loops bloquees + mecanisme de recovery
@@ -64,14 +65,14 @@ Les problemes identifies se repartissent en **4 niveaux de gravite** :
 - **Impact** : Rapporte par un grand reseau, toujours ouvert
 - **Solution Warp** : Rate-limiting + limites configurables de taille decompresse par connexion. Le blind forwarding reduit aussi la surface d'attaque (moins de paquets decompresses)
 
-### 1.9 IP forwarding usurpable (BungeeCord #1328, ouvert depuis 2015)
+### 1.9 IP forwarding usurpable (BungeeCord #3180, #2174 ; refonte proposee dans #1328, ouverte depuis 2015)
 - **Probleme** : L'IP/UUID du joueur est insere en texte clair dans le handshake. Aucun HMAC, aucun secret. Usurpation triviale si un attaquant atteint un backend directement
 - **Impact** : Probleme de securite #1 poussant les migrations vers Velocity
 - **Solution Warp** : HMAC-SHA256 (compatible Velocity modern forwarding). Plus : secrets par serveur, rotation automatique possible
 
 ### 1.10 Pas de protection anti-bot/DDoS native (Velocity + BungeeCord)
 - **Probleme** : Aucune protection integree. Solutions = plugins tiers (VeloCity-Security, VeloFlame, ProxyFlow, LimboFilter)
-- **Impact** : BungeeCord crash avec 200-300 requetes HTTP/seconde (#2854). Les attaques de ping flood saturent le proxy
+- **Impact** : Les floods de pings et de logins saturent le proxy : 50 a 700 logins par seconde depuis des IP differentes ont fait bloquer le proxy par Mojang et l'ont gele par manque de memoire (Waterfall #528). Le chiffre "crash a 200-300 requetes/seconde" cite auparavant venait de BungeeCord #2854, supprimee de GitHub : il n'est plus verifiable
 - **Solution Warp** : Rate-limiting natif par IP et par type de requete. Detection et fermeture immediate des connexions non-MC. Cache de ping (comme Gate Lite)
 
 ### 1.11 Forwarding mode unique et global (Velocity #566, #888)
@@ -144,7 +145,7 @@ Les problemes identifies se repartissent en **4 niveaux de gravite** :
 - **Solution Warp** : Direct buffers exclusivement, ResourceLeakDetector en dev, monitoring du pool Netty
 
 ### 2.14 CPU spike avec HAProxy (Velocity #1699)
-- **Probleme** : Velocity boucle et consomme 100% CPU aleatoirement avec HAProxy
+- **Probleme** : Velocity boucle et consomme 100% CPU aleatoirement sur Pterodactyl avec HAProxy active. Le rapporteur l'attribue ensuite a l'option `enable-reuse-port` sous Docker ; non reproduit. Ce n'est pas un bug du PROXY protocol
 - **Solution Warp** : Tests de charge avec HAProxy dans la CI. PROXY protocol bien implemente
 
 ### 2.15 Registries moddees pas synchronisees (Velocity #922)
@@ -263,7 +264,7 @@ Les problemes identifies se repartissent en **4 niveaux de gravite** :
 | #1723 | Re-entree en configuration phase | 0 | 0 | Ouverte |
 | #804 | Chat manipulation cassee 1.19.1 | 0 | 0 | Ouverte |
 | #1742 | Attaque de decompression OOM | 0 | 0 | Ouverte |
-| #1699 | CPU spike avec HAProxy | 0 | 0 | Ouverte |
+| #1699 | CPU en boucle sur Pterodactyl (reuse-port, pas le PROXY protocol) | 0 | 0 | Ouverte |
 | #888 | Custom player info forwarding | 3 | 0 | In progress |
 | #1488 | Communication proxy-Paper | 2 | 13 | Ouverte |
 | #569 | ServerConnectedEvent flawed | 0 | 0 | Ouverte |
@@ -280,13 +281,13 @@ Les problemes identifies se repartissent en **4 niveaux de gravite** :
 | #1858 | AsyncEvent defaillant | 0 | Ouverte |
 | #217 | Support cluster natif | 0 | Ouverte (2013!) |
 | #1328 | Redesign IP forwarding | 0 | Ouverte (2015!) |
-| #3358 | Proxy cesse d'accepter connexions | 0 | Ouverte |
+| #3358 | Proxy cesse d'accepter connexions (rapport non diagnostique) | 0 | Ouverte |
 | #3542 | Login apres ServerSwitchEvent 1.20.2 | 0 | Ouverte |
 | #2815 | PostLogin avant Disconnect | 2 | Ouverte |
 | #2583 | Fuite memoire Netty | 1 | Ouverte (2019!) |
 | #3624 | Remplacer Gson | 0 | Ouverte |
 | #3392 | Write batching | 0 | Ouverte |
-| #2854 | Attaque DoS HTTP | 0 | Ouverte |
+| #2854 | Attaque DoS HTTP (issue supprimee, inverifiable) | ? | Supprimee |
 | #3503 | Scoreboards non nettoyes au switch | 0 | Ouverte |
 | #832 | Systeme de commandes primitif | 0 | Ouverte (2014!) |
 | #1873 | Licence non-libre | 2 | Ouverte (2016!) |

@@ -40,12 +40,12 @@
 | **Bombe de decompression** | Paquets compresses (39 KB) se decompressant en ~26.6 MB, causant OOM | Velocity (#1742), BungeeCord | Velocity #1742, Netty GHSA-3p8m |
 | **Bombe NBT** | Structure NBT imbriquee : 300 listes x 10 sous-listes x 5 niveaux = 30M objets. Ratio compression 682:1 | Tous les proxys deserialisant les paquets | MC-79612, ammaraskar advisory |
 | **Join spam (botnet)** | 100k+ connexions/sec via botnets (MCCrash, Aisuru: 6.35+ Tbps en 2025) | Tous | Microsoft Security Blog |
-| **Ping flood** | Saturation via status requests repetees | BungeeCord (#2854 : crash a 200-300 req/s), Velocity | BungeeCord #2854 |
+| **Ping flood** | Saturation via status requests repetees | BungeeCord (#2743), Velocity | voir `anti-bot.md` §6.3 |
 | **Slowloris MC** | Connexions ouvertes mais progression de handshake extremement lente pour epuiser les slots | Tous | Analogie HTTP Slowloris |
 | **Confusion d'etat protocole** | Envoi de paquets d'un etat (LOGIN) pendant un autre (PLAY), causant deserialisations incorrectes | BungeeCord (#3519, #3542), Velocity (#1723) | Hypixel Forums |
 | **Overflow VarInt** | VarInt encode sur plus de 5 octets (spec: max 5 bytes), causant des lectures infinies | Implementations naives | wiki.vg |
 | **String length attack** | Chaines > 32767 caracteres dans les paquets, depassant les limites memoire | Implementations sans validation | node-minecraft-protocol #60 |
-| **IP spoofing via forwarding** | Usurpation d'identite en injectant des headers BungeeCord en texte clair | BungeeCord (#1328, ouvert depuis 2015) | SpigotMC exploit fix |
+| **IP spoofing via forwarding** | Usurpation d'identite en injectant des headers BungeeCord en texte clair | BungeeCord (#3180, #2174 ; refonte #1328 ouverte depuis 2015) | SpigotMC exploit fix |
 | **Token leak BungeeGuard** | Build BungeeCord 1756+ fuit le token BungeeGuard aux joueurs 1.20.2+ via LoginSuccess | BungeeCord | BungeeGuard security |
 | **BleedingPipe (deserialization RCE)** | ObjectInputStream dans les mods -> RCE via paquets malveillants | Mods utilisant la serialisation Java | Malwarebytes 2023 |
 | **CVE-2023-30859 (Triton)** | Plugin BungeeCord: execution de commandes via CustomPayload en mode bungee | BungeeCord + plugin Triton | NVD |
@@ -299,7 +299,7 @@ security:
 
 ### 3.6 Cache de Status/Ping -- CONFIGURABLE
 
-**Probleme** : BungeeCord crash a 200-300 status requests/sec (#2854). Les ping floods sont le vecteur d'attaque le plus simple.
+**Probleme** : Les ping floods sont le vecteur d'attaque le plus simple (BungeeCord #2743). Le chiffre "crash a 200-300 status requests/sec" cite auparavant (#2854) n'est plus verifiable : l'issue a ete supprimee, et dans #2743 md_5 mesure plus de 5 000 requetes par seconde.
 
 **Implementation Warp** (inspiration Gate Lite) :
 ```
@@ -321,7 +321,7 @@ status-cache:
 
 ### 4.1 Framework anti-bot natif -- CONFIGURABLE
 
-**Contexte** : Ni Velocity ni BungeeCord n'ont de protection anti-bot. LimboFilter (Elytrium) a prouve qu'un anti-bot au niveau proxy est 3.5x plus efficace en CPU qu'un mode online Velocity (20% vs 70% CPU sous 100k joins/sec).
+**Contexte** : Ni Velocity ni BungeeCord n'ont de protection anti-bot. LimboFilter (Elytrium) a prouve qu'un anti-bot au niveau proxy est 3.5x plus efficace en CPU qu'un mode online Velocity (20% vs 70% CPU sous 100k joins/sec). **Correction (2026-11-02)** : c'est un unique test de LimboFilter en 2021, non reproduit, avec les logs desactives pendant l'attaque (voir `anti-bot.md` §5.1).
 
 **Architecture en couches** (chaque couche est franchie sequentiellement) :
 
@@ -364,7 +364,7 @@ security:
 
 ### 4.3 API pour les challenges anti-bot avances -- PLUGIN
 
-**Warp ne DOIT PAS integrer de CAPTCHA dans le core** -- c'est trop opinionne et evolue trop vite. A la place, fournir une API puissante.
+**Remplace (2026-11-02)** : la decision D1 de `anti-bot.md` integre l'anti-bot, captcha d'escalade compris, au core. Texte d'origine : "Warp ne DOIT PAS integrer de CAPTCHA dans le core -- c'est trop opinionne et evolue trop vite. A la place, fournir une API puissante."
 
 **API proposee** :
 ```java
@@ -459,7 +459,7 @@ security:
 
 ### 5.1 Modern forwarding HMAC-SHA256 -- BUILT-IN
 
-**Contexte** : Le forwarding BungeeCord (texte clair dans le handshake, BungeeCord #1328) est fondamentalement casse depuis 2015. Velocity modern forwarding utilise HMAC-SHA256.
+**Contexte** : Le forwarding BungeeCord (texte clair dans le handshake ; usurpation : BungeeCord #3180, #2174 ; refonte proposee : #1328) est fondamentalement casse depuis 2015. Velocity modern forwarding utilise HMAC-SHA256.
 
 **Implementation Warp** :
 - **HMAC-SHA256** signe le payload (IP, UUID, properties du joueur)
@@ -578,7 +578,7 @@ resilience:
 
 ### 6.3 Watchdog des event loops -- BUILT-IN
 
-**Contexte** : BungeeCord #3358 + 6 issues liees -- le proxy cesse d'accepter les connexions sans log ni erreur. L'event loop est bloquee mais personne ne le detecte.
+**Contexte** : BungeeCord #3358 + 6 issues liees -- le proxy cesse d'accepter les connexions sans log ni erreur. La cause de #3358 n'a jamais ete identifiee ; un watchdog d'event loop rendrait visible ce genre de blocage.
 
 **Implementation Warp** :
 ```java
@@ -986,9 +986,9 @@ overload:
 | Watchdog event loop | Non | Non | Non | **BUILT-IN** |
 | Drain system | Non | Non (#431) | Oui | **CONFIGURABLE** |
 | Metriques securite | Non | Plugin | Oui | **BUILT-IN** |
-| PROXY protocol securise | Partiel | Oui (bugs #1699) | Oui | **CONFIGURABLE** |
+| PROXY protocol securise | Partiel | Oui | Oui | **CONFIGURABLE** |
 | Overload manager | Non | Non | Non | **CONFIGURABLE** |
-| Cache status/ping | Non (#2854) | Non | Oui (Lite) | **CONFIGURABLE** |
+| Cache status/ping | Non | Non | Oui (Lite) | **CONFIGURABLE** |
 | Logging structure | Non | Non | Partiel | **BUILT-IN** |
 
 ---
@@ -1055,8 +1055,10 @@ overload:
 - [Velocity #431 -- graceful shutdown](https://github.com/PaperMC/Velocity/issues/431)
 - [Velocity #566 -- backend rearchitecture](https://github.com/PaperMC/Velocity/issues/566)
 - [BungeeCord #1328 -- IP forwarding redesign](https://github.com/SpigotMC/BungeeCord/issues/1328)
-- [BungeeCord #2854 -- DoS HTTP crash](https://github.com/SpigotMC/BungeeCord/issues/2854)
-- [BungeeCord #3358 -- proxy stops accepting](https://github.com/SpigotMC/BungeeCord/issues/3358)
+- [BungeeCord #2854 -- DoS HTTP crash](https://github.com/SpigotMC/BungeeCord/issues/2854) (supprimee de GitHub, inverifiable)
+- [BungeeCord #2743 -- exploit used to crash the proxy](https://github.com/SpigotMC/BungeeCord/issues/2743)
+- [BungeeCord #3180 -- UUID spoof](https://github.com/SpigotMC/BungeeCord/issues/3180)
+- [BungeeCord #3358 -- proxy stops working randomly, never diagnosed](https://github.com/SpigotMC/BungeeCord/issues/3358)
 - [LimboFilter -- anti-bot solution](https://github.com/Elytrium/LimboFilter)
 - [Gate -- Proxy Protocol security](https://www.mintlify.com/minekube/gate/security/proxy-protocol)
 - [Hypixel Forums -- proxying MC challenges](https://hypixel.net/threads/i-thought-proxying-minecraft-would-take-a-weekend-it-took-13-days-heres-why.6064963/)
