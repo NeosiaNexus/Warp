@@ -277,7 +277,11 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, forward
           acceptsTransfers: true,
           status: { motd: STATUS_MOTD },
           // The JVM resolves the recording against its own directory: the path must be absolute.
-          jvmArgs: opts.soak === undefined ? [] : soakJvmArgs(resolve(logDir, `warp-${variant.name}.jfr`)),
+          // Native memory tracking lets the flood scenario read Netty's direct memory.
+          jvmArgs:
+            opts.soak === undefined
+              ? ['-XX:NativeMemoryTracking=summary']
+              : soakJvmArgs(resolve(logDir, `warp-${variant.name}.jfr`)),
         }),
         // Same backends, but the default server is a closed port: every join must fall back.
         new Warp({
