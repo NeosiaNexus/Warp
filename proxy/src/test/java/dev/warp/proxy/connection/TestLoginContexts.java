@@ -118,24 +118,6 @@ final class TestLoginContexts {
   }
 
   /**
-   * Returns {@link #offline()}, letting in the players a Transfer packet sends to the proxy if
-   * {@code acceptsTransfers}.
-   *
-   * @param acceptsTransfers the {@code accepts-transfers} setting
-   * @return the context
-   */
-  static ServerLoginContext offlineAcceptingTransfers(boolean acceptsTransfers) {
-    return context(
-        false,
-        -1,
-        new MojangSessionService(),
-        ProfileKeys.mojang(),
-        DuplicateLoginPolicy.AUTO,
-        EVENTS,
-        acceptsTransfers);
-  }
-
-  /**
    * An offline-mode context whose events go to {@code events}, with the server list entry and
    * player limit of {@code status}.
    *
@@ -153,6 +135,24 @@ final class TestLoginContexts {
         events,
         false,
         status);
+  }
+
+  /**
+   * Returns {@link #offline()}, letting in the players a Transfer packet sends to the proxy if
+   * {@code acceptsTransfers}.
+   *
+   * @param acceptsTransfers the {@code accepts-transfers} setting
+   * @return the context
+   */
+  static ServerLoginContext offlineAcceptingTransfers(boolean acceptsTransfers) {
+    return context(
+        false,
+        -1,
+        new MojangSessionService(),
+        ProfileKeys.mojang(),
+        DuplicateLoginPolicy.AUTO,
+        EVENTS,
+        acceptsTransfers);
   }
 
   /**
