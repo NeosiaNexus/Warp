@@ -199,6 +199,8 @@ class ViaTranslationTest {
 
     // CONFIGURATION, then PLAY, as the proxy's session handlers would move them.
     backend.writeAndFlush(new LoginAcknowledged());
+    assertFalse(
+        sentToBackend(channel, ProtocolState.LOGIN, LoginAcknowledged.class, true).isEmpty());
     backend.setState(ProtocolState.CONFIGURATION);
     receive(channel, ProtocolState.CONFIGURATION, new FinishConfiguration(), true);
     assertTrue(received.packets.stream().anyMatch(FinishConfiguration.class::isInstance));
