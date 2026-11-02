@@ -20,6 +20,7 @@ import dev.warp.api.Warp;
 import dev.warp.api.WarpProvider;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
+import dev.warp.proxy.compression.Compression;
 import dev.warp.proxy.config.WarpConfig;
 import dev.warp.proxy.connection.PlaySession;
 import dev.warp.proxy.connection.ServerChannelInitializer;
@@ -135,6 +136,8 @@ public final class WarpServer implements Warp {
 
     TransportInfo transport = detectTransport();
     this.transportInfo = transport;
+    // Loads and self-tests native compression before any connection, so the log tells the truth.
+    Compression.logImplementation();
     // Before the event loops, so that a configuration error leaves nothing to shut down.
     ServerLoginContext loginContext = createLoginContext(transport);
     this.bossGroup = new MultiThreadIoEventLoopGroup(1, transport.ioFactory());

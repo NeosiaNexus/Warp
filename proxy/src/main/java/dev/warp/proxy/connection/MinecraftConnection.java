@@ -19,7 +19,6 @@ package dev.warp.proxy.connection;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.compress.FrameDecompressor;
-import dev.warp.protocol.compress.JavaCompressor;
 import dev.warp.protocol.netty.CompressionEncoder;
 import dev.warp.protocol.netty.FrameForwarder;
 import dev.warp.protocol.netty.MinecraftDecoder;
@@ -27,6 +26,7 @@ import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
+import dev.warp.proxy.compression.Compression;
 
 import java.io.IOException;
 import java.nio.channels.ClosedChannelException;
@@ -371,7 +371,7 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
                 threshold,
                 !peerIsServer,
                 FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE,
-                new JavaCompressor(level)),
+                Compression.create(level)),
             peerIsServer && passthrough);
     // The compression encoder frames and compresses in one pass, replacing the frame encoder.
     channel
@@ -379,7 +379,7 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
         .replace(
             ServerChannelInitializer.FRAME_ENCODER,
             ServerChannelInitializer.COMPRESSION_ENCODER,
-            new CompressionEncoder(threshold, new JavaCompressor(level)));
+            new CompressionEncoder(threshold, Compression.create(level)));
     forwarder.compressionEnabled(threshold);
     forwarder.setVerbatimEnabled(passthrough);
   }
