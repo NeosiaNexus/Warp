@@ -50,6 +50,11 @@ public enum PipelinePosition {
    *
    * <p>Adding a handler here disables compression passthrough for this connection (and only this
    * one): it then inflates every frame it receives, and compresses again every packet it sends.
+   *
+   * <p>On a backend connection, the proxy answers the backend's player info forwarding query
+   * (Velocity modern forwarding) itself, ahead of these handlers, in the backend's own protocol: a
+   * translator never carries it, so forwarding works for players of any version, 1.12 and older
+   * included, whose protocol has no login query.
    */
   PACKET
 }
