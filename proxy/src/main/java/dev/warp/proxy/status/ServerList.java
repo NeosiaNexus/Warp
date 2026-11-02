@@ -160,17 +160,13 @@ public final class ServerList {
   private ServerPing build(int protocol, int online, Sample sample) {
     ServerPing.Players counts = null;
     if (settings.showPlayerCount()) {
-      counts = new ServerPing.Players(online, shownMax(online), sample.players());
+      counts = new ServerPing.Players(online, settings.shownMax(online), sample.players());
     }
     return new ServerPing(
         new ServerPing.Version(settings.versionName(), protocol),
         counts,
         settings.motd(),
         settings.favicon());
-  }
-
-  private int shownMax(int online) {
-    return settings.maxPlayers() == StatusSettings.NO_LIMIT ? online + 1 : settings.maxPlayers();
   }
 
   // ---------------------------------------------------------------------------

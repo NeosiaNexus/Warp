@@ -19,6 +19,7 @@ package dev.warp.proxy.plugin;
 import dev.warp.api.Warp;
 import dev.warp.api.command.CommandManager;
 import dev.warp.api.event.EventBus;
+import dev.warp.api.logging.LogSinks;
 import dev.warp.api.messaging.Messaging;
 import dev.warp.api.permission.Permissions;
 import dev.warp.api.plugin.PluginContainer;
@@ -27,6 +28,8 @@ import dev.warp.proxy.command.PluginCommandManager;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.logging.LogSinkRegistry;
+import dev.warp.proxy.logging.PluginLogSinks;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.messaging.PluginMessaging;
 import dev.warp.proxy.permission.PermissionRegistry;
@@ -56,6 +59,7 @@ final class WarpPluginContext implements PluginContext {
   private final PluginMessaging messaging;
   private final PluginCommandManager commands;
   private final PluginPermissions permissions;
+  private final PluginLogSinks logSinks;
 
   WarpPluginContext(
       WarpPluginContainer plugin,
@@ -63,7 +67,8 @@ final class WarpPluginContext implements PluginContext {
       WarpEventBus bus,
       ChannelRegistry channels,
       WarpCommandManager commandManager,
-      PermissionRegistry permissionRegistry) {
+      PermissionRegistry permissionRegistry,
+      LogSinkRegistry logSinkRegistry) {
     this.plugin = plugin;
     this.proxy = proxy;
     this.pluginLogger = LoggerFactory.getLogger(plugin.description().id());
@@ -74,6 +79,9 @@ final class WarpPluginContext implements PluginContext {
         new PluginCommandManager(commandManager, plugin.description().id(), this::track);
     this.permissions =
         new PluginPermissions(permissionRegistry, plugin.description().id(), this::track);
+    this.logSinks =
+        new PluginLogSinks(
+            logSinkRegistry, plugin.description().id(), plugin.classLoader(), this::track);
   }
 
   @Override
@@ -114,6 +122,11 @@ final class WarpPluginContext implements PluginContext {
   @Override
   public Permissions permissions() {
     return permissions;
+  }
+
+  @Override
+  public LogSinks logSinks() {
+    return logSinks;
   }
 
   /**

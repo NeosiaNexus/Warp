@@ -34,7 +34,7 @@ const TRANSFERS_DISABLED = 'multiplayer.disconnect.transfers_disabled';
 export const STATUS_MOTD = '<gradient:#38bdf8:#a78bfa>warp-e2e</gradient> <gray>status';
 export const STATUS_MOTD_TEXT = 'warp-e2e status';
 
-/** The player limit of the main Warp: its default. */
+/** The maximum the main Warp shows: its default, with no player limit set. */
 export const WARP_MAX_PLAYERS = 500;
 
 /** The player limit of warp-alt, which `player-limit` fills. */
@@ -567,7 +567,7 @@ async function waitForEmpty(ctx, port, timeoutMs = 10_000) {
 }
 
 async function playerLimit(ctx) {
-  // warp-alt lets one player in (status.max-players = 1); the next one is refused at login.
+  // warp-alt lets one player in (player-limit = 1, shown as the maximum); the next one is refused.
   await waitForEmpty(ctx, ctx.warpAlt.port);
   const first = await joinWarp(ctx, 'e2e_limit_in', ctx.warpAlt);
   try {
@@ -582,7 +582,7 @@ async function playerLimit(ctx) {
       },
       (e) => e,
     );
-    if (refused === null) throw new Error(`a second player got in past max-players = ${ALT_MAX_PLAYERS}`);
+    if (refused === null) throw new Error(`a second player got in past player-limit = ${ALT_MAX_PLAYERS}`);
     if (!/The server is full\./.test(refused.message)) throw new Error(`the second player was refused for another reason: ${refused.message}`);
     first.healthy();
     return `one player in (the server list shows 1/${ALT_MAX_PLAYERS}), the next refused: "The server is full."`;

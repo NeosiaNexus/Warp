@@ -77,12 +77,14 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
 import io.netty.channel.ChannelPipeline;
+import io.netty.handler.timeout.ReadTimeoutHandler;
 import io.netty.util.concurrent.ScheduledFuture;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
 
 /**
  * Handles the client login sequence: encryption, Mojang authentication, and compression.
@@ -985,14 +987,19 @@ final class LoginSessionHandler implements SessionHandler {
       connection.writeAndFlush(loginSuccess);
     }
 
-    logger.info(
-        "Player {} ({}) logged in from {}{}",
-        profile.name(),
-        profile.uuid(),
-        connection.remoteAddress(),
-        connection.handshakeIntent() == HandshakeIntent.TRANSFER ? ", transferred" : "");
-    // No longer among the connections not logged in, nor under their deadlines.
+    ConnectedPlayer joined = this.player;
+    if (joined != null && loginContext.logging().connections()) {
+      joined.log(logger, Level.INFO).log(
+          "Player {} ({}) logged in from {}{}",
+          profile.name(),
+          profile.uuid(),
+          connection.remoteAddress(),
+          connection.handshakeIntent() == HandshakeIntent.TRANSFER ? ", transferred" : "");
+    }
+    // No longer among the connections not logged in, nor under their deadlines and frame limits:
+    // from now on it is read under the read timeout of logged-in connections.
     connection.loggedIn();
+    useLoggedInReadTimeout();
     // Refreshes what the anti-bot knows of the player, or learns it outside attacks.
     loginContext.antiBot().joined(recognition(), onlineMode ? profile.uuid() : null, escalated);
 
@@ -1008,6 +1015,23 @@ final class LoginSessionHandler implements SessionHandler {
       state = LoginState.COMPLETE;
       connection.setState(ProtocolState.PLAY);
       initiateBackendConnection();
+    }
+  }
+
+  /**
+   * Gives the connection of the player now logged in the read timeout of logged-in connections,
+   * {@code timeouts.read}, in place of the one it was accepted with: the time a player may stay
+   * silent is a setting, the time a connection may take to log in is the limits' business.
+   */
+  private void useLoggedInReadTimeout() {
+    ChannelPipeline pipeline = connection.channel().pipeline();
+    if (pipeline.get(ServerChannelInitializer.READ_TIMEOUT) != null) {
+      var _ =
+          pipeline.replace(
+              ServerChannelInitializer.READ_TIMEOUT,
+              ServerChannelInitializer.READ_TIMEOUT,
+              new ReadTimeoutHandler(
+                  loginContext.timeouts().read().toMillis(), TimeUnit.MILLISECONDS));
     }
   }
 

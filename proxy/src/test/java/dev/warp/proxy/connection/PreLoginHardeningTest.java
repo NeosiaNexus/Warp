@@ -40,6 +40,7 @@ import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import io.netty.buffer.ByteBuf;
@@ -298,6 +299,12 @@ class PreLoginHardeningTest {
             "Refused before login over the last 60 s: server list ping time-outs: 50, invalid"
                 + " handshakes: 50, logins from unsupported versions: 50"),
         report);
+    // JSON logs and log sinks get each count as a field of the record's context.
+    Map<String, String> context = limitsLog.events().getFirst().getContextData().toMap();
+    assertEquals("50", context.get("refused.status_timeout"));
+    assertEquals("50", context.get("refused.invalid_handshake"));
+    assertEquals("50", context.get("refused.unsupported_version"));
+    assertFalse(context.containsKey("refused.handshake_timeout"));
   }
 
   // ---------------------------------------------------------------------------

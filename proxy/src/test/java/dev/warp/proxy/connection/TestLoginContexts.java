@@ -23,6 +23,8 @@ import dev.warp.proxy.command.ProxyCommands;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.config.DuplicateLoginPolicy;
 import dev.warp.proxy.config.ForwardingMode;
+import dev.warp.proxy.config.LoggingConfig;
+import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.messaging.ChannelRegistry;
@@ -304,7 +306,61 @@ final class TestLoginContexts {
         channelClass,
         acceptsTransfers,
         limits,
+        TimeoutsConfig.DEFAULTS,
+        LoggingConfig.DEFAULTS,
+        false,
         antiBot);
+  }
+
+  /**
+   * Returns a mock context whose settings are the defaults, for tests that stub what else they
+   * need.
+   *
+   * @return the mock
+   */
+  static ServerLoginContext mocked() {
+    ServerLoginContext context = org.mockito.Mockito.mock(ServerLoginContext.class);
+    org.mockito.Mockito.when(context.logging()).thenReturn(LoggingConfig.DEFAULTS);
+    org.mockito.Mockito.when(context.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
+    return context;
+  }
+
+  /**
+   * Returns a context like {@code base}, with other timeouts and logging settings.
+   *
+   * @param base the context to copy
+   * @param timeouts the timeouts
+   * @param logging the logging settings
+   * @return the context
+   */
+  static ServerLoginContext with(
+      ServerLoginContext base, TimeoutsConfig timeouts, LoggingConfig logging) {
+    return new ServerLoginContext(
+        base.rsaKeyPair(),
+        base.onlineMode(),
+        base.compressionThreshold(),
+        base.compressionLevel(),
+        base.compressionPassthrough(),
+        base.sessionService(),
+        base.profileKeys(),
+        base.playSession(),
+        base.serverRegistry(),
+        base.playerRegistry(),
+        base.serverList(),
+        base.duplicateLoginPolicy(),
+        base.events(),
+        base.channels(),
+        base.commands(),
+        base.permissions(),
+        base.forwardingMode(),
+        base.forwardingSecret(),
+        base.channelClass(),
+        base.acceptsTransfers(),
+        base.limits(),
+        timeouts,
+        logging,
+        base.tcpFastOpen(),
+        base.antiBot());
   }
 
   /**
@@ -333,15 +389,6 @@ final class TestLoginContexts {
         NioSocketChannel.class);
   }
 
-  /**
-   * Returns {@link #offline()}, or its online-mode form authenticating with {@code sessionService},
-   * whose connections count against {@code limits}.
-   *
-   * @param onlineMode whether players authenticate
-   * @param sessionService the session service, usually a mock
-   * @param limits the limits on client addresses
-   * @return the context
-   */
   /**
    * A context whose anti-bot is {@code antiBot}, built on {@code limits}.
    *
@@ -376,6 +423,15 @@ final class TestLoginContexts {
         antiBot);
   }
 
+  /**
+   * Returns {@link #offline()}, or its online-mode form authenticating with {@code sessionService},
+   * whose connections count against {@code limits}.
+   *
+   * @param onlineMode whether players authenticate
+   * @param sessionService the session service, usually a mock
+   * @param limits the limits on client addresses
+   * @return the context
+   */
   static ServerLoginContext limited(
       boolean onlineMode, MojangSessionService sessionService, ClientLimits limits) {
     return context(

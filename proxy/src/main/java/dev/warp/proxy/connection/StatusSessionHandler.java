@@ -142,6 +142,10 @@ final class StatusSessionHandler implements SessionHandler {
       return; // A duplicate: ignored, as vanilla does.
     }
     state = State.ANSWERING;
+    if (context.logging().pings()) {
+      logger.info(
+          "Server list ping from {} (protocol {})", connection.remoteAddress(), clientProtocol);
+    }
     ServerList serverList = context.serverList();
     if (!context.events().hasHandlers(ProxyPingEventImpl.class)) {
       answer(serverList.json(clientProtocol));

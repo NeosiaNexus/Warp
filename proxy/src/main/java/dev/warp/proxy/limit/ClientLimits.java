@@ -27,6 +27,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.BooleanSupplier;
@@ -35,6 +36,7 @@ import java.util.function.LongSupplier;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.spi.LoggingEventBuilder;
 
 /**
  * The proxy's limits on what one client address may do, and on the authentications it runs at once:
@@ -74,6 +76,9 @@ import org.slf4j.LoggerFactory;
 public final class ClientLimits {
 
   private static final Logger logger = LoggerFactory.getLogger(ClientLimits.class);
+
+  /** The prefix of the context keys a {@linkplain #report() report} gives its counts under. */
+  public static final String REPORT_KEY_PREFIX = "refused.";
 
   private static final LoginAdmission ADMITTED = new LoginAdmission.Admitted(LoginSlot.NONE);
   private static final LoginAdmission TOO_MANY_IN_PROGRESS = new LoginAdmission.TooManyInProgress();
@@ -467,20 +472,25 @@ public final class ClientLimits {
 
   /**
    * Logs, at INFO, the connections refused before login since the previous report, in one line by
-   * reason, and nothing if there were none. Called from one thread at a time.
+   * reason, and nothing if there were none. Each count also goes in the record's context, under
+   * {@value #REPORT_KEY_PREFIX} and the reason in lower case ({@code refused.handshake_timeout}),
+   * which JSON logs and plugin log sinks carry as fields. Called from one thread at a time.
    */
   public void report() {
     List<String> counts = new ArrayList<>();
+    LoggingEventBuilder record = logger.atInfo();
     for (Refusal reason : Refusal.values()) {
       long total = counter(reason).sum();
       Long previous = reported.put(reason, total);
       long count = total - (previous == null ? 0 : previous);
       if (count > 0) {
         counts.add(reason.description() + ": " + count);
+        record =
+            record.addKeyValue(REPORT_KEY_PREFIX + reason.name().toLowerCase(Locale.ROOT), count);
       }
     }
     if (!counts.isEmpty()) {
-      logger.info(
+      record.log(
           "Refused before login over the last {} s: {}",
           reportInterval.toSeconds(),
           String.join(", ", counts));

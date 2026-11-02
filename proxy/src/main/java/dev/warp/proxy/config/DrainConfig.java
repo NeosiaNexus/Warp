@@ -18,9 +18,11 @@ package dev.warp.proxy.config;
 
 import java.time.Duration;
 import java.util.Locale;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.minimessage.MiniMessage;
+import net.kyori.adventure.text.minimessage.ParsingException;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.jspecify.annotations.Nullable;
 import org.spongepowered.configurate.CommentedConfigurationNode;
 
@@ -34,7 +36,8 @@ import org.spongepowered.configurate.CommentedConfigurationNode;
  * @param cannotTransfer what happens to a player the proxy cannot transfer
  * @param newPlayers what happens to a player who logs in while the proxy drains
  * @param timeout how long the proxy waits for the players it kept, once the transfers are done
- * @param message shown to the players the drain disconnects and to the logins it refuses
+ * @param message shown to the players the drain disconnects and to the logins it refuses, written
+ *     in MiniMessage in the configuration
  */
 public record DrainConfig(
     @Nullable Target transferTo,
@@ -44,7 +47,7 @@ public record DrainConfig(
     CannotTransfer cannotTransfer,
     NewPlayers newPlayers,
     Duration timeout,
-    String message) {
+    Component message) {
 
   /** Minecraft's default port, for a {@code transfer-to} without one. */
   static final int DEFAULT_PORT = 25565;
@@ -52,9 +55,7 @@ public record DrainConfig(
   static final Duration DEFAULT_PROPAGATION_DELAY = Duration.ofSeconds(5);
   static final Duration DEFAULT_TRANSFER_INTERVAL = Duration.ofMillis(100);
   static final Duration DEFAULT_TIMEOUT = Duration.ofMinutes(30);
-  static final String DEFAULT_MESSAGE = "This proxy is restarting. Please reconnect.";
-
-  private static final Pattern DURATION = Pattern.compile("(\\d+)\\s*(ms|s|m|h)");
+  static final String DEFAULT_MESSAGE = "<yellow>This proxy is restarting. Please reconnect.";
 
   /**
    * An address players are transferred to.
@@ -108,10 +109,7 @@ public record DrainConfig(
         parseEnum(CannotTransfer.class, node, "cannot-transfer", CannotTransfer.KEEP);
     NewPlayers newPlayers = parseEnum(NewPlayers.class, node, "new-players", NewPlayers.ACCEPT);
     Duration timeout = parseDuration(node, "timeout", DEFAULT_TIMEOUT, true);
-    String message = node.node("message").getString(DEFAULT_MESSAGE);
-    if (message.isBlank()) {
-      throw new ConfigurationException("drain.message must not be blank");
-    }
+    Component message = parseMessage(node.node("message").getString(DEFAULT_MESSAGE));
     return new DrainConfig(
         transferTo,
         onSigterm,
@@ -121,6 +119,27 @@ public record DrainConfig(
         newPlayers,
         timeout,
         message);
+  }
+
+  /**
+   * Parses the message, in MiniMessage like {@code status.motd}.
+   *
+   * @param source the configured text
+   * @return the message
+   * @throws ConfigurationException if the text is blank, or not valid MiniMessage
+   */
+  static Component parseMessage(String source) throws ConfigurationException {
+    Component message;
+    try {
+      message = MiniMessage.miniMessage().deserialize(source);
+    } catch (ParsingException e) {
+      throw new ConfigurationException(
+          "drain.message is not valid MiniMessage: " + e.getMessage(), e);
+    }
+    if (PlainTextComponentSerializer.plainText().serialize(message).isBlank()) {
+      throw new ConfigurationException("drain.message must not be blank");
+    }
+    return message;
   }
 
   /**
@@ -178,35 +197,14 @@ public record DrainConfig(
   }
 
   /**
-   * Parses a duration such as {@code 100ms}, {@code 5s}, {@code 30m} or {@code 1h}.
+   * Parses a duration in the configuration's one format (see {@link Durations}).
    *
    * @param positive whether zero is refused
    */
   static Duration parseDuration(
       CommentedConfigurationNode node, String key, Duration fallback, boolean positive)
       throws ConfigurationException {
-    String value = node.node(key).getString();
-    if (value == null) {
-      return fallback;
-    }
-    Matcher matcher = DURATION.matcher(value.trim().toLowerCase(Locale.ROOT));
-    if (!matcher.matches()) {
-      throw new ConfigurationException(
-          "drain." + key + " must be a duration such as 100ms, 5s, 30m or 1h, got '" + value + "'");
-    }
-    long amount;
-    try {
-      amount = Long.parseLong(matcher.group(1));
-    } catch (NumberFormatException e) {
-      throw new ConfigurationException("drain." + key + " is too large: '" + value + "'", e);
-    }
-    Duration duration =
-        switch (matcher.group(2)) {
-          case "ms" -> Duration.ofMillis(amount);
-          case "s" -> Duration.ofSeconds(amount);
-          case "m" -> Duration.ofMinutes(amount);
-          default -> Duration.ofHours(amount);
-        };
+    Duration duration = Durations.parse(node.node(key), "drain." + key, fallback);
     if (positive && duration.isZero()) {
       throw new ConfigurationException("drain." + key + " must be more than zero");
     }

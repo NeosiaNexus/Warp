@@ -292,7 +292,7 @@ async function runVariant({ matrix, entry, variant, scenarios, backends, forward
           servers: { unreachable: ports.closed, survival: ports.survival },
           fallbackOrder: ['unreachable', 'survival'],
           // One player at most: player-limit fills it, and checks that the next one is refused.
-          status: { motd: STATUS_MOTD, maxPlayers: ALT_MAX_PLAYERS },
+          status: { motd: STATUS_MOTD, playerLimit: ALT_MAX_PLAYERS },
         }),
       ];
   const targets = opts.direct ? { warp: ports.lobby } : { warp: ports.warp, warpAlt: ports.warpAlt };

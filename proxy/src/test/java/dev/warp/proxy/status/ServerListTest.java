@@ -156,9 +156,10 @@ class ServerListTest {
     }
 
     @Test
-    @DisplayName("should show one more than the players online without a limit")
-    void noLimit() {
-      ServerList list = new ServerList(settings(StatusSettings.NO_LIMIT, true, 12, null), players);
+    @DisplayName("should show one more than the players online when configured so")
+    void oneMoreThanOnline() {
+      ServerList list =
+          new ServerList(settings(StatusSettings.ONE_MORE_THAN_ONLINE, true, 12, null), players);
       register(player("Steve", true));
 
       JsonObject counts = status(list.json(LATEST)).getAsJsonObject("players");
@@ -381,7 +382,13 @@ class ServerListTest {
       int maxPlayers, boolean showCount, int sampleSize, @Nullable Favicon favicon) {
     StatusSettings defaults = StatusSettings.defaults();
     return new StatusSettings(
-        defaults.motd(), favicon, maxPlayers, showCount, sampleSize, defaults.versionName());
+        defaults.motd(),
+        favicon,
+        maxPlayers,
+        StatusSettings.NO_LIMIT,
+        showCount,
+        sampleSize,
+        defaults.versionName());
   }
 
   private ConnectedPlayer register(ConnectedPlayer player) {
