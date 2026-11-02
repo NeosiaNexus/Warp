@@ -28,6 +28,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.minimessage.MiniMessage;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -57,7 +59,10 @@ class DrainConfigTest {
     assertEquals(DrainConfig.CannotTransfer.KEEP, drain.cannotTransfer());
     assertEquals(DrainConfig.NewPlayers.ACCEPT, drain.newPlayers());
     assertEquals(Duration.ofMinutes(30), drain.timeout());
-    assertEquals("This proxy is restarting. Please reconnect.", drain.message());
+    assertEquals(
+        MiniMessage.miniMessage()
+            .deserialize("<yellow>This proxy is restarting. Please reconnect."),
+        drain.message());
   }
 
   @Test
@@ -97,7 +102,7 @@ class DrainConfigTest {
     assertEquals(DrainConfig.CannotTransfer.KICK, drain.cannotTransfer());
     assertEquals(DrainConfig.NewPlayers.REFUSE, drain.newPlayers());
     assertEquals(Duration.ofHours(2), drain.timeout());
-    assertEquals("Back in a minute", drain.message());
+    assertEquals(Component.text("Back in a minute"), drain.message());
   }
 
   @Nested
@@ -134,7 +139,7 @@ class DrainConfigTest {
   class Values {
 
     @ParameterizedTest(name = "{0}")
-    @ValueSource(strings = {"5", "five seconds", "-1s", "1d", "s"})
+    @ValueSource(strings = {"5", "five seconds", "-1s", "1w", "s"})
     @DisplayName("should refuse a duration without a known unit")
     void invalidDuration(String value) {
       assertThrows(
@@ -160,6 +165,37 @@ class DrainConfigTest {
               ConfigurationException.class, () -> load("drain {\n  new-players = maybe\n}\n"));
 
       assertTrue(String.valueOf(e.getMessage()).contains("accept, refuse"), e.getMessage());
+    }
+
+    @Test
+    @DisplayName("should read the message in MiniMessage")
+    void messageMiniMessage() throws Exception {
+      DrainConfig drain = load("drain {\n  message = \"<red>Back <bold>soon\"\n}\n");
+
+      assertEquals(MiniMessage.miniMessage().deserialize("<red>Back <bold>soon"), drain.message());
+    }
+
+    @Test
+    @DisplayName("should refuse a message made of tags only, which shows nothing")
+    void messageTagsOnly() {
+      ConfigurationException error =
+          assertThrows(
+              ConfigurationException.class, () -> load("drain {\n  message = \"<red>\"\n}\n"));
+
+      assertTrue(
+          String.valueOf(error.getMessage()).contains("drain.message must not be blank"),
+          error.getMessage());
+    }
+
+    @Test
+    @DisplayName("should refuse a duration without a unit")
+    void bareDuration() {
+      ConfigurationException error =
+          assertThrows(ConfigurationException.class, () -> load("drain {\n  timeout = 30\n}\n"));
+
+      assertTrue(
+          String.valueOf(error.getMessage()).contains("drain.timeout needs a unit"),
+          error.getMessage());
     }
 
     @Test

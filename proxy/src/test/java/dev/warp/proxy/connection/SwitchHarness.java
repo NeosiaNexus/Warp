@@ -59,6 +59,8 @@ import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabListHeaderFooter;
 import dev.warp.protocol.packet.play.Transfer;
+import dev.warp.proxy.config.LoggingConfig;
+import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
@@ -156,6 +158,8 @@ final class SwitchHarness implements AutoCloseable {
       servers.put(server.name(), server.address());
     }
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
+    when(loginContext.logging()).thenReturn(LoggingConfig.DEFAULTS);
+    when(loginContext.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
     when(loginContext.channels()).thenReturn(new ChannelRegistry());

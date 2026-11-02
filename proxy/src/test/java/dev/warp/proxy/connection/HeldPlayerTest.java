@@ -47,6 +47,7 @@ import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.SystemChatMessage;
+import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.server.BackendServer;
@@ -200,7 +201,7 @@ class HeldPlayerTest {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("dev.warp.proxy.connection.HeldPlayerTest#bothSwitches")
-    @DisplayName("should still drop a held client that goes silent, after 30 s")
+    @DisplayName("should still drop a held client that goes silent, after timeouts.read")
     void silentClient(ProtocolVersion version) {
       events.subscribeAsync(
           PlayerChooseInitialServerEvent.class,
@@ -209,11 +210,13 @@ class HeldPlayerTest {
           e -> hold);
       Client client = loggedIn(version);
 
-      client.waitFor(Duration.ofSeconds(29), Client.Behaviour.SILENT);
-      boolean openAt29 = client.channel.isOpen();
+      Duration readTimeout = TimeoutsConfig.DEFAULTS.read();
+
+      client.waitFor(readTimeout.minusSeconds(1), Client.Behaviour.SILENT);
+      boolean openJustBefore = client.channel.isOpen();
       client.waitFor(Duration.ofSeconds(2), Client.Behaviour.SILENT);
 
-      assertTrue(openAt29);
+      assertTrue(openJustBefore);
       assertFalse(client.channel.isOpen(), "the read time-out of the pipeline");
     }
   }

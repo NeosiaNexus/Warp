@@ -37,7 +37,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import net.kyori.adventure.text.Component;
@@ -64,7 +63,7 @@ public final class WarpConfig {
 
   private static final Logger logger = LoggerFactory.getLogger(WarpConfig.class);
 
-  private static final String CONFIG_FILE = "warp.conf";
+  static final String CONFIG_FILE = "warp.conf";
   private static final String ENV_FORWARDING_SECRET = "WARP_FORWARDING_SECRET";
 
   // ---------------------------------------------------------------------------
@@ -83,6 +82,7 @@ public final class WarpConfig {
   private static final String DEFAULT_DUPLICATE_LOGIN = "auto";
   private static final boolean DEFAULT_ACCEPTS_TRANSFERS = false;
   private static final String DEFAULT_FAVICON = "server-icon.png";
+  private static final boolean DEFAULT_TCP_FAST_OPEN = false;
 
   /** How many lines of the message of the day clients show. */
   private static final int MOTD_LINES = 2;
@@ -105,9 +105,6 @@ public final class WarpConfig {
   /** A whole number of zero or more, for counts. */
   private static final Pattern COUNT = Pattern.compile("\\d{1,10}");
 
-  /** A duration: digits and an optional unit, milliseconds without one. */
-  private static final Pattern DURATION = Pattern.compile("(\\d{1,15})\\s*(ms|s|m|h)?");
-
   // ---------------------------------------------------------------------------
   // Fields
   // ---------------------------------------------------------------------------
@@ -129,6 +126,9 @@ public final class WarpConfig {
   private final StatusSettings status;
   private final ProxyProtocolConfig proxyProtocol;
   private final LimitsConfig limits;
+  private final TimeoutsConfig timeouts;
+  private final boolean tcpFastOpen;
+  private final LoggingConfig logging;
   private final BungeeCordSettings bungeeCord;
 
   // ---------------------------------------------------------------------------
@@ -153,6 +153,9 @@ public final class WarpConfig {
       StatusSettings status,
       ProxyProtocolConfig proxyProtocol,
       LimitsConfig limits,
+      TimeoutsConfig timeouts,
+      boolean tcpFastOpen,
+      LoggingConfig logging,
       BungeeCordSettings bungeeCord) {
     this.bind = bind;
     this.onlineMode = onlineMode;
@@ -171,6 +174,9 @@ public final class WarpConfig {
     this.status = status;
     this.proxyProtocol = proxyProtocol;
     this.limits = limits;
+    this.timeouts = timeouts;
+    this.tcpFastOpen = tcpFastOpen;
+    this.logging = logging;
     this.bungeeCord = bungeeCord;
   }
 
@@ -237,9 +243,12 @@ public final class WarpConfig {
 
     ManagementConfig management = ManagementConfig.parse(root, directory, System::getenv);
     DrainConfig drain = DrainConfig.parse(root);
-    StatusSettings status = parseStatus(root.node("status"), directory);
+    StatusSettings status = parseStatus(root, directory);
     ProxyProtocolConfig proxyProtocol = parseProxyProtocol(root);
     LimitsConfig limits = parseLimits(root);
+    TimeoutsConfig timeouts = TimeoutsConfig.parse(root);
+    boolean tcpFastOpen = booleanValue(root.node("tcp-fast-open"), DEFAULT_TCP_FAST_OPEN);
+    LoggingConfig logging = LoggingConfig.parse(root, System::getenv);
     BungeeCordSettings bungeeCord = parseBungeeCord(root.node("bungeecord-channel"));
 
     // ---------------------------------------------------------------------------
@@ -274,6 +283,9 @@ public final class WarpConfig {
             status,
             proxyProtocol,
             limits,
+            timeouts,
+            tcpFastOpen,
+            logging,
             bungeeCord);
 
     logConfig(config);
@@ -448,6 +460,36 @@ public final class WarpConfig {
   }
 
   /**
+   * Returns how long the proxy waits on a backend that does not answer, and on a logged-in
+   * connection that went quiet.
+   *
+   * @return the timeouts
+   */
+  public TimeoutsConfig timeouts() {
+    return timeouts;
+  }
+
+  /**
+   * Returns whether TCP Fast Open is requested, on the listener and on connections to backends. It
+   * takes effect with the epoll transport only (Linux), with the kernel's {@code
+   * net.ipv4.tcp_fastopen} allowing it.
+   *
+   * @return {@code true} if requested
+   */
+  public boolean tcpFastOpen() {
+    return tcpFastOpen;
+  }
+
+  /**
+   * Returns the log format, and which routine events get a line each.
+   *
+   * @return the logging settings
+   */
+  public LoggingConfig logging() {
+    return logging;
+  }
+
+  /**
    * Returns how the proxy answers the BungeeCord plugin messaging channel, and which servers may
    * use which of its sub-channels.
    *
@@ -592,19 +634,31 @@ public final class WarpConfig {
   // Status
   // ---------------------------------------------------------------------------
 
-  private static StatusSettings parseStatus(CommentedConfigurationNode node, Path directory)
+  private static StatusSettings parseStatus(CommentedConfigurationNode root, Path directory)
       throws ConfigurationException {
     StatusSettings defaults = StatusSettings.defaults();
+    CommentedConfigurationNode node = root.node("status");
     // Without a status block every key is virtual and takes its default: server-icon.png is still
     // loaded when it exists, as vanilla, Velocity and BungeeCord load it.
     if (!node.virtual() && !node.isMap()) {
       throw new ConfigurationException(
           "status must be a block, for example status { motd = \"A Warp Proxy\" }");
     }
-    int maxPlayers = intValue(node.node("max-players"), defaults.maxPlayers());
-    if (maxPlayers < StatusSettings.NO_LIMIT) {
+    int playerLimit = intValue(root.node("player-limit"), defaults.playerLimit());
+    if (playerLimit < StatusSettings.NO_LIMIT) {
       throw new ConfigurationException(
-          "status.max-players must be 0 or more, or -1 for no limit; got " + maxPlayers);
+          "player-limit must be 0 or more, or -1 for no limit; got " + playerLimit);
+    }
+    // Shown only. Without a value, the limit when there is one: what players can actually reach.
+    int maxPlayers =
+        intValue(
+            node.node("max-players"),
+            playerLimit == StatusSettings.NO_LIMIT ? defaults.maxPlayers() : playerLimit);
+    if (maxPlayers < StatusSettings.ONE_MORE_THAN_ONLINE) {
+      throw new ConfigurationException(
+          "status.max-players must be 0 or more, or -1 to show one more than the players online;"
+              + " got "
+              + maxPlayers);
     }
     int sampleSize = intValue(node.node("sample-size"), defaults.sampleSize());
     if (sampleSize < 0) {
@@ -616,6 +670,7 @@ public final class WarpConfig {
             parseMotd(node.node("motd")),
             parseFavicon(node.node("favicon"), directory),
             maxPlayers,
+            playerLimit,
             booleanValue(node.node("show-player-count"), defaults.showPlayerCount()),
             sampleSize,
             stringValue(node.node("version-name"), defaults.versionName()));
@@ -710,7 +765,7 @@ public final class WarpConfig {
     }
   }
 
-  private static int intValue(ConfigurationNode node, int fallback) throws ConfigurationException {
+  static int intValue(ConfigurationNode node, int fallback) throws ConfigurationException {
     if (node.virtual()) {
       return fallback;
     }
@@ -728,7 +783,7 @@ public final class WarpConfig {
     throw new ConfigurationException(path(node) + " must be a whole number, got '" + raw + "'");
   }
 
-  private static boolean booleanValue(ConfigurationNode node, boolean fallback)
+  static boolean booleanValue(ConfigurationNode node, boolean fallback)
       throws ConfigurationException {
     if (node.virtual()) {
       return fallback;
@@ -744,8 +799,7 @@ public final class WarpConfig {
     throw new ConfigurationException(path(node) + " must be true or false, got '" + raw + "'");
   }
 
-  private static String stringValue(ConfigurationNode node, String fallback)
-      throws ConfigurationException {
+  static String stringValue(ConfigurationNode node, String fallback) throws ConfigurationException {
     if (node.virtual()) {
       return fallback;
     }
@@ -994,34 +1048,12 @@ public final class WarpConfig {
   }
 
   /**
-   * Parses a duration: a whole number followed by {@code ms}, {@code s}, {@code m} or {@code h}, or
-   * a bare number of milliseconds, as Velocity's {@code login-ratelimit = 3000}. An absent key
+   * Parses a duration in the configuration's one format (see {@link Durations}); an absent key
    * takes {@code defaultValue}.
    */
   static Duration parseDuration(CommentedConfigurationNode node, String key, Duration defaultValue)
       throws ConfigurationException {
-    if (node.virtual()) {
-      return defaultValue;
-    }
-    String value = String.valueOf(node.getString()).strip();
-    Matcher matcher = DURATION.matcher(value);
-    if (!matcher.matches()) {
-      throw new ConfigurationException(
-          key + " must be a duration such as 200ms, 3s or 1m, got '" + value + "'");
-    }
-    long amount;
-    try {
-      amount = Long.parseLong(matcher.group(1));
-    } catch (NumberFormatException e) {
-      throw new ConfigurationException(key + " is too large: " + value, e);
-    }
-    String unit = matcher.group(2);
-    return switch (unit == null ? "ms" : unit) {
-      case "s" -> Duration.ofSeconds(amount);
-      case "m" -> Duration.ofMinutes(amount);
-      case "h" -> Duration.ofHours(amount);
-      default -> Duration.ofMillis(amount);
-    };
+    return Durations.parse(node, key, defaultValue);
   }
 
   private static byte[] loadForwardingSecret(Path directory, String secretPath, ForwardingMode mode)
@@ -1078,7 +1110,21 @@ public final class WarpConfig {
   private static void writeDefaultConfig(Path path) throws ConfigurationException {
     String content =
         """
-        # Warp Proxy Configuration
+        # Warp Proxy Configuration, in HOCON (https://github.com/lightbend/config/blob/main/HOCON.md).
+        #
+        # Durations take a unit: 200ms, 30s, 5m, 1h or 30d (a bare 0 is zero, any other bare number
+        # is refused).
+        #
+        # Any value can come from an environment variable: write the value, then the same key again
+        # with ${?NAME}, which replaces it only when NAME is set:
+        #   bind = "0.0.0.0:25577"
+        #   bind = ${?WARP_BIND}
+        # Alone, `key = ${?NAME}` leaves the key at its default when NAME is not set. This works in
+        # any block, and inside strings: status { motd = "<aqua>Welcome to "${?NETWORK_NAME} }
+        #
+        # Secrets stay out of this file: the forwarding secret is read from forwarding.secret-file or
+        # the WARP_FORWARDING_SECRET variable, the management token from management.token-file or the
+        # WARP_MANAGEMENT_TOKEN variable.
 
         # Address to listen on.
         bind = "0.0.0.0:25577"
@@ -1129,7 +1175,13 @@ public final class WarpConfig {
           secret-file = "forwarding.secret"
         }
 
-        # The proxy's entry in the server list, and its player limit.
+        # The most players the proxy lets in at once. Players beyond it are refused with "The server is
+        # full.", unless a plugin lets them in (LoginEvent); 0 refuses everyone a plugin does not let
+        # in, a maintenance mode. -1 for no limit. The server list shows it as the maximum, unless
+        # status.max-players says otherwise.
+        player-limit = -1
+
+        # The proxy's entry in the server list.
         status {
           # The message of the day, in MiniMessage
           # (https://docs.papermc.io/adventure/minimessage/format/): colors such as <aqua> or
@@ -1142,10 +1194,10 @@ public final class WarpConfig {
           # this default file, no icon; set "" to ignore it.
           favicon = "server-icon.png"
 
-          # The most players the proxy lets in at once, also shown as the maximum. Players beyond
-          # it are refused with "The server is full.", unless a plugin lets them in (LoginEvent).
-          # -1 for no limit: the server list then shows one more than the players online.
-          max-players = 500
+          # The maximum the server list shows, only shown: player-limit is what lets players in.
+          # Without it, the server list shows player-limit when one is set, 500 otherwise. -1 shows
+          # one more than the players online.
+          # max-players = 500
 
           # Show how many players are online. Off, clients show ??? instead of the counts.
           show-player-count = true
@@ -1174,6 +1226,42 @@ public final class WarpConfig {
           # network-compression-threshold at the same value as `threshold` above (Paper's default,
           # 256) rather than -1. Disable only to troubleshoot.
           passthrough = true
+        }
+
+        # How long the proxy waits.
+        timeouts {
+          # Opening a TCP connection to a backend server.
+          connect = 5s
+
+          # A logged-in player's connection, or its connection to a backend, that sends nothing for
+          # this long is closed. Below the client's own 30s, so that a backend that stalls is noticed
+          # and its players sent to a fallback server before their clients give up with "Timed out".
+          # The deadline before login is limits.logins.timeout.
+          read = 25s
+        }
+
+        # TCP Fast Open, on the listener and on connections to backends: a connection opens one round
+        # trip sooner when both ends support it. Linux only (epoll transport), with the kernel's
+        # net.ipv4.tcp_fastopen set to 3; ignored, with a warning, elsewhere.
+        tcp-fast-open = false
+
+        logging {
+          # text: a line of text per record, for a terminal. json: one JSON object per line on the
+          # standard output, for log collectors (timestamp, level, logger, thread, message, exception,
+          # and context such as player and session). The WARP_LOG_FORMAT variable takes precedence.
+          # The log files (logs/warp.log) stay in text.
+          format = text
+
+          # Players logging in, leaving, and moving between servers.
+          connections = true
+
+          # Each server list ping, with its address. Off by default: refreshing a server list, or a
+          # ping flood, writes a line per ping.
+          pings = false
+
+          # Each command a player sends, with its arguments. Off by default: commands carry passwords
+          # on offline-mode networks (/login, /register).
+          commands = false
         }
 
         # Management HTTP server: Kubernetes probes, load balancer health checks and the drain.
@@ -1224,8 +1312,9 @@ public final class WarpConfig {
           new-players = accept
           # Longest wait for the players kept, once the transfers are done.
           timeout = 30m
-          # Shown to the players the drain disconnects and to the logins it refuses.
-          message = "This proxy is restarting. Please reconnect."
+          # Shown to the players the drain disconnects and to the logins it refuses, in MiniMessage
+          # like status.motd.
+          message = "<yellow>This proxy is restarting. Please reconnect."
         }
 
         # PROXY protocol (v1 and v2), for a load balancer in front of Warp that sends it: HAProxy
@@ -1250,7 +1339,7 @@ public final class WarpConfig {
         # Behind the PROXY protocol, limits count the players' real addresses, never the load
         # balancer's. Refusals are not logged one by one: their counts are, at most once per
         # report-interval. Rates are token buckets: `burst` at once, then one every `interval`;
-        # an interval of 0 lifts that limit. Durations take ms, s, m or h (a bare number is ms).
+        # an interval of 0 lifts that limit.
         limits {
           # Set to false to lift every limit, e.g. behind a DDoS protection that already does it.
           enabled = true
@@ -1365,8 +1454,13 @@ public final class WarpConfig {
     StatusSettings status = config.status;
     Favicon favicon = status.favicon();
     logger.info(
-        "  status: max-players={}, show-player-count={}, sample-size={}, favicon={}",
-        status.maxPlayers() == StatusSettings.NO_LIMIT ? "none" : status.maxPlayers(),
+        "  player-limit: {}",
+        status.playerLimit() == StatusSettings.NO_LIMIT ? "none" : status.playerLimit());
+    logger.info(
+        "  status: max-players shown={}, show-player-count={}, sample-size={}, favicon={}",
+        status.maxPlayers() == StatusSettings.ONE_MORE_THAN_ONLINE
+            ? "one more than online"
+            : status.maxPlayers(),
         status.showPlayerCount(),
         status.sampleSize(),
         favicon == null ? "none" : favicon.uri().length() + " characters");
@@ -1377,6 +1471,15 @@ public final class WarpConfig {
     } else {
       logger.info("  proxy-protocol: disabled");
     }
+    logger.info("  timeouts: {}", config.timeouts);
+    logger.info("  tcp-fast-open: {}", config.tcpFastOpen);
+    LoggingConfig logging = config.logging;
+    logger.info(
+        "  logging: format={}, connections={}, pings={}, commands={}",
+        logging.format().configName(),
+        logging.connections(),
+        logging.pings(),
+        logging.commands());
     logger.info("  bungeecord-channel: {}", config.bungeeCord.describe());
     LimitsConfig limits = config.limits;
     if (limits.enabled()) {

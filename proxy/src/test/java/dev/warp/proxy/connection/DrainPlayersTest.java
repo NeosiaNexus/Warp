@@ -45,6 +45,8 @@ import dev.warp.protocol.packet.StateRegistry;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.Transfer;
 import dev.warp.proxy.config.DrainConfig;
+import dev.warp.proxy.config.LoggingConfig;
+import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.drain.ManualScheduler;
 import dev.warp.proxy.drain.ProxyDrain;
 import dev.warp.proxy.event.PluginEventBus;
@@ -66,6 +68,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.embedded.EmbeddedChannel;
+import net.kyori.adventure.text.Component;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -154,6 +157,8 @@ class DrainPlayersTest {
     MinecraftConnection connection = new MinecraftConnection(warpSide);
     warpSide.pipeline().addLast(ServerChannelInitializer.CONNECTION_HANDLER, connection);
     ServerLoginContext context = mock(ServerLoginContext.class);
+    when(context.logging()).thenReturn(LoggingConfig.DEFAULTS);
+    when(context.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
     when(context.playerRegistry()).thenReturn(registry);
     when(context.events()).thenReturn(events);
     when(context.channels()).thenReturn(new ChannelRegistry());
@@ -199,7 +204,7 @@ class DrainPlayersTest {
             cannotTransfer,
             DrainConfig.NewPlayers.ACCEPT,
             Duration.ofMinutes(30),
-            "Restarting, see you on the other side"),
+            Component.text("Restarting, see you on the other side")),
         registry,
         events,
         clock,

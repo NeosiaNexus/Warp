@@ -106,7 +106,7 @@ class LimitsConfigTest {
                 status-pings { burst = 5, interval = 2s }
                 logins {
                   burst = 1
-                  interval = 3000
+                  interval = 3s
                   max-concurrent-per-address = 4
                   max-concurrent-authentications = 64
                   timeout = 1m
@@ -138,8 +138,8 @@ class LimitsConfigTest {
     }
 
     @ParameterizedTest(name = "{0} -> {1} ms")
-    @CsvSource({"250ms, 250", "3s, 3000", "2m, 120000", "1h, 3600000", "1500, 1500", "0, 0"})
-    @DisplayName("should read durations with or without a unit")
+    @CsvSource({"250ms, 250", "3s, 3000", "2m, 120000", "1h, 3600000", "0, 0"})
+    @DisplayName("should read durations with a unit, and a bare 0")
     void durations(String value, long millis) throws Exception {
       WarpConfig config = load("limits { connections { interval = " + value + " } }");
 
@@ -185,7 +185,7 @@ class LimitsConfigTest {
   class InvalidValues {
 
     @ParameterizedTest(name = "{0}")
-    @ValueSource(strings = {"1.5s", "-1s", "3 days", "fast", "3S"})
+    @ValueSource(strings = {"1.5s", "-1s", "3 weeks", "fast", "3 sec"})
     @DisplayName("should refuse a duration it cannot read, naming the key")
     void badDuration(String value) {
       ConfigurationException error =
