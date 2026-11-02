@@ -53,7 +53,8 @@ group "Build the benchmarks"
 endgroup
 # The java of the toolchain that compiled the benchmarks, wherever Gradle found or installed it.
 java=$(./gradlew --quiet :protocol:jmhJava)
-jar=protocol/build/libs/protocol-$(< version.txt)-jmh.jar
+# Snapshot builds are numbered after version.txt (see build.gradle.kts): take the newest jar.
+jar=$(ls -t protocol/build/libs/protocol-*-jmh.jar | head -n 1)
 mkdir -p "$results"
 # -foe: a benchmark that throws fails the run instead of being skipped.
 jmh() { "$java" -jar "$jar" -foe true "$@"; }

@@ -1,0 +1,54 @@
+name: Snapshots
+
+# Publishes the plugin API (dev.warp:warp-api) of every push to main to GitHub Packages, as the
+# snapshot of the next version (0.1.0-beta.6-SNAPSHOT after the 0.1.0-beta.5 release, see
+# build.gradle.kts), so that plugins can build against main without vendoring a jar. Releases are
+# not published here: they come from release.yml.
+#
+# Reading GitHub Packages' Maven registry needs a token, even for a public repository: see
+# CONTRIBUTING.md, "Using a snapshot of the plugin API".
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+permissions: {}
+
+# Only the newest main matters: a newer push replaces the snapshot a running publish would write.
+concurrency:
+  group: snapshots
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: Publish warp-api snapshot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # check out the code
+      packages: write # publish to this repository's GitHub Packages
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up build
+        uses: $/.github/actions/setup-build
+
+      # check first: the API's tests, and that it still needs no more than Java 21 (checkApiRelease).
+      - name: Check and publish
+        env:
+          ORG_GRADLE_PROJECT_GitHubPackagesUsername: ${{ github.actor }}
+          ORG_GRADLE_PROJECT_GitHubPackagesPassword: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(./gradlew --quiet :api:properties --property version | sed -n 's/^version: //p')
+          if [[ "$version" != *-SNAPSHOT ]]; then
+            echo "::error::Expected a snapshot version, got '$version'."
+            exit 1
+          fi
+          ./gradlew :api:check :api:publishMavenJavaPublicationToGitHubPackagesRepository
+          echo "Published dev.warp:warp-api:$version" >> "$GITHUB_STEP_SUMMARY"

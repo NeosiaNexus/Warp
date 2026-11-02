@@ -70,8 +70,10 @@ jobs:
       - name: Set up build
         uses: $/.github/actions/setup-build
 
+      # warp.release: the version of version.txt rather than the next snapshot (build.gradle.kts);
+      # the build checks that the checked-out commit carries the release's tag.
       - name: Build shadow jar
-        run: ./gradlew shadowJar
+        run: ./gradlew shadowJar -Pwarp.release=true
 
       # Exactly one jar is released: the provenance below is named after it.
       - name: Checksum
