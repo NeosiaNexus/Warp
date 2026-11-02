@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.cookie.CookieRequest;
@@ -49,6 +50,10 @@ import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
 import dev.warp.protocol.packet.play.TabListHeaderFooter;
 import dev.warp.protocol.packet.play.Transfer;
+import dev.warp.proxy.messaging.BungeeCordChannel;
+import dev.warp.proxy.messaging.ChannelRegistry;
+
+import java.nio.charset.StandardCharsets;
 
 import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
@@ -79,6 +84,12 @@ final class BackendPlaySessionHandler implements SessionHandler {
 
   private static final Logger logger = LoggerFactory.getLogger(BackendPlaySessionHandler.class);
 
+  /** The channel a client registers its channels on, from 1.13. */
+  private static final String REGISTER = "minecraft:register";
+
+  /** The channel a client registers its channels on, before 1.13. */
+  private static final String LEGACY_REGISTER = "REGISTER";
+
   private final ConnectedPlayer player;
   private final MinecraftConnection backendConnection;
 
@@ -101,6 +112,33 @@ final class BackendPlaySessionHandler implements SessionHandler {
     // paused it (writabilityChanged), and no longer resumes it once the client is gone.
     player.playOn(backendConnection);
     player.clientConnection().setAutoRead(backendConnection.channel().isWritable());
+    registerBungeeCordChannel();
+  }
+
+  /**
+   * Registers the BungeeCord channel with the backend on the client's behalf, as BungeeCord and
+   * Velocity do: Bukkit's {@code Player#sendPluginMessage} only sends on a channel the client
+   * registered, which a vanilla client never does for this one. Sent when the proxy answers the
+   * channel for this server, or a plugin took it over.
+   */
+  private void registerBungeeCordChannel() {
+    BackendConnection backend = player.backendConnection();
+    if (backend == null || backend.connection() != backendConnection) {
+      return;
+    }
+    ChannelRegistry channels = player.loginContext().channels();
+    String channel = BungeeCordChannel.nameFor(player.protocolVersion());
+    boolean answered =
+        channels.bungeeCord().enabled()
+            && channels.bungeeCord().speaksWith(backend.server().name());
+    if (answered || channels.lookup(channel) != null) {
+      String register =
+          player.protocolVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_13)
+              ? REGISTER
+              : LEGACY_REGISTER;
+      backendConnection.writeAndFlush(
+          new PlayPluginMessage(register, channel.getBytes(StandardCharsets.UTF_8)));
+    }
   }
 
   @Override

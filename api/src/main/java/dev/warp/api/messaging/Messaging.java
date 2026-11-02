@@ -34,6 +34,13 @@ public interface Messaging {
    * PluginMessageEvent} and is only relayed if a handler asks; a message from another side is
    * dropped.
    *
+   * <p>Registering a name of the BungeeCord channel ({@code BungeeCord} or {@code bungeecord:main},
+   * which a proxy answers by default) takes it over from the proxy: every message a backend sends
+   * on it goes to the plugin, and the proxy answers none unless a handler sets {@link
+   * PluginMessageEvent.Pass}. The proxy answers the channel again once the registration is closed.
+   * To take over only some sub-channels, listen to {@link PluginMessageEvent} without registering
+   * the channel instead.
+   *
    * @param channel the channel
    * @param accepted the sides the plugin accepts messages from
    * @return the registration; closing it releases the channel

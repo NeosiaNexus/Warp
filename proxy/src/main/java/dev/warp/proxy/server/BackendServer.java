@@ -28,6 +28,9 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
+
+import org.jspecify.annotations.Nullable;
 
 /**
  * A backend server registered with the proxy, and the players playing on it.
@@ -84,6 +87,23 @@ public final class BackendServer implements RegisteredServer {
    */
   public Set<ConnectedPlayer> connectedPlayers() {
     return Set.copyOf(players);
+  }
+
+  /**
+   * Returns the first player playing on this server that {@code test} accepts, without copying the
+   * players: the way to reach a server, whose plugin messages only travel over a player's
+   * connection.
+   *
+   * @param test tried on each player in turn, until it accepts one
+   * @return the player accepted, or {@code null} if none was
+   */
+  public @Nullable ConnectedPlayer anyPlayer(Predicate<ConnectedPlayer> test) {
+    for (ConnectedPlayer player : players) {
+      if (test.test(player)) {
+        return player;
+      }
+    }
+    return null;
   }
 
   @Override

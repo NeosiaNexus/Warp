@@ -17,6 +17,8 @@
 package dev.warp.proxy.config;
 
 import dev.warp.api.server.Favicon;
+import dev.warp.proxy.messaging.BungeeCordSettings;
+import dev.warp.proxy.messaging.BungeeCordSubchannel;
 import dev.warp.proxy.network.CidrRange;
 import dev.warp.proxy.network.CidrRanges;
 import dev.warp.proxy.status.ServerList;
@@ -34,6 +36,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -126,6 +129,7 @@ public final class WarpConfig {
   private final StatusSettings status;
   private final ProxyProtocolConfig proxyProtocol;
   private final LimitsConfig limits;
+  private final BungeeCordSettings bungeeCord;
 
   // ---------------------------------------------------------------------------
   // Constructor (private — use load())
@@ -148,7 +152,8 @@ public final class WarpConfig {
       DrainConfig drain,
       StatusSettings status,
       ProxyProtocolConfig proxyProtocol,
-      LimitsConfig limits) {
+      LimitsConfig limits,
+      BungeeCordSettings bungeeCord) {
     this.bind = bind;
     this.onlineMode = onlineMode;
     this.servers = Map.copyOf(servers);
@@ -166,6 +171,7 @@ public final class WarpConfig {
     this.status = status;
     this.proxyProtocol = proxyProtocol;
     this.limits = limits;
+    this.bungeeCord = bungeeCord;
   }
 
   // ---------------------------------------------------------------------------
@@ -234,6 +240,7 @@ public final class WarpConfig {
     StatusSettings status = parseStatus(root.node("status"), directory);
     ProxyProtocolConfig proxyProtocol = parseProxyProtocol(root);
     LimitsConfig limits = parseLimits(root);
+    BungeeCordSettings bungeeCord = parseBungeeCord(root.node("bungeecord-channel"));
 
     // ---------------------------------------------------------------------------
     // Validate
@@ -266,7 +273,8 @@ public final class WarpConfig {
             drain,
             status,
             proxyProtocol,
-            limits);
+            limits,
+            bungeeCord);
 
     logConfig(config);
     return config;
@@ -437,6 +445,16 @@ public final class WarpConfig {
    */
   public LimitsConfig limits() {
     return limits;
+  }
+
+  /**
+   * Returns how the proxy answers the BungeeCord plugin messaging channel, and which servers may
+   * use which of its sub-channels.
+   *
+   * @return the {@code bungeecord-channel} block
+   */
+  public BungeeCordSettings bungeeCord() {
+    return bungeeCord;
   }
 
   // ---------------------------------------------------------------------------
@@ -880,6 +898,69 @@ public final class WarpConfig {
         reportInterval);
   }
 
+  /**
+   * Parses the {@code bungeecord-channel} block. Without it, the channel is answered for every
+   * server, every sub-channel allowed, as BungeeCord and Velocity answer it.
+   */
+  private static BungeeCordSettings parseBungeeCord(CommentedConfigurationNode node)
+      throws ConfigurationException {
+    BungeeCordSettings defaults = BungeeCordSettings.DEFAULTS;
+    if (node.virtual()) {
+      return defaults;
+    }
+    if (!node.isMap()) {
+      throw new ConfigurationException(
+          "bungeecord-channel must be a block, for example bungeecord-channel { enabled = true }");
+    }
+    boolean enabled = booleanValue(node.node("enabled"), defaults.enabled());
+    Duration forwardHold =
+        parseDuration(
+            node.node("forward-hold"), "bungeecord-channel.forward-hold", defaults.forwardHold());
+    CommentedConfigurationNode allowNode = node.node("allow");
+    Map<String, Set<BungeeCordSubchannel>> allow = new LinkedHashMap<>();
+    if (allowNode.virtual()) {
+      allow.putAll(defaults.allow());
+    } else if (!allowNode.isMap()) {
+      throw new ConfigurationException(
+          "bungeecord-channel.allow must be a block of rules, for example allow { \"*\" = [\"*\"]"
+              + " }");
+    } else {
+      for (var rule : allowNode.childrenMap().entrySet()) {
+        String key = String.valueOf(rule.getKey());
+        CommentedConfigurationNode value = rule.getValue();
+        List<String> entries = new ArrayList<>();
+        if (value.isList()) {
+          for (CommentedConfigurationNode entry : value.childrenList()) {
+            String text = entry.isMap() || entry.isList() ? null : entry.getString();
+            if (text == null) {
+              throw new ConfigurationException(
+                  "bungeecord-channel.allow." + key + " must be a list of sub-channel names");
+            }
+            entries.add(text);
+          }
+        } else {
+          String text = value.isMap() ? null : value.getString();
+          if (text == null) {
+            throw new ConfigurationException(
+                "bungeecord-channel.allow." + key + " must be a list of sub-channel names");
+          }
+          entries.add(text);
+        }
+        try {
+          allow.put(key, BungeeCordSettings.parseRule(entries));
+        } catch (IllegalArgumentException e) {
+          throw new ConfigurationException(
+              "bungeecord-channel.allow." + key + ": " + e.getMessage(), e);
+        }
+      }
+    }
+    try {
+      return new BungeeCordSettings(enabled, allow, forwardHold);
+    } catch (IllegalArgumentException e) {
+      throw new ConfigurationException("bungeecord-channel.allow: " + e.getMessage(), e);
+    }
+  }
+
   /** Parses the {@code burst} and {@code interval} of a token bucket section. */
   private static LimitsConfig.Rate parseRate(
       CommentedConfigurationNode node, String key, LimitsConfig.Rate defaults)
@@ -1216,6 +1297,35 @@ public final class WarpConfig {
           # How often the counts of refused connections and logins are logged, when not zero.
           report-interval = 1m
         }
+
+        # BungeeCord's plugin messaging channel ("BungeeCord" before 1.13, "bungeecord:main"
+        # after), through which backend plugins move players and query the network: Connect,
+        # ConnectOther, IP, IPOther, PlayerCount, PlayerList, GetServers, GetPlayerServer,
+        # Message, MessageRaw, GetServer, UUID, UUIDOther, ServerIP, KickPlayer, KickPlayerRaw,
+        # Forward and ForwardToPlayer. Warp answers it as BungeeCord and Velocity do. Players
+        # never speak it: what a client sends on it is dropped.
+        bungeecord-channel {
+          enabled = true
+
+          # The sub-channels each server may use. A backend can move or kick any player, message
+          # everyone, or read players' addresses through this channel: on a network where some
+          # servers belong to someone else, allow them only what they need. Keys are server names
+          # or prefixes ending with * (game-*); the rule named after a server applies, else the
+          # longest prefix that matches it, else "*". A server no rule matches may use nothing.
+          # Lists name sub-channels, * for all of them, and !Name to take one away. Requests a
+          # rule refuses are dropped and logged.
+          allow {
+            "*" = ["*"]
+            # "game-*" = [Connect, GetServer, GetServers, PlayerCount, PlayerList, UUID, Forward]
+            # "lobby" = ["*", "!KickPlayer", "!KickPlayerRaw"]
+          }
+
+          # A Forward to a server nobody plays on cannot be delivered: plugin messages only travel
+          # over a player's connection. It waits this long for a player to arrive there (so that
+          # "send the data, then the player" works), then is dropped, with a warning. ONLINE
+          # forwards never wait. 0 drops them at once.
+          forward-hold = 30s
+        }
         """
             .replace("{default-version-name}", StatusSettings.defaultVersionName());
 
@@ -1267,6 +1377,7 @@ public final class WarpConfig {
     } else {
       logger.info("  proxy-protocol: disabled");
     }
+    logger.info("  bungeecord-channel: {}", config.bungeeCord.describe());
     LimitsConfig limits = config.limits;
     if (limits.enabled()) {
       logger.info(

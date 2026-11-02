@@ -27,7 +27,7 @@ import java.util.function.LongSupplier;
  *
  * <p>Lock-free: one compare-and-set per permitted line, an atomic increment per suppressed one.
  */
-final class LogThrottle {
+public final class LogThrottle {
 
   private final long intervalNanos;
   private final LongSupplier nanoClock;
@@ -43,7 +43,7 @@ final class LogThrottle {
    *
    * @param interval the minimum time between two lines
    */
-  LogThrottle(Duration interval) {
+  public LogThrottle(Duration interval) {
     this(interval, System::nanoTime);
   }
 
@@ -65,7 +65,7 @@ final class LogThrottle {
    * @return {@code -1} to keep quiet, or, when the event is to be logged, how many events were held
    *     back since the previous line
    */
-  long tryAcquire() {
+  public long tryAcquire() {
     long now = nanoClock.getAsLong();
     long next = nextPermitted.get();
     if (now - next >= 0 && nextPermitted.compareAndSet(next, now + intervalNanos)) {
@@ -83,7 +83,7 @@ final class LogThrottle {
    * @param what the events, plural, as in {@code "refused connections"}
    * @return {@code ""}, or e.g. {@code " (42 more refused connections since the last warning)"}
    */
-  static String suffix(long suppressed, String what) {
+  public static String suffix(long suppressed, String what) {
     if (suppressed <= 0) {
       return "";
     }

@@ -121,6 +121,20 @@ final class SwitchHarness implements AutoCloseable {
    * @param fallbackOrder the server names of the fallback order
    */
   SwitchHarness(ProtocolVersion version, List<String> fallbackOrder, ProtocolState clientState) {
+    this(version, fallbackOrder, clientState, "Steve");
+  }
+
+  /**
+   * Creates a player named {@code username} of {@code version} whose client is in {@code
+   * clientState}.
+   *
+   * @param fallbackOrder the server names of the fallback order
+   */
+  SwitchHarness(
+      ProtocolVersion version,
+      List<String> fallbackOrder,
+      ProtocolState clientState,
+      String username) {
     this.version = version;
     this.client = connection(PacketDirection.SERVERBOUND, clientState);
     this.clientEncoder = client.encoder();
@@ -157,7 +171,7 @@ final class SwitchHarness implements AutoCloseable {
         new ConnectedPlayer(
             client,
             version,
-            new GameProfile(UUID.randomUUID(), "Steve", List.of()),
+            new GameProfile(UUID.randomUUID(), username, List.of()),
             new InetSocketAddress(InetAddress.getLoopbackAddress(), 50000),
             loginContext,
             new ClientCookies(client, version, client.channel().eventLoop()));

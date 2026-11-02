@@ -43,6 +43,7 @@ import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.management.ManagementServer;
 import dev.warp.proxy.management.ProxyHealth;
 import dev.warp.proxy.management.ReadinessHolds;
+import dev.warp.proxy.messaging.BungeeCordChannel;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.network.CidrRanges;
 import dev.warp.proxy.permission.PermissionRegistry;
@@ -122,6 +123,9 @@ public final class WarpServer implements Warp {
   /** How long shutdown waits for the handlers of {@link ProxyShutdownEvent}. */
   private static final long SHUTDOWN_EVENT_TIMEOUT_SECONDS = 30;
 
+  /** How often the BungeeCord forwards that waited too long for a player are dropped. */
+  private static final long HELD_FORWARDS_SWEEP_SECONDS = 1;
+
   /** How long shutdown waits for the listener to close. */
   private static final long LISTENER_CLOSE_TIMEOUT_SECONDS = 5;
 
@@ -156,7 +160,7 @@ public final class WarpServer implements Warp {
   private final WarpEventBus events = new WarpEventBus();
 
   /** The plugin message channels plugins own. */
-  private final ChannelRegistry channels = new ChannelRegistry();
+  private final ChannelRegistry channels;
 
   /** The proxy's commands, its own and the plugins'. */
   private final WarpCommandManager commands = new WarpCommandManager();
@@ -230,6 +234,9 @@ public final class WarpServer implements Warp {
     this.exit = exit;
     this.serverRegistry =
         new ServerRegistry(config.servers(), config.defaultServer(), config.fallbackOrder());
+    this.channels =
+        new ChannelRegistry(
+            new BungeeCordChannel(config.bungeeCord(), playerRegistry, serverRegistry));
     ProxyCommands.register(commands, serverRegistry);
     this.pluginManager =
         new WarpPluginManager(
@@ -275,6 +282,14 @@ public final class WarpServer implements Warp {
     var _ =
         workerGroup.scheduleAtFixedRate(
             limits::report, reportMillis, reportMillis, TimeUnit.MILLISECONDS);
+    if (channels.bungeeCord().enabled()) {
+      var _ =
+          workerGroup.scheduleAtFixedRate(
+              channels.bungeeCord()::expireHeld,
+              HELD_FORWARDS_SWEEP_SECONDS,
+              HELD_FORWARDS_SWEEP_SECONDS,
+              TimeUnit.SECONDS);
+    }
 
     serverRegistry.setPinger(new BackendPinger(workerGroup, transport.clientChannelClass()));
 

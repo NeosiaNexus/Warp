@@ -24,6 +24,15 @@ import dev.warp.api.server.ServerConnection;
  * Fired for a plugin message on a channel a plugin registered with {@link Messaging}, from a side
  * it accepts. The message is not relayed to the other side unless a handler sets {@link Forward}.
  *
+ * <p>Also fired, when any handler listens, for a message a backend sends on a channel the proxy
+ * speaks itself and no plugin registered: the BungeeCord channel ({@code BungeeCord} before
+ * Minecraft 1.13, {@code bungeecord:main} from 1.13). The result then starts as {@link Pass}: the
+ * proxy answers the message once the handlers are done, unless one of them takes it with {@link
+ * Handled}. A plugin can so watch every request the backends make, and take over the sub-channels
+ * it wants to answer itself, such as {@code PlayerCount} counted across several proxies, while the
+ * proxy answers the others. A client's message on the BungeeCord channel never fires it: only
+ * backends speak it, and the proxy drops what a client sends there.
+ *
  * <p>Delivered on the player's lane, in the order the messages arrived.
  *
  * <p>Implemented by the proxy; plugins must not implement it.
@@ -75,7 +84,10 @@ public interface PluginMessageEvent extends ResultedEvent<PluginMessageEvent.Res
    */
   record FromServer(ServerConnection connection) implements Source {}
 
-  /** What happens to the message. The default is {@link Handled}. */
+  /**
+   * What happens to the message. The default is {@link Handled} on a channel a plugin registered,
+   * {@link Pass} on a channel the proxy speaks itself (see above).
+   */
   sealed interface Result {}
 
   /** The plugin consumed it: it goes no further. */
@@ -83,4 +95,12 @@ public interface PluginMessageEvent extends ResultedEvent<PluginMessageEvent.Res
 
   /** Relay it to the other side: the backend for a player's message, the client for a server's. */
   record Forward() implements Result {}
+
+  /**
+   * Let the message go on as if no plugin had seen it: the proxy answers it on a channel it speaks
+   * itself (the BungeeCord channel), and relays it to the other side, as {@link Forward}, on any
+   * other channel. A plugin that registered the BungeeCord channel to take it over sets this to
+   * hand the proxy back the sub-channels it does not answer itself.
+   */
+  record Pass() implements Result {}
 }

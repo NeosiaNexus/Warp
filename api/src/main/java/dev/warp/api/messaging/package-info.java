@@ -6,6 +6,10 @@
  * dev.warp.api.messaging.PluginMessageEvent} and are not relayed unless a handler says so, and
  * messages from a side the plugin did not accept are dropped, so a client cannot speak on a channel
  * meant for backends.
+ *
+ * <p>The proxy speaks one channel itself: BungeeCord's plugin messaging channel, through which
+ * backend plugins move players and query the network. Plugins can watch and take over its messages
+ * through {@link dev.warp.api.messaging.PluginMessageEvent}.
  */
 @NullMarked
 package dev.warp.api.messaging;
