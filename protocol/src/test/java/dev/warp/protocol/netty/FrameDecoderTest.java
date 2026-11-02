@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -658,10 +659,65 @@ class FrameDecoderTest {
     }
 
     @Test
+    @DisplayName("should wait for the rest of a frame its header already allows")
+    void waitsForPayload() {
+      EmbeddedChannel ch = new EmbeddedChannel(new FrameDecoder(FrameLimits.STATUS));
+
+      ch.writeInbound(Unpooled.wrappedBuffer(new byte[] {0x09, 0x01, 0, 0}));
+      assertNull(ch.readInbound());
+      ch.writeInbound(Unpooled.wrappedBuffer(new byte[] {0, 0, 0, 0, 0, 1}));
+
+      assertFrameLength(9, ch.readInbound());
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should wait for the rest of a frame length cut inside its VarInt")
+    void waitsForLength() {
+      EmbeddedChannel ch = new EmbeddedChannel(new FrameDecoder(FrameLimits.HANDSHAKE));
+
+      // 133: 0x85 0x01, a handshake frame within the handshake's bounds.
+      ch.writeInbound(Unpooled.wrappedBuffer(new byte[] {(byte) 0x85}));
+      assertNull(ch.readInbound());
+      ByteBuf rest = Unpooled.buffer();
+      rest.writeByte(0x01);
+      rest.writeZero(133);
+      ch.writeInbound(rest);
+
+      assertFrameLength(133, ch.readInbound());
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should refuse a frame length wider than three bytes")
+    void refusesWideLength() {
+      EmbeddedChannel ch = new EmbeddedChannel(new FrameDecoder(FrameLimits.HANDSHAKE));
+
+      DecoderException thrown =
+          assertThrows(
+              DecoderException.class,
+              () -> ch.writeInbound(Unpooled.wrappedBuffer(HexFormat.of().parseHex("ffffff7f00"))));
+
+      assertEquals("Frame-length VarInt exceeds 3 bytes", thrown.getMessage());
+    }
+
+    @Test
+    @DisplayName("should skip an empty frame and read the one after it")
+    void skipsEmptyFrame() {
+      EmbeddedChannel ch = new EmbeddedChannel(new FrameDecoder(FrameLimits.STATUS));
+
+      ch.writeInbound(Unpooled.wrappedBuffer(HexFormat.of().parseHex("000100")));
+
+      assertFrameLength(1, ch.readInbound());
+      assertFalse(ch.finish());
+    }
+
+    @Test
     @DisplayName("should frame without limits once they are lifted, as for a logged-in client")
     void lifted() {
       FrameDecoder decoder = new FrameDecoder(FrameLimits.STATUS);
       EmbeddedChannel ch = new EmbeddedChannel(decoder);
+      assertSame(FrameLimits.STATUS, decoder.limits());
       decoder.limits(null);
 
       ch.writeInbound(Unpooled.wrappedBuffer(HexFormat.of().parseHex("0a01020304050607080900")));

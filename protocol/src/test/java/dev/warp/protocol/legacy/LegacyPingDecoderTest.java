@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.concurrent.TimeUnit;
 
@@ -78,12 +79,45 @@ class LegacyPingDecoderTest {
       channel.advanceTimeBy(LegacyPingDecoder.FRAGMENT_WAIT_MILLIS - 1, TimeUnit.MILLISECONDS);
       channel.runScheduledPendingTasks();
       channel.writeInbound(Unpooled.wrappedBuffer(ping, 1, ping.length - 1));
+      assertEquals(-1, channel.runScheduledPendingTasks(), "the wait ends with the ping read");
       waitForFragment(channel);
 
       assertEquals(
           new LegacyPing(LegacyPing.Format.MINECRAFT_1_6, "mc.example.net", 25565),
           channel.readInbound());
       assertNull(channel.readInbound(), "one ping only");
+    }
+
+    @Test
+    @DisplayName("should time the wait from the first byte, which a second one does not extend")
+    void waitFromFirstByte() {
+      EmbeddedChannel channel = channel();
+
+      channel.writeInbound(bytes("fe"));
+      channel.advanceTimeBy(60, TimeUnit.MILLISECONDS);
+      channel.writeInbound(bytes("01"));
+      channel.advanceTimeBy(LegacyPingDecoder.FRAGMENT_WAIT_MILLIS - 60, TimeUnit.MILLISECONDS);
+      channel.runScheduledPendingTasks();
+
+      assertEquals(new LegacyPing(LegacyPing.Format.MINECRAFT_1_4, null, 0), channel.readInbound());
+      assertEquals(-1, channel.runScheduledPendingTasks(), "one wait only");
+    }
+
+    @Test
+    @DisplayName("should not answer a 1.6 ping still arriving when the wait ends")
+    void slowMinecraft16() {
+      EmbeddedChannel channel = channel();
+      byte[] ping = pingHost("MC|PingHost", "mc.example.net", 25565);
+
+      channel.writeInbound(Unpooled.wrappedBuffer(ping, 0, 1));
+      channel.writeInbound(Unpooled.wrappedBuffer(ping, 1, 5));
+      waitForFragment(channel);
+      assertNull(channel.readInbound(), "neither a 1.3 nor a 1.4 ping");
+      channel.writeInbound(Unpooled.wrappedBuffer(ping, 6, ping.length - 6));
+
+      assertEquals(
+          new LegacyPing(LegacyPing.Format.MINECRAFT_1_6, "mc.example.net", 25565),
+          channel.readInbound());
     }
 
     @Test
@@ -151,6 +185,74 @@ class LegacyPingDecoderTest {
     }
 
     @Test
+    @DisplayName("should wait for a 1.6 ping cut at any byte, and read it once whole")
+    void cutAnywhere() {
+      byte[] ping = pingHost("MC|PingHost", "mc.example.net", 25565);
+      for (int cut = 1; cut < ping.length; cut++) {
+        EmbeddedChannel channel = channel();
+
+        channel.writeInbound(Unpooled.wrappedBuffer(ping, 0, cut));
+        assertNull(channel.readInbound(), "cut after " + cut + " bytes: nothing yet");
+        channel.writeInbound(Unpooled.wrappedBuffer(ping, cut, ping.length - cut));
+
+        assertEquals(
+            new LegacyPing(LegacyPing.Format.MINECRAFT_1_6, "mc.example.net", 25565),
+            channel.readInbound(),
+            "cut after " + cut + " bytes");
+      }
+    }
+
+    @Test
+    @DisplayName("should not wait for the name of a channel longer than any")
+    void oversizedChannel() {
+      EmbeddedChannel channel = channel();
+
+      channel.writeInbound(bytes("fe01fa0041"));
+
+      assertEquals(new LegacyPing(LegacyPing.Format.MINECRAFT_1_6, null, 0), channel.readInbound());
+    }
+
+    @Test
+    @DisplayName("should wait for the data of a ping at the largest channel and data lengths")
+    void largestLengths() {
+      EmbeddedChannel longChannel = channel();
+      ByteBuf channelOf64 = Unpooled.buffer();
+      channelOf64.writeBytes(bytes("fe01fa"));
+      writeLegacyString(channelOf64, "c".repeat(64));
+      EmbeddedChannel longData = channel();
+      ByteBuf dataOf517 = Unpooled.buffer();
+      dataOf517.writeBytes(bytes("fe01fa"));
+      writeLegacyString(dataOf517, "MC|PingHost");
+      dataOf517.writeShort(1 + 2 + 255 * 2 + 4);
+
+      longChannel.writeInbound(channelOf64);
+      longData.writeInbound(dataOf517);
+
+      assertNull(longChannel.readInbound(), "a 64-character channel may still be a ping");
+      assertNull(longData.readInbound(), "517 bytes hold the longest host name");
+    }
+
+    @ParameterizedTest(name = "{0} bytes of data")
+    @ValueSource(ints = {0, 2, 37})
+    @DisplayName("should answer a 1.6 ping whose data does not hold a host as one without host")
+    void malformedData(int dataLength) {
+      EmbeddedChannel channel = channel();
+      ByteBuf ping = Unpooled.buffer();
+      ping.writeBytes(bytes("fe01fa"));
+      writeLegacyString(ping, "MC|PingHost");
+      ping.writeShort(dataLength);
+      if (dataLength > 0) {
+        // The data of a ping to mc.example.net:25565 (35 bytes), cut or with two bytes more.
+        byte[] data = Arrays.copyOfRange(pingHost("MC|PingHost", "mc.example.net", 25565), 29, 64);
+        ping.writeBytes(Arrays.copyOf(data, dataLength));
+      }
+
+      channel.writeInbound(Unpooled.wrappedBuffer(ByteBufUtil.getBytes(ping)));
+
+      assertEquals(new LegacyPing(LegacyPing.Format.MINECRAFT_1_6, null, 0), channel.readInbound());
+    }
+
+    @Test
     @DisplayName("should discard what the client sends after a ping")
     void discardsAfter() {
       EmbeddedChannel channel = channel();
@@ -175,6 +277,20 @@ class LegacyPingDecoderTest {
     assertEquals(new LegacyLogin(), channel.readInbound());
   }
 
+  @Test
+  @DisplayName("should wait for the rest of a legacy login whose first byte came alone")
+  void loneLoginByte() {
+    EmbeddedChannel channel = channel();
+
+    channel.writeInbound(bytes("02"));
+    waitForFragment(channel);
+
+    assertNull(channel.readInbound());
+    assertNotNull(channel.pipeline().get(LegacyPingDecoder.class), "still deciding");
+    channel.writeInbound(bytes("4e"));
+    assertEquals(new LegacyLogin(), channel.readInbound());
+  }
+
   @Nested
   @DisplayName("framed connections")
   class Framed {
@@ -185,7 +301,9 @@ class LegacyPingDecoderTest {
           "1000fd0509", // a handshake: length 16, packet id 0
           "fe0100fd05", // a 254-byte handshake: length FE 01, packet id 0
           "fe0200fd05", // a 382-byte handshake: length FE 02
-          "0100" // a frame of one byte
+          "0100", // a frame of one byte
+          "10", // the first byte of a frame length, alone
+          "fe02" // the start of a 382-byte frame: no ping goes on with 0x02
         })
     @DisplayName("should hand every byte to the next handler and leave the pipeline")
     void passesThrough(String hex) {
@@ -210,12 +328,26 @@ class LegacyPingDecoderTest {
 
       channel.writeInbound(Unpooled.wrappedBuffer(frame, 0, first));
       channel.writeInbound(Unpooled.wrappedBuffer(frame, first, frame.length - first));
+      assertEquals(-1, channel.runScheduledPendingTasks(), "the wait went with the decoder");
       waitForFragment(channel);
 
       ByteBuf passed = channel.readInbound();
       assertArrayEquals(frame, ByteBufUtil.getBytes(passed));
       passed.release();
       assertNull(channel.readInbound(), "no ping answered after it");
+      assertNull(channel.pipeline().get(LegacyPingDecoder.class));
+    }
+
+    @Test
+    @DisplayName("should leave a pipeline that has no legacy disconnect encoder")
+    void withoutEncoder() {
+      EmbeddedChannel channel = new EmbeddedChannel(new LegacyPingDecoder());
+
+      channel.writeInbound(bytes("1000"));
+
+      ByteBuf passed = channel.readInbound();
+      assertArrayEquals(new byte[] {0x10, 0x00}, ByteBufUtil.getBytes(passed));
+      passed.release();
       assertNull(channel.pipeline().get(LegacyPingDecoder.class));
     }
 

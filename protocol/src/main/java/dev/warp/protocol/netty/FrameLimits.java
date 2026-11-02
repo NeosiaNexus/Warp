@@ -194,7 +194,15 @@ public final class FrameLimits {
     return new FrameLimits[] {login(version, false), login(version, true)};
   }
 
-  private static FrameLimits login(ProtocolVersion version, boolean cookieResponses) {
+  /**
+   * Computes the limits of the LOGIN state for a version, as {@link #serverbound} caches them:
+   * tests check the bounds here, every call computing them anew.
+   *
+   * @param version the client's protocol version
+   * @param cookieResponses whether a Cookie Response is allowed
+   * @return the limits
+   */
+  static FrameLimits login(ProtocolVersion version, boolean cookieResponses) {
     Builder builder = new Builder(ProtocolState.LOGIN);
 
     // Login Start: a UUID from 1.20.2, an optional one from 1.19.1, an optional key in 1.19.x.

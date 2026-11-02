@@ -218,10 +218,28 @@ class FrameLimitsTest {
     void shared() {
       ProtocolVersion version = ProtocolVersion.latest();
 
-      assertSame(login(version, false), login(version, false));
-      assertSame(login(version, true), login(version, true));
+      assertSame(cached(version, false), cached(version, false));
+      assertSame(cached(version, true), cached(version, true));
       assertSame(FrameLimits.HANDSHAKE, FrameLimits.serverbound(ProtocolState.HANDSHAKE, version));
       assertSame(FrameLimits.STATUS, FrameLimits.serverbound(ProtocolState.STATUS, version));
+      assertSame(cached(version, false), FrameLimits.serverbound(ProtocolState.LOGIN, version));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("dev.warp.protocol.netty.FrameLimitsTest#versions")
+    @DisplayName("should cache the very limits it computes for the version")
+    void cachedAsComputed(ProtocolVersion version) {
+      for (boolean cookies : new boolean[] {false, true}) {
+        FrameLimits cached = cached(version, cookies);
+        FrameLimits computed = login(version, cookies);
+
+        assertEquals(ProtocolState.LOGIN, cached.state());
+        assertEquals(computed.largest(), cached.largest());
+        for (int packetId = 0; packetId < 8; packetId++) {
+          assertEquals(computed.smallest(packetId), cached.smallest(packetId));
+          assertEquals(computed.largest(packetId), cached.largest(packetId));
+        }
+      }
     }
   }
 
@@ -240,6 +258,16 @@ class FrameLimitsTest {
       assertTrue(limits.allows(0x01, 9));
       assertFalse(limits.allows(0x01, 8));
       assertFalse(limits.allows(0x01, 10));
+      assertEquals(0, limits.largest(0x05));
+      assertEquals(0, limits.smallest(0x05));
+      assertEquals(0, limits.largest(-1));
+    }
+
+    @Test
+    @DisplayName("should name its state and largest frame")
+    void describes() {
+      assertEquals(ProtocolState.STATUS, FrameLimits.STATUS.state());
+      assertEquals("FrameLimits[STATUS, largest 9 bytes]", FrameLimits.STATUS.toString());
     }
 
     @Test
@@ -279,7 +307,13 @@ class FrameLimitsTest {
   // Helpers
   // ---------------------------------------------------------------------------
 
+  /** The limits of the LOGIN state, computed for this call: what the bounds are checked on. */
   private FrameLimits login(ProtocolVersion version, boolean cookies) {
+    return FrameLimits.login(version, cookies);
+  }
+
+  /** The limits of the LOGIN state as the frame decoder gets them. */
+  private FrameLimits cached(ProtocolVersion version, boolean cookies) {
     FrameLimits limits = FrameLimits.serverbound(ProtocolState.LOGIN, version, cookies);
     assertNotNull(limits);
     return limits;
