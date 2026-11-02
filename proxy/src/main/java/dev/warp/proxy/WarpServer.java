@@ -23,7 +23,6 @@ import dev.warp.api.event.proxy.ProxyShutdownEvent;
 import dev.warp.api.lifecycle.DrainOutcome;
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
-import dev.warp.api.lifecycle.ReadinessHold;
 import dev.warp.api.player.Player;
 import dev.warp.api.plugin.PluginManager;
 import dev.warp.proxy.auth.MojangSessionService;
@@ -234,7 +233,13 @@ public final class WarpServer implements Warp {
     ProxyCommands.register(commands, serverRegistry);
     this.pluginManager =
         new WarpPluginManager(
-            this, events, channels, commands, permissions, directory.resolve("plugins"));
+            this,
+            events,
+            channels,
+            commands,
+            permissions,
+            readinessHolds,
+            directory.resolve("plugins"));
     this.drain =
         new ProxyDrain(
             config.drain(), playerRegistry, events, drainScheduler, this::stopAfterDrain);
@@ -538,9 +543,13 @@ public final class WarpServer implements Warp {
     return serverRegistry;
   }
 
-  @Override
-  public ReadinessHold holdReadiness(String reason) {
-    return readinessHolds.hold(reason);
+  /**
+   * Returns the holds plugins keep on the proxy's readiness (tests take one as a plugin would).
+   *
+   * @return the readiness holds
+   */
+  ReadinessHolds readinessHolds() {
+    return readinessHolds;
   }
 
   @Override

@@ -19,16 +19,23 @@ package dev.warp.proxy.plugin;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
 import dev.warp.api.Warp;
+import dev.warp.api.event.player.PlayerDrainEvent;
+import dev.warp.api.player.Player;
 import dev.warp.api.plugin.PluginContainer;
+import dev.warp.api.plugin.PluginContext;
 import dev.warp.api.plugin.PluginState;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.management.ReadinessHolds;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
 
@@ -37,6 +44,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -45,6 +53,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 @DisplayName("WarpPluginManager")
 class WarpPluginManagerTest {
@@ -56,6 +66,10 @@ class WarpPluginManagerTest {
 
   private Path plugins;
   private WarpEventBus events;
+  private final ChannelRegistry channels = new ChannelRegistry();
+  private final WarpCommandManager commands = new WarpCommandManager();
+  private final PermissionRegistry permissions = new PermissionRegistry();
+  private final ReadinessHolds readinessHolds = new ReadinessHolds();
   private WarpPluginManager manager;
 
   @BeforeEach
@@ -64,12 +78,7 @@ class WarpPluginManagerTest {
     events = new WarpEventBus();
     manager =
         new WarpPluginManager(
-            mock(Warp.class),
-            events,
-            new ChannelRegistry(),
-            new WarpCommandManager(),
-            new PermissionRegistry(),
-            plugins);
+            mock(Warp.class), events, channels, commands, permissions, readinessHolds, plugins);
   }
 
   @AfterEach
@@ -575,6 +584,187 @@ class WarpPluginManagerTest {
 
       assertEquals(PluginState.FAILED, manager.plugin("flaky").orElseThrow().state());
       assertFalse(events.hasHandlers(StringBuilder.class));
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Everything a plugin registers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * One plugin registers one of each kind of registration in its constructor; its enable fails when
+   * the probe {@code fail} is set. Each test checks that one kind is released.
+   */
+  @Nested
+  @DisplayName("what a plugin registers")
+  class Ownership {
+
+    private static final String OWNER_SOURCE =
+        """
+        package owner;
+        import dev.warp.api.event.player.PlayerDrainEvent;
+        import dev.warp.api.messaging.ChannelIdentifier;
+        import dev.warp.api.messaging.Messaging;
+        import dev.warp.api.permission.Tristate;
+        import dev.warp.api.plugin.*;
+        import java.util.Set;
+        @Plugin(id = "owner")
+        public final class Main implements WarpPlugin {
+          public Main(PluginContext context) {
+            context.events().subscribe(StringBuilder.class, builder -> builder.append("heard"));
+            context.events().subscribe(PlayerDrainEvent.class, event -> {});
+            context.messaging()
+                .register(ChannelIdentifier.of("owner", "data"), Set.of(Messaging.Origin.SERVER));
+            context.commands().register("ownercmd", invocation -> {});
+            context.permissions().register(0, (player, permission) -> Tristate.TRUE);
+            context.holdReadiness("owner: warming up");
+            System.getProperties().put("warp.test.probe.context", context);
+          }
+          @Override public void enable() {
+            if (Boolean.getBoolean("warp.test.probe.fail")) {
+              throw new IllegalStateException("enable failed");
+            }
+          }
+        }
+        """;
+
+    /** How the plugin goes away. */
+    enum Ending {
+      DISABLED,
+      FAILED_TO_LOAD
+    }
+
+    private void loadOwner(Ending ending) throws IOException {
+      if (ending == Ending.FAILED_TO_LOAD) {
+        System.setProperty(PROBE + "fail", "true");
+      }
+      TestPluginJars.build(plugins, "owner.jar", Map.of("owner/Main.java", OWNER_SOURCE));
+      manager.loadAll();
+    }
+
+    private void end(Ending ending) {
+      if (ending == Ending.DISABLED) {
+        assertEquals(PluginState.ENABLED, manager.plugin("owner").orElseThrow().state());
+        manager.disableAll();
+      }
+      assertNotEquals(PluginState.ENABLED, manager.plugin("owner").orElseThrow().state());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(Ending.class)
+    @DisplayName("should drop its event subscriptions")
+    void eventSubscriptions(Ending ending) throws IOException {
+      loadOwner(ending);
+
+      end(ending);
+
+      assertFalse(events.hasHandlers(StringBuilder.class));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(Ending.class)
+    @DisplayName("should drop its drain policy, so that it keeps no player in a drain")
+    void drainPolicies(Ending ending) throws IOException {
+      loadOwner(ending);
+
+      end(ending);
+
+      assertFalse(events.hasHandlers(PlayerDrainEvent.class));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(Ending.class)
+    @DisplayName("should release its plugin message channels")
+    void channels(Ending ending) throws IOException {
+      loadOwner(ending);
+
+      end(ending);
+
+      assertNull(channels.lookup("owner:data"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(Ending.class)
+    @DisplayName("should remove its commands")
+    void commands(Ending ending) throws IOException {
+      loadOwner(ending);
+
+      end(ending);
+
+      assertFalse(commands.hasCommand("ownercmd"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(Ending.class)
+    @DisplayName("should remove its permission providers")
+    void permissionProviders(Ending ending) throws IOException {
+      loadOwner(ending);
+
+      end(ending);
+
+      assertFalse(permissions.check(mock(Player.class), "anything"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(Ending.class)
+    @DisplayName("should release its readiness holds, so that the proxy becomes ready again")
+    void readinessHolds(Ending ending) throws IOException {
+      loadOwner(ending);
+
+      end(ending);
+
+      assertFalse(readinessHolds.isHeld(), String.valueOf(readinessHolds.reasons()));
+    }
+
+    @Test
+    @DisplayName("should keep everything while the plugin is enabled")
+    void keptWhileEnabled() throws IOException {
+      loadOwner(Ending.DISABLED);
+
+      assertTrue(events.hasHandlers(StringBuilder.class));
+      assertTrue(events.hasHandlers(PlayerDrainEvent.class));
+      assertNotNull(channels.lookup("owner:data"));
+      assertTrue(commands.hasCommand("ownercmd"));
+      assertTrue(permissions.check(mock(Player.class), "anything"));
+      assertEquals(List.of("owner: warming up"), readinessHolds.reasons());
+    }
+
+    @Test
+    @DisplayName("should undo and refuse what a plugin registers once it is gone")
+    void refusesLateRegistrations() throws IOException {
+      loadOwner(Ending.DISABLED);
+      PluginContext context =
+          (PluginContext) Objects.requireNonNull(System.getProperties().get(PROBE + "context"));
+      manager.disableAll();
+
+      assertThrows(
+          IllegalStateException.class,
+          () -> context.events().subscribe(StringBuilder.class, builder -> {}));
+      assertThrows(IllegalStateException.class, () -> context.holdReadiness("too late"));
+      assertThrows(
+          IllegalStateException.class, () -> context.commands().register("late", invocation -> {}));
+
+      assertFalse(events.hasHandlers(StringBuilder.class));
+      assertFalse(readinessHolds.isHeld());
+      assertFalse(commands.hasCommand("late"));
+    }
+
+    @Test
+    @DisplayName("should forget the registrations a plugin undid itself")
+    void forgetsUndone() throws IOException {
+      loadOwner(Ending.DISABLED);
+      WarpPluginContext context =
+          (WarpPluginContext) Objects.requireNonNull(System.getProperties().get(PROBE + "context"));
+      int before = context.trackedRegistrations();
+
+      for (int i = 0; i < 100; i++) {
+        context.holdReadiness("blip " + i).release();
+      }
+
+      assertTrue(
+          context.trackedRegistrations() <= before + 1,
+          "tracked " + context.trackedRegistrations() + ", was " + before);
+      assertEquals(List.of("owner: warming up"), readinessHolds.reasons());
     }
   }
 
