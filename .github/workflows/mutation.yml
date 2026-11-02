@@ -1,10 +1,14 @@
 name: Mutation testing
 
 # PIT mutation testing of every main class of every module that has it (_mutation.yml): nightly on
-# main, which holds each module's score to its threshold and says when to raise one, and on demand
-# on any branch (gh workflow run mutation.yml --ref <branch>). Pull requests mutate only the main
-# classes they change, in CI; this run also catches what they leave out: a change to a module's
-# tests or build alone, and a change to one class that moves the score of another.
+# main, and on demand on any branch (gh workflow run mutation.yml --ref <branch>). Pull requests
+# mutate only the main classes they change, in CI; this run also catches what they leave out: a
+# change to a module's tests or build alone, and a change to one class that moves another's score.
+#
+# It holds each module's full score to its threshold, and its summary reports the score. Only this
+# run on main moves a threshold: when it notes that a score has outgrown one, raise the threshold to
+# the score rounded down in a pull request of its own, once any stack of pull requests has landed
+# (config/pitest/thresholds.properties).
 on:
   schedule:
     - cron: '41 2 * * *'
@@ -31,5 +35,6 @@ jobs:
     with:
       modules: '["protocol", "proxy"]'
       since: ${{ inputs.since || '' }}
-      # Every class of proxy takes about 15 minutes on a four-core runner, and grows with its tests.
-      timeout-minutes: ${{ inputs.since && 20 || 60 }}
+      # Every class of proxy takes about 30 minutes on a four-core runner, and grows with its tests;
+      # a scoped run gets as long as a pull request's (ci.yml).
+      timeout-minutes: ${{ inputs.since && 30 || 60 }}
