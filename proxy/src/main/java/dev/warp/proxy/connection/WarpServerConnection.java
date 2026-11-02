@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.messaging.ChannelIdentifier;
 import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerConnection;
@@ -38,6 +39,11 @@ record WarpServerConnection(ConnectedPlayer owner, BackendServer backend)
   @Override
   public Player player() {
     return owner.api();
+  }
+
+  @Override
+  public boolean sendPluginMessage(ChannelIdentifier channel, byte[] data) {
+    return owner.sendPluginMessageToServer(backend, channel.id(), data);
   }
 
   @Override

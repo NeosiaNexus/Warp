@@ -22,6 +22,7 @@ import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.config.DuplicateLoginPolicy;
 import dev.warp.proxy.config.ForwardingMode;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 
@@ -51,6 +52,7 @@ import io.netty.channel.Channel;
  * @param duplicateLoginPolicy what happens when a player logs in while a session with its UUID is
  *     still connected
  * @param events the event bus plugins subscribe to
+ * @param channels the plugin message channels plugins own
  * @param forwardingMode the player info forwarding mode
  * @param forwardingSecret the shared HMAC secret for Velocity modern forwarding
  * @param channelClass the socket channel class matching the detected transport
@@ -69,6 +71,7 @@ public record ServerLoginContext(
     PlayerRegistry playerRegistry,
     DuplicateLoginPolicy duplicateLoginPolicy,
     WarpEventBus events,
+    ChannelRegistry channels,
     ForwardingMode forwardingMode,
     byte[] forwardingSecret,
     Class<? extends Channel> channelClass) {

@@ -16,6 +16,7 @@
  */
 package dev.warp.api.server;
 
+import dev.warp.api.messaging.ChannelIdentifier;
 import dev.warp.api.player.Player;
 
 /**
@@ -45,4 +46,13 @@ public interface ServerConnection {
    * @return {@code true} while open
    */
   boolean isActive();
+
+  /**
+   * Sends a plugin message to the server, over this connection.
+   *
+   * @param channel the channel
+   * @param data the payload, copied
+   * @return {@code true} if it was sent; {@code false} if the connection is closed or not playing
+   */
+  boolean sendPluginMessage(ChannelIdentifier channel, byte[] data);
 }

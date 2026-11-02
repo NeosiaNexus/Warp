@@ -16,6 +16,7 @@
  */
 package dev.warp.api.player;
 
+import dev.warp.api.messaging.ChannelIdentifier;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerConnection;
 
@@ -103,6 +104,16 @@ public interface Player extends InboundConnection {
    * @return completed with the outcome once known; never completes exceptionally
    */
   CompletableFuture<ConnectionResult> connect(RegisteredServer server);
+
+  /**
+   * Sends a plugin message to the player's client.
+   *
+   * @param channel the channel
+   * @param data the payload, copied
+   * @return {@code true} if it was sent; {@code false} if the player is gone or between two states
+   *     where the client cannot receive one
+   */
+  boolean sendPluginMessage(ChannelIdentifier channel, byte[] data);
 
   /**
    * Disconnects the player with a reason shown on its screen.

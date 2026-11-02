@@ -31,6 +31,7 @@ import dev.warp.proxy.connection.PlaySession;
 import dev.warp.proxy.connection.ServerChannelInitializer;
 import dev.warp.proxy.connection.ServerLoginContext;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.plugin.WarpPluginManager;
 import dev.warp.proxy.server.ServerRegistry;
@@ -118,6 +119,9 @@ public final class WarpServer implements Warp {
   /** The event bus plugins subscribe to. */
   private final WarpEventBus events = new WarpEventBus();
 
+  /** The plugin message channels plugins own. */
+  private final ChannelRegistry channels = new ChannelRegistry();
+
   /** The plugins of the proxy's {@code plugins} directory. */
   private final WarpPluginManager pluginManager;
 
@@ -148,7 +152,8 @@ public final class WarpServer implements Warp {
     this.config = config;
     this.serverRegistry =
         new ServerRegistry(config.servers(), config.defaultServer(), config.fallbackOrder());
-    this.pluginManager = new WarpPluginManager(this, events, directory.resolve("plugins"));
+    this.pluginManager =
+        new WarpPluginManager(this, events, channels, directory.resolve("plugins"));
   }
 
   // ---------------------------------------------------------------------------
@@ -389,6 +394,7 @@ public final class WarpServer implements Warp {
         playerRegistry,
         config.duplicateLoginPolicy(),
         events,
+        channels,
         config.forwardingMode(),
         config.forwardingSecret(),
         transport.clientChannelClass());

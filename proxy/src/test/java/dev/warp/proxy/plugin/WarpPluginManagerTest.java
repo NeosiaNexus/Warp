@@ -28,6 +28,7 @@ import dev.warp.api.Warp;
 import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginState;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.messaging.ChannelRegistry;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -59,7 +60,7 @@ class WarpPluginManagerTest {
   void setUp() {
     plugins = root.resolve("plugins");
     events = new WarpEventBus();
-    manager = new WarpPluginManager(mock(Warp.class), events, plugins);
+    manager = new WarpPluginManager(mock(Warp.class), events, new ChannelRegistry(), plugins);
   }
 
   @AfterEach

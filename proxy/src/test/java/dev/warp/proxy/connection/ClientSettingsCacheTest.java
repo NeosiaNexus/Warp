@@ -32,6 +32,7 @@ import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.play.PlayClientSettings;
+import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 
@@ -81,6 +82,7 @@ class ClientSettingsCacheTest {
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
+    when(loginContext.channels()).thenReturn(new ChannelRegistry());
     ServerRegistry registry =
         new ServerRegistry(
             Map.of("lobby", new InetSocketAddress("localhost", 25565)), "lobby", List.of());

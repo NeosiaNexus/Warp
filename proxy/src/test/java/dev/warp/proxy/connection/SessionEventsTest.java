@@ -34,6 +34,7 @@ import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.event.player.LoginEventImpl;
+import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 
@@ -63,6 +64,7 @@ class SessionEventsTest {
   SessionEventsTest() {
     when(context.events()).thenReturn(bus);
     when(context.playerRegistry()).thenReturn(registry);
+    when(context.channels()).thenReturn(new ChannelRegistry());
     when(context.serverRegistry()).thenReturn(new ServerRegistry(Map.of(), null, List.of()));
   }
 

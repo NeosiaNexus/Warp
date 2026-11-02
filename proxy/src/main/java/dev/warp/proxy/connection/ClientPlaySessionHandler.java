@@ -279,8 +279,9 @@ final class ClientPlaySessionHandler implements SessionHandler {
   }
 
   private void handlePluginMessage(PlayPluginMessage pluginMessage) {
-    // TODO: Route specific channels (bungeecord:main, warp:main). For now, forward all.
-    forwardToBackend(pluginMessage);
+    if (!player.interceptPluginMessage(pluginMessage, null)) {
+      forwardToBackend(pluginMessage);
+    }
   }
 
   private void handleAcknowledgeConfiguration() {

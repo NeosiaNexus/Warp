@@ -41,6 +41,7 @@ import dev.warp.protocol.packet.play.ClearTitles;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.LegacyPlayerInfo;
 import dev.warp.protocol.packet.play.PlayDisconnect;
+import dev.warp.protocol.packet.play.PlayPluginMessage;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
@@ -49,6 +50,7 @@ import dev.warp.protocol.packet.play.SpawnInfo;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabListHeaderFooter;
+import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 
@@ -110,6 +112,7 @@ final class SwitchHarness implements AutoCloseable {
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
+    when(loginContext.channels()).thenReturn(new ChannelRegistry());
     when(loginContext.serverRegistry())
         .thenReturn(new ServerRegistry(servers, "lobby", fallbackOrder));
     // Cannot be registered on an embedded event loop: every connection fails at once.
@@ -271,7 +274,8 @@ final class SwitchHarness implements AutoCloseable {
             SystemChatMessage.class,
             StartConfiguration.class,
             BundleDelimiter.class,
-            ConfigDisconnect.class)) {
+            ConfigDisconnect.class,
+            PlayPluginMessage.class)) {
       try {
         if (registry.packetId(version, type) == packetId) {
           return type;

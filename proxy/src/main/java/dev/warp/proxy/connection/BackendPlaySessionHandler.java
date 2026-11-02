@@ -77,6 +77,9 @@ final class BackendPlaySessionHandler implements SessionHandler {
   private final ConnectedPlayer player;
   private final MinecraftConnection backendConnection;
 
+  /** Whether the next frame is that of a watched plugin message a plugin took. */
+  private boolean swallowNextFrame;
+
   BackendPlaySessionHandler(ConnectedPlayer player, MinecraftConnection backendConnection) {
     this.player = player;
     this.backendConnection = backendConnection;
@@ -154,6 +157,12 @@ final class BackendPlaySessionHandler implements SessionHandler {
 
   @Override
   public void handleBlind(ByteBuf buf) {
+    if (swallowNextFrame) {
+      // The frame of a plugin message a plugin took.
+      swallowNextFrame = false;
+      buf.release();
+      return;
+    }
     // A backend the client no longer plays on (left in a server switch) may still send PLAY
     // packets: drop them, the client is elsewhere or not in PLAY at all.
     if (!player.isPlayingOn(backendConnection)) {
@@ -225,9 +234,14 @@ final class BackendPlaySessionHandler implements SessionHandler {
     }
   }
 
+  /**
+   * Takes a watched plugin message, reported only on channels plugins own; its frame follows. A
+   * message a plugin takes has its frame dropped; any other frame is forwarded untouched.
+   */
   private void handlePluginMessage(PlayPluginMessage pluginMessage) {
-    // TODO: Intercept minecraft:brand and rewrite. For now, forward all.
-    forwardToClient(pluginMessage);
+    if (player.interceptPluginMessage(pluginMessage, backendConnection)) {
+      swallowNextFrame = true;
+    }
   }
 
   /**

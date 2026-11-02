@@ -76,6 +76,7 @@ import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.LegacyPlayerInfo;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
+import dev.warp.protocol.packet.play.PlayPluginMessage;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
@@ -636,6 +637,13 @@ class MinecraftDecoderFuzzTest {
           sample(BundleDelimiter.CODEC, v -> new BundleDelimiter()),
           sample(PlayDisconnect.CODEC, v -> new PlayDisconnect(REASON)),
           sample(StartConfiguration.CODEC, v -> new StartConfiguration()),
+          Map.entry(
+              PlayPluginMessage.WATCH,
+              v ->
+                  encode(
+                      PlayPluginMessage.CODEC,
+                      new PlayPluginMessage("minecraft:brand", new byte[] {1}),
+                      v)),
           fixture(BossBar.WATCH, "boss_bar_add"),
           fixture(LegacyPlayerInfo.WATCH, "legacy_player_info_add"),
           fixture(PlayerInfo.WATCH, "player_info_add"),

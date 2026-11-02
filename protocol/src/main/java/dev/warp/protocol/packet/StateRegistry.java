@@ -478,9 +478,10 @@ public final class StateRegistry {
                     map(0x2B, MINECRAFT_1_21_9),
                     map(0x2C, MINECRAFT_26_1),
                     map(0x2D, MINECRAFT_26_3))
-                .registerEncodeOnly(
+                .registerWatched(
                     PlayPluginMessage.class,
                     PlayPluginMessage.CODEC,
+                    PlayPluginMessage.WATCH,
                     map(0x3F, MINECRAFT_1_7_2),
                     map(0x18, MINECRAFT_1_9),
                     map(0x19, MINECRAFT_1_13),

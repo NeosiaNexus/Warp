@@ -23,6 +23,8 @@ import dev.warp.api.event.player.PostLoginEvent;
 import dev.warp.api.event.player.ServerConnectedEvent;
 import dev.warp.api.event.player.ServerPostConnectEvent;
 import dev.warp.api.event.player.ServerPreConnectEvent;
+import dev.warp.api.messaging.Messaging;
+import dev.warp.api.messaging.PluginMessageEvent;
 import dev.warp.api.player.ConnectionResult;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerInfo;
@@ -31,14 +33,18 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.packet.TextComponent;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
+import dev.warp.protocol.packet.config.ConfigPluginMessage;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.PlayDisconnect;
+import dev.warp.protocol.packet.play.PlayPluginMessage;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.event.player.KickedFromServerEventImpl;
 import dev.warp.proxy.event.player.PlayerChooseInitialServerEventImpl;
 import dev.warp.proxy.event.player.ServerPreConnectEventImpl;
+import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.messaging.PluginMessageEventImpl;
 import dev.warp.proxy.server.BackendServer;
 import dev.warp.proxy.text.Reasons;
 
@@ -1403,6 +1409,141 @@ public final class ConnectedPlayer {
    */
   public long measuredLatencyMs() {
     return clientLatencyNanos == 0 ? -1 : TimeUnit.NANOSECONDS.toMillis(clientLatencyNanos);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Plugin messages
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Hands a plugin message on a channel a plugin owns to {@link PluginMessageEvent}. Runs on the
+   * client event loop.
+   *
+   * @param message the message
+   * @param fromBackend the backend that sent it, or {@code null} if the client did
+   * @return {@code true} if the proxy took the message: the caller must not relay it
+   */
+  boolean interceptPluginMessage(
+      PlayPluginMessage message, @Nullable MinecraftConnection fromBackend) {
+    ChannelRegistry.Registration registration = loginContext.channels().lookup(message.channel());
+    if (registration == null) {
+      return false;
+    }
+    Messaging.Origin origin =
+        fromBackend == null ? Messaging.Origin.PLAYER : Messaging.Origin.SERVER;
+    if (!registration.accepts(origin)) {
+      logger.debug(
+          "Dropped a message on {} from the {} side of {}: plugin {} does not accept it",
+          message.channel(),
+          origin,
+          username,
+          registration.owner());
+      return true;
+    }
+    PluginMessageEvent.Source source;
+    if (fromBackend == null) {
+      source = new PluginMessageEvent.FromPlayer(api);
+    } else {
+      BackendServer server = serverOf(fromBackend);
+      if (server == null) {
+        return true; // a backend the player already left
+      }
+      source = new PluginMessageEvent.FromServer(new WarpServerConnection(this, server));
+    }
+    var event = new PluginMessageEventImpl(registration.channel(), source, api, message.data());
+    var _ =
+        loginContext
+            .events()
+            .fire(event, uuid)
+            .whenComplete(
+                (done, _) -> {
+                  if (done.result() instanceof PluginMessageEvent.Forward) {
+                    onEventLoop(() -> relay(message, fromBackend));
+                  }
+                });
+    return true;
+  }
+
+  private void relay(PlayPluginMessage message, @Nullable MinecraftConnection fromBackend) {
+    if (fromBackend == null) {
+      BackendConnection backend = backendConnection;
+      if (backend != null && backend.isActive()) {
+        backend.connection().writeAndFlush(message);
+      }
+    } else if (isPlayingOn(fromBackend)) {
+      clientConnection.writeAndFlush(message);
+    }
+  }
+
+  /** The registered server a backend connection of this player belongs to. */
+  private @Nullable BackendServer serverOf(MinecraftConnection backend) {
+    BackendConnection current = backendConnection;
+    if (current == null || current.connection() != backend) {
+      return null;
+    }
+    BackendServer playing = currentServer;
+    if (playing != null && playing.info().equals(current.server())) {
+      return playing;
+    }
+    BackendServer target = connectingTo;
+    if (target != null && target.info().equals(current.server())) {
+      return target;
+    }
+    return loginContext.serverRegistry().registered(current.server());
+  }
+
+  /**
+   * Sends a plugin message to the client, in the packet of its state. Thread-safe.
+   *
+   * @param channel the channel's wire name
+   * @param data the payload
+   * @return {@code true} if the client was in a state where it can receive one
+   */
+  boolean sendPluginMessage(String channel, byte[] data) {
+    if (!clientConnection.channel().isActive()) {
+      return false;
+    }
+    ProtocolState state = clientConnection.encoder().state();
+    if (state != ProtocolState.PLAY && state != ProtocolState.CONFIGURATION) {
+      return false;
+    }
+    byte[] copy = data.clone();
+    onEventLoop(
+        () -> {
+          switch (clientConnection.encoder().state()) {
+            case PLAY -> clientConnection.writeAndFlush(new PlayPluginMessage(channel, copy));
+            case CONFIGURATION ->
+                clientConnection.writeAndFlush(new ConfigPluginMessage(channel, copy));
+            default -> logger.debug("Dropped a plugin message to {}: it left the state", username);
+          }
+        });
+    return true;
+  }
+
+  /**
+   * Sends a plugin message to the server the player plays on. Thread-safe.
+   *
+   * @param server the server it must still be playing on
+   * @param channel the channel's wire name
+   * @param data the payload
+   * @return {@code true} if the player still plays on that server
+   */
+  boolean sendPluginMessageToServer(BackendServer server, String channel, byte[] data) {
+    BackendConnection backend = backendConnection;
+    if (currentServer != server || backend == null || !backend.isActive()) {
+      return false;
+    }
+    byte[] copy = data.clone();
+    MinecraftConnection connection = backend.connection();
+    onEventLoop(
+        () -> {
+          switch (connection.encoder().state()) {
+            case PLAY -> connection.writeAndFlush(new PlayPluginMessage(channel, copy));
+            case CONFIGURATION -> connection.writeAndFlush(new ConfigPluginMessage(channel, copy));
+            default -> logger.debug("Dropped a plugin message to {}'s server", username);
+          }
+        });
+    return true;
   }
 
   /** Fires a notification event on the player's lane, if anyone listens. */

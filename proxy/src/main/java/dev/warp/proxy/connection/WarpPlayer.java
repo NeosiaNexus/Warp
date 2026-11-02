@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.messaging.ChannelIdentifier;
 import dev.warp.api.player.ConnectionResult;
 import dev.warp.api.player.GameProfile;
 import dev.warp.api.player.Player;
@@ -108,6 +109,11 @@ public final class WarpPlayer implements Player {
       throw new IllegalArgumentException("Not a server of this proxy: " + server);
     }
     return player.requestConnection(backend, false);
+  }
+
+  @Override
+  public boolean sendPluginMessage(ChannelIdentifier channel, byte[] data) {
+    return player.sendPluginMessage(channel.id(), data);
   }
 
   @Override

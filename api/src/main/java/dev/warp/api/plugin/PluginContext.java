@@ -18,6 +18,7 @@ package dev.warp.api.plugin;
 
 import dev.warp.api.Warp;
 import dev.warp.api.event.EventBus;
+import dev.warp.api.messaging.Messaging;
 
 import java.nio.file.Path;
 
@@ -36,6 +37,7 @@ import org.slf4j.Logger;
  *   <li>{@link PluginContainer} and {@link PluginDescription}: the plugin itself;
  *   <li>{@link PluginManager}: every plugin;
  *   <li>{@link EventBus}: the plugin's event bus;
+ *   <li>{@link Messaging}: the plugin's plugin message channels;
  *   <li>{@link Path} annotated with {@link DataDirectory}: the plugin's data directory.
  * </ul>
  *
@@ -81,4 +83,12 @@ public interface PluginContext {
    * @return the event bus
    */
   EventBus events();
+
+  /**
+   * Returns the plugin's plugin message channels. Channels registered through it are released when
+   * the plugin is disabled or fails.
+   *
+   * @return the messaging registrar
+   */
+  Messaging messaging();
 }

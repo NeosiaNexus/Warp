@@ -21,6 +21,7 @@ import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.config.DuplicateLoginPolicy;
 import dev.warp.proxy.config.ForwardingMode;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 
@@ -163,6 +164,7 @@ final class TestLoginContexts {
         new PlayerRegistry(),
         policy,
         events,
+        new ChannelRegistry(),
         ForwardingMode.NONE,
         new byte[0],
         NioSocketChannel.class);

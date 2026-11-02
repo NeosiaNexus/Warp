@@ -41,6 +41,7 @@ import dev.warp.protocol.packet.TextComponent;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.PlayPacket;
+import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 
@@ -429,6 +430,7 @@ class ClientPlaySessionHandlerTest {
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
     when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
     when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
+    when(loginContext.channels()).thenReturn(new ChannelRegistry());
     when(loginContext.serverRegistry()).thenReturn(new ServerRegistry(servers, "lobby", List.of()));
     ConnectedPlayer player =
         new ConnectedPlayer(
