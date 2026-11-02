@@ -186,7 +186,7 @@ final class ComponentWriter {
           out.string(features.keybinds() ? "keybind" : "translate", keybind.keybind());
       case ScoreComponent score -> score(score);
       case SelectorComponent selector -> selector(selector);
-      case NBTComponent<?, ?> nbt -> nbt(nbt);
+      case NBTComponent<?> nbt -> nbt(nbt);
       case ObjectComponent object -> object(object);
       default ->
           throw new IllegalArgumentException(
@@ -247,12 +247,12 @@ final class ComponentWriter {
   }
 
   /** Whether the version reads NBT contents: from 1.14, from command storage from 1.15. */
-  private boolean writesNbt(NBTComponent<?, ?> nbt) {
+  private boolean writesNbt(NBTComponent<?> nbt) {
     return features.nbtContents()
         && (!(nbt instanceof StorageNBTComponent) || features.storageAndClipboard());
   }
 
-  private void nbt(NBTComponent<?, ?> nbt) {
+  private void nbt(NBTComponent<?> nbt) {
     if (!writesNbt(nbt)) {
       out.string("text", ""); // a client shows unresolved NBT contents as nothing
       return;
@@ -410,23 +410,25 @@ final class ComponentWriter {
    * open_file} (from 1.20.3 the client refuses it), and {@code show_dialog} carries a dialog
    * Adventure has no wire form for: both are left out, as is any action the version lacks.
    */
-  private void clickEvent(@Nullable ClickEvent event) {
+  private void clickEvent(@Nullable ClickEvent<?> event) {
     if (event == null || !writesClick(event)) {
       return;
     }
-    ClickEvent.Action action = event.action();
+    ClickEvent.Action<?> action = event.action();
     String name = action.name().toLowerCase(Locale.ROOT);
     ClickEvent.Payload payload = event.payload();
-    switch (action) {
-      case OPEN_URL -> {
-        String url = text(payload);
-        click(
-            name, "url", features.typedEvents() ? Objects.requireNonNull(untrustedUri(url)) : url);
-      }
-      case RUN_COMMAND, SUGGEST_COMMAND -> click(name, "command", text(payload));
-      case COPY_TO_CLIPBOARD -> click(name, "value", text(payload));
-      case CHANGE_PAGE -> changePage(name, page(payload));
-      default -> custom(name, (ClickEvent.Payload.Custom) payload);
+    if (action == ClickEvent.Action.OPEN_URL) {
+      String url = text(payload);
+      click(name, "url", features.typedEvents() ? Objects.requireNonNull(untrustedUri(url)) : url);
+    } else if (action == ClickEvent.Action.RUN_COMMAND
+        || action == ClickEvent.Action.SUGGEST_COMMAND) {
+      click(name, "command", text(payload));
+    } else if (action == ClickEvent.Action.COPY_TO_CLIPBOARD) {
+      click(name, "value", text(payload));
+    } else if (action == ClickEvent.Action.CHANGE_PAGE) {
+      changePage(name, page(payload));
+    } else {
+      custom(name, (ClickEvent.Payload.Custom) payload);
     }
   }
 
@@ -436,17 +438,26 @@ final class ComponentWriter {
    * pages its client validates. A server never sends {@code open_file} (from 1.20.3 the client
    * refuses it), and {@code show_dialog} carries a dialog Adventure has no wire form for.
    */
-  private boolean writesClick(ClickEvent event) {
+  private boolean writesClick(ClickEvent<?> event) {
     ClickEvent.Payload payload = event.payload();
     boolean typed = features.typedEvents();
-    return switch (event.action()) {
-      case OPEN_URL -> !typed || untrustedUri(text(payload)) != null;
-      case RUN_COMMAND, SUGGEST_COMMAND -> !typed || isChatString(text(payload));
-      case COPY_TO_CLIPBOARD -> features.storageAndClipboard();
-      case CHANGE_PAGE -> features.scoresAndSelectors() && (!typed || page(payload) > 0);
-      case CUSTOM -> features.customClicks();
-      case OPEN_FILE, SHOW_DIALOG -> false;
-    };
+    ClickEvent.Action<?> action = event.action();
+    if (action == ClickEvent.Action.OPEN_URL) {
+      return !typed || untrustedUri(text(payload)) != null;
+    }
+    if (action == ClickEvent.Action.RUN_COMMAND || action == ClickEvent.Action.SUGGEST_COMMAND) {
+      return !typed || isChatString(text(payload));
+    }
+    if (action == ClickEvent.Action.COPY_TO_CLIPBOARD) {
+      return features.storageAndClipboard();
+    }
+    if (action == ClickEvent.Action.CHANGE_PAGE) {
+      return features.scoresAndSelectors() && (!typed || page(payload) > 0);
+    }
+    if (action == ClickEvent.Action.CUSTOM) {
+      return features.customClicks();
+    }
+    return false; // open_file, show_dialog, and any action Adventure adds later
   }
 
   private void changePage(String name, int page) {
@@ -466,7 +477,8 @@ final class ComponentWriter {
 
   /** The {@code custom} action (1.21.6): an id, and an NBT payload the client sends back. */
   private void custom(String name, ClickEvent.Payload.Custom custom) {
-    BinaryTag payload = parse(custom.nbt());
+    BinaryTagHolder nbt = custom.nbt();
+    BinaryTag payload = nbt == null ? null : parse(nbt);
     out.beginObject("click_event");
     out.string("action", name);
     out.string("id", custom.key().asString());
@@ -783,7 +795,7 @@ final class ComponentWriter {
         String value = resolved(score);
         yield value != null ? value : "";
       }
-      case NBTComponent<?, ?> nbt when !writesNbt(nbt) -> "";
+      case NBTComponent<?> nbt when !writesNbt(nbt) -> "";
       case ObjectComponent _ when !features.objects() -> "";
       default -> null;
     };
@@ -799,7 +811,7 @@ final class ComponentWriter {
         return true;
       }
     }
-    ClickEvent click = style.clickEvent();
+    ClickEvent<?> click = style.clickEvent();
     HoverEvent<?> hover = style.hoverEvent();
     return (style.insertion() != null && features.insertion())
         || (style.font() != null && features.rgbFontsAndHoverContents())

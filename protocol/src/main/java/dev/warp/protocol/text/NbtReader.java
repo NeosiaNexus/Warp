@@ -169,7 +169,10 @@ final class NbtReader {
         return compound.build();
       }
       String name = string();
-      BinaryTag value = name == null ? null : payload(type, depth + 1);
+      if (name == null) {
+        break;
+      }
+      BinaryTag value = payload(type, depth + 1);
       if (value == null) {
         break;
       }

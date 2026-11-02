@@ -29,12 +29,10 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
-import net.kyori.adventure.audience.MessageType;
 import net.kyori.adventure.bossbar.BossBar;
 import net.kyori.adventure.chat.ChatType;
 import net.kyori.adventure.chat.SignedMessage;
 import net.kyori.adventure.dialog.DialogLike;
-import net.kyori.adventure.identity.Identified;
 import net.kyori.adventure.identity.Identity;
 import net.kyori.adventure.inventory.Book;
 import net.kyori.adventure.pointer.Pointers;
@@ -154,18 +152,6 @@ public final class WarpPlayer implements Player {
   }
 
   @Override
-  @SuppressWarnings("deprecation") // Adventure's identity overloads, still part of Audience
-  public void sendMessage(Identified source, Component message, MessageType type) {
-    player.sendMessage(message);
-  }
-
-  @Override
-  @SuppressWarnings("deprecation") // Adventure's identity overloads, still part of Audience
-  public void sendMessage(Identity source, Component message, MessageType type) {
-    player.sendMessage(message);
-  }
-
-  @Override
   public void sendMessage(SignedMessage signedMessage, ChatType.Bound boundChatType) {
     throw unsupported("signed messages (only a backend can write them)");
   }
@@ -263,7 +249,7 @@ public final class WarpPlayer implements Player {
   }
 
   @Override
-  public void removeResourcePacks(Iterable<UUID> ids) {
+  public void removeResourcePacks(UUID id, UUID... others) {
     throw unsupported("resource packs");
   }
 

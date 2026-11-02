@@ -622,7 +622,8 @@ class ComponentCodecTest {
       assertEquals(
           j("{'text':'c','click_event':{'action':'change_page','page':2}}"),
           click(ClickEvent.changePage(2), MINECRAFT_1_21_5));
-      assertEquals(j("'c'"), click(ClickEvent.changePage(0), MINECRAFT_1_21_5));
+      // Adventure 5 refuses a page below 1 itself.
+      assertThrows(IllegalArgumentException.class, () -> ClickEvent.changePage(0));
     }
 
     @Test
@@ -635,8 +636,8 @@ class ComponentCodecTest {
           j("{'text':'c','click_event':{'action':'open_url','url':'HTTP://a'}}"),
           click(ClickEvent.openUrl("HTTP://a"), MINECRAFT_1_21_5));
       assertEquals(j("'c'"), click(ClickEvent.openUrl("javascript:alert(1)"), MINECRAFT_1_21_5));
-      assertEquals(j("'c'"), click(ClickEvent.openUrl("http://a b"), MINECRAFT_1_21_5));
-      assertEquals(j("'c'"), click(ClickEvent.openUrl("a b"), MINECRAFT_1_21_5));
+      // Adventure 5 refuses a URL that is not a URI itself.
+      assertThrows(IllegalArgumentException.class, () -> ClickEvent.openUrl("http://a b"));
       assertEquals(
           j("{'text':'c','clickEvent':{'action':'open_url','value':'warp.dev'}}"),
           click(ClickEvent.openUrl("warp.dev"), MINECRAFT_1_21_4));
