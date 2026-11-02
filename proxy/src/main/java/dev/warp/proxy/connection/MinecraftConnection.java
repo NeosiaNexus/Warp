@@ -29,7 +29,7 @@ import dev.warp.protocol.netty.PacketDecompressor;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
-import dev.warp.proxy.network.PipelineHost;
+import dev.warp.proxy.pipeline.PipelineHost;
 
 import java.io.IOException;
 import java.nio.channels.ClosedChannelException;

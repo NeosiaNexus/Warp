@@ -48,7 +48,7 @@ import dev.warp.protocol.netty.PacketDecompressor;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
-import dev.warp.proxy.network.PipelineRegistry;
+import dev.warp.proxy.pipeline.PipelineRegistry;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;

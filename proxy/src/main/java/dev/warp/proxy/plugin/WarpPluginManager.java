@@ -33,8 +33,8 @@ import dev.warp.api.plugin.WarpPlugin;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.messaging.ChannelRegistry;
-import dev.warp.proxy.network.PipelineRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
+import dev.warp.proxy.pipeline.PipelineRegistry;
 
 import java.io.IOException;
 import java.net.MalformedURLException;

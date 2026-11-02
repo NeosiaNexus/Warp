@@ -24,7 +24,7 @@ import dev.warp.protocol.netty.FrameEncoder;
 import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.packet.PacketDirection;
-import dev.warp.proxy.network.PipelineRegistry;
+import dev.warp.proxy.pipeline.PipelineRegistry;
 import dev.warp.proxy.server.BackendServer;
 
 import java.util.concurrent.TimeUnit;

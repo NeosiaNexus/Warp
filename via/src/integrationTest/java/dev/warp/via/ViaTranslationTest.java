@@ -63,8 +63,8 @@ import dev.warp.protocol.packet.login.SetCompression;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.proxy.connection.MinecraftConnection;
 import dev.warp.proxy.connection.ServerChannelInitializer;
-import dev.warp.proxy.network.PipelineRegistry;
-import dev.warp.proxy.network.PluginNetworkPipelines;
+import dev.warp.proxy.pipeline.PipelineRegistry;
+import dev.warp.proxy.pipeline.PluginNetworkPipelines;
 
 import java.io.IOException;
 import java.net.InetAddress;
