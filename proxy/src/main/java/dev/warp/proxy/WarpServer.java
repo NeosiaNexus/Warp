@@ -20,6 +20,10 @@ import dev.warp.api.Warp;
 import dev.warp.api.WarpProvider;
 import dev.warp.api.event.proxy.ProxyReadyEvent;
 import dev.warp.api.event.proxy.ProxyShutdownEvent;
+import dev.warp.api.lifecycle.DrainOutcome;
+import dev.warp.api.lifecycle.DrainStatus;
+import dev.warp.api.lifecycle.DrainTrigger;
+import dev.warp.api.lifecycle.ReadinessHold;
 import dev.warp.api.player.Player;
 import dev.warp.api.plugin.PluginManager;
 import dev.warp.proxy.auth.MojangSessionService;
@@ -32,7 +36,12 @@ import dev.warp.proxy.connection.ConnectedPlayer;
 import dev.warp.proxy.connection.PlaySession;
 import dev.warp.proxy.connection.ServerChannelInitializer;
 import dev.warp.proxy.connection.ServerLoginContext;
+import dev.warp.proxy.drain.ExecutorDrainScheduler;
+import dev.warp.proxy.drain.ProxyDrain;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.management.ManagementServer;
+import dev.warp.proxy.management.ProxyHealth;
+import dev.warp.proxy.management.ReadinessHolds;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.plugin.WarpPluginManager;
@@ -48,9 +57,12 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.IntConsumer;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.PooledByteBufAllocator;
@@ -106,6 +118,24 @@ public final class WarpServer implements Warp {
   /** How long shutdown waits for the handlers of {@link ProxyShutdownEvent}. */
   private static final long SHUTDOWN_EVENT_TIMEOUT_SECONDS = 30;
 
+  /** How long shutdown waits for the listener to close. */
+  private static final long LISTENER_CLOSE_TIMEOUT_SECONDS = 5;
+
+  /**
+   * How long a second shutdown request (the JVM's hook during a drain's shutdown) waits for the one
+   * in progress before the JVM goes on exiting.
+   */
+  private static final long STOP_JOIN_TIMEOUT_SECONDS = 60;
+
+  /** Exit code once a drain emptied the proxy. */
+  static final int EXIT_DRAINED = 0;
+
+  /** Exit code when the drain's time-out expired and the players left were disconnected. */
+  static final int EXIT_DRAIN_TIMED_OUT = 2;
+
+  /** Exit code when a second SIGTERM stops the proxy in the middle of a drain: 128 + 15. */
+  static final int EXIT_SIGTERM = 143;
+
   // ---------------------------------------------------------------------------
   // Instance fields
   // ---------------------------------------------------------------------------
@@ -130,6 +160,21 @@ public final class WarpServer implements Warp {
   /** The plugins of the proxy's {@code plugins} directory. */
   private final WarpPluginManager pluginManager;
 
+  /** The holds plugins keep on the proxy's readiness. */
+  private final ReadinessHolds readinessHolds = new ReadinessHolds();
+
+  /** Runs the drain's steps, on a thread of their own. */
+  private final ExecutorDrainScheduler drainScheduler = new ExecutorDrainScheduler();
+
+  /** Empties the proxy before it stops. */
+  private final ProxyDrain drain;
+
+  /** Ends the process once a drain stopped the proxy: {@link System#exit} outside tests. */
+  private final IntConsumer exit;
+
+  /** The management server, when enabled. */
+  private @Nullable ManagementServer management;
+
   /** Netty boss group — accepts incoming connections. */
   private @Nullable MultiThreadIoEventLoopGroup bossGroup;
 
@@ -147,6 +192,15 @@ public final class WarpServer implements Warp {
 
   private volatile boolean running;
 
+  /** Whether the proxy listens and its plugins are enabled. */
+  private volatile boolean started;
+
+  /** Set by the first shutdown request; later ones wait for {@link #stopped}. */
+  private final AtomicBoolean stopping = new AtomicBoolean();
+
+  /** Completed once the shutdown is over. */
+  private final CompletableFuture<@Nullable Void> stopped = new CompletableFuture<>();
+
   /**
    * Creates a server with the given configuration.
    *
@@ -154,12 +208,27 @@ public final class WarpServer implements Warp {
    * @param directory the proxy's working directory, which holds the {@code plugins} directory
    */
   public WarpServer(WarpConfig config, Path directory) {
+    this(config, directory, System::exit);
+  }
+
+  /**
+   * Creates a server that ends the process with {@code exit} once a drain stopped it.
+   *
+   * @param config the proxy configuration
+   * @param directory the proxy's working directory, which holds the {@code plugins} directory
+   * @param exit ends the process with an exit code
+   */
+  WarpServer(WarpConfig config, Path directory, IntConsumer exit) {
     this.config = config;
+    this.exit = exit;
     this.serverRegistry =
         new ServerRegistry(config.servers(), config.defaultServer(), config.fallbackOrder());
     ProxyCommands.register(commands, serverRegistry);
     this.pluginManager =
         new WarpPluginManager(this, events, channels, commands, directory.resolve("plugins"));
+    this.drain =
+        new ProxyDrain(
+            config.drain(), playerRegistry, events, drainScheduler, this::stopAfterDrain);
   }
 
   // ---------------------------------------------------------------------------
@@ -188,6 +257,9 @@ public final class WarpServer implements Warp {
     this.workerGroup = new MultiThreadIoEventLoopGroup(transport.ioFactory());
 
     serverRegistry.setPinger(new BackendPinger(workerGroup, transport.clientChannelClass()));
+
+    // Probes get an answer (503) while plugins load, and the agent check from the start.
+    startManagement();
 
     // Plugins find the API published, and load before the first player can connect.
     registerProvider();
@@ -220,54 +292,168 @@ public final class WarpServer implements Warp {
       this.serverChannel = bootstrap.bind(config.bind()).sync().channel();
     } catch (InterruptedException e) {
       shutdownEventLoops();
+      stopManagement();
       Thread.currentThread().interrupt();
       throw new RuntimeException("Interrupted while binding server", e);
     } catch (Exception e) {
       shutdownEventLoops();
+      stopManagement();
       throw new RuntimeException("Failed to bind to " + config.bind(), e);
     }
 
-    Runtime.getRuntime().addShutdownHook(new Thread(this::stop, "warp-shutdown"));
+    Runtime.getRuntime().addShutdownHook(new Thread(this::onJvmShutdown, "warp-shutdown"));
+    if (config.drain().onSigterm()) {
+      catchSigterm();
+    }
 
     this.running = true;
+    this.started = true;
     logger.info("Warp is listening on {}", config.bind());
     var _ = events.fire(new ProxyReadyEvent(serverChannel.localAddress()));
   }
 
-  /** Gracefully shuts down the server channel and Netty event loops. */
+  /**
+   * Gracefully shuts down the server channel and Netty event loops. A call while a shutdown is in
+   * progress waits for it, for at most a minute.
+   */
   public void stop() {
-    if (!running) {
-      return;
-    }
-    running = false;
-    logger.info("Shutting down Warp...");
+    var _ = stop(null);
+  }
 
-    if (serverChannel != null) {
-      serverChannel.close().awaitUninterruptibly();
+  /**
+   * Shuts down: closes the listener, disconnects the players, lets plugins finish, then stops the
+   * event bus, the drain, the event loops and, last, the management server.
+   *
+   * @param reason shown to the players disconnected, or {@code null} for the default
+   * @return whether this call shut the proxy down, rather than a call before it
+   */
+  private boolean stop(@Nullable String reason) {
+    if (!stopping.compareAndSet(false, true)) {
+      awaitStopped();
+      return false;
     }
-    disconnectPlayers();
-    awaitShutdownHandlers();
-    pluginManager.disableAll();
-    events.close();
-    commands.close();
-    shutdownEventLoops();
+    try {
+      if (!running) {
+        return false;
+      }
+      running = false;
+      logger.info("Shutting down Warp...");
 
-    if (sessionService != null) {
-      sessionService.close();
+      if (serverChannel != null) {
+        serverChannel
+            .close()
+            .awaitUninterruptibly(LISTENER_CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+      }
+      disconnectPlayers(reason);
+      awaitShutdownHandlers();
+      pluginManager.disableAll();
+      events.close();
+      commands.close();
+      drainScheduler.shutdown();
+      shutdownEventLoops();
+
+      if (sessionService != null) {
+        sessionService.close();
+      }
+      // Last: the agent check and the liveness probe answer until the very end.
+      stopManagement();
+
+      logger.info("Warp has been stopped.");
+      return true;
+    } finally {
+      stopped.complete(null);
     }
+  }
 
-    logger.info("Warp has been stopped.");
+  /** Waits a bounded time for the shutdown in progress. */
+  private void awaitStopped() {
+    try {
+      stopped.get(STOP_JOIN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    } catch (ExecutionException | TimeoutException e) {
+      logger.warn("The shutdown in progress did not finish within {} s", STOP_JOIN_TIMEOUT_SECONDS);
+    }
+  }
+
+  /**
+   * The JVM's shutdown hook (SIGINT, SIGTERM unless it drains, the end of the process): stops the
+   * proxy or waits for the shutdown in progress, then stops the logging, whose own hook is off so
+   * that the proxy can log its shutdown.
+   */
+  private void onJvmShutdown() {
+    stop();
+    org.apache.logging.log4j.LogManager.shutdown();
+  }
+
+  /** Phase 3 of a drain: stops the proxy, then ends the process with the drain's outcome. */
+  private void stopAfterDrain(DrainStatus status) {
+    if (stop(config.drain().message())) {
+      int code = status.outcome() == DrainOutcome.TIMED_OUT ? EXIT_DRAIN_TIMED_OUT : EXIT_DRAINED;
+      logger.info("Exiting with code {}", code);
+      exit.accept(code);
+    }
   }
 
   /** Disconnects every player, telling them the proxy is shutting down. */
-  private void disconnectPlayers() {
+  private void disconnectPlayers(@Nullable String reason) {
     List<ConnectedPlayer> players = playerRegistry.all();
     if (players.isEmpty()) {
       return;
     }
     logger.info("Disconnecting {} players", players.size());
     for (ConnectedPlayer player : players) {
-      player.disconnectShutdown();
+      if (reason == null) {
+        player.disconnectShutdown();
+      } else {
+        player.disconnectShutdown(reason);
+      }
+    }
+  }
+
+  /** Starts the management server, if enabled. */
+  private void startManagement() {
+    if (!config.management().enabled()) {
+      return;
+    }
+    ManagementServer server = new ManagementServer(config.management(), new Health());
+    try {
+      server.start();
+    } catch (IllegalStateException e) {
+      shutdownEventLoops();
+      throw e;
+    }
+    this.management = server;
+  }
+
+  private void stopManagement() {
+    ManagementServer server = management;
+    if (server != null) {
+      server.stop();
+    }
+  }
+
+  /** Makes SIGTERM start a drain, and a second SIGTERM stop at once. */
+  private void catchSigterm() {
+    boolean caught =
+        Sigterm.install(
+            () -> {
+              if (stopping.get()) {
+                return;
+              }
+              logger.info("SIGTERM received: draining (another SIGTERM stops at once)");
+              var _ = startDrain(DrainTrigger.SIGNAL);
+            },
+            () -> {
+              logger.warn("SIGTERM received again: stopping now, without finishing the drain");
+              var _ = Thread.ofPlatform().name("warp-stop").start(() -> exit.accept(EXIT_SIGTERM));
+            });
+    if (caught) {
+      logger.info("SIGTERM drains the proxy (drain.on-sigterm)");
+    } else {
+      logger.warn(
+          "drain.on-sigterm is on, but this JVM does not let Warp handle SIGTERM: SIGTERM stops"
+              + " the proxy at once, without draining");
     }
   }
 
@@ -329,6 +515,77 @@ public final class WarpServer implements Warp {
   @Override
   public dev.warp.api.server.ServerRegistry servers() {
     return serverRegistry;
+  }
+
+  @Override
+  public ReadinessHold holdReadiness(String reason) {
+    return readinessHolds.hold(reason);
+  }
+
+  @Override
+  public CompletableFuture<DrainStatus> drain() {
+    return startDrain(DrainTrigger.PLUGIN);
+  }
+
+  @Override
+  public boolean isDraining() {
+    return drain.isDraining();
+  }
+
+  @Override
+  public DrainStatus drainStatus() {
+    return drain.status();
+  }
+
+  /**
+   * Starts the drain, or returns the one in progress.
+   *
+   * @throws IllegalStateException if the proxy is not running
+   */
+  private CompletableFuture<DrainStatus> startDrain(DrainTrigger trigger) {
+    if (!started || stopping.get()) {
+      throw new IllegalStateException("The proxy is not running: it cannot drain");
+    }
+    return drain.start(trigger);
+  }
+
+  /** The proxy as the management server reads it. */
+  private final class Health implements ProxyHealth {
+
+    @Override
+    public boolean isStarted() {
+      return started;
+    }
+
+    @Override
+    public boolean isStopping() {
+      return stopping.get();
+    }
+
+    @Override
+    public int serverCount() {
+      return serverRegistry.servers().size();
+    }
+
+    @Override
+    public List<String> readinessHolds() {
+      return readinessHolds.reasons();
+    }
+
+    @Override
+    public boolean isDraining() {
+      return drain.isDraining();
+    }
+
+    @Override
+    public DrainStatus drainStatus() {
+      return drain.status();
+    }
+
+    @Override
+    public CompletableFuture<DrainStatus> drain(DrainTrigger trigger) {
+      return startDrain(trigger);
+    }
   }
 
   // ---------------------------------------------------------------------------

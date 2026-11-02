@@ -953,8 +953,12 @@ public final class ConnectedPlayer {
         }
         case CONFIGURATION ->
             clientConnection.writeAndFlush(ConfigDisconnect.ofPlainText(reason, protocolVersion));
-        case PLAY ->
-            clientConnection.writeAndFlush(PlayDisconnect.ofPlainText(reason, protocolVersion));
+        case PLAY -> {
+          // Inside an open bundle, the client would hold the reason until the bundle closes, and
+          // lose it with the connection.
+          closeBundle();
+          clientConnection.writeAndFlush(PlayDisconnect.ofPlainText(reason, protocolVersion));
+        }
         case HANDSHAKE, STATUS -> {
           // No player exists in these states.
         }
@@ -1591,8 +1595,17 @@ public final class ConnectedPlayer {
 
   /** Disconnects the player because the proxy is shutting down. Thread-safe. */
   public void disconnectShutdown() {
+    disconnectShutdown("The proxy is shutting down.");
+  }
+
+  /**
+   * Disconnects the player because the proxy is shutting down, telling it why. Thread-safe.
+   *
+   * @param reason shown to the player
+   */
+  public void disconnectShutdown(String reason) {
     setDisconnectCause(DisconnectEvent.Cause.PROXY_SHUTDOWN);
-    onEventLoop(() -> disconnectWithReason("The proxy is shutting down."));
+    onEventLoop(() -> disconnectWithReason(reason));
   }
 
   /** Stops counting the player on its server. Runs on the client's event loop. */
