@@ -133,6 +133,10 @@ class AudiencePacketsTest {
       assertEquals("MC|StopSound", named.channel());
       assertArrayEquals(concat(string("player"), string(SOUND)), named.data());
       assertArrayEquals(new byte[] {0, 0}, all.data());
+      // A source those clients lack is master, never an index out of their list.
+      assertArrayEquals(
+          concat(string("master"), string("")),
+          new StopSound(10, null).legacyPluginMessage().data());
     }
 
     @Test
@@ -149,6 +153,7 @@ class AudiencePacketsTest {
       assertEquals(12, SoundEffect.fixed(1.5));
       assertEquals(-4, SoundEffect.fixed(-0.5));
       assertEquals(Integer.MAX_VALUE, SoundEffect.fixed(1e12));
+      assertEquals(Integer.MIN_VALUE, SoundEffect.fixed(-1e12));
     }
 
     @Test
@@ -164,6 +169,25 @@ class AudiencePacketsTest {
       assertThrows(
           DecoderException.class,
           () -> decode(EntitySoundEffect.CODEC, ProtocolVersion.MINECRAFT_1_21_4, registryId));
+    }
+
+    @Test
+    @DisplayName("should read past a fixed range, which a server may give an inlined sound")
+    void fixedRange() {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_21_4;
+      byte[] written =
+          encode(EntitySoundEffect.CODEC, new EntitySoundEffect("a", 1, 2, 1, 1, 3), version);
+      // The holder: 0, the name "a", then a present fixed range of 16 blocks in place of absent.
+      byte[] ranged = new byte[written.length + Float.BYTES];
+      System.arraycopy(written, 0, ranged, 0, 3);
+      ranged[3] = 1;
+      ByteBuf range = Unpooled.wrappedBuffer(ranged);
+      range.setFloat(4, 16);
+      System.arraycopy(written, 4, ranged, 4 + Float.BYTES, written.length - 4);
+
+      assertEquals(
+          new EntitySoundEffect("a", 1, 2, 1, 1, 3),
+          decode(EntitySoundEffect.CODEC, version, ranged));
     }
 
     private static byte[] string(String value) {
@@ -404,8 +428,21 @@ class AudiencePacketsTest {
       assertTrue(pack.samePack(unprompted));
       assertFalse(pack.equals(unprompted));
       assertFalse(pack.samePack(ResourcePackPush.of(PACK, URL, "", false, null, version)));
+      assertFalse(
+          pack.samePack(ResourcePackPush.of(PACK, URL + "?v=2", HASH, true, null, version)));
+      assertFalse(
+          pack.samePack(ResourcePackPush.of(UUID.randomUUID(), URL, HASH, true, null, version)));
       assertEquals(pack, pack(version));
       assertEquals(pack.hashCode(), pack(version).hashCode());
+      assertFalse(pack.hashCode() == unprompted.hashCode());
+      // Only whether it is required differs, then only the prompt.
+      assertFalse(
+          pack.equals(
+              ResourcePackPush.of(PACK, URL, HASH, false, Component.text("Please"), version)));
+      assertFalse(
+          pack.equals(
+              ResourcePackPush.of(PACK, URL, HASH, true, Component.text("Other"), version)));
+      assertFalse(pack.equals(URL));
     }
   }
 

@@ -187,9 +187,4 @@ public record ResourcePackPush(
   public int hashCode() {
     return Objects.hash(uuid, url, hash, required, Arrays.hashCode(prompt));
   }
-
-  @Override
-  public String toString() {
-    return "ResourcePackPush[uuid=" + uuid + ", url=" + url + ", hash=" + hash + "]";
-  }
 }
