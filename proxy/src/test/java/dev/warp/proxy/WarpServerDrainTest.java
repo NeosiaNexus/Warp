@@ -61,8 +61,14 @@ class WarpServerDrainTest {
 
   @TempDir private Path directory;
 
-  private final HttpClient client =
-      HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+  /**
+   * The longest the test waits for an answer: far more than a local one takes, and less than the
+   * time-out PIT gives the test (its usual time plus 4 s), so that a mutant that never answers
+   * fails the test instead of hanging it until PIT kills the JVM running it, which costs a restart.
+   */
+  private static final Duration ANSWER_TIMEOUT = Duration.ofSeconds(3);
+
+  private final HttpClient client = HttpClient.newBuilder().connectTimeout(ANSWER_TIMEOUT).build();
 
   @Test
   @DisplayName(
@@ -122,18 +128,25 @@ class WarpServerDrainTest {
       hold.release();
       assertEquals(200, get(http, "/readyz").statusCode());
 
+      long drainStarted = System.nanoTime();
       HttpResponse<String> drained =
           client.send(
               HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + http + "/drain?wait=true"))
                   .header("Authorization", "Bearer " + TOKEN)
-                  .timeout(Duration.ofSeconds(20))
+                  .timeout(ANSWER_TIMEOUT)
                   .POST(HttpRequest.BodyPublishers.noBody())
                   .build(),
               HttpResponse.BodyHandlers.ofString());
 
       assertEquals(200, drained.statusCode());
       assertTrue(drained.body().contains("\"outcome\":\"drained\""), drained.body());
-      assertEquals(WarpServer.EXIT_DRAINED, exited.get(20, TimeUnit.SECONDS));
+      assertEquals(WarpServer.EXIT_DRAINED, exited.get(5, TimeUnit.SECONDS));
+      Duration drainToExit = Duration.ofNanos(System.nanoTime() - drainStarted);
+      // Nobody to drain: the time is the stop's, whose event loops each wait out a quiet period
+      // of 2 s before terminating. Both at once, not one after the other.
+      assertTrue(
+          drainToExit.compareTo(Duration.ofMillis(3_500)) < 0,
+          "drained and stopped in " + drainToExit.toMillis() + " ms");
       assertTrue(server.isDraining());
       assertEquals(DrainPhase.STOPPING, server.drainStatus().phase());
       assertThrows(
@@ -149,7 +162,7 @@ class WarpServerDrainTest {
   private HttpResponse<String> get(int port, String path) throws IOException, InterruptedException {
     return client.send(
         HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path))
-            .timeout(Duration.ofSeconds(10))
+            .timeout(ANSWER_TIMEOUT)
             .GET()
             .build(),
         HttpResponse.BodyHandlers.ofString());
@@ -157,7 +170,7 @@ class WarpServerDrainTest {
 
   private static String agentReply(int port) throws IOException {
     try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), port)) {
-      socket.setSoTimeout(5_000);
+      socket.setSoTimeout((int) ANSWER_TIMEOUT.toMillis());
       return new BufferedReader(
               new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII))
           .readLine();
