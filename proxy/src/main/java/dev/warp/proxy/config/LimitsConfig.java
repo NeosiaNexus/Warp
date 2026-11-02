@@ -193,19 +193,6 @@ public record LimitsConfig(
 
   /** Formats a duration as its configuration would: {@code 200ms}, {@code 3s}, {@code 1m}. */
   static String format(Duration duration) {
-    long millis = duration.toMillis();
-    if (millis % 86_400_000 == 0 && millis != 0) {
-      return millis / 86_400_000 + "d";
-    }
-    if (millis % 3_600_000 == 0 && millis != 0) {
-      return millis / 3_600_000 + "h";
-    }
-    if (millis % 60_000 == 0 && millis != 0) {
-      return millis / 60_000 + "m";
-    }
-    if (millis % 1000 == 0) {
-      return millis / 1000 + "s";
-    }
-    return millis + "ms";
+    return Durations.format(duration);
   }
 }
