@@ -35,6 +35,7 @@ jobs:
     with:
       modules: '["protocol", "proxy"]'
       since: ${{ inputs.since || '' }}
-      # Every class of proxy takes about 30 minutes on a four-core runner, and grows with its tests;
-      # a scoped run gets as long as a pull request's (ci.yml).
-      timeout-minutes: ${{ inputs.since && 30 || 60 }}
+      # Every class of proxy takes about 31 minutes on a four-core runner, and grows with its tests;
+      # a scoped run gets as long, as a pull request's does (ci.yml): a revision far enough back
+      # makes it a full run.
+      timeout-minutes: 60

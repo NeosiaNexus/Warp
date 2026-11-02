@@ -221,8 +221,10 @@ jobs:
     with:
       modules: ${{ needs.changes.outputs.mutation }}
       since: ${{ github.event.pull_request.base.sha }}
-      # A few changed classes take minutes; 25 core classes of proxy, half its mutants, took 19.
-      timeout-minutes: 30
+      # A few changed classes take minutes, but a pull request that changes most classes mutates
+      # nearly all of them: the integration branch's took about 31 minutes for proxy. So a pull
+      # request gets the nightly full run's limit (mutation.yml); a small one finishes long before.
+      timeout-minutes: 60
 
   # The only check to mark as required: it fails if any job above failed or was cancelled, and
   # passes when they succeeded or were skipped on purpose.
