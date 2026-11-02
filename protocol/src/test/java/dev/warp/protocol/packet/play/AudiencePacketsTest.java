@@ -79,6 +79,10 @@ class AudiencePacketsTest {
       return AudiencePacketFixtures.versionsWith("sound_entity");
     }
 
+    static Stream<ProtocolVersion> entityIdVersions() {
+      return AudiencePacketFixtures.versionsWith("sound_entity_id");
+    }
+
     static Stream<ProtocolVersion> stopVersions() {
       return AudiencePacketFixtures.versionsWith("stop_sound_all");
     }
@@ -102,12 +106,44 @@ class AudiencePacketsTest {
     @MethodSource("entityVersions")
     @DisplayName("should write a sound following an entity with its event inlined, from 1.19.3")
     void followingEntity(ProtocolVersion version) {
-      EntitySoundEffect sound = new EntitySoundEffect(SOUND, PLAYER_SOURCE, 42, 0.5f, 1.5f, 42);
+      EntitySoundEffect sound = EntitySoundEffect.named(SOUND, PLAYER_SOURCE, 42, 0.5f, 1.5f, 42);
 
       byte[] written = encode(EntitySoundEffect.CODEC, sound, version);
 
       assertArrayEquals(bytes(version, "sound_entity"), written);
       assertEquals(sound, decode(EntitySoundEffect.CODEC, version, written));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("entityIdVersions")
+    @DisplayName("should write a sound following an entity by its registry id, 1.14 to 1.19.2")
+    void followingEntityById(ProtocolVersion version) {
+      long seed = version.isAtLeast(ProtocolVersion.MINECRAFT_1_19) ? 42 : 0;
+      EntitySoundEffect sound =
+          EntitySoundEffect.registered(300, PLAYER_SOURCE, 42, 0.5f, 1.5f, seed);
+
+      byte[] written = encode(EntitySoundEffect.CODEC, sound, version);
+
+      assertArrayEquals(bytes(version, "sound_entity_id"), written);
+      assertEquals(sound, decode(EntitySoundEffect.CODEC, version, written));
+    }
+
+    @Test
+    @DisplayName("should refuse a sound following an entity in the form the client lacks")
+    void followingEntityInTheWrongForm() {
+      EntitySoundEffect named = EntitySoundEffect.named(SOUND, PLAYER_SOURCE, 42, 1, 1, 0);
+      EntitySoundEffect registered = EntitySoundEffect.registered(0, PLAYER_SOURCE, 42, 1, 1, 0);
+
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> encode(EntitySoundEffect.CODEC, named, ProtocolVersion.MINECRAFT_1_19_2));
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> encode(EntitySoundEffect.CODEC, registered, ProtocolVersion.MINECRAFT_1_19_3));
+      // Id 0 is a sound: only a negative id is missing.
+      assertArrayEquals(
+          new byte[] {0, PLAYER_SOURCE, 42, 63, -128, 0, 0, 63, -128, 0, 0},
+          encode(EntitySoundEffect.CODEC, registered, ProtocolVersion.MINECRAFT_1_14));
     }
 
     @ParameterizedTest(name = "{0}")
@@ -176,7 +212,7 @@ class AudiencePacketsTest {
     void fixedRange() {
       ProtocolVersion version = ProtocolVersion.MINECRAFT_1_21_4;
       byte[] written =
-          encode(EntitySoundEffect.CODEC, new EntitySoundEffect("a", 1, 2, 1, 1, 3), version);
+          encode(EntitySoundEffect.CODEC, EntitySoundEffect.named("a", 1, 2, 1, 1, 3), version);
       // The holder: 0, the name "a", then a present fixed range of 16 blocks in place of absent.
       byte[] ranged = new byte[written.length + Float.BYTES];
       System.arraycopy(written, 0, ranged, 0, 3);
@@ -186,7 +222,7 @@ class AudiencePacketsTest {
       System.arraycopy(written, 4, ranged, 4 + Float.BYTES, written.length - 4);
 
       assertEquals(
-          new EntitySoundEffect("a", 1, 2, 1, 1, 3),
+          EntitySoundEffect.named("a", 1, 2, 1, 1, 3),
           decode(EntitySoundEffect.CODEC, version, ranged));
     }
 

@@ -24,6 +24,7 @@ const URL = 'https://warp.dev/pack.zip'
 const HASH = '0123456789abcdef0123456789abcdef01234567'
 const SOUND = 'minecraft:entity.experience_orb.pickup'
 const SEED = [0, 42] // protodef i64 as [high, low]
+const SOUND_ID = 300
 const SIGNATURE = Buffer.alloc(256, 7)
 
 function at (data, version) {
@@ -70,6 +71,12 @@ for (const v of VERSIONS) {
     out(protocol, 'sound_named', body(ser, 'named_sound_effect', {
       soundName: SOUND, soundCategory: 7, x: 8, y: 520, z: -16, volume: 0.5, pitch: at(data, '1.10') ? 1.5 : 94, seed: SEED
     }))
+    // Up to 1.19.2 a sound following an entity is its registry id: 300, two VarInt bytes.
+    if (has('entity_sound_effect')) {
+      out(protocol, 'sound_entity_id', body(ser, 'entity_sound_effect', {
+        soundId: SOUND_ID, soundCategory: 7, entityId: 42, volume: 0.5, pitch: 1.5, seed: SEED
+      }))
+    }
   } else {
     out(protocol, 'sound_named', inlined(body(ser, 'sound_effect', {
       sound: { data: { soundName: SOUND, fixedRange: undefined } },

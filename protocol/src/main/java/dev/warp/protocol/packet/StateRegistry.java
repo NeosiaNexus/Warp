@@ -840,6 +840,12 @@ public final class StateRegistry {
                 .registerEncodeOnly(
                     EntitySoundEffect.class,
                     EntitySoundEffect.CODEC,
+                    map(0x50, MINECRAFT_1_14),
+                    map(0x51, MINECRAFT_1_15),
+                    map(0x50, MINECRAFT_1_16),
+                    map(0x5B, MINECRAFT_1_17),
+                    map(0x5C, MINECRAFT_1_18),
+                    map(0x5F, MINECRAFT_1_19_1),
                     map(0x5D, MINECRAFT_1_19_3),
                     map(0x61, MINECRAFT_1_19_4),
                     map(0x63, MINECRAFT_1_20_2),

@@ -231,7 +231,7 @@ public final class WarpPlayer implements Player {
       case ACTION_BAR, TITLE, PLAYER_LIST_HEADER_AND_FOOTER, RESOURCE_PACK_STATUS ->
           version.isAtLeast(ProtocolVersion.MINECRAFT_1_8);
       case POSITIONED_SOUND, RESOURCE_PACK -> true;
-      case EMITTED_SOUND -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_19_3);
+      case EMITTED_SOUND -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_14);
       case STOP_SOUND -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_9_4);
       case BOSS_BAR -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_9);
       case MULTIPLE_RESOURCE_PACKS -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_3);

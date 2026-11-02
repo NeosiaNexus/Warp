@@ -44,8 +44,10 @@ public enum AudienceFeature {
 
   /**
    * Sounds that follow the player or another player on the same server ({@code playSound(Sound)}
-   * and {@code playSound(Sound, Emitter)}), from 1.19.3: before, the client only takes a sound
-   * following an entity by its id in the client's sound registry, which the proxy never learns.
+   * and {@code playSound(Sound, Emitter)}), from 1.14. From 1.14 to 1.19.2 the client takes such a
+   * sound by its id in the sound registry of its version, so only the vanilla sounds of that
+   * version play (a resource pack's own sound, or one a later version added, does nothing); from
+   * 1.19.3 any sound plays. Before 1.14 no packet plays a sound following an entity.
    */
   EMITTED_SOUND,
 

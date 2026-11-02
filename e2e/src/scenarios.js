@@ -2,6 +2,7 @@
 // sign of trouble. Backends are told apart by game mode, which every version announces when a
 // player joins: lobby = creative, survival = adventure.
 import { randomBytes, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 import { FORWARDED_PLAYER, mojangUuid, offlineUuid } from './mojang.js';
 import { sha1 } from './packs.js';
@@ -385,8 +386,9 @@ async function expectPack(bot, index, pack, server) {
   if (downloaded !== offer.hash) throw new Error(`${offer.url}: HTTP ${response.status}, SHA-1 ${downloaded} instead of ${offer.hash}`);
 }
 
-/** First protocols where the client: has boss bars (1.9), plays a named sound following an entity (1.19.3), configures (1.20.2), holds several packs by UUID (1.20.3). */
+/** First protocols where the client: has boss bars (1.9), plays a sound following an entity by its registry id (1.14), by its name (1.19.3), configures (1.20.2), holds several packs by UUID (1.20.3). */
 const BOSS_BARS = 107;
+const ENTITY_SOUNDS = 477;
 const NAMED_ENTITY_SOUNDS = 761;
 const CONFIGURATION = 764;
 const MULTIPLE_PACKS = 765;
@@ -396,9 +398,22 @@ const PROBE_BAR = 'Warp e2e';
 const PROBE_SOUND = /entity\.experience_orb\.pickup$/;
 
 /**
+ * The id of the probe's sound in a client's registry, 1.14 to 1.19.2: read from Mojang's data
+ * generator reports through the samples tools/sound-events.js writes for Warp's tests, never from
+ * the table Warp loads.
+ */
+function probeSoundId(protocol) {
+  const samples = readFileSync(new URL('../../protocol/src/test/resources/dev/warp/protocol/packet/play/sound-event-samples.txt', import.meta.url), 'utf8');
+  const line = samples.split('\n').find((l) => l.startsWith(`${protocol} id entity.experience_orb.pickup `));
+  if (!line) throw new Error(`no sound event sample for protocol ${protocol}`);
+  return Number(line.split(' ')[3]);
+}
+
+/**
  * A plugin of Warp's own (e2e/plugin) shows the player a boss bar, plays it a sound at a position
  * and one that follows it, and sends the proxy's resource pack: the bot receives each as its version
- * has it (no boss bar before 1.9, no named sound following a player before 1.19.3), and the plugin
+ * has it (no boss bar before 1.9, the sound following the player by its registry id from 1.14, by its
+ * name from 1.19.3, not at all before 1.14), and the plugin
  * hears the pack's statuses. After a switch the bar is still on the bot's screen, whose model clears
  * it in the configuration phase from 1.20.2 as the vanilla client does, the plugin's pack is not sent
  * again, and from 1.20.3 the lobby's own pack is removed, the next server not sending it. The bar is
@@ -427,6 +442,12 @@ async function audience(ctx) {
     if (protocol >= NAMED_ENTITY_SOUNDS) {
       await bot.waitFor(() => bot.sounds.some((s) => s.packet === 'entity_sound_effect' && PROBE_SOUND.test(String(s.sound))), 'the sound following the player', 10_000);
       details.push('sound following the player played');
+    } else if (protocol >= ENTITY_SOUNDS) {
+      const id = probeSoundId(protocol);
+      await bot.waitFor(() => bot.sounds.some((s) => s.packet === 'entity_sound_effect' && s.sound === id), `the sound following the player (registry id ${id})`, 10_000);
+      details.push(`sound following the player played by registry id ${id}`);
+    } else if (bot.sounds.some((s) => s.packet === 'entity_sound_effect')) {
+      throw new Error('a sound following the player reached a client before 1.14');
     }
     const offer = await bot.waitFor(() => bot.resourcePacks.some((p) => p.url === ctx.packs.proxy.url), "the plugin's resource pack", 10_000)
       .then(() => bot.resourcePacks.find((p) => p.url === ctx.packs.proxy.url));

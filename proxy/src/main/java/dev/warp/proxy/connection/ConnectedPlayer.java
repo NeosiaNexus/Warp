@@ -51,6 +51,7 @@ import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.PlayPacket;
 import dev.warp.protocol.packet.play.PlayPluginMessage;
 import dev.warp.protocol.packet.play.SoundEffect;
+import dev.warp.protocol.packet.play.SoundEventIds;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.StopSound;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
@@ -1246,9 +1247,10 @@ public final class ConnectedPlayer {
   }
 
   /**
-   * Plays a sound that follows the player, or another player on the same server, from 1.19.3.
-   * Nothing happens before 1.19.3, nor when {@code emitter} plays on another server or is
-   * switching.
+   * Plays a sound that follows the player, or another player on the same server, from 1.14: by its
+   * key from 1.19.3, by its id in the client's registry before ({@link SoundEventIds}), which only
+   * vanilla sounds of the client's version have. Nothing happens before 1.14, for a sound the
+   * client's registry lacks, nor when {@code emitter} plays on another server or is switching.
    *
    * @param sound the sound
    * @param emitter the player the sound follows, or {@code null} for this player
@@ -1256,8 +1258,13 @@ public final class ConnectedPlayer {
    */
   public void playSound(Sound sound, @Nullable ConnectedPlayer emitter) {
     String key = soundKey(sound.name());
-    if (protocolVersion.isOlderThan(ProtocolVersion.MINECRAFT_1_19_3)) {
+    if (protocolVersion.isOlderThan(ProtocolVersion.MINECRAFT_1_14)) {
       return;
+    }
+    boolean named = protocolVersion.isAtLeast(ProtocolVersion.MINECRAFT_1_19_3);
+    int soundId = named ? -1 : SoundEventIds.id(key, protocolVersion);
+    if (!named && soundId < 0) {
+      return; // not a sound of the client's version: no id names it
     }
     int source = AdventureIds.source(sound.source(), protocolVersion);
     long seed = seed(sound);
@@ -1276,8 +1283,12 @@ public final class ConnectedPlayer {
             }
             entity = emitter.entityId();
           }
+          float volume = sound.volume();
+          float pitch = sound.pitch();
           clientConnection.writeAndFlush(
-              new EntitySoundEffect(key, source, entity, sound.volume(), sound.pitch(), seed));
+              named
+                  ? EntitySoundEffect.named(key, source, entity, volume, pitch, seed)
+                  : EntitySoundEffect.registered(soundId, source, entity, volume, pitch, seed));
         });
   }
 

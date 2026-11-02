@@ -158,13 +158,42 @@ class SoundsTest {
     }
 
     @Test
-    @DisplayName("should do nothing before 1.19.3, whose client takes registry ids only")
-    void beforeInlinedSounds() {
-      SwitchHarness setup = inGame(ProtocolVersion.MINECRAFT_1_19_1);
+    @DisplayName("should name the sound by its id in the client's registry from 1.14 to 1.19.2")
+    void byRegistryId() {
+      SwitchHarness modern = inGame(ProtocolVersion.MINECRAFT_1_19_1);
+      SwitchHarness first = inGame(ProtocolVersion.MINECRAFT_1_14);
 
-      setup.player.api().playSound(SOUND);
+      modern.player.api().playSound(SOUND);
+      first.player.api().playSound(SOUND, Sound.Emitter.self());
 
-      assertEquals(List.of(), setup.sentToClient());
+      // block.note_block.pling is 776 in 1.19.1's registry, 412 in 1.14's (Mojang's reports).
+      assertEquals(
+          EntitySoundEffect.registered(776, 7, 42, 0.5f, 1.5f, 7),
+          modern.sentToClient().getFirst().as(EntitySoundEffect.class));
+      // No seed before 1.19.
+      assertEquals(
+          EntitySoundEffect.registered(412, 7, 42, 0.5f, 1.5f, 0),
+          first.sentToClient().getFirst().as(EntitySoundEffect.class));
+    }
+
+    @Test
+    @DisplayName("should do nothing for a sound the client's registry lacks, nor before 1.14")
+    void noRegistryId() {
+      SwitchHarness older = inGame(ProtocolVersion.MINECRAFT_1_18_2);
+      SwitchHarness oldest = inGame(ProtocolVersion.MINECRAFT_1_13_2);
+
+      older
+          .player
+          .api()
+          .playSound(Sound.sound(Key.key("entity.warden.heartbeat"), Sound.Source.HOSTILE, 1, 1));
+      older
+          .player
+          .api()
+          .playSound(Sound.sound(Key.key("myserver", "bell"), Sound.Source.MASTER, 1, 1));
+      oldest.player.api().playSound(SOUND);
+
+      assertEquals(List.of(), older.sentToClient());
+      assertEquals(List.of(), oldest.sentToClient());
     }
 
     @Test

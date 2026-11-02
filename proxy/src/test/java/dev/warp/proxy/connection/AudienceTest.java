@@ -205,7 +205,7 @@ class AudienceTest {
           version.isAtLeast(ProtocolVersion.MINECRAFT_1_19_1),
           WarpPlayer.supports(AudienceFeature.DELETE_MESSAGE, version));
       assertEquals(
-          version.isAtLeast(ProtocolVersion.MINECRAFT_1_19_3),
+          version.isAtLeast(ProtocolVersion.MINECRAFT_1_14),
           WarpPlayer.supports(AudienceFeature.EMITTED_SOUND, version));
       assertEquals(
           version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_3),
@@ -245,6 +245,8 @@ class AudienceTest {
         ProtocolVersion.MINECRAFT_1_9,
         ProtocolVersion.MINECRAFT_1_9_4,
         ProtocolVersion.MINECRAFT_1_12_2,
+        ProtocolVersion.MINECRAFT_1_13_2,
+        ProtocolVersion.MINECRAFT_1_14,
         ProtocolVersion.MINECRAFT_1_19,
         ProtocolVersion.MINECRAFT_1_19_1,
         ProtocolVersion.MINECRAFT_1_19_3,
