@@ -6,7 +6,8 @@
 #   bin/bench-guard.sh --timings  # time the guarded benchmarks (the trend tracked on main)
 #
 # The guarded benchmarks are the hot path: relaying clientbound traffic with compression
-# passthrough, Warp's default, and peeking at the packet id of a compressed frame.
+# passthrough, Warp's default, peeking at the packet id of a compressed frame, and compressing and
+# decompressing with Warp's native libdeflate, which runs for every packet Warp compresses itself.
 #
 # Allocation guard: JMH's GC profiler counts the bytes allocated per packet, with escape analysis
 # off so that the count covers every allocation the code makes, not those the JIT happened to keep
@@ -33,7 +34,8 @@ esac
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 results=protocol/build/results/jmh
 baseline=protocol/src/jmh/alloc-baseline.json
-guarded=('ForwardingPathBenchmark\.relayClientbound$|PacketIdPeekBenchmark\.peek$' -p mode=PASSTHROUGH)
+guarded=('ForwardingPathBenchmark\.relayClientbound$|PacketIdPeekBenchmark\.peek$|CodecCostBenchmark\.(deflate|inflate)$'
+  -p mode=PASSTHROUGH -p implementation=WARP_NATIVE)
 
 # Collapsible sections in the Actions log, headings elsewhere.
 group() { if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::group::$1"; else echo "== $1"; fi; }

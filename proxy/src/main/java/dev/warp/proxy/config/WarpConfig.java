@@ -1271,7 +1271,9 @@ public final class WarpConfig {
         }
 
 
-        # Packet compression settings (applied after login).
+        # Packet compression settings (applied after login). Warp compresses with the libdeflate
+        # bundled in its jar, or with Java's zlib where that cannot load (the startup log says
+        # which, and why). -Dwarp.natives.disable=true forces Java's zlib.
         compression {
           # Packets >= this size (bytes) are compressed. Set to -1 to disable.
           threshold = 256

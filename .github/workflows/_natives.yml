@@ -1,0 +1,162 @@
+name: Natives (reusable)
+
+# Reusable: builds libdeflate (jni/native/build-libdeflate.sh, version and checksum pinned in
+# jni/native/libdeflate.env) for every platform Warp bundles, each on a runner of that platform,
+# then loads each build on its own platform through Warp's real loader and start-up self-test
+# (`java dev.warp.jni.Natives --expect <platform>`), twice: once installing it into the user's cache
+# directory, once reusing it. A library that does not load where it will run never reaches the jar.
+#
+# Uploads the `natives` artifact, laid out as <platform>/<library>, which the release bundles with
+# `./gradlew shadowJar -Pwarp.natives.dir=natives -Pwarp.natives.required=true`.
+
+on:
+  workflow_call:
+
+permissions: {}
+
+env:
+  # Pinned by digest (multi-architecture indexes). musl builds and their load test run in these.
+  ALPINE_IMAGE: alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f
+  TEMURIN_ALPINE_IMAGE: eclipse-temurin:25-jre-alpine@sha256:56f273059de6b13a6b49fe0ded691ed2d0399bbee76156a8f2d385f7524a3d43
+
+jobs:
+  # The jni classes without any library, to load each platform's build with on its own runner.
+  classes:
+    name: Loader classes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # check out the code
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up build
+        uses: $/.github/actions/setup-build
+
+      # An empty natives directory: the jar holds no library, so each test below loads the build
+      # of its own platform and nothing else.
+      - name: Build the jni jar
+        run: |
+          mkdir -p "$RUNNER_TEMP/no-natives"
+          ./gradlew :jni:jar -Pwarp.natives.dir="$RUNNER_TEMP/no-natives"
+          cp jni/build/libs/jni-"$(< version.txt)".jar "$RUNNER_TEMP/jni.jar"
+
+      - name: Upload the jni jar
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: natives-loader
+          path: ${{ runner.temp }}/jni.jar
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    name: libdeflate (${{ matrix.platform }})
+    needs: classes
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+          - platform: linux-x86_64-musl
+            runner: ubuntu-24.04
+            alpine: true
+          - platform: linux-aarch64-musl
+            runner: ubuntu-24.04-arm
+            alpine: true
+          - platform: macos-x86_64
+            runner: macos-15-intel
+          - platform: macos-aarch64
+            runner: macos-15
+          - platform: windows-x86_64
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read # check out the code
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      ALPINE: ${{ matrix.alpine || false }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # LLVM's clang, lld and llvm-objdump: preinstalled on Windows runners, not always on PATH.
+      - name: Put LLVM on PATH
+        if: ${{ runner.os == 'Windows' }}
+        run: printf '%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
+
+      - name: Build
+        if: ${{ !matrix.alpine }}
+        run: jni/native/build-libdeflate.sh "$PLATFORM" natives
+
+      - name: Build on Alpine
+        if: ${{ matrix.alpine }}
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work -e PLATFORM -e OWNER="$(id -u):$(id -g)" \
+            "$ALPINE_IMAGE" sh -euc '
+              apk add --no-cache bash build-base binutils curl > /dev/null
+              bash jni/native/build-libdeflate.sh "$PLATFORM" natives
+              chown -R "$OWNER" natives'
+
+      - name: Download the jni jar
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: natives-loader
+          path: loader
+
+      - name: Set up JDK 25
+        if: ${{ !matrix.alpine }}
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '25'
+          verify-signature: true
+
+      # The library goes where the jar keeps it, ahead of the jar on the class path. The first run
+      # installs it into the user's cache directory, the second reuses it.
+      - name: Load and self-test
+        run: |
+          mkdir -p classpath/dev/warp/jni/native
+          cp -R "natives/$PLATFORM" classpath/dev/warp/jni/native/
+          if [ "$RUNNER_OS" = Windows ]; then separator=';'; else separator=':'; fi
+          command=(java --enable-native-access=ALL-UNNAMED -cp "classpath${separator}loader/jni.jar"
+            dev.warp.jni.Natives --expect "$PLATFORM")
+          if [ "$ALPINE" = true ]; then
+            command=(docker run --rm -v "$PWD:/work" -w /work "$TEMURIN_ALPINE_IMAGE" "${command[@]}")
+          fi
+          "${command[@]}"
+          "${command[@]}"
+
+      - name: Upload the library
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: natives-${{ matrix.platform }}
+          path: natives/
+          if-no-files-found: error
+          retention-days: 7
+
+  merge:
+    name: Merge the libraries
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Merge
+        uses: actions/upload-artifact/merge@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: natives
+          pattern: natives-*-*
+          delete-merged: true
+          retention-days: 7

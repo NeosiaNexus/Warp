@@ -20,7 +20,6 @@ import dev.warp.api.network.PipelinePosition;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.compress.FrameDecompressor;
-import dev.warp.protocol.compress.JavaCompressor;
 import dev.warp.protocol.netty.CompressionEncoder;
 import dev.warp.protocol.netty.FrameDecoder;
 import dev.warp.protocol.netty.FrameForwarder;
@@ -31,6 +30,7 @@ import dev.warp.protocol.netty.PacketDecompressor;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
+import dev.warp.proxy.compression.Compression;
 import dev.warp.proxy.limit.Refusal;
 import dev.warp.proxy.pipeline.PipelineHost;
 
@@ -692,7 +692,7 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
             threshold,
             !peerIsServer,
             FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE,
-            new JavaCompressor(level));
+            Compression.create(level));
     if (packetLevel) {
       // Every frame is inflated ahead of the plugin packet handlers, the decoder reads bare
       // packets.
@@ -707,7 +707,7 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
         .replace(
             ServerChannelInitializer.FRAME_ENCODER,
             ServerChannelInitializer.COMPRESSION_ENCODER,
-            new CompressionEncoder(threshold, new JavaCompressor(level)));
+            new CompressionEncoder(threshold, Compression.create(level)));
     compressed = true;
     forwarder.compressionEnabled(threshold);
     forwarder.setVerbatimEnabled(passthrough && !packetLevel);

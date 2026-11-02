@@ -24,8 +24,9 @@ import io.netty.buffer.ByteBuf;
  * Abstraction for packet compression and decompression.
  *
  * <p>Implementations may use Java's built-in {@link java.util.zip.Deflater}/{@link
- * java.util.zip.Inflater} or native libraries (libdeflate, zlib-ng) via JNI. Instances are
- * <b>not</b> thread-safe — each Netty channel must use its own compressor.
+ * java.util.zip.Inflater} ({@link JavaCompressor}) or a native library (the proxy's libdeflate
+ * implementation, through the FFM API). Instances are <b>not</b> thread-safe: each Netty channel
+ * must use its own compressor.
  *
  * <p>Lifecycle: the owning pipeline handler calls {@link #close()} from {@code handlerRemoved()}.
  * If a compressor is shared between two handlers (decoder and encoder), only one should close it,
@@ -62,6 +63,24 @@ public interface PacketCompressor extends AutoCloseable {
    * @throws DataFormatException if compression fails
    */
   void deflate(ByteBuf source, ByteBuf destination) throws DataFormatException;
+
+  /**
+   * Returns an upper bound on what {@link #deflate} produces from {@code uncompressedSize} bytes,
+   * so that an encoder can allocate its output once instead of growing it.
+   *
+   * <p>The default is zlib's {@code deflateBound} for its default window and memory settings, which
+   * {@link java.util.zip.Deflater} uses: a hint, since {@link #deflate} grows its output anyway.
+   *
+   * @param uncompressedSize the number of bytes to compress
+   * @return the worst-case compressed size (slightly above {@code uncompressedSize})
+   */
+  default int deflateBound(int uncompressedSize) {
+    return uncompressedSize
+        + (uncompressedSize >>> 12)
+        + (uncompressedSize >>> 14)
+        + (uncompressedSize >>> 25)
+        + 13;
+  }
 
   /**
    * Releases underlying resources (native memory, Deflater/Inflater instances). Idempotent —

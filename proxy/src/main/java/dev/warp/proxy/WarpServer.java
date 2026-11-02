@@ -31,6 +31,7 @@ import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.command.ProxyCommands;
 import dev.warp.proxy.command.WarpCommandManager;
+import dev.warp.proxy.compression.Compression;
 import dev.warp.proxy.config.AntiBotConfig;
 import dev.warp.proxy.config.WarpConfig;
 import dev.warp.proxy.connection.BackendPinger;
@@ -331,6 +332,8 @@ public final class WarpServer implements Warp {
 
     TransportInfo transport = detectTransport();
     this.transportInfo = transport;
+    // Loads and self-tests native compression before any connection, so the log tells the truth.
+    Compression.logImplementation();
     // Behind the PROXY protocol, the trusted proxies are never limited: their own connections are
     // health checks, and every other one is limited under the client address of its header.
     AntiBotConfig antiBotConfig = config.antiBot();
