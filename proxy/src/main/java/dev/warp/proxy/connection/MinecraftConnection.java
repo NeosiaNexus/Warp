@@ -141,6 +141,12 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
   private boolean cookieResponsesExpected;
 
   /**
+   * Whether the client is logged in: its frames are bounded by the protocol alone from then on,
+   * whatever state the proxy still reads it in (LOGIN until a 1.20.2+ client acknowledges).
+   */
+  private boolean frameLimitsLifted;
+
+  /**
    * A packet {@link #writeWhenSettled} holds, with the promise its write completes.
    *
    * @param packet the packet
@@ -509,13 +515,21 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   /**
    * Marks the client logged in: it no longer counts among the connections not logged in, and no
-   * deadline or limit of those applies to it any more.
+   * deadline or limit of those applies to it any more, the frame limits included. Those must go
+   * now rather than when the state changes: a 1.20.2+ client stays in the LOGIN state until it
+   * acknowledges its Login Success, and does so in a compressed frame, whose first byte is the
+   * uncompressed length rather than the packet identifier.
    */
   void loggedIn() {
     ConnectionGuard watching = guard;
     if (watching != null) {
       guard = null;
       watching.end();
+    }
+    frameLimitsLifted = true;
+    FrameDecoder frames = frameDecoder();
+    if (frames != null) {
+      frames.limits(null);
     }
   }
 
@@ -536,18 +550,23 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
    */
   private void updateFrameLimits() {
     MinecraftDecoder dec = decoder();
-    if (dec.direction() != PacketDirection.SERVERBOUND) {
+    if (frameLimitsLifted || dec.direction() != PacketDirection.SERVERBOUND) {
       return;
     }
+    FrameDecoder frames = frameDecoder();
+    if (frames != null) {
+      frames.limits(FrameLimits.serverbound(dec.state(), dec.version(), cookieResponsesExpected));
+    }
+  }
+
+  /** The frame decoder, or {@code null} in a test pipeline without framing. */
+  private @Nullable FrameDecoder frameDecoder() {
     FrameDecoder frames = frameDecoder;
     if (frames == null) {
       frames = channel.pipeline().get(FrameDecoder.class);
-      if (frames == null) {
-        return; // A test pipeline without framing.
-      }
       frameDecoder = frames;
     }
-    frames.limits(FrameLimits.serverbound(dec.state(), dec.version(), cookieResponsesExpected));
+    return frames;
   }
 
   // ---------------------------------------------------------------------------

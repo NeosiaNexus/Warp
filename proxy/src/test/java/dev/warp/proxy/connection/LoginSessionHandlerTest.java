@@ -43,6 +43,7 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.codec.McUuid;
 import dev.warp.protocol.codec.VarInt;
+import dev.warp.protocol.netty.FrameDecoder;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketCodec;
 import dev.warp.protocol.packet.PacketDirection;
@@ -306,6 +307,34 @@ class LoginSessionHandlerTest {
                     ? text
                     : "{\"text\":" + text + "}"),
             reason);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    static Stream<ProtocolVersion> versionsWithConfiguration() {
+      return ProtocolVersion.values().stream()
+          .filter(version -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_2));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versionsWithConfiguration")
+    @DisplayName("should read the compressed Login Acknowledged a 1.20.2+ client answers with")
+    void compressedLoginAcknowledged(ProtocolVersion version) {
+      EmbeddedChannel channel = loginChannel(version, TestLoginContexts.offline(THRESHOLD));
+      try {
+        sendLoginStart(channel, "Steve", version);
+        nextFrame(channel); // Set Compression
+        nextFrame(channel); // Login Success, compressed from now on
+
+        // Read in the LOGIN state, but compressed: length 2, uncompressed (0), packet id 0x03.
+        channel.writeInbound(Unpooled.wrappedBuffer(new byte[] {0x02, 0x00, 0x03}));
+
+        assertTrue(channel.isActive(), "the player is logged in, not refused by frame limits");
+        assertEquals(
+            ProtocolState.CONFIGURATION,
+            channel.pipeline().get(MinecraftConnection.class).decoder().state());
+        assertNull(channel.pipeline().get(FrameDecoder.class).limits());
       } finally {
         channel.finishAndReleaseAll();
       }
