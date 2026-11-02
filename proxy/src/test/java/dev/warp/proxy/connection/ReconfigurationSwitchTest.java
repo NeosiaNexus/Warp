@@ -70,15 +70,34 @@ class ReconfigurationSwitchTest {
   }
 
   @Test
-  @DisplayName(
-      "should close an open bundle, send Start Configuration, then drop the server's packets")
-  void startConfiguration() {
+  @DisplayName("should keep the player on its server while the new one logs it in")
+  void staysWhileLoggingIn() {
     SwitchHarness setup = playingOnLobby();
+    setup.holdConnections();
     MinecraftConnection lobby = setup.current();
-    setup.receive(lobby, frame(VERSION, new BundleDelimiter()));
     setup.sentToClient();
 
     setup.player.switchServer(SURVIVAL);
+    setup.receive(lobby, opaqueFrame(0x22));
+
+    assertTrue(setup.player.isSwitching());
+    assertTrue(setup.player.isPlayingOn(lobby));
+    assertEquals(1, setup.sentToClient().size(), "the lobby's packet reaches the client");
+  }
+
+  @Test
+  @DisplayName(
+      "should close an open bundle, send Start Configuration, then drop the server's packets once"
+          + " the new server accepted the player")
+  void startConfigurationOnceAccepted() {
+    SwitchHarness setup = playingOnLobby();
+    setup.holdConnections();
+    MinecraftConnection lobby = setup.current();
+    setup.receive(lobby, frame(VERSION, new BundleDelimiter()));
+    setup.player.switchServer(SURVIVAL);
+    setup.sentToClient();
+
+    setup.login(SURVIVAL);
     setup.receive(lobby, opaqueFrame(0x22));
 
     assertEquals(
@@ -88,11 +107,67 @@ class ReconfigurationSwitchTest {
   }
 
   @Test
-  @DisplayName("should ignore the server being left until the client acknowledges")
-  void serverLeftBeforeAcknowledgement() {
-    SwitchHarness setup = playingOnLobby();
+  @DisplayName("should keep the player on its server when the new one cannot be reached")
+  void unreachableTarget() {
+    SwitchHarness setup = playingOnLobby(CREATIVE.name());
+    MinecraftConnection lobby = setup.current();
+    setup.sentToClient();
+
+    // The harness cannot open connections: survival is unreachable.
+    setup.player.switchServer(SURVIVAL);
+
+    assertEquals(List.of(SystemChatMessage.class), types(setup.sentToClient()));
+    assertFalse(setup.player.isSwitching());
+    assertTrue(setup.player.isPlayingOn(lobby));
+    assertTrue(lobby.channel().isOpen());
+    assertEquals(LOBBY.name(), setup.player.currentServerName());
+  }
+
+  @Test
+  @DisplayName("should keep the player on its server when the new one refuses it")
+  void refusedByTarget() {
+    SwitchHarness setup = playingOnLobby(CREATIVE.name());
+    setup.holdConnections();
     MinecraftConnection lobby = setup.current();
     setup.player.switchServer(SURVIVAL);
+    MinecraftConnection survival = setup.backend(ProtocolState.LOGIN);
+    setup.player.serverSwitch().connected(new BackendConnection(survival, SURVIVAL));
+    setup.sentToClient();
+
+    setup.player.scheduleBackendFailure(survival);
+    setup.runPendingTasks();
+
+    assertEquals(List.of(SystemChatMessage.class), types(setup.sentToClient()));
+    assertFalse(setup.player.isSwitching());
+    assertTrue(setup.player.isPlayingOn(lobby));
+    assertFalse(survival.channel().isOpen());
+  }
+
+  @Test
+  @DisplayName("should keep the player on its server when the new one takes too long")
+  void timedOutWhileLoggingIn() {
+    SwitchHarness setup = playingOnLobby();
+    setup.holdConnections();
+    MinecraftConnection lobby = setup.current();
+    setup.player.switchServer(SURVIVAL);
+    setup.sentToClient();
+
+    setup.player.serverSwitch().timedOut();
+
+    assertEquals(List.of(SystemChatMessage.class), types(setup.sentToClient()));
+    assertFalse(setup.player.isSwitching());
+    assertTrue(setup.player.isPlayingOn(lobby));
+    assertTrue(setup.client.channel().isActive());
+  }
+
+  @Test
+  @DisplayName("should ignore the server being left once the new one accepted the player")
+  void serverLeftBeforeAcknowledgement() {
+    SwitchHarness setup = playingOnLobby();
+    setup.holdConnections();
+    MinecraftConnection lobby = setup.current();
+    setup.player.switchServer(SURVIVAL);
+    setup.login(SURVIVAL);
 
     lobby.close();
     setup.runPendingTasks();
@@ -103,14 +178,54 @@ class ReconfigurationSwitchTest {
   }
 
   @Test
-  @DisplayName("should move a player whose server went down through the configuration phase")
+  @DisplayName("should go on with the switch when the server being left goes down meanwhile")
+  void serverLeftWhileLoggingIn() {
+    SwitchHarness setup = playingOnLobby();
+    setup.holdConnections();
+    MinecraftConnection lobby = setup.current();
+    setup.player.switchServer(SURVIVAL);
+
+    lobby.close();
+    setup.runPendingTasks();
+    setup.sentToClient();
+    setup.login(SURVIVAL);
+
+    assertTrue(setup.player.isSwitching());
+    assertEquals(List.of(StartConfiguration.class), types(setup.sentToClient()));
+  }
+
+  @Test
+  @DisplayName("should fall back when the server being left and the new one both fail")
+  void bothFail() {
+    SwitchHarness setup = playingOnLobby(CREATIVE.name());
+    setup.holdConnections();
+    MinecraftConnection lobby = setup.current();
+    setup.player.switchServer(SURVIVAL);
+    MinecraftConnection survival = setup.backend(ProtocolState.LOGIN);
+    setup.player.serverSwitch().connected(new BackendConnection(survival, SURVIVAL));
+    lobby.close();
+    setup.runPendingTasks();
+    setup.sentToClient();
+
+    setup.player.scheduleBackendFailure(survival);
+    setup.runPendingTasks();
+
+    assertTrue(setup.player.isSwitching());
+    assertEquals(CREATIVE, setup.player.pendingSwitchTarget());
+    assertEquals(List.of(SystemChatMessage.class), types(setup.sentToClient()));
+  }
+
+  @Test
+  @DisplayName("should move a player whose server went down to the fallback")
   void serverDown() {
     SwitchHarness setup = playingOnLobby(SURVIVAL.name());
+    setup.holdConnections();
     MinecraftConnection lobby = setup.current();
     setup.sentToClient();
 
     lobby.close();
     setup.runPendingTasks();
+    setup.login(SURVIVAL);
 
     assertEquals(
         List.of(SystemChatMessage.class, StartConfiguration.class), types(setup.sentToClient()));
@@ -118,11 +233,13 @@ class ReconfigurationSwitchTest {
   }
 
   @Test
-  @DisplayName("should connect the next server once the client acknowledges")
+  @DisplayName("should hand the client to the new server once it acknowledges")
   void acknowledged() {
-    SwitchHarness setup = playingOnLobby(CREATIVE.name());
+    SwitchHarness setup = playingOnLobby();
+    setup.holdConnections();
     MinecraftConnection lobby = setup.current();
     setup.player.switchServer(SURVIVAL);
+    MinecraftConnection survival = setup.login(SURVIVAL);
     setup.sentToClient();
 
     ((ReconfigurationSwitch) setup.player.serverSwitch()).acknowledged(SURVIVAL);
@@ -130,9 +247,9 @@ class ReconfigurationSwitchTest {
     assertFalse(lobby.channel().isOpen());
     assertEquals(ProtocolState.CONFIGURATION, setup.client.decoder().state());
     assertInstanceOf(SwitchWaitSessionHandler.class, setup.client.sessionHandler());
-    // survival, then creative, cannot be reached from an embedded channel: nothing is left.
-    assertEquals(ConfigDisconnect.class, setup.sentToClient().getLast().type());
-    assertFalse(setup.client.channel().isOpen());
+    assertEquals(ProtocolState.CONFIGURATION, survival.decoder().state());
+    assertInstanceOf(BackendConfigSessionHandler.class, survival.sessionHandler());
+    assertEquals(1, setup.sentToBackend(survival), "survival got the Login Acknowledged");
   }
 
   @Test

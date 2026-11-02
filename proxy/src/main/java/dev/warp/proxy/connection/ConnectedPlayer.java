@@ -33,6 +33,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -514,10 +515,45 @@ public final class ConnectedPlayer {
    */
   void connect(ServerInfo target) {
     var _ =
-        BackendConnection.connect(
-                loginContext.channelClass(), this, target, loginContext.forwardingSecret())
+        connector
+            .connect(target)
             .whenComplete(
                 (backend, ex) -> onEventLoop(() -> connectionAttempted(target, backend, ex)));
+  }
+
+  /** Opens backend connections for the player; replaced in tests. */
+  @FunctionalInterface
+  interface Connector {
+    CompletableFuture<BackendConnection> connect(ServerInfo target);
+  }
+
+  private Connector connector = this::openBackend;
+
+  private CompletableFuture<BackendConnection> openBackend(ServerInfo target) {
+    return BackendConnection.connect(
+        loginContext.channelClass(), this, target, loginContext.forwardingSecret());
+  }
+
+  /**
+   * Replaces how the player opens backend connections (tests).
+   *
+   * @param connector the connector
+   */
+  void setConnector(Connector connector) {
+    this.connector = connector;
+  }
+
+  /**
+   * Ends a switch whose new server could not be reached or refused the player, which still plays on
+   * its current server.
+   *
+   * @param target the server it could not switch to
+   */
+  void switchFailed(ServerInfo target) {
+    logger.info(
+        "Could not switch {} to '{}', staying on '{}'", username, target.name(), currentServerName);
+    cancelSwitch();
+    sendSystemMessage("Could not connect to " + target.name() + ".");
   }
 
   private void connectionAttempted(

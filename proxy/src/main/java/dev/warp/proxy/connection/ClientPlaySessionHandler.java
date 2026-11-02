@@ -287,8 +287,8 @@ final class ClientPlaySessionHandler implements SessionHandler {
     // Client acknowledges re-entering configuration state.
     ServerInfo target = player.pendingSwitchTarget();
     if (target != null
-        && player.isSwitching()
-        && player.serverSwitch() instanceof ReconfigurationSwitch reconfiguration) {
+        && player.serverSwitch() instanceof ReconfigurationSwitch reconfiguration
+        && reconfiguration.awaitingAcknowledgement()) {
       // Proxy-initiated server switch.
       reconfiguration.acknowledged(target);
     } else {

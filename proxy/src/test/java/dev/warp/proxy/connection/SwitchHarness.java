@@ -134,6 +134,14 @@ final class SwitchHarness implements AutoCloseable {
   // Backends
   // ---------------------------------------------------------------------------
 
+  /**
+   * Makes every connection the player opens wait forever, instead of failing at once, so that a
+   * test can play the new server's part with {@link #login}.
+   */
+  void holdConnections() {
+    player.setConnector(target -> new java.util.concurrent.CompletableFuture<>());
+  }
+
   /** Returns the backend connection the player is on. */
   MinecraftConnection current() {
     return Objects.requireNonNull(player.backendConnection(), "no backend").connection();

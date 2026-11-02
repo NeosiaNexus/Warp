@@ -491,6 +491,31 @@ async function fallbackRejected(ctx) {
   }
 }
 
+/**
+ * A /server to a server that refuses the player (an empty whitelist, like a full server) leaves it
+ * where it was: it keeps playing on the lobby and is told why. Warp logs the player in to the new
+ * server before it leaves the current one, as Velocity does.
+ */
+async function switchRefused(ctx) {
+  await ctx.survival.command('whitelist on', /white-?list/i);
+  try {
+    const bot = await joinWarp(ctx, 'e2e_switch_no');
+    try {
+      await bot.waitForChunks(20, 30_000, 0);
+      await bot.command('server survival', /Could not connect to survival/);
+      await sleep(1_000);
+      await bot.waitForGameMode(LOBBY_MODE, 5_000);
+      await proxyReportsServer(ctx, bot, 'lobby');
+      bot.healthy();
+      return 'survival refused the switch: player stayed on lobby';
+    } finally {
+      bot.quit();
+    }
+  } finally {
+    await ctx.survival.command('whitelist off', /white-?list/i);
+  }
+}
+
 const DAY_MS = 86_400_000;
 /**
  * Warp's reason for every refused key: the only profile key reason that 1.19, 1.19.1 and 1.19.2
@@ -616,4 +641,5 @@ export const SCENARIOS = [
   { name: 'crowd', run: crowd },
   { name: 'fallback-unreachable', run: fallbackUnreachable, requires: 'proxy' },
   { name: 'fallback-rejected', run: fallbackRejected, requires: 'proxy' },
+  { name: 'switch-refused', run: switchRefused, requires: 'switching' },
 ];

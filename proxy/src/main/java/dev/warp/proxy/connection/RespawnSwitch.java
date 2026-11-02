@@ -221,10 +221,7 @@ final class RespawnSwitch implements ServerSwitch {
   private void pendingFailed(ServerInfo target) {
     BackendConnection current = player.backendConnection();
     if (current != null && current.isActive()) {
-      logger.info(
-          "Could not move {} to '{}', staying on its server", player.username(), target.name());
-      player.cancelSwitch();
-      player.sendSystemMessage("Could not connect to " + target.name() + ".");
+      player.switchFailed(target);
       return;
     }
     player.handleBackendFailure(target.name());

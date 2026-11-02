@@ -58,6 +58,7 @@ a closed port) and run the scenarios:
 | `crowd` | Ten bots at once, then half of them switch server at the same moment (50 ms apart on a server with the `concurrentLogins` quirk) while the others stay on the lobby; those that switched must list none of those left behind |
 | `fallback-unreachable` | Default server down: the player lands on the next one |
 | `fallback-rejected` | Lobby refuses the login (whitelist): the player lands on survival |
+| `switch-refused` | Survival refuses a `/server survival` (whitelist): the player stays on the lobby, told why, never disconnected |
 
 A scenario a run cannot hold is skipped and says why: `forwarding` without forwarding or offline
 (Warp then forwards the UUID a backend derives itself, so nothing tells them apart), `switching`

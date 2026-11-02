@@ -51,6 +51,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
@@ -185,14 +186,16 @@ class ClientPlaySessionHandlerTest {
     }
 
     @Test
-    @DisplayName("should switch a 1.20.2+ player through the configuration phase")
+    @DisplayName("should log a 1.20.2+ player in to the new server while it stays where it is")
     void switchesFrom1202() {
       Session session =
           join(ProtocolVersion.MINECRAFT_1_21_4, Map.of("lobby", LOBBY, "survival", SURVIVAL));
+      session.player().setConnector(target -> new CompletableFuture<>());
 
       session.handler().handle(new ChatCommand("server survival", new byte[0], 0));
 
-      assertArrayEquals(new byte[] {0x70}, session.toPlayer()); // StartConfiguration
+      // No Start Configuration until survival accepts the player.
+      assertNull(session.client().readOutbound());
       assertTrue(session.player().isSwitching());
     }
   }
