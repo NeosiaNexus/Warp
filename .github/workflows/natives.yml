@@ -1,0 +1,35 @@
+name: Natives
+
+# Builds and load-tests libdeflate on every platform Warp bundles it for (_natives.yml) whenever
+# something that goes into those libraries or loads them changes, so that a release never finds out
+# first. CI's build covers Linux x86_64 on every pull request; this covers the six others.
+on:
+  pull_request:
+    paths:
+      - 'jni/native/**'
+      - 'jni/src/main/**'
+      - 'jni/build.gradle.kts'
+      - '.github/workflows/_natives.yml'
+      - '.github/workflows/natives.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'jni/native/**'
+      - 'jni/src/main/**'
+      - 'jni/build.gradle.kts'
+      - '.github/workflows/_natives.yml'
+      - '.github/workflows/natives.yml'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: natives-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  natives:
+    name: Natives
+    permissions:
+      contents: read # check out the code
+    uses: $/.github/workflows/_natives.yml
