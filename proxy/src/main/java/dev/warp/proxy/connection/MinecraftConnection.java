@@ -40,6 +40,7 @@ import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelOutboundBuffer;
+import io.netty.channel.ChannelPromise;
 import io.netty.handler.timeout.ReadTimeoutException;
 import io.netty.util.ReferenceCountUtil;
 import org.jspecify.annotations.Nullable;
@@ -108,7 +109,15 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
   private boolean stateChangePending;
 
   /** Packets of the proxy's own held until the pending state change completes. */
-  private final Queue<Packet> heldUntilStateChange = new ArrayDeque<>();
+  private final Queue<Held> heldUntilStateChange = new ArrayDeque<>();
+
+  /**
+   * A packet {@link #writeWhenSettled} holds, with the promise its write completes.
+   *
+   * @param packet the packet
+   * @param promise completed once it is written, or failed if it never is; possibly void
+   */
+  private record Held(Packet packet, ChannelPromise promise) {}
 
   // ---------------------------------------------------------------------------
   // Constructor
@@ -157,7 +166,13 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   @Override
   public void channelInactive(ChannelHandlerContext ctx) {
-    heldUntilStateChange.clear();
+    for (Held held = heldUntilStateChange.poll();
+        held != null;
+        held = heldUntilStateChange.poll()) {
+      if (!held.promise().isVoid()) {
+        held.promise().tryFailure(new ClosedChannelException());
+      }
+    }
     if (sessionHandler != null) {
       sessionHandler.disconnected();
     }
@@ -332,10 +347,22 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
    * @param packet the packet to write
    */
   public void writeWhenSettled(Packet packet) {
+    writeWhenSettled(packet, channel.voidPromise());
+  }
+
+  /**
+   * Writes and flushes a packet as {@link #writeWhenSettled(Packet)} does, completing {@code
+   * promise} once it is written: right away, or when the pending state change completes. The
+   * promise fails if the packet is dropped, or if the connection closes first.
+   *
+   * @param packet the packet to write
+   * @param promise the promise of the write, from this connection's channel
+   */
+  public void writeWhenSettled(Packet packet, ChannelPromise promise) {
     if (stateChangePending) {
-      heldUntilStateChange.add(packet);
+      heldUntilStateChange.add(new Held(packet, promise));
     } else {
-      writeAndFlush(packet);
+      var _ = channel.writeAndFlush(packet, promise);
     }
   }
 
@@ -352,17 +379,24 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
   private void releaseHeldPackets() {
     stateChangePending = false;
     MinecraftEncoder enc = encoder();
-    for (Packet packet = heldUntilStateChange.poll();
-        packet != null;
-        packet = heldUntilStateChange.poll()) {
+    for (Held held = heldUntilStateChange.poll();
+        held != null;
+        held = heldUntilStateChange.poll()) {
+      Packet packet = held.packet();
       if (enc.canEncode(packet.getClass())) {
-        writeAndFlush(packet);
+        var _ = channel.writeAndFlush(packet, held.promise());
       } else {
         logger.warn(
             "Dropped {} held for {}: it does not exist in {}",
             packet.getClass().getSimpleName(),
             channel.remoteAddress(),
             enc.state());
+        if (!held.promise().isVoid()) {
+          held.promise()
+              .tryFailure(
+                  new IllegalStateException(
+                      packet.getClass().getSimpleName() + " does not exist in " + enc.state()));
+        }
       }
     }
   }

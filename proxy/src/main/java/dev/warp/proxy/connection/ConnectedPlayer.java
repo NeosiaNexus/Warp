@@ -27,6 +27,7 @@ import dev.warp.api.event.player.ServerPreConnectEvent;
 import dev.warp.api.messaging.Messaging;
 import dev.warp.api.messaging.PluginMessageEvent;
 import dev.warp.api.player.ConnectionResult;
+import dev.warp.api.player.TransferResult;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerInfo;
 import dev.warp.protocol.ProtocolState;
@@ -70,6 +71,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -80,6 +82,8 @@ import com.mojang.brigadier.suggestion.Suggestions;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelPromise;
 import io.netty.channel.EventLoop;
 import io.netty.util.AttributeKey;
 import net.kyori.adventure.text.Component;
@@ -1359,12 +1363,88 @@ public final class ConnectedPlayer {
       throw new IllegalStateException(
           "Transfers are sent in the configuration and play states, not in " + state);
     }
-    if (state == ProtocolState.PLAY && !clientConnection.isStateChangePending()) {
+    writeTransfer(packet, clientConnection.channel().voidPromise());
+  }
+
+  /**
+   * Returns whether the client can be transferred: Minecraft 1.20.5 and newer.
+   *
+   * @return {@code true} if the client supports transfers
+   */
+  public boolean supportsTransfers() {
+    return protocolVersion.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5);
+  }
+
+  /**
+   * Sends the player to another server with a Transfer packet, as {@link #transfer} does, but tells
+   * how it went rather than throwing: what {@link dev.warp.api.player.Player#transfer} returns.
+   *
+   * <p>A client still logging in can be transferred once it settles in the configuration state: a
+   * transfer asked for between Login Success and the client's acknowledgement waits for it. Before
+   * Login Success, it is {@link TransferResult#NOT_READY}.
+   *
+   * @param host the host name or address the client connects to
+   * @param port the port, 1 to 65535
+   * @return completed with the outcome, on the client event loop; never exceptionally
+   * @throws IllegalArgumentException if {@code host} is blank or longer than a protocol string, or
+   *     {@code port} is out of range
+   */
+  public CompletableFuture<TransferResult> requestTransfer(String host, int port) {
+    if (host.isBlank() || host.length() > McString.DEFAULT_MAX_CHARS) {
+      throw new IllegalArgumentException("Transfer host must be a non-blank protocol string");
+    }
+    if (port < 1 || port > 65_535) {
+      throw new IllegalArgumentException("Transfer port must be 1 to 65535, got " + port);
+    }
+    if (!supportsTransfers()) {
+      return CompletableFuture.completedFuture(TransferResult.UNSUPPORTED);
+    }
+    CompletableFuture<TransferResult> result = new CompletableFuture<>();
+    Transfer packet = new Transfer(host, port);
+    try {
+      onEventLoop(() -> trySendTransfer(packet, result));
+    } catch (RejectedExecutionException e) {
+      // The event loop is shutting down with the proxy.
+      result.complete(TransferResult.DISCONNECTED);
+    }
+    return result;
+  }
+
+  private void trySendTransfer(Transfer packet, CompletableFuture<TransferResult> result) {
+    Channel channel = clientConnection.channel();
+    if (!channel.isActive() || disconnected.get()) {
+      result.complete(TransferResult.DISCONNECTED);
+      return;
+    }
+    ProtocolState state = clientConnection.encoder().state();
+    boolean settling = clientConnection.isStateChangePending();
+    boolean readable =
+        state == ProtocolState.CONFIGURATION
+            || state == ProtocolState.PLAY
+            // Login Success written: the client reads configuration packets already.
+            || (state == ProtocolState.LOGIN && settling);
+    if (!readable) {
+      result.complete(TransferResult.NOT_READY);
+      return;
+    }
+    ChannelPromise promise = channel.newPromise();
+    var _ =
+        promise.addListener(
+            future ->
+                result.complete(
+                    future.isSuccess() ? TransferResult.SENT : TransferResult.DISCONNECTED));
+    writeTransfer(packet, promise);
+  }
+
+  /** Writes a Transfer packet once the client reads the proxy's state. On the client event loop. */
+  private void writeTransfer(Transfer packet, ChannelPromise promise) {
+    if (clientConnection.encoder().state() == ProtocolState.PLAY
+        && !clientConnection.isStateChangePending()) {
       // Inside an open bundle, the client would only act on it once the bundle closes.
       closeBundle();
     }
     logger.info("Transferring {} to {}:{}", username, packet.host(), packet.port());
-    clientConnection.writeWhenSettled(packet);
+    clientConnection.writeWhenSettled(packet, promise);
   }
 
   /**

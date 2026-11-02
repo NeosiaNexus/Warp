@@ -51,6 +51,11 @@ final class WarpInboundConnection implements InboundConnection {
   }
 
   @Override
+  public boolean isTransferred() {
+    return connection.handshakeIntent() == HandshakeIntent.TRANSFER;
+  }
+
+  @Override
   public String toString() {
     return "InboundConnection[" + remoteAddress() + "]";
   }

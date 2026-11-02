@@ -20,6 +20,7 @@ import dev.warp.api.messaging.ChannelIdentifier;
 import dev.warp.api.player.ConnectionResult;
 import dev.warp.api.player.GameProfile;
 import dev.warp.api.player.Player;
+import dev.warp.api.player.TransferResult;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerConnection;
 import dev.warp.proxy.server.BackendServer;
@@ -86,6 +87,11 @@ public final class WarpPlayer implements Player {
   }
 
   @Override
+  public boolean isTransferred() {
+    return player.isTransferred();
+  }
+
+  @Override
   public Optional<ServerConnection> currentServer() {
     BackendServer server = player.currentServer();
     return server == null
@@ -109,6 +115,16 @@ public final class WarpPlayer implements Player {
       throw new IllegalArgumentException("Not a server of this proxy: " + server);
     }
     return player.requestConnection(backend, false);
+  }
+
+  @Override
+  public boolean supportsTransfers() {
+    return player.supportsTransfers();
+  }
+
+  @Override
+  public CompletableFuture<TransferResult> transfer(String host, int port) {
+    return player.requestTransfer(host, port);
   }
 
   @Override

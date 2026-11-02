@@ -27,6 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
+import dev.warp.api.player.TransferResult;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.packet.Packet;
@@ -40,6 +41,7 @@ import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Stream;
 
 import io.netty.buffer.ByteBuf;
@@ -89,6 +91,20 @@ class TransferTest {
     @DisplayName("should not take a player whose connection has no handshake for a transferred one")
     void noHandshake() {
       assertFalse(playerWhoseHandshakeSaid(null).isTransferred());
+    }
+
+    @Test
+    @DisplayName(
+        "should tell plugins whether a client arrived by a transfer, logging in or playing")
+    void toldToPlugins() {
+      EmbeddedChannel channel = new EmbeddedChannel();
+      MinecraftConnection connection = new MinecraftConnection(channel);
+      connection.setHandshakeIntent(HandshakeIntent.TRANSFER);
+
+      assertTrue(new WarpInboundConnection(connection).isTransferred());
+      assertTrue(playerWhoseHandshakeSaid(HandshakeIntent.TRANSFER).api().isTransferred());
+      assertFalse(playerWhoseHandshakeSaid(HandshakeIntent.LOGIN).api().isTransferred());
+      channel.finishAndReleaseAll();
     }
 
     private ConnectedPlayer playerWhoseHandshakeSaid(@Nullable HandshakeIntent intent) {
@@ -208,6 +224,119 @@ class TransferTest {
       assertThrows(
           IllegalStateException.class, () -> setup.player.transfer("play.primemc.net", 25565));
       assertTrue(setup.sentToClient().isEmpty());
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // The outcome plugins see
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("reporting the outcome to plugins")
+  class Outcome {
+
+    @Test
+    @DisplayName("should report a transfer the client received as sent")
+    void sent() {
+      SwitchHarness setup = playingOnLobby();
+
+      CompletableFuture<TransferResult> result =
+          setup.player.api().transfer("play.primemc.net", 25565);
+      setup.runPendingTasks();
+
+      assertTrue(result.isDone());
+      assertEquals(TransferResult.SENT, result.join());
+      assertEquals(List.of(Transfer.class), types(setup.sentToClient()));
+    }
+
+    @Test
+    @DisplayName("should report a client older than 1.20.5 as unsupported, sending nothing")
+    void unsupported() {
+      SwitchHarness setup = harness(ProtocolVersion.MINECRAFT_1_20_4, ProtocolState.PLAY);
+
+      CompletableFuture<TransferResult> result =
+          setup.player.api().transfer("play.primemc.net", 25565);
+
+      assertFalse(setup.player.api().supportsTransfers());
+      assertEquals(TransferResult.UNSUPPORTED, result.join());
+      assertTrue(setup.sentToClient().isEmpty());
+    }
+
+    @Test
+    @DisplayName("should report a client still logging in as not ready, sending nothing")
+    void notReady() {
+      SwitchHarness setup = harness(VERSION, ProtocolState.LOGIN);
+
+      CompletableFuture<TransferResult> result =
+          setup.player.requestTransfer("play.primemc.net", 25565);
+      setup.runPendingTasks();
+
+      assertTrue(setup.player.api().supportsTransfers());
+      assertEquals(TransferResult.NOT_READY, result.join());
+      assertTrue(setup.sentToClient().isEmpty());
+    }
+
+    @Test
+    @DisplayName("should report a transfer held across a state change once the client gets it")
+    void heldThenSent() {
+      SwitchHarness setup = acceptedOnSurvival();
+
+      CompletableFuture<TransferResult> result =
+          setup.player.requestTransfer("play.primemc.net", 25565);
+      setup.runPendingTasks();
+      boolean pending = !result.isDone();
+      setup.client.setState(ProtocolState.CONFIGURATION); // the client acknowledged
+
+      assertTrue(pending, "held until the client reads configuration packets");
+      assertEquals(TransferResult.SENT, result.join());
+      assertEquals(List.of(Transfer.class), types(setup.sentToClient()));
+    }
+
+    @Test
+    @DisplayName("should report a held transfer as disconnected when the client leaves first")
+    void heldThenGone() {
+      SwitchHarness setup = acceptedOnSurvival();
+
+      CompletableFuture<TransferResult> result =
+          setup.player.requestTransfer("play.primemc.net", 25565);
+      setup.runPendingTasks();
+      var _ = setup.client.channel().close();
+      setup.runPendingTasks();
+
+      assertEquals(TransferResult.DISCONNECTED, result.join());
+    }
+
+    @Test
+    @DisplayName("should report a player already gone as disconnected")
+    void gone() {
+      SwitchHarness setup = playingOnLobby();
+      var _ = setup.client.channel().close();
+      setup.runPendingTasks();
+
+      CompletableFuture<TransferResult> result =
+          setup.player.requestTransfer("play.primemc.net", 25565);
+      setup.runPendingTasks();
+
+      assertEquals(TransferResult.DISCONNECTED, result.join());
+    }
+
+    @Test
+    @DisplayName("should refuse an address no client could connect to")
+    void invalidAddress() {
+      SwitchHarness setup = playingOnLobby();
+
+      assertThrows(IllegalArgumentException.class, () -> setup.player.api().transfer(" ", 25565));
+      assertThrows(IllegalArgumentException.class, () -> setup.player.api().transfer("a", 70_000));
+    }
+
+    /** A player whose switch to survival was accepted: Start Configuration is on its way. */
+    private SwitchHarness acceptedOnSurvival() {
+      SwitchHarness setup = playingOnLobby();
+      setup.holdConnections();
+      setup.player.switchServer(SURVIVAL);
+      setup.login(SURVIVAL);
+      setup.sentToClient();
+      return setup;
     }
   }
 
