@@ -6,7 +6,9 @@
 #   bin/bench-guard.sh --timings  # time the guarded benchmarks (the trend tracked on main)
 #
 # The guarded benchmarks are the hot path: relaying clientbound traffic with compression
-# passthrough, Warp's default, and peeking at the packet id of a compressed frame.
+# passthrough, Warp's default, peeking at the packet id of a compressed frame, and encrypting and
+# decrypting a frame of an online-mode connection. The cipher's 1 KiB frame stands for every size:
+# a 16 KiB frame runs so few times per iteration that JMH's own allocation shows in its count.
 #
 # Allocation guard: JMH's GC profiler counts the bytes allocated per packet, with escape analysis
 # off so that the count covers every allocation the code makes, not those the JIT happened to keep
@@ -33,7 +35,10 @@ esac
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 results=protocol/build/results/jmh
 baseline=protocol/src/jmh/alloc-baseline.json
-guarded=('ForwardingPathBenchmark\.relayClientbound$|PacketIdPeekBenchmark\.peek$' -p mode=PASSTHROUGH)
+guarded=(
+  'ForwardingPathBenchmark\.relayClientbound$|PacketIdPeekBenchmark\.peek$|CipherBenchmark\.(encrypt|decrypt)$'
+  -p mode=PASSTHROUGH -p frameSize=1024
+)
 
 # Collapsible sections in the Actions log, headings elsewhere.
 group() { if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::group::$1"; else echo "== $1"; fi; }
