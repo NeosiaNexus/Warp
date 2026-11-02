@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.server.ServerPing;
 import dev.warp.protocol.legacy.LegacyPing;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
@@ -24,7 +25,11 @@ import dev.warp.protocol.packet.status.PongResponse;
 import dev.warp.protocol.packet.status.StatusPacket;
 import dev.warp.protocol.packet.status.StatusRequest;
 import dev.warp.protocol.packet.status.StatusResponse;
+import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.event.proxy.ProxyPingEventImpl;
 import dev.warp.proxy.status.ServerList;
+
+import java.util.function.Consumer;
 
 import io.netty.channel.ChannelFutureListener;
 import org.jspecify.annotations.Nullable;
@@ -45,8 +50,11 @@ import org.slf4j.LoggerFactory;
  *        [connection closes]
  * }</pre>
  *
- * <p>The entry comes from {@link ServerList}, which caches its answer. A {@link StatusRequest} must
- * come before any {@link PingRequest}; duplicate requests are ignored.
+ * <p>The entry comes from {@link ServerList}: a cached answer when no plugin listens to {@link
+ * dev.warp.api.event.proxy.ProxyPingEvent}, otherwise the entry the handlers leave, answered on the
+ * event loop once they are done. A {@link StatusRequest} must come before any {@link PingRequest};
+ * duplicate requests are ignored, and a ping that arrives while the handlers still hold the entry
+ * is answered right after it.
  */
 final class StatusSessionHandler implements SessionHandler {
 
@@ -105,7 +113,17 @@ final class StatusSessionHandler implements SessionHandler {
       return; // A duplicate: ignored, as vanilla does.
     }
     state = State.ANSWERING;
-    answer(context.serverList().json(clientProtocol));
+    ServerList serverList = context.serverList();
+    if (!context.events().hasHandlers(ProxyPingEventImpl.class)) {
+      answer(serverList.json(clientProtocol));
+      return;
+    }
+    resolve(
+        connection,
+        context.events(),
+        new WarpInboundConnection(connection, clientProtocol),
+        serverList.proposal(clientProtocol),
+        ping -> answer(serverList.json(ping, clientProtocol)));
   }
 
   private void answer(String json) {
@@ -138,7 +156,8 @@ final class StatusSessionHandler implements SessionHandler {
 
   /**
    * Answers a legacy server list ping (Minecraft 1.6 and older, and load balancer health checks)
-   * with the proxy's entry, then closes the connection.
+   * with the proxy's entry, through {@link dev.warp.api.event.proxy.ProxyPingEvent} like any ping,
+   * then closes the connection.
    *
    * @param connection the client connection
    * @param context the proxy's shared state
@@ -151,10 +170,53 @@ final class StatusSessionHandler implements SessionHandler {
       connection.setVirtualHost(host);
     }
     ServerList serverList = context.serverList();
+    Consumer<ServerPing> answer =
+        entry ->
+            connection
+                .channel()
+                .writeAndFlush(serverList.legacyAnswer(entry, ping.format()))
+                .addListener(ChannelFutureListener.CLOSE);
+    if (!context.events().hasHandlers(ProxyPingEventImpl.class)) {
+      answer.accept(serverList.legacyProposal());
+      return;
+    }
+    resolve(
+        connection,
+        context.events(),
+        new WarpInboundConnection(connection, WarpInboundConnection.LEGACY_PROTOCOL),
+        serverList.legacyProposal(),
+        answer);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Event
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Lets the ping handlers decide the entry, then answers with it on the connection's event loop,
+   * or closes the connection if a handler chose not to answer.
+   */
+  private static void resolve(
+      MinecraftConnection connection,
+      WarpEventBus events,
+      WarpInboundConnection inbound,
+      ServerPing proposal,
+      Consumer<ServerPing> answer) {
     var _ =
-        connection
-            .channel()
-            .writeAndFlush(serverList.legacyAnswer(serverList.legacyProposal(), ping.format()))
-            .addListener(ChannelFutureListener.CLOSE);
+        events
+            .fire(new ProxyPingEventImpl(inbound, proposal))
+            .whenCompleteAsync(
+                (event, _) -> {
+                  ServerPing entry = event.answer();
+                  if (!connection.channel().isActive()) {
+                    return;
+                  }
+                  if (entry == null) {
+                    connection.close();
+                    return;
+                  }
+                  answer.accept(entry);
+                },
+                connection.channel().eventLoop());
   }
 }

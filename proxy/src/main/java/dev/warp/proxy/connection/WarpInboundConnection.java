@@ -21,13 +21,40 @@ import dev.warp.api.player.InboundConnection;
 import java.net.InetSocketAddress;
 import java.util.Optional;
 
-/** A client connection logging in, as plugins see it before it becomes a player. */
+/**
+ * A client connection logging in or asking for the server list entry, as plugins see it before it
+ * becomes a player.
+ */
 final class WarpInboundConnection implements InboundConnection {
 
-  private final MinecraftConnection connection;
+  /** {@link #protocolVersion()} of a legacy server list ping, which predates protocol numbers. */
+  static final int LEGACY_PROTOCOL = -1;
 
+  /** Marks a connection whose protocol is the one its decoder runs. */
+  private static final int DECODER_PROTOCOL = Integer.MIN_VALUE;
+
+  private final MinecraftConnection connection;
+  private final int protocol;
+
+  /**
+   * Creates the view of a connection logging in: its protocol is the one Warp decodes it with.
+   *
+   * @param connection the connection
+   */
   WarpInboundConnection(MinecraftConnection connection) {
+    this(connection, DECODER_PROTOCOL);
+  }
+
+  /**
+   * Creates the view of a connection asking for the server list entry, whose protocol may be one
+   * Warp does not support.
+   *
+   * @param connection the connection
+   * @param protocol the protocol its handshake announced, or {@link #LEGACY_PROTOCOL}
+   */
+  WarpInboundConnection(MinecraftConnection connection, int protocol) {
     this.connection = connection;
+    this.protocol = protocol;
   }
 
   @Override
@@ -42,7 +69,7 @@ final class WarpInboundConnection implements InboundConnection {
 
   @Override
   public int protocolVersion() {
-    return connection.decoder().version().protocol();
+    return protocol == DECODER_PROTOCOL ? connection.decoder().version().protocol() : protocol;
   }
 
   @Override

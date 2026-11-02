@@ -19,17 +19,25 @@ package dev.warp.proxy.connection;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.warp.api.event.EventBus;
+import dev.warp.api.event.Subscribe;
+import dev.warp.api.event.Subscription;
+import dev.warp.api.event.proxy.ProxyPingEvent;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
+import dev.warp.proxy.event.PluginEventBus;
+import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.event.proxy.ProxyPingEventImpl;
 import dev.warp.proxy.status.ServerList;
 import dev.warp.proxy.status.StatusSettings;
 
@@ -37,16 +45,23 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Stream;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -421,6 +436,173 @@ class ServerListPingTest {
       assertEquals("Custom", status.getAsJsonObject("version").get("name").getAsString());
       ch.finishAndReleaseAll();
     }
+
+    @Test
+    @DisplayName("should answer a ping that arrives before the entry right after it")
+    void pingWhileAnswering() {
+      WarpEventBus bus = new WarpEventBus(Runnable::run);
+      EventBus events = new PluginEventBus(bus, "test", null, s -> {});
+      CompletableFuture<Void> hold = new CompletableFuture<>();
+      events.subscribeAsync(ProxyPingEvent.class, Subscribe.NORMAL, 30, event -> hold);
+      EmbeddedChannel ch = createFullPipeline(TestLoginContexts.offline(bus));
+      try {
+        writeFramedHandshake(
+            ch, ProtocolVersion.MINECRAFT_1_21_4.protocol(), "localhost", 25577, 1);
+        writeFramedPacket(ch, 0x00, Unpooled.EMPTY_BUFFER);
+        ByteBuf ping = Unpooled.buffer(8);
+        ping.writeLong(7L);
+        writeFramedPacket(ch, 0x01, ping);
+        assertNull(ch.readOutbound(), "nothing before the handlers are done");
+
+        hold.complete(null);
+        ch.runPendingTasks();
+
+        assertNotNull(readStatusJson(ch));
+        ByteBuf pong = ch.readOutbound();
+        assertNotNull(pong, "the pong follows the entry");
+        VarInt.read(pong);
+        assertEquals(0x01, VarInt.read(pong));
+        assertEquals(7L, pong.readLong());
+        pong.release();
+      } finally {
+        ch.finishAndReleaseAll();
+        bus.close();
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // ProxyPingEvent
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("ProxyPingEvent")
+  class PingEvents {
+
+    private final WarpEventBus bus = new WarpEventBus(Runnable::run);
+    private final EventBus events = new PluginEventBus(bus, "test", null, s -> {});
+    private final ServerLoginContext context = TestLoginContexts.offline(bus);
+
+    @AfterEach
+    void closeBus() {
+      bus.close();
+    }
+
+    @Test
+    @DisplayName("should answer with the entry a handler set, seeing the proposal and connection")
+    void replaced() {
+      List<ProxyPingEvent> fired = new ArrayList<>();
+      events.subscribe(
+          ProxyPingEvent.class,
+          event -> {
+            fired.add(event);
+            event.setPing(event.ping().withDescription(Component.text("Maintenance")));
+          });
+      EmbeddedChannel ch = createFullPipeline(context);
+
+      JsonObject status = requestStatus(ch, ProtocolVersion.MINECRAFT_1_21_4.protocol());
+
+      assertEquals("Maintenance", plainDescription(status));
+      ProxyPingEvent event = fired.getFirst();
+      assertEquals(
+          ProtocolVersion.MINECRAFT_1_21_4.protocol(), event.connection().protocolVersion());
+      assertEquals("play.example.net", event.connection().virtualHost().orElseThrow());
+      assertEquals(CLIENT_ADDRESS, event.connection().remoteAddress());
+      assertEquals(500, event.ping().playerInfo().orElseThrow().max());
+      ch.finishAndReleaseAll();
+    }
+
+    @Test
+    @DisplayName("should report the protocol of a client Warp does not support, as it announced it")
+    void unsupportedProtocol() {
+      List<ProxyPingEvent> fired = new ArrayList<>();
+      events.subscribe(ProxyPingEvent.class, fired::add);
+      EmbeddedChannel ch = createFullPipeline(context);
+
+      JsonObject status = requestStatus(ch, 99999);
+
+      assertEquals(99999, fired.getFirst().connection().protocolVersion());
+      assertEquals(
+          ProtocolVersion.latest().protocol(), fired.getFirst().ping().version().protocol());
+      assertEquals(
+          ProtocolVersion.latest().protocol(),
+          status.getAsJsonObject("version").get("protocol").getAsInt());
+      ch.finishAndReleaseAll();
+    }
+
+    @Test
+    @DisplayName("should wait for an asynchronous handler before answering")
+    void async() {
+      CompletableFuture<Void> lookup = new CompletableFuture<>();
+      events.subscribeAsync(
+          ProxyPingEvent.class,
+          Subscribe.NORMAL,
+          30,
+          event ->
+              lookup.thenRun(
+                  () -> event.setPing(event.ping().withDescription(Component.text("Later")))));
+      EmbeddedChannel ch = createFullPipeline(context);
+      writeFramedHandshake(ch, ProtocolVersion.MINECRAFT_1_21_4.protocol(), "localhost", 25577, 1);
+      writeFramedPacket(ch, 0x00, Unpooled.EMPTY_BUFFER);
+      ch.runPendingTasks();
+      assertNull(ch.readOutbound(), "no answer while the handler holds the ping");
+
+      lookup.complete(null);
+      ch.runPendingTasks();
+
+      assertEquals(
+          "Later", plainDescription(JsonParser.parseString(readStatusJson(ch)).getAsJsonObject()));
+      ch.finishAndReleaseAll();
+    }
+
+    @Test
+    @DisplayName("should close without answering when a handler chooses not to answer")
+    void ignored() {
+      events.subscribe(ProxyPingEvent.class, event -> event.setResult(new ProxyPingEvent.Ignore()));
+      EmbeddedChannel ch = createFullPipeline(context);
+      writeFramedHandshake(ch, ProtocolVersion.MINECRAFT_1_21_4.protocol(), "localhost", 25577, 1);
+
+      writeFramedPacket(ch, 0x00, Unpooled.EMPTY_BUFFER);
+      ch.runPendingTasks();
+
+      assertNull(ch.readOutbound());
+      assertFalse(ch.isOpen());
+    }
+
+    @Test
+    @DisplayName("should answer from the cached entry, building no event, when nobody listens")
+    void notFiredWithoutHandlers() {
+      Subscription subscription = events.subscribe(ProxyPingEvent.class, event -> {});
+      subscription.unsubscribe();
+      EmbeddedChannel ch = createFullPipeline(context);
+      int protocol = ProtocolVersion.MINECRAFT_1_21_4.protocol();
+      String cached = context.serverList().json(protocol);
+
+      writeFramedHandshake(ch, protocol, "localhost", 25577, 1);
+      writeFramedPacket(ch, 0x00, Unpooled.EMPTY_BUFFER);
+
+      assertEquals(cached, readStatusJson(ch));
+      assertFalse(bus.hasHandlers(ProxyPingEventImpl.class));
+      ch.finishAndReleaseAll();
+    }
+
+    @Test
+    @DisplayName("should ignore and log a change made after the answer")
+    void lateChange() {
+      List<ProxyPingEvent> fired = new ArrayList<>();
+      events.subscribe(ProxyPingEvent.class, fired::add);
+      EmbeddedChannel ch = createFullPipeline(context);
+      requestStatus(ch, ProtocolVersion.MINECRAFT_1_21_4.protocol());
+
+      try (LogCapture log = new LogCapture(ProxyPingEventImpl.class)) {
+        ProxyPingEvent event = fired.getFirst();
+        event.setPing(event.ping().withDescription(Component.text("Too late")));
+
+        assertNotEquals("Too late", plainText(event.ping().description()));
+        assertFalse(log.events().isEmpty(), "the late change is logged");
+      }
+      ch.finishAndReleaseAll();
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -455,6 +637,32 @@ class ServerListPingTest {
               + StatusSettings.defaultVersionName()
               + "\u0000§bA Warp Proxy\u00000\u0000500",
           readLegacyKick(ch));
+    }
+
+    @Test
+    @DisplayName("should fire the ping event with the host a 1.6 ping carries and protocol -1")
+    void minecraft16() {
+      WarpEventBus bus = new WarpEventBus(Runnable::run);
+      EventBus events = new PluginEventBus(bus, "test", null, s -> {});
+      List<ProxyPingEvent> fired = new ArrayList<>();
+      events.subscribe(
+          ProxyPingEvent.class,
+          event -> {
+            fired.add(event);
+            event.setPing(event.ping().withDescription(Component.text("Legacy")));
+          });
+      EmbeddedChannel ch = createFullPipeline(TestLoginContexts.offline(bus));
+      try {
+        ch.writeInbound(Unpooled.wrappedBuffer(pingHost("mc.example.net", 25565)));
+        ch.runPendingTasks();
+
+        assertTrue(readLegacyKick(ch).contains("\u0000Legacy\u0000"));
+        assertEquals(-1, fired.getFirst().connection().protocolVersion());
+        assertEquals("mc.example.net", fired.getFirst().connection().virtualHost().orElseThrow());
+      } finally {
+        ch.finishAndReleaseAll();
+        bus.close();
+      }
     }
 
     @Test
@@ -560,6 +768,30 @@ class ServerListPingTest {
     } finally {
       kick.release();
     }
+  }
+
+  /** A 1.6 legacy ping: 0xFE 0x01, then an MC|PingHost plugin message. */
+  private static byte[] pingHost(String host, int port) {
+    ByteBuf buf = Unpooled.buffer();
+    buf.writeByte(0xFE).writeByte(0x01).writeByte(0xFA);
+    String channel = "MC|PingHost";
+    buf.writeShort(channel.length()).writeCharSequence(channel, StandardCharsets.UTF_16BE);
+    buf.writeShort(7 + host.length() * 2);
+    buf.writeByte(78); // 1.6.4
+    buf.writeShort(host.length()).writeCharSequence(host, StandardCharsets.UTF_16BE);
+    buf.writeInt(port);
+    byte[] bytes = ByteBufUtil.getBytes(buf);
+    buf.release();
+    return bytes;
+  }
+
+  /** The plain text of a status answer's description. */
+  private static String plainDescription(JsonObject status) {
+    return plainText(GsonComponentSerializer.gson().deserializeFromTree(status.get("description")));
+  }
+
+  private static String plainText(Component component) {
+    return PlainTextComponentSerializer.plainText().serialize(component);
   }
 
   /** Writes a framed Handshake packet to the channel's inbound. */
