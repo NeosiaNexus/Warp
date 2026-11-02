@@ -44,6 +44,7 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.codec.McUuid;
 import dev.warp.protocol.codec.VarInt;
+import dev.warp.protocol.netty.FrameDecoder;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketCodec;
 import dev.warp.protocol.packet.PacketDirection;
@@ -312,6 +313,34 @@ class LoginSessionHandlerTest {
                     ? text
                     : "{\"text\":" + text + "}"),
             reason);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    static Stream<ProtocolVersion> versionsWithConfiguration() {
+      return ProtocolVersion.values().stream()
+          .filter(version -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_2));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versionsWithConfiguration")
+    @DisplayName("should read the compressed Login Acknowledged a 1.20.2+ client answers with")
+    void compressedLoginAcknowledged(ProtocolVersion version) {
+      EmbeddedChannel channel = loginChannel(version, TestLoginContexts.offline(THRESHOLD));
+      try {
+        sendLoginStart(channel, "Steve", version);
+        nextFrame(channel); // Set Compression
+        nextFrame(channel); // Login Success, compressed from now on
+        MinecraftConnection connection = channel.pipeline().get(MinecraftConnection.class);
+        FrameDecoder frames = channel.pipeline().get(FrameDecoder.class);
+
+        // Read in the LOGIN state, but compressed: length 2, uncompressed (0), packet id 0x03.
+        channel.writeInbound(Unpooled.wrappedBuffer(new byte[] {0x02, 0x00, 0x03}));
+
+        // Acknowledged, not refused: the proxy moved the player on (to a server that is down here).
+        assertEquals(ProtocolState.CONFIGURATION, connection.decoder().state());
+        assertNull(frames.limits());
       } finally {
         channel.finishAndReleaseAll();
       }
@@ -1123,11 +1152,28 @@ class LoginSessionHandlerTest {
     }
 
     @Test
-    @DisplayName(
-        "should refuse a client that answers a cookie request nobody sent, as vanilla does")
+    @DisplayName("should close, unread, a client that answers a cookie request before any was sent")
     void refusesUnaskedAnswer() {
       EmbeddedChannel channel = loginChannel(VERSION);
       try {
+        send(channel, ProtocolState.LOGIN, new CookieResponse("primemc:session", null), VERSION);
+
+        // Refused from the frame's header, as the login state allows no answer yet.
+        assertNull(channel.readOutbound());
+        assertClosed(channel);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName(
+        "should refuse a client that answers a cookie request nobody sent, as vanilla does")
+    void refusesAnswerToAnotherKey() {
+      EmbeddedChannel channel = loginChannel(VERSION);
+      try {
+        var _ = loginHandler(channel).cookies().request("primemc:asked", Duration.ofSeconds(10));
+        nextPacket(channel, ProtocolState.LOGIN, CookieRequest.class, VERSION);
         send(channel, ProtocolState.LOGIN, new CookieResponse("primemc:session", null), VERSION);
 
         byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);

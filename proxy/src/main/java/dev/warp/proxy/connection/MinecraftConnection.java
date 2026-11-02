@@ -21,12 +21,15 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.compress.FrameDecompressor;
 import dev.warp.protocol.compress.JavaCompressor;
 import dev.warp.protocol.netty.CompressionEncoder;
+import dev.warp.protocol.netty.FrameDecoder;
 import dev.warp.protocol.netty.FrameForwarder;
+import dev.warp.protocol.netty.FrameLimits;
 import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
+import dev.warp.proxy.limit.Refusal;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -127,6 +130,24 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
   private final Queue<Held> heldUntilStateChange = new ArrayDeque<>();
 
   /**
+   * Watches a client connection until its client is logged in; {@code null} afterwards, and for a
+   * backend connection.
+   */
+  private @Nullable ConnectionGuard guard;
+
+  /** The frame decoder of a client connection, whose limits follow the state; looked up once. */
+  private @Nullable FrameDecoder frameDecoder;
+
+  /** Whether the proxy asked the client for a cookie during its login (1.20.5+). */
+  private boolean cookieResponsesExpected;
+
+  /**
+   * Whether the client is logged in: its frames are bounded by the protocol alone from then on,
+   * whatever state the proxy still reads it in (LOGIN until a 1.20.2+ client acknowledges).
+   */
+  private boolean frameLimitsLifted;
+
+  /**
    * A packet {@link #writeWhenSettled} holds, with the promise its write completes.
    *
    * @param packet the packet
@@ -181,6 +202,11 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   @Override
   public void channelInactive(ChannelHandlerContext ctx) {
+    ConnectionGuard watching = guard;
+    if (watching != null) {
+      guard = null;
+      watching.end();
+    }
     for (Held held = heldUntilStateChange.poll();
         held != null;
         held = heldUntilStateChange.poll()) {
@@ -203,6 +229,17 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   @Override
   public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+    ConnectionGuard watching = guard;
+    Refusal refusal = watching == null ? null : watching.failed(cause);
+    if (refusal != null) {
+      // A client that is not logged in can cause this at will: counted, never logged one by one.
+      logger.debug(
+          "Closed {} before login ({}): {}", remoteAddress(), refusal.label(), cause.toString());
+      if (ctx.channel().isActive()) {
+        ServerChannelInitializer.reset(ctx.channel());
+      }
+      return;
+    }
     if (cause instanceof ReadTimeoutException) {
       // A peer that went quiet: it is gone or stuck, and closing is all the proxy can do. Worth a
       // line, unlike a reset connection: how the connection stood says which side stopped.
@@ -457,6 +494,92 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
     var _ = channel.close();
   }
 
+  /**
+   * Closes the channel with a TCP reset, for a client refused before login: no answer is owed, and
+   * the proxy keeps no socket in TIME_WAIT for it.
+   */
+  public void reset() {
+    ServerChannelInitializer.reset(channel);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Before login
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Hands the connection the guard that watches it until its client is logged in.
+   *
+   * @param watching the guard
+   */
+  void guard(ConnectionGuard watching) {
+    this.guard = watching;
+  }
+
+  /**
+   * Returns the guard watching this client connection.
+   *
+   * @return the guard, or {@code null} once the client is logged in, and for a backend
+   */
+  @Nullable ConnectionGuard guard() {
+    return guard;
+  }
+
+  /**
+   * Marks the client logged in: it no longer counts among the connections not logged in, and no
+   * deadline or limit of those applies to it any more, the frame limits included. Those must go now
+   * rather than when the state changes: a 1.20.2+ client stays in the LOGIN state until it
+   * acknowledges its Login Success, and does so in a compressed frame, whose first byte is the
+   * uncompressed length rather than the packet identifier.
+   */
+  void loggedIn() {
+    ConnectionGuard watching = guard;
+    if (watching != null) {
+      guard = null;
+      watching.end();
+    }
+    frameLimitsLifted = true;
+    FrameDecoder frames = frameDecoder();
+    if (frames != null) {
+      frames.limits(null);
+    }
+  }
+
+  /**
+   * Lets the client answer the cookie requests the proxy sends it during its login: Cookie
+   * Responses, which the frame limits of the login state otherwise refuse, are now read.
+   */
+  void expectCookieResponses() {
+    if (!cookieResponsesExpected) {
+      cookieResponsesExpected = true;
+      updateFrameLimits();
+    }
+  }
+
+  /**
+   * Sets the frame limits of the state a client is read in: those of the HANDSHAKE, STATUS and
+   * LOGIN states, none from CONFIGURATION on. A backend's frames are not limited.
+   */
+  private void updateFrameLimits() {
+    MinecraftDecoder dec = decoder();
+    if (frameLimitsLifted || dec.direction() != PacketDirection.SERVERBOUND) {
+      return;
+    }
+    FrameDecoder frames = frameDecoder();
+    if (frames != null) {
+      frames.limits(FrameLimits.serverbound(dec.state(), dec.version(), cookieResponsesExpected));
+    }
+  }
+
+  /** The frame decoder, or {@code null} in a test pipeline without framing. */
+  private @Nullable FrameDecoder frameDecoder() {
+    FrameDecoder frames = frameDecoder;
+    if (frames == null) {
+      frames = channel.pipeline().get(FrameDecoder.class);
+      frameDecoder = frames;
+    }
+    return frames;
+  }
+
   // ---------------------------------------------------------------------------
   // Session handler management
   // ---------------------------------------------------------------------------
@@ -489,13 +612,15 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   /**
    * Updates the protocol state on both the decoder and encoder, then writes the packets {@link
-   * #writeWhenSettled} held during the state change, if one was pending.
+   * #writeWhenSettled} held during the state change, if one was pending. On a client connection,
+   * the frames that follow are checked against the limits of the new state.
    *
    * @param state the new protocol state
    */
   public void setState(ProtocolState state) {
     decoder().setState(state);
     encoder().setState(state);
+    updateFrameLimits();
     if (stateChangePending) {
       releaseHeldPackets();
     }

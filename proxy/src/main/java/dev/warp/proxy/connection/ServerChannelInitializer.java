@@ -22,10 +22,12 @@ import dev.warp.protocol.legacy.LegacyDisconnectEncoder;
 import dev.warp.protocol.legacy.LegacyPingDecoder;
 import dev.warp.protocol.netty.FrameDecoder;
 import dev.warp.protocol.netty.FrameEncoder;
+import dev.warp.protocol.netty.FrameLimits;
 import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.proxy.config.ProxyProtocolConfig;
+import dev.warp.proxy.limit.ClientLimits;
 
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -47,7 +49,7 @@ import org.slf4j.LoggerFactory;
  * <p>Pipeline layout (inbound top → bottom, outbound bottom → top):
  *
  * <pre>{@code
- * Inbound:  [read-timeout] → [legacy-ping-decoder] → [frame-decoder] → [minecraft-decoder]
+ * Inbound:  [legacy-ping-decoder] → [frame-decoder] → [read-timeout] → [minecraft-decoder]
  *           → [connection-handler]
  * Outbound: [connection-handler] → [minecraft-encoder] → [frame-encoder] → [legacy-ping-encoder]
  * }</pre>
@@ -68,7 +70,17 @@ import org.slf4j.LoggerFactory;
  * <p>Every new connection counts against its client address's connection limit ({@link
  * dev.warp.proxy.limit.ClientLimits}) before anything is read from it: here, from the socket's
  * peer, or, behind the PROXY protocol, from the address of the header once it is applied. A
- * connection over the limit is reset with no handler installed.
+ * connection over the limit is reset with no handler installed. Before that, the connection takes a
+ * place among the connections not logged in, for the whole proxy: over that cap, it is reset too. A
+ * {@link ConnectionGuard} gives the place back once the client is logged in or gone, and holds the
+ * connection to the deadlines of the states before login.
+ *
+ * <h3>Before login</h3>
+ *
+ * <p>Until the client is logged in, the frame decoder checks every frame against the {@link
+ * FrameLimits} of its state, from its header: a connection that has not logged in never makes the
+ * proxy buffer more than the largest packet it may send. The read timeout sits after the frame
+ * decoder, so that bytes trickled into a frame never reset it.
  *
  * <p>Encryption handlers are inserted during login. Compression needs no extra inbound handler: the
  * {@link MinecraftDecoder} decompresses only the frames it inspects (see {@link
@@ -188,12 +200,19 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
 
   @Override
   protected void initChannel(Channel ch) {
-    if (proxyProtocol.enabled()) {
-      if (!fromTrustedProxy(ch)) {
-        return;
-      }
-      // The connection limit applies to the client address of the header, once it is known.
-    } else if (!loginContext.limits().admitConnection(ch.remoteAddress())) {
+    ClientLimits limits = loginContext.limits();
+    if (proxyProtocol.enabled() && !fromTrustedProxy(ch)) {
+      return;
+    }
+    // First the cap on connections not logged in, a counter: a flood over it costs no lookup.
+    if (!limits.tryStartPending()) {
+      reset(ch);
+      return;
+    }
+    // Behind the PROXY protocol, the connection limit applies to the client address of the
+    // header, once it is known.
+    if (!proxyProtocol.enabled() && !limits.admitConnection(ch.remoteAddress())) {
+      limits.endPending();
       reset(ch);
       return;
     }
@@ -209,6 +228,8 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
             PacketDirection.CLIENTBOUND, ProtocolVersion.MINECRAFT_1_7_2, ProtocolState.HANDSHAKE);
 
     MinecraftConnection connection = new MinecraftConnection(ch);
+    // From now on the connection gives its place back when it closes, or once logged in.
+    connection.guard(new ConnectionGuard(connection, limits));
     ChannelPipeline pipeline = ch.pipeline();
 
     if (proxyProtocol.enabled()) {
@@ -217,17 +238,19 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
           .addLast(PROXY_PROTOCOL_DECODER, new ProxyProtocolDecoder())
           .addLast(
               PROXY_PROTOCOL_HANDLER,
-              new ProxyProtocolHandler(connection, loginContext.limits(), proxyHeaderWarnings));
+              new ProxyProtocolHandler(connection, limits, proxyHeaderWarnings));
     }
 
     pipeline
-        // Inbound: timeout → frame split → packet decode → handler
+        // Inbound: frame split → timeout → packet decode → handler. The read timeout comes after
+        // the frame decoder, so that only complete frames reset it (BungeeCord PR #3066), and the
+        // frames of a client that is not logged in are checked against the limits of its state.
+        .addLast(LEGACY_PING_DECODER, new LegacyPingDecoder())
+        .addLast(LEGACY_PING_ENCODER, LegacyDisconnectEncoder.INSTANCE)
+        .addLast(FRAME_DECODER, new FrameDecoder(FrameLimits.HANDSHAKE))
         .addLast(
             READ_TIMEOUT,
             new ReadTimeoutHandler(MinecraftConnection.READ_TIMEOUT_SECONDS, TimeUnit.SECONDS))
-        .addLast(LEGACY_PING_DECODER, new LegacyPingDecoder())
-        .addLast(LEGACY_PING_ENCODER, LegacyDisconnectEncoder.INSTANCE)
-        .addLast(FRAME_DECODER, new FrameDecoder())
         .addLast(MINECRAFT_DECODER, decoder)
         // Outbound: handler → packet encode → frame prepend
         .addLast(FRAME_ENCODER, FrameEncoder.INSTANCE)

@@ -159,6 +159,7 @@ class DrainPlayersTest {
     ServerLoginContext context = mock(ServerLoginContext.class);
     when(context.logging()).thenReturn(LoggingConfig.DEFAULTS);
     when(context.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
+    when(context.antiBot()).thenReturn(TestLoginContexts.calmAntiBot());
     when(context.playerRegistry()).thenReturn(registry);
     when(context.events()).thenReturn(events);
     when(context.channels()).thenReturn(new ChannelRegistry());

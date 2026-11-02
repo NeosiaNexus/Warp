@@ -59,6 +59,34 @@ final class AddressKey {
     return network;
   }
 
+  /**
+   * Returns what a key covers, in CIDR notation: {@code 203.0.113.7/32} for an IPv4 address, {@code
+   * 2001:db8:1:2::/64} for an IPv6 network.
+   *
+   * @param key a key from {@link #of(InetAddress)}
+   * @return its CIDR
+   */
+  static String cidr(long key) {
+    if ((key & IPV4_TAG) == IPV4_TAG) {
+      return ((key >>> 24) & 0xFF)
+          + "."
+          + ((key >>> 16) & 0xFF)
+          + "."
+          + ((key >>> 8) & 0xFF)
+          + "."
+          + (key & 0xFF)
+          + "/32";
+    }
+    return Long.toHexString((key >>> 48) & 0xFFFF)
+        + ":"
+        + Long.toHexString((key >>> 32) & 0xFFFF)
+        + ":"
+        + Long.toHexString((key >>> 16) & 0xFFFF)
+        + ":"
+        + Long.toHexString(key & 0xFFFF)
+        + "::/64";
+  }
+
   private static long ipv4(byte[] bytes, int offset) {
     return ((bytes[offset] & 0xFFL) << 24)
         | ((bytes[offset + 1] & 0xFFL) << 16)

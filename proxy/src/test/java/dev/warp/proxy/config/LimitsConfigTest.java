@@ -71,7 +71,7 @@ class LimitsConfigTest {
     }
 
     @Test
-    @DisplayName("should exempt loopback and limit logins like Velocity's login-ratelimit")
+    @DisplayName("should exempt loopback, admit shared addresses and turn strict under attack")
     void defaultValues() {
       LimitsConfig defaults = LimitsConfig.DEFAULTS;
 
@@ -79,9 +79,22 @@ class LimitsConfigTest {
       assertEquals(
           List.of(CidrRange.parse("127.0.0.0/8"), CidrRange.parse("::1")),
           defaults.exempt().ranges());
-      assertEquals(Duration.ofSeconds(3), defaults.logins().interval());
-      assertEquals("2 at once, then 1 every 3s", defaults.logins().toString());
+      assertEquals(Duration.ofSeconds(1), defaults.logins().interval());
+      assertEquals(10, defaults.maxConcurrentLoginsPerAddress());
+      assertEquals("2 at once, then 1 every 3s", defaults.loginsUnderAttack().toString());
+      assertEquals(2, defaults.maxConcurrentLoginsPerAddressUnderAttack());
+      assertEquals("10 at once, then 1 every 1s", defaults.logins().toString());
       assertEquals("10 at once, then 1 every 200ms", defaults.connections().toString());
+    }
+
+    @Test
+    @DisplayName("should cap connections not logged in and give handshakes and pings 5 s each")
+    void preLoginDefaults() {
+      LimitsConfig defaults = LimitsConfig.DEFAULTS;
+
+      assertEquals(8192, defaults.maxPendingConnections());
+      assertEquals(Duration.ofSeconds(5), defaults.handshakeTimeout());
+      assertEquals(Duration.ofSeconds(5), defaults.statusTimeout());
     }
   }
 
@@ -112,10 +125,16 @@ class LimitsConfigTest {
                   timeout = 1m
                 }
                 report-interval = 5m
+                max-pending-connections = 1000
+                handshake-timeout = 3s
+                status-timeout = 0
               }
               """);
 
       LimitsConfig limits = config.limits();
+      assertEquals(1000, limits.maxPendingConnections());
+      assertEquals(Duration.ofSeconds(3), limits.handshakeTimeout());
+      assertEquals(Duration.ZERO, limits.statusTimeout());
       assertEquals(List.of(CidrRange.parse("10.1.0.0/16")), limits.exempt().ranges());
       assertEquals(new LimitsConfig.Rate(20, Duration.ofMillis(100)), limits.connections());
       assertEquals(new LimitsConfig.Rate(5, Duration.ofSeconds(2)), limits.statusPings());

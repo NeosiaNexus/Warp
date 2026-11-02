@@ -122,7 +122,7 @@ public final class MojangSessionService implements AutoCloseable {
     }
 
     if (response.statusCode() == 204 || response.body().isEmpty()) {
-      throw new AuthenticationException(
+      throw AuthenticationException.notJoined(
           "Player '" + username + "' did not authenticate with Mojang");
     }
 

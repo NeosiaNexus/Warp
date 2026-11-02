@@ -34,6 +34,12 @@ export function offlineUuid(name) {
  */
 export const FORWARDED_PLAYER = 'e2e_forwarded';
 
+/**
+ * Names the mock never vouches for (`hasJoined` answers 204, as Mojang does for a client that did
+ * not join): the forged logins of the flood scenario.
+ */
+export const NOT_JOINED_PREFIX = 'forged';
+
 /** The UUID the mock vouches for `name` with, as 32 hex digits. */
 export function mojangUuid(name) {
   if (name !== FORWARDED_PLAYER) return offlineUuid(name);
@@ -58,12 +64,19 @@ export function startMockMojang(port, signer = createSigner()) {
 
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
-    res.writeHead(200, { 'content-type': 'application/json' });
     if (url.pathname === '/publickeys') {
+      res.writeHead(200, { 'content-type': 'application/json' });
       res.end(keySet);
       return;
     }
     const name = url.searchParams.get('username') ?? 'unknown';
+    if (name.startsWith(NOT_JOINED_PREFIX)) {
+      // What Mojang answers when the client never joined: a forged login (the flood scenario).
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ id: mojangUuid(name), name, properties: [] }));
   });
 

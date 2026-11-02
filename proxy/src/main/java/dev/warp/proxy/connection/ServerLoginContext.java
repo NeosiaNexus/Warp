@@ -17,6 +17,7 @@
 package dev.warp.proxy.connection;
 
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.command.WarpCommandManager;
@@ -73,6 +74,7 @@ import io.netty.channel.Channel;
  * @param logging which routine events get a log line each
  * @param tcpFastOpen whether connections to backends request TCP Fast Open: only when configured
  *     and the transport supports it
+ * @param antiBot the anti-bot: attack detection, trusted identities, lockdown, plugin checks
  */
 @SuppressWarnings("ArrayRecordComponent") // forwardingSecret is treated as immutable
 public record ServerLoginContext(
@@ -99,7 +101,8 @@ public record ServerLoginContext(
     ClientLimits limits,
     TimeoutsConfig timeouts,
     LoggingConfig logging,
-    boolean tcpFastOpen) {
+    boolean tcpFastOpen,
+    AntiBotService antiBot) {
 
   /** Validates configuration invariants. */
   public ServerLoginContext {

@@ -233,6 +233,10 @@ final class ClientCookies {
             () -> onEventLoop(() -> timedOut(request, timeoutNanos)),
             timeoutNanos,
             TimeUnit.NANOSECONDS);
+    if (state == ProtocolState.LOGIN && !client.isStateChangePending()) {
+      // The client answers in its login state, whose frame limits refuse unasked cookies.
+      client.expectCookieResponses();
+    }
     client.writeWhenSettled(new CookieRequest(request.key()));
     keepReadingForAnswer();
   }

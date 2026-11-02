@@ -58,6 +58,7 @@ import dev.warp.protocol.packet.play.StopSound;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
 import dev.warp.protocol.packet.play.Transfer;
+import dev.warp.proxy.antibot.AntiBotService.RoutineLine;
 import dev.warp.proxy.command.CommandExecuteEventImpl;
 import dev.warp.proxy.command.PlayerAvailableCommandsEventImpl;
 import dev.warp.proxy.command.WarpCommandManager;
@@ -2551,9 +2552,13 @@ public final class ConnectedPlayer {
         .addKeyValue(LOG_SESSION, sessionId.toString());
   }
 
-  /** Logs a player connection event at INFO, when {@code logging.connections} is on. */
+  /**
+   * Logs a player connection event at INFO, when {@code logging.connections} is on and no attack is
+   * under way (counted in the attack's summaries then).
+   */
   private void logConnection(String format, @Nullable Object... arguments) {
-    if (loginContext.logging().connections()) {
+    if (loginContext.logging().connections()
+        && loginContext.antiBot().logs(RoutineLine.CONNECTION)) {
       log(logger, Level.INFO).log(format, arguments);
     }
   }

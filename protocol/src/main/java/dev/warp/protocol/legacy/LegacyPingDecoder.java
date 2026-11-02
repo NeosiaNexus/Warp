@@ -18,11 +18,13 @@ package dev.warp.protocol.legacy;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPipeline;
 import io.netty.handler.codec.ByteToMessageDecoder;
+import io.netty.util.concurrent.ScheduledFuture;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -39,12 +41,21 @@ import org.jspecify.annotations.Nullable;
  * every other start is framed. A frame of 2 bytes cannot hold a handshake: {@code 0x02} followed by
  * more bytes is a legacy login.
  *
+ * <p>TCP may split a ping, or the first frame of a modern client, after its first or second byte.
+ * So {@code 0xFE} or {@code 0xFE 0x01} alone is answered as a ping only if nothing follows within
+ * {@value #FRAGMENT_WAIT_MILLIS} ms, as Velocity's fix of the same ambiguity does: answered at
+ * once, a 1.6 ping would get the older format, and a fragmented modern frame of 254 bytes (a long
+ * Floodgate host name) a ping answer instead of a session.
+ *
  * <p>Never throws on malformed input: a 1.6 ping whose plugin message does not parse is answered as
- * a ping without host name. It waits for more bytes only while a 1.6 ping is incomplete, and never
- * for more than such a ping can hold. Once it has emitted a ping or a login it discards whatever
- * the client sends next: the proxy answers and closes.
+ * a ping without host name. It waits for more bytes only while a ping is incomplete, and never for
+ * more than such a ping can hold. Once it has emitted a ping or a login it discards whatever the
+ * client sends next: the proxy answers and closes.
  */
 public final class LegacyPingDecoder extends ByteToMessageDecoder {
+
+  /** How long a lone {@code 0xFE}, or {@code 0xFE 0x01}, waits for the bytes that may follow. */
+  static final long FRAGMENT_WAIT_MILLIS = 100;
 
   private static final int PING = 0xFE;
   private static final int PING_PAYLOAD = 0x01;
@@ -67,6 +78,11 @@ public final class LegacyPingDecoder extends ByteToMessageDecoder {
 
   /** Whether a legacy packet was emitted: anything after it is discarded. */
   private boolean emitted;
+
+  /**
+   * Answers a ping of one or two bytes if nothing follows them in time; {@code null} if unarmed.
+   */
+  private @Nullable ScheduledFuture<?> fragmentWait;
 
   @Override
   protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) {
@@ -91,7 +107,7 @@ public final class LegacyPingDecoder extends ByteToMessageDecoder {
       return;
     }
     if (readable == 1) {
-      emit(in, out, new LegacyPing(LegacyPing.Format.MINECRAFT_1_3, null, 0));
+      awaitFragment(ctx);
       return;
     }
     if (in.getUnsignedByte(start + 1) != PING_PAYLOAD) {
@@ -99,7 +115,7 @@ public final class LegacyPingDecoder extends ByteToMessageDecoder {
       return;
     }
     if (readable == 2) {
-      emit(in, out, new LegacyPing(LegacyPing.Format.MINECRAFT_1_4, null, 0));
+      awaitFragment(ctx);
       return;
     }
     if (in.getUnsignedByte(start + 2) != PLUGIN_MESSAGE) {
@@ -154,7 +170,52 @@ public final class LegacyPingDecoder extends ByteToMessageDecoder {
   private void emit(ByteBuf in, List<Object> out, Object packet) {
     in.skipBytes(in.readableBytes());
     emitted = true;
+    cancelFragmentWait();
     out.add(packet);
+  }
+
+  /** Answers the ping of one or two bytes seen so far, unless more bytes come within the wait. */
+  private void awaitFragment(ChannelHandlerContext ctx) {
+    if (fragmentWait == null) {
+      fragmentWait =
+          ctx.executor()
+              .schedule(() -> fragmentTimedOut(ctx), FRAGMENT_WAIT_MILLIS, TimeUnit.MILLISECONDS);
+    }
+  }
+
+  /** Nothing followed the first bytes: they are a ping of Minecraft 1.3, or of 1.4 and 1.5. */
+  private void fragmentTimedOut(ChannelHandlerContext ctx) {
+    fragmentWait = null;
+    if (emitted || ctx.isRemoved()) {
+      return;
+    }
+    ByteBuf in = internalBuffer();
+    int readable = in.readableBytes();
+    LegacyPing ping;
+    if (readable == 1) {
+      ping = new LegacyPing(LegacyPing.Format.MINECRAFT_1_3, null, 0);
+    } else if (readable == 2) {
+      ping = new LegacyPing(LegacyPing.Format.MINECRAFT_1_4, null, 0);
+    } else {
+      return; // Decided by decode() when the bytes came.
+    }
+    in.skipBytes(readable);
+    emitted = true;
+    ctx.fireChannelRead(ping);
+    ctx.fireChannelReadComplete();
+  }
+
+  private void cancelFragmentWait() {
+    ScheduledFuture<?> wait = fragmentWait;
+    if (wait != null) {
+      fragmentWait = null;
+      wait.cancel(false);
+    }
+  }
+
+  @Override
+  protected void handlerRemoved0(ChannelHandlerContext ctx) {
+    cancelFragmentWait();
   }
 
   /**

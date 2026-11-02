@@ -26,7 +26,12 @@ import dev.warp.api.lifecycle.DrainOutcome;
 import dev.warp.api.lifecycle.DrainPhase;
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
+import dev.warp.proxy.antibot.AntiBotService;
+import dev.warp.proxy.config.AntiBotConfig;
+import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.config.ManagementConfig;
+import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.limit.ClientLimits;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -41,6 +46,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -244,7 +250,7 @@ class ManagementServerTest {
     void notFound() throws Exception {
       start();
 
-      HttpResponse<String> response = get("/metrics");
+      HttpResponse<String> response = get("/nothing-here");
 
       assertEquals(404, response.statusCode());
       assertTrue(json(response).has("error"));
@@ -511,9 +517,92 @@ class ManagementServerTest {
   }
 
   /** The proxy's state as a test sets it, recording the threads that read it. */
+  // ---------------------------------------------------------------------------
+  // Anti-bot
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("anti-bot")
+  class AntiBotEndpointsTest {
+
+    @Test
+    @DisplayName("should describe the anti-bot in JSON and expose its metrics")
+    void statusAndMetrics() throws Exception {
+      health.antiBot = antiBot();
+      start();
+
+      HttpResponse<String> status = get("/antibot");
+      HttpResponse<String> metrics = get("/metrics");
+
+      assertEquals(200, status.statusCode());
+      assertEquals("normal", json(status).get("level").getAsString());
+      assertTrue(json(status).getAsJsonObject("refused").has("handshake_timeout"));
+      assertEquals(200, metrics.statusCode());
+      assertTrue(metrics.body().contains("warp_antibot_level 0"), metrics.body());
+      assertTrue(
+          metrics.body().contains("warp_connections_refused_total{reason=\"invalid_frame\"} 0"),
+          metrics.body());
+    }
+
+    @Test
+    @DisplayName("should turn lockdown on with the token only, and list the blocklist as text")
+    void lockdownAndBlocklist() throws Exception {
+      AntiBotService antiBot = antiBot();
+      health.antiBot = antiBot;
+      start();
+
+      HttpResponse<String> refused = send("POST", "/antibot/lockdown?enabled=true", "wrong");
+      HttpResponse<String> accepted = send("POST", "/antibot/lockdown?enabled=true", TOKEN);
+      HttpResponse<String> blocklist = get("/antibot/blocklist");
+
+      assertEquals(401, refused.statusCode());
+      assertEquals(200, accepted.statusCode());
+      assertTrue(json(accepted).get("lockdown").getAsBoolean());
+      assertTrue(antiBot.isLockdown());
+      assertEquals(200, blocklist.statusCode());
+      assertEquals("", blocklist.body());
+    }
+
+    @Test
+    @DisplayName("should answer 503 before the anti-bot is loaded")
+    void beforeLoad() throws Exception {
+      start();
+
+      assertEquals(503, get("/antibot").statusCode());
+    }
+
+    private AntiBotService antiBot() throws IOException {
+      AntiBotConfig d = AntiBotConfig.DEFAULTS;
+      AntiBotConfig.Verified v = d.verified();
+      return new AntiBotService(
+          new AntiBotConfig(
+              true,
+              d.exempt(),
+              new AntiBotConfig.Verified(
+                  v.expireAfterLastJoin(),
+                  100,
+                  24,
+                  48,
+                  false,
+                  v.secretFile(),
+                  v.sharedStoreTimeout()),
+              d.attack(),
+              d.blocklist(),
+              d.checkTimeout()),
+          false,
+          ClientLimits.unlimited(),
+          new WarpEventBus(Runnable::run),
+          LoggingConfig.DEFAULTS,
+          Path.of("."),
+          _ -> null,
+          System::currentTimeMillis);
+    }
+  }
+
   private static final class FakeHealth implements ProxyHealth {
 
     private volatile boolean started = true;
+    private volatile @Nullable AntiBotService antiBot;
     private volatile boolean stopping;
     private volatile int servers = 1;
     private final List<String> holds = new CopyOnWriteArrayList<>();
@@ -566,6 +655,11 @@ class ManagementServerTest {
       }
       asked.complete(null);
       return done;
+    }
+
+    @Override
+    public @Nullable AntiBotService antiBot() {
+      return antiBot;
     }
 
     void awaitDrain() throws Exception {

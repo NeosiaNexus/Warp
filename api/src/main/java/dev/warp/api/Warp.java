@@ -16,6 +16,7 @@
  */
 package dev.warp.api;
 
+import dev.warp.api.antibot.AntiBot;
 import dev.warp.api.lifecycle.DrainPhase;
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.player.Player;
@@ -87,6 +88,14 @@ public interface Warp {
    * @return the server registry
    */
   ServerRegistry servers();
+
+  /**
+   * Returns the proxy's built-in anti-bot: whether it is under attack, lockdown, the identities it
+   * trusts, and the extension points for shared stores and extra checks.
+   *
+   * @return the anti-bot
+   */
+  AntiBot antiBot();
 
   // ---------------------------------------------------------------------------
   // Drain (readiness holds belong to plugins: see PluginContext#holdReadiness)

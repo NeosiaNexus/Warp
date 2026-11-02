@@ -254,6 +254,10 @@ under `logs/` stay in text. A plugin that forwards records elsewhere (Sentry, Lo
 from a bounded queue that drops (and counts) records rather than slow down logging, and is removed
 with its plugin.
 
+`logging.connections` and `logging.pings` never turn a flood into a flood of log lines: while the
+anti-bot reports an attack, neither is logged one by one. One line at the start of the attack says
+so, and its summaries count the lines held back. Out of an attack, both apply as configured.
+
 On each backend, set `online-mode=false` in `server.properties` and keep
 `network-compression-threshold` equal to Warp's threshold (256). For Velocity forwarding, enable
 Velocity support with the content of `forwarding.secret` as its secret, as described in

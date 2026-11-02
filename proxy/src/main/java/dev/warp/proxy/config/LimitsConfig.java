@@ -36,6 +36,21 @@ import java.util.List;
  *     once, RSA decryption included; 0 for no limit
  * @param loginTimeout the longest a login may take before the player is logged in; zero for none
  * @param reportInterval how often the counts of refusals are logged
+ * @param maxPendingConnections connections that are not logged in yet (server list pings, logins in
+ *     progress, connections that sent nothing) the whole proxy holds at once, whatever their
+ *     address; 0 for no limit
+ * @param handshakeTimeout the longest a connection may take to send its handshake, PROXY protocol
+ *     header included, counted from the accept whatever it sends meanwhile; zero for none
+ * @param statusTimeout the longest a server list ping may take, from its handshake to its pong;
+ *     zero for none
+ * @param authenticationQueue online logins that wait for an authentication when the proxy runs its
+ *     most, trusted players first; 0 to refuse them at once
+ * @param authenticationQueueWait the longest a login waits in that queue before it is told the
+ *     server is busy
+ * @param loginsUnderAttack login attempts per address while the anti-bot detects an attack, in
+ *     place of {@code logins}: strict, as calm-mode budgets are generous to shared addresses
+ * @param maxConcurrentLoginsPerAddressUnderAttack logins one address may have in progress at once
+ *     during an attack; 0 for no limit
  */
 public record LimitsConfig(
     boolean enabled,
@@ -46,7 +61,14 @@ public record LimitsConfig(
     int maxConcurrentLoginsPerAddress,
     int maxConcurrentAuthentications,
     Duration loginTimeout,
-    Duration reportInterval) {
+    Duration reportInterval,
+    int maxPendingConnections,
+    Duration handshakeTimeout,
+    Duration statusTimeout,
+    int authenticationQueue,
+    Duration authenticationQueueWait,
+    Rate loginsUnderAttack,
+    int maxConcurrentLoginsPerAddressUnderAttack) {
 
   /** The limits Warp applies when the configuration does not say otherwise. */
   public static final LimitsConfig DEFAULTS =
@@ -55,11 +77,18 @@ public record LimitsConfig(
           CidrRanges.parse(List.of("127.0.0.0/8", "::1/128")),
           new Rate(10, Duration.ofMillis(200)),
           new Rate(10, Duration.ofSeconds(1)),
-          new Rate(2, Duration.ofSeconds(3)),
-          2,
+          new Rate(10, Duration.ofSeconds(1)),
+          10,
           256,
           Duration.ofSeconds(30),
-          Duration.ofMinutes(1));
+          Duration.ofMinutes(1),
+          8192,
+          Duration.ofSeconds(5),
+          Duration.ofSeconds(5),
+          1024,
+          Duration.ofSeconds(10),
+          new Rate(2, Duration.ofSeconds(3)),
+          2);
 
   /** No limit at all. */
   public static final LimitsConfig DISABLED =
@@ -72,20 +101,41 @@ public record LimitsConfig(
           0,
           0,
           Duration.ZERO,
-          Duration.ofMinutes(1));
+          Duration.ofMinutes(1),
+          0,
+          Duration.ZERO,
+          Duration.ZERO,
+          0,
+          Duration.ofSeconds(10),
+          Rate.UNLIMITED,
+          0);
 
   /**
    * Checks the values.
    *
    * @throws IllegalArgumentException if a count or a duration is negative, or the report interval
-   *     is not positive
+   *     or the queue wait is not positive
    */
   public LimitsConfig {
-    if (maxConcurrentLoginsPerAddress < 0 || maxConcurrentAuthentications < 0) {
+    if (maxConcurrentLoginsPerAddress < 0
+        || maxConcurrentLoginsPerAddressUnderAttack < 0
+        || maxConcurrentAuthentications < 0
+        || maxPendingConnections < 0
+        || authenticationQueue < 0) {
       throw new IllegalArgumentException("concurrency limits must not be negative");
     }
-    if (loginTimeout.isNegative()) {
-      throw new IllegalArgumentException("loginTimeout must not be negative, got " + loginTimeout);
+    if (authenticationQueueWait.isNegative() || authenticationQueueWait.isZero()) {
+      throw new IllegalArgumentException(
+          "authenticationQueueWait must be positive, got " + authenticationQueueWait);
+    }
+    if (loginTimeout.isNegative() || handshakeTimeout.isNegative() || statusTimeout.isNegative()) {
+      throw new IllegalArgumentException(
+          "timeouts must not be negative, got "
+              + loginTimeout
+              + ", "
+              + handshakeTimeout
+              + ", "
+              + statusTimeout);
     }
     if (reportInterval.isNegative() || reportInterval.isZero()) {
       throw new IllegalArgumentException("reportInterval must be positive, got " + reportInterval);
@@ -143,13 +193,6 @@ public record LimitsConfig(
 
   /** Formats a duration as its configuration would: {@code 200ms}, {@code 3s}, {@code 1m}. */
   static String format(Duration duration) {
-    long millis = duration.toMillis();
-    if (millis % 60_000 == 0 && millis != 0) {
-      return millis / 60_000 + "m";
-    }
-    if (millis % 1000 == 0) {
-      return millis / 1000 + "s";
-    }
-    return millis + "ms";
+    return Durations.format(duration);
   }
 }

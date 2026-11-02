@@ -18,6 +18,7 @@ package dev.warp.proxy;
 
 import dev.warp.api.Warp;
 import dev.warp.api.WarpProvider;
+import dev.warp.api.antibot.AntiBot;
 import dev.warp.api.event.proxy.ProxyReadyEvent;
 import dev.warp.api.event.proxy.ProxyShutdownEvent;
 import dev.warp.api.lifecycle.DrainOutcome;
@@ -25,10 +26,12 @@ import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
 import dev.warp.api.player.Player;
 import dev.warp.api.plugin.PluginManager;
+import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.command.ProxyCommands;
 import dev.warp.proxy.command.WarpCommandManager;
+import dev.warp.proxy.config.AntiBotConfig;
 import dev.warp.proxy.config.WarpConfig;
 import dev.warp.proxy.connection.BackendPinger;
 import dev.warp.proxy.connection.ConnectedPlayer;
@@ -38,6 +41,7 @@ import dev.warp.proxy.connection.ServerLoginContext;
 import dev.warp.proxy.drain.ExecutorDrainScheduler;
 import dev.warp.proxy.drain.ProxyDrain;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.limit.Blocklist;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.logging.LogSinkRegistry;
 import dev.warp.proxy.logging.SinkAppender;
@@ -223,6 +227,12 @@ public final class WarpServer implements Warp {
   /** The Mojang session service, kept for lifecycle management. */
   private @Nullable MojangSessionService sessionService;
 
+  /** The anti-bot, from {@link #start()} on. */
+  private volatile @Nullable AntiBotService antiBot;
+
+  /** The proxy's working directory. */
+  private final Path directory;
+
   private volatile boolean running;
 
   /** Whether the proxy listens and its plugins are enabled. */
@@ -266,6 +276,7 @@ public final class WarpServer implements Warp {
    */
   WarpServer(WarpConfig config, Path directory, IntConsumer exit, Duration shutdownQuietPeriod) {
     this.config = config;
+    this.directory = directory;
     this.exit = exit;
     this.shutdownQuietPeriod = shutdownQuietPeriod;
     this.serverRegistry =
@@ -310,23 +321,31 @@ public final class WarpServer implements Warp {
     this.transportInfo = transport;
     // Behind the PROXY protocol, the trusted proxies are never limited: their own connections are
     // health checks, and every other one is limited under the client address of its header.
+    AntiBotConfig antiBotConfig = config.antiBot();
+    AntiBotConfig.Blocklist blocklist = antiBotConfig.blocklist();
     ClientLimits limits =
         new ClientLimits(
             config.limits(),
             config.proxyProtocol().enabled()
                 ? config.proxyProtocol().trustedProxies()
-                : CidrRanges.none());
+                : CidrRanges.none(),
+            antiBotConfig.enabled() && blocklist.enabled()
+                ? new Blocklist(blocklist.strikes(), blocklist.duration(), System::nanoTime)
+                : null);
     if (config.tcpFastOpen() && !transport.tcpFastOpen()) {
       logger.warn("tcp-fast-open is on, but only the epoll transport (Linux) supports it: ignored");
     }
     // Before the event loops, so that a configuration error leaves nothing to shut down.
-    ServerLoginContext loginContext = createLoginContext(transport, limits);
+    AntiBotService bots = startAntiBot(limits);
+    ServerLoginContext loginContext = createLoginContext(transport, limits, bots);
     this.bossGroup = new MultiThreadIoEventLoopGroup(1, transport.ioFactory());
     this.workerGroup = new MultiThreadIoEventLoopGroup(transport.ioFactory());
     long reportMillis = limits.reportInterval().toMillis();
     var _ =
         workerGroup.scheduleAtFixedRate(
             limits::report, reportMillis, reportMillis, TimeUnit.MILLISECONDS);
+    var _ = workerGroup.scheduleAtFixedRate(bots::tick, 1, 1, TimeUnit.SECONDS);
+    ProxyCommands.registerAntiBot(commands, bots, this::player);
 
     serverRegistry.setPinger(new BackendPinger(workerGroup, transport.clientChannelClass()));
 
@@ -433,6 +452,10 @@ public final class WarpServer implements Warp {
 
       if (sessionService != null) {
         sessionService.close();
+      }
+      AntiBotService bots = antiBot;
+      if (bots != null) {
+        bots.close(); // saves the trusted identities
       }
       // Last: the agent check and the liveness probe answer until the very end.
       stopManagement();
@@ -620,6 +643,49 @@ public final class WarpServer implements Warp {
     return readinessHolds;
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * @throws IllegalStateException before {@link #start()}, which loads the anti-bot
+   */
+  @Override
+  public AntiBot antiBot() {
+    AntiBotService bots = antiBot;
+    if (bots == null) {
+      throw new IllegalStateException("The anti-bot is loaded when the proxy starts");
+    }
+    return bots;
+  }
+
+  /**
+   * Loads the anti-bot: its secret and its store of trusted identities.
+   *
+   * @throws IllegalStateException if they cannot be read or written
+   */
+  private AntiBotService startAntiBot(ClientLimits limits) {
+    try {
+      AntiBotService bots =
+          new AntiBotService(
+              config.antiBot(),
+              config.onlineMode(),
+              limits,
+              events,
+              config.logging(),
+              directory,
+              System::getenv,
+              System::currentTimeMillis);
+      this.antiBot = bots;
+      return bots;
+    } catch (IOException e) {
+      throw new IllegalStateException(
+          "Cannot load the anti-bot's trusted identities from "
+              + directory.resolve("anti-bot")
+              + ": "
+              + e.getMessage(),
+          e);
+    }
+  }
+
   @Override
   public CompletableFuture<DrainStatus> drain() {
     return startDrain(DrainTrigger.PLUGIN);
@@ -684,6 +750,11 @@ public final class WarpServer implements Warp {
     public CompletableFuture<DrainStatus> drain(DrainTrigger trigger) {
       return startDrain(trigger);
     }
+
+    @Override
+    public @Nullable AntiBotService antiBot() {
+      return antiBot;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -722,7 +793,8 @@ public final class WarpServer implements Warp {
    * @param transport the detected transport for channel class resolution
    * @param limits the limits on what one client address may do
    */
-  private ServerLoginContext createLoginContext(TransportInfo transport, ClientLimits limits) {
+  private ServerLoginContext createLoginContext(
+      TransportInfo transport, ClientLimits limits, AntiBotService bots) {
     ProfileKeys profileKeys = loadProfileKeys();
 
     KeyPairGenerator gen;
@@ -768,7 +840,8 @@ public final class WarpServer implements Warp {
         limits,
         config.timeouts(),
         config.logging(),
-        config.tcpFastOpen() && transport.tcpFastOpen());
+        config.tcpFastOpen() && transport.tcpFastOpen(),
+        bots);
   }
 
   /**

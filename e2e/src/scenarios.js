@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { connect as tcpConnect } from 'node:net';
 import { dirname, join } from 'node:path';
 
+import { flood } from './flood.js';
 import { FORWARDED_PLAYER, mojangUuid, offlineUuid } from './mojang.js';
 import { sha1 } from './packs.js';
 import { sleep } from './proc.js';
@@ -1078,4 +1079,5 @@ export const SCENARIOS = [
   { name: 'transfer', run: transfer, requires: 'transfers' },
   { name: 'drain', run: drain, requires: 'drain' },
   { name: 'player-limit', run: playerLimit, requires: 'proxy' },
+  { name: 'flood', run: (ctx) => flood(ctx, joinWarp, LOBBY_MODE), requires: 'proxy' },
 ];

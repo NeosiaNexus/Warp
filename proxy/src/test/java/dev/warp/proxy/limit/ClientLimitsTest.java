@@ -19,6 +19,8 @@ package dev.warp.proxy.limit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.proxy.config.LimitsConfig;
@@ -29,8 +31,10 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.UnknownHostException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import io.netty.channel.embedded.EmbeddedChannel;
@@ -115,16 +119,42 @@ class ClientLimitsTest {
   class Logins {
 
     @Test
-    @DisplayName("should let a burst of logins in, then say how long to wait")
-    void burstThenWait() {
+    @DisplayName("should let ten players behind one address log in at once out of an attack")
+    void sharedAddressInCalm() {
       ClientLimits limits = limits(LimitsConfig.DEFAULTS);
-      release(limits.admitLogin(CLIENT));
-      release(limits.admitLogin(CLIENT));
+      List<LoginAdmission> household = new ArrayList<>();
+      for (int i = 0; i < 10; i++) {
+        household.add(limits.admitLogin(CLIENT));
+      }
 
-      LoginAdmission third = limits.admitLogin(CLIENT);
+      household.forEach(admission -> assertInstanceOf(LoginAdmission.Admitted.class, admission));
+      // In progress together: none released before the eleventh.
+      LoginAdmission eleventh = limits.admitLogin(CLIENT);
+      assertInstanceOf(LoginAdmission.TooManyInProgress.class, eleventh);
+      household.forEach(ClientLimitsTest::release);
+      LoginAdmission.TooFast tooFast =
+          assertInstanceOf(LoginAdmission.TooFast.class, limits.admitLogin(CLIENT));
+      assertEquals(Duration.ofSeconds(1), tooFast.retryAfter());
+    }
 
-      LoginAdmission.TooFast tooFast = assertInstanceOf(LoginAdmission.TooFast.class, third);
+    @Test
+    @DisplayName("should hold one address to 2 logins, then 1 every 3 s, during an attack")
+    void strictUnderAttack() {
+      ClientLimits limits = limits(LimitsConfig.DEFAULTS);
+      AtomicBoolean attack = new AtomicBoolean(true);
+      limits.attackMode(attack::get);
+      LoginAdmission first = limits.admitLogin(CLIENT);
+      LoginAdmission second = limits.admitLogin(CLIENT);
+
+      assertInstanceOf(LoginAdmission.TooManyInProgress.class, limits.admitLogin(CLIENT));
+      release(first);
+      release(second);
+      LoginAdmission.TooFast tooFast =
+          assertInstanceOf(LoginAdmission.TooFast.class, limits.admitLogin(CLIENT));
       assertEquals(Duration.ofSeconds(3), tooFast.retryAfter());
+
+      attack.set(false);
+      release(limits.admitLogin(CLIENT)); // calm again: the generous budget
     }
 
     @Test
@@ -189,29 +219,30 @@ class ClientLimitsTest {
     @Test
     @DisplayName("should cap the authentications in flight for the whole proxy")
     void cap() {
-      ClientLimits limits = limits(withAuthentications(2));
+      AuthenticationLane lane = limits(withAuthentications(2)).lane();
 
-      assertTrue(limits.tryStartAuthentication());
-      assertTrue(limits.admitOnlineLogin());
-      assertTrue(limits.tryStartAuthentication());
-      assertFalse(limits.admitOnlineLogin());
-      assertFalse(limits.tryStartAuthentication());
+      AuthenticationLane.Slot first = lane.tryAcquire();
+      assertNotNull(first);
+      assertFalse(lane.mustWait());
+      assertNotNull(lane.tryAcquire());
+      assertTrue(lane.mustWait());
+      assertNull(lane.tryAcquire());
 
-      limits.endAuthentication();
-      assertTrue(limits.admitOnlineLogin());
-      assertTrue(limits.tryStartAuthentication());
+      first.release();
+      first.release(); // idempotent
+      assertFalse(lane.mustWait());
+      assertNotNull(lane.tryAcquire());
     }
 
     @Test
     @DisplayName("should not cap authentications when the maximum is 0")
     void unlimited() {
-      ClientLimits limits = limits(withAuthentications(0));
+      AuthenticationLane lane = limits(withAuthentications(0)).lane();
 
       for (int i = 0; i < 1000; i++) {
-        assertTrue(limits.tryStartAuthentication());
+        assertNotNull(lane.tryAcquire());
       }
-      limits.endAuthentication();
-      assertTrue(limits.admitOnlineLogin());
+      assertFalse(lane.mustWait());
     }
 
     @Test
@@ -219,9 +250,9 @@ class ClientLimitsTest {
     void exemptAddressesCount() {
       ClientLimits limits = limits(withAuthentications(1));
       limits.admitLogin(socket("127.0.0.1"));
-      limits.tryStartAuthentication();
+      assertNotNull(limits.lane().tryAcquire());
 
-      assertFalse(limits.admitOnlineLogin());
+      assertTrue(limits.lane().mustWait());
     }
   }
 
@@ -250,7 +281,7 @@ class ClientLimitsTest {
     void trustedProxies() {
       ClientLimits limits =
           new ClientLimits(
-              LimitsConfig.DEFAULTS, CidrRanges.parse(List.of("10.0.0.0/24")), now::get);
+              LimitsConfig.DEFAULTS, CidrRanges.parse(List.of("10.0.0.0/24")), null, now::get);
 
       for (int i = 0; i < 100; i++) {
         assertTrue(limits.admitConnection(socket("10.0.0.5")));
@@ -267,7 +298,7 @@ class ClientLimitsTest {
         assertTrue(limits.admitConnection(CLIENT));
         assertTrue(limits.admitStatusPing(CLIENT));
         assertInstanceOf(LoginAdmission.Admitted.class, limits.admitLogin(CLIENT));
-        assertTrue(limits.tryStartAuthentication());
+        assertNotNull(limits.lane().tryAcquire());
       }
       assertEquals(Duration.ZERO, limits.loginTimeout());
     }
@@ -289,7 +320,7 @@ class ClientLimitsTest {
   // ---------------------------------------------------------------------------
 
   private ClientLimits limits(LimitsConfig config) {
-    return new ClientLimits(config, CidrRanges.none(), now::get);
+    return new ClientLimits(config, CidrRanges.none(), null, now::get);
   }
 
   private static void release(LoginAdmission admission) {
@@ -308,7 +339,14 @@ class ClientLimitsTest {
         d.maxConcurrentLoginsPerAddress(),
         d.maxConcurrentAuthentications(),
         d.loginTimeout(),
-        d.reportInterval());
+        d.reportInterval(),
+        d.maxPendingConnections(),
+        d.handshakeTimeout(),
+        d.statusTimeout(),
+        d.authenticationQueue(),
+        d.authenticationQueueWait(),
+        d.loginsUnderAttack(),
+        d.maxConcurrentLoginsPerAddressUnderAttack());
   }
 
   private static LimitsConfig withLogins(LimitsConfig.Rate logins, int maxInProgress) {
@@ -322,7 +360,14 @@ class ClientLimitsTest {
         maxInProgress,
         d.maxConcurrentAuthentications(),
         d.loginTimeout(),
-        d.reportInterval());
+        d.reportInterval(),
+        d.maxPendingConnections(),
+        d.handshakeTimeout(),
+        d.statusTimeout(),
+        d.authenticationQueue(),
+        d.authenticationQueueWait(),
+        d.loginsUnderAttack(),
+        d.maxConcurrentLoginsPerAddressUnderAttack());
   }
 
   private static LimitsConfig withAuthentications(int max) {
@@ -336,7 +381,14 @@ class ClientLimitsTest {
         d.maxConcurrentLoginsPerAddress(),
         max,
         d.loginTimeout(),
-        d.reportInterval());
+        d.reportInterval(),
+        d.maxPendingConnections(),
+        d.handshakeTimeout(),
+        d.statusTimeout(),
+        d.authenticationQueue(),
+        d.authenticationQueueWait(),
+        d.loginsUnderAttack(),
+        d.maxConcurrentLoginsPerAddressUnderAttack());
   }
 
   private static InetSocketAddress socket(String literal) {
