@@ -25,11 +25,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
 import dev.warp.api.Warp;
+import dev.warp.api.player.InboundConnection;
+import dev.warp.api.plugin.Capability;
 import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginState;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.network.PipelineHost;
+import dev.warp.proxy.network.PipelineRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
 
 import java.io.IOException;
@@ -37,6 +41,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -57,6 +62,7 @@ class WarpPluginManagerTest {
   private Path plugins;
   private WarpEventBus events;
   private WarpPluginManager manager;
+  private final PipelineRegistry pipelines = new PipelineRegistry();
 
   @BeforeEach
   void setUp() {
@@ -69,6 +75,7 @@ class WarpPluginManagerTest {
             new ChannelRegistry(),
             new WarpCommandManager(),
             new PermissionRegistry(),
+            pipelines,
             plugins);
   }
 
@@ -297,6 +304,139 @@ class WarpPluginManagerTest {
 
       assertTrue(manager.isEnabled("database"));
       assertEquals(PluginState.FAILED, manager.plugin("intruder").orElseThrow().state());
+    }
+  }
+
+  @Nested
+  @DisplayName("network pipeline capability")
+  class NetworkPipelineCapability {
+
+    @Test
+    @DisplayName("should give a plugin that declares it the network pipeline and the proxy's Netty")
+    void grantsWhenDeclared() throws IOException {
+      TestPluginJars.build(
+          plugins,
+          "via.jar",
+          Map.of(
+              "via/Main.java",
+              """
+              package via;
+              import dev.warp.api.network.NetworkPipelines;
+              import dev.warp.api.network.PipelinePosition;
+              import dev.warp.api.plugin.*;
+              @Plugin(id = "via", capabilities = Capability.NETWORK_PIPELINE)
+              public final class Main {
+                public Main(NetworkPipelines network, PluginContext context) {
+                  if (network != context.network()) throw new AssertionError("two registrars");
+                  network.initializeBackends(pipeline -> pipeline.addHandler(
+                      PipelinePosition.FRAME, "probe",
+                      new io.netty.channel.ChannelInboundHandlerAdapter()));
+                }
+              }
+              """));
+
+      manager.loadAll();
+
+      PluginContainer via = manager.plugin("via").orElseThrow();
+      assertEquals(PluginState.ENABLED, via.state(), () -> String.valueOf(via.failure()));
+      assertEquals(Set.of(Capability.NETWORK_PIPELINE), via.description().capabilities());
+      assertEquals(
+          " (low-level access: network-pipeline)",
+          WarpPluginManager.describeCapabilities(via.description()));
+    }
+
+    @Test
+    @DisplayName("should hide Netty from a plugin that does not declare it")
+    void hidesNettyOtherwise() throws IOException {
+      TestPluginJars.build(
+          plugins,
+          "sneaky.jar",
+          Map.of(
+              "sneaky/Main.java",
+              """
+              package sneaky;
+              @dev.warp.api.plugin.Plugin(id = "sneaky")
+              public final class Main {
+                public Main() { new io.netty.channel.ChannelInboundHandlerAdapter(); }
+              }
+              """));
+
+      manager.loadAll();
+
+      PluginContainer sneaky = manager.plugin("sneaky").orElseThrow();
+      assertEquals(PluginState.FAILED, sneaky.state());
+      assertInstanceOf(NoClassDefFoundError.class, sneaky.failure().orElseThrow());
+    }
+
+    @Test
+    @DisplayName("should refuse the network pipeline to a plugin that does not declare it")
+    void refusesUndeclared() throws IOException {
+      TestPluginJars.build(
+          plugins,
+          "asks.jar",
+          Map.of(
+              "asks/Main.java",
+              """
+              package asks;
+              @dev.warp.api.plugin.Plugin(id = "asks")
+              public final class Main {
+                public Main(dev.warp.api.network.NetworkPipelines network) {}
+              }
+              """));
+      TestPluginJars.build(
+          plugins,
+          "calls.jar",
+          Map.of(
+              "calls/Main.java",
+              """
+              package calls;
+              @dev.warp.api.plugin.Plugin(id = "calls")
+              public final class Main {
+                public Main(dev.warp.api.plugin.PluginContext context) { context.network(); }
+              }
+              """));
+
+      manager.loadAll();
+
+      Throwable asks = manager.plugin("asks").orElseThrow().failure().orElseThrow();
+      assertInstanceOf(PluginLoadException.class, asks);
+      assertTrue(String.valueOf(asks.getMessage()).contains("Capability.NETWORK_PIPELINE"));
+      Throwable calls = manager.plugin("calls").orElseThrow().failure().orElseThrow();
+      assertInstanceOf(IllegalStateException.class, calls);
+      assertTrue(String.valueOf(calls.getMessage()).contains("Capability.NETWORK_PIPELINE"));
+    }
+
+    @Test
+    @DisplayName("should remove a plugin's initializers when it is disabled")
+    void removesInitializersOnDisable() throws IOException {
+      TestPluginJars.build(
+          plugins,
+          "counter.jar",
+          Map.of(
+              "counter/Main.java",
+              """
+              package counter;
+              import dev.warp.api.plugin.*;
+              @Plugin(id = "counter", capabilities = Capability.NETWORK_PIPELINE)
+              public final class Main {
+                public Main(PluginContext context) {
+                  context.network().initializeClients(pipeline ->
+                      System.setProperty("%s.counter", "ran"));
+                }
+              }
+              """
+                  .formatted(PROBE)));
+      manager.loadAll();
+      PipelineHost host = mock(PipelineHost.class);
+      InboundConnection connection = mock(InboundConnection.class);
+
+      assertTrue(pipelines.initializeClient(host, 769, connection));
+      assertEquals("ran", System.getProperty(PROBE + ".counter"));
+      System.clearProperty(PROBE + ".counter");
+      manager.disableAll();
+      assertTrue(pipelines.initializeClient(host, 769, connection));
+
+      assertNull(System.getProperty(PROBE + ".counter"));
     }
   }
 

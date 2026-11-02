@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.plugin;
 
+import dev.warp.api.network.NetworkPipelines;
 import dev.warp.api.plugin.DataDirectory;
 
 import java.lang.reflect.Constructor;
@@ -89,6 +90,15 @@ final class PluginInjector {
     @Nullable Object value = injectables.get(type);
     if (value != null) {
       return value;
+    }
+    if (type == NetworkPipelines.class) {
+      throw new PluginLoadException(
+          "parameter "
+              + (index + 1)
+              + " of the constructor of "
+              + mainClass.getName()
+              + " asks for the network pipeline, which needs capabilities ="
+              + " Capability.NETWORK_PIPELINE in its @Plugin annotation");
     }
     String available =
         injectables.keySet().stream()

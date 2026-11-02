@@ -16,8 +16,11 @@
  */
 package dev.warp.api.plugin;
 
+import java.util.Collections;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
@@ -31,6 +34,8 @@ import java.util.regex.Pattern;
  * @param authors the authors, unmodifiable
  * @param dependencies the plugins this one needs, unmodifiable
  * @param mainClass the fully qualified name of the class annotated with {@link Plugin}
+ * @param capabilities the low-level access the plugin declared, see {@link Plugin#capabilities()};
+ *     unmodifiable
  */
 public record PluginDescription(
     String id,
@@ -40,7 +45,8 @@ public record PluginDescription(
     String url,
     List<String> authors,
     List<PluginDependency> dependencies,
-    String mainClass) {
+    String mainClass,
+    Set<Capability> capabilities) {
 
   /** The form every plugin identifier takes. */
   public static final Pattern ID_PATTERN = Pattern.compile("[a-z][a-z0-9_-]{0,63}");
@@ -69,6 +75,11 @@ public record PluginDescription(
     }
     authors = List.copyOf(authors);
     dependencies = List.copyOf(dependencies);
+    Objects.requireNonNull(capabilities, "capabilities");
+    capabilities =
+        capabilities.isEmpty()
+            ? Set.of()
+            : Collections.unmodifiableSet(EnumSet.copyOf(capabilities));
     for (int i = 0; i < dependencies.size(); i++) {
       String dependency = dependencies.get(i).id();
       if (dependency.equals(id)) {
@@ -81,6 +92,40 @@ public record PluginDescription(
         }
       }
     }
+  }
+
+  /**
+   * Describes a plugin that declares no capability.
+   *
+   * @param id the unique identifier
+   * @param name the display name, or blank for the identifier
+   * @param version the version, or an empty string
+   * @param description the one-line description, or an empty string
+   * @param url the website or source repository, or an empty string
+   * @param authors the authors
+   * @param dependencies the plugins this one needs
+   * @param mainClass the fully qualified name of the main class
+   */
+  public PluginDescription(
+      String id,
+      String name,
+      String version,
+      String description,
+      String url,
+      List<String> authors,
+      List<PluginDependency> dependencies,
+      String mainClass) {
+    this(id, name, version, description, url, authors, dependencies, mainClass, Set.of());
+  }
+
+  /**
+   * Returns whether the plugin declared a capability.
+   *
+   * @param capability the capability
+   * @return {@code true} if it is among {@link #capabilities()}
+   */
+  public boolean hasCapability(Capability capability) {
+    return capabilities.contains(capability);
   }
 
   /**

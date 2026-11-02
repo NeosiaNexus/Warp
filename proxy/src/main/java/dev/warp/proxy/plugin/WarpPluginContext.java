@@ -20,7 +20,9 @@ import dev.warp.api.Warp;
 import dev.warp.api.command.CommandManager;
 import dev.warp.api.event.EventBus;
 import dev.warp.api.messaging.Messaging;
+import dev.warp.api.network.NetworkPipelines;
 import dev.warp.api.permission.Permissions;
+import dev.warp.api.plugin.Capability;
 import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginContext;
 import dev.warp.proxy.command.PluginCommandManager;
@@ -29,6 +31,8 @@ import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.messaging.PluginMessaging;
+import dev.warp.proxy.network.PipelineRegistry;
+import dev.warp.proxy.network.PluginNetworkPipelines;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.permission.PluginPermissions;
 
@@ -37,6 +41,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -56,6 +61,7 @@ final class WarpPluginContext implements PluginContext {
   private final PluginMessaging messaging;
   private final PluginCommandManager commands;
   private final PluginPermissions permissions;
+  private final @Nullable PluginNetworkPipelines network;
 
   WarpPluginContext(
       WarpPluginContainer plugin,
@@ -63,7 +69,8 @@ final class WarpPluginContext implements PluginContext {
       WarpEventBus bus,
       ChannelRegistry channels,
       WarpCommandManager commandManager,
-      PermissionRegistry permissionRegistry) {
+      PermissionRegistry permissionRegistry,
+      PipelineRegistry pipelines) {
     this.plugin = plugin;
     this.proxy = proxy;
     this.pluginLogger = LoggerFactory.getLogger(plugin.description().id());
@@ -74,6 +81,10 @@ final class WarpPluginContext implements PluginContext {
         new PluginCommandManager(commandManager, plugin.description().id(), this::track);
     this.permissions =
         new PluginPermissions(permissionRegistry, plugin.description().id(), this::track);
+    this.network =
+        plugin.description().hasCapability(Capability.NETWORK_PIPELINE)
+            ? new PluginNetworkPipelines(pipelines, plugin.description().id(), this::track)
+            : null;
   }
 
   @Override
@@ -114,6 +125,19 @@ final class WarpPluginContext implements PluginContext {
   @Override
   public Permissions permissions() {
     return permissions;
+  }
+
+  @Override
+  public NetworkPipelines network() {
+    PluginNetworkPipelines pipelines = network;
+    if (pipelines == null) {
+      throw new IllegalStateException(
+          "Plugin "
+              + plugin.description().id()
+              + " did not declare the network pipeline capability: add capabilities ="
+              + " Capability.NETWORK_PIPELINE to its @Plugin annotation");
+    }
+    return pipelines;
   }
 
   /**

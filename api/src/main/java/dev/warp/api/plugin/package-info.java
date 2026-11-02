@@ -10,6 +10,9 @@
  * (Adventure, SLF4J, JSpecify), the classes of the plugins it declares as dependencies, and its own
  * jar; it never sees the proxy's internals or the libraries the proxy uses internally, so a plugin
  * can ship any version of Gson, Guava or Netty without clashing with the proxy or other plugins.
+ * The one exception is declared: a plugin with {@link
+ * dev.warp.api.plugin.Capability#NETWORK_PIPELINE} sees the proxy's Netty, whose handlers it adds
+ * to connections (see {@link dev.warp.api.network}).
  *
  * <p>The main class has a single public constructor. Its parameters are injected by type: see
  * {@link dev.warp.api.plugin.PluginContext} for what can be injected. Lifecycle callbacks come from

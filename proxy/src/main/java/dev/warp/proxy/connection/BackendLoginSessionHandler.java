@@ -172,7 +172,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
     int playerThreshold = context.compressionThreshold(player.protocolVersion());
     if (context.compressionPassthrough()
         && playerThreshold >= 0
-        && backendConnection.decoder().decompressor() == null
+        && !backendConnection.isCompressed()
         && COMPRESSION_ADVICE_GIVEN.add(serverAddress)) {
       logger.warn(
           "Backend {} has compression disabled, so Warp must compress its traffic for every player."

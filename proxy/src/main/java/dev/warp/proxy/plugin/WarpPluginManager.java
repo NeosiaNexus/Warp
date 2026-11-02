@@ -20,7 +20,9 @@ import dev.warp.api.Warp;
 import dev.warp.api.command.CommandManager;
 import dev.warp.api.event.EventBus;
 import dev.warp.api.messaging.Messaging;
+import dev.warp.api.network.NetworkPipelines;
 import dev.warp.api.permission.Permissions;
+import dev.warp.api.plugin.Capability;
 import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginContext;
 import dev.warp.api.plugin.PluginDependency;
@@ -31,6 +33,7 @@ import dev.warp.api.plugin.WarpPlugin;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.network.PipelineRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
 
 import java.io.IOException;
@@ -41,6 +44,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -63,8 +67,12 @@ public final class WarpPluginManager implements PluginManager {
   private final ChannelRegistry channels;
   private final WarpCommandManager commands;
   private final PermissionRegistry permissions;
+  private final PipelineRegistry pipelines;
   private final Path directory;
   private final ApiClassLoader apiLoader;
+
+  /** The parent of plugins with the network pipeline capability: the API and the proxy's Netty. */
+  private final ApiClassLoader networkApiLoader;
 
   /** Every plugin found, in load order (plugins that cannot load at the end). */
   private volatile List<WarpPluginContainer> plugins = List.of();
@@ -77,6 +85,7 @@ public final class WarpPluginManager implements PluginManager {
    * @param channels the proxy's plugin message channels
    * @param commands the proxy's commands
    * @param permissions the proxy's permission providers
+   * @param pipelines the proxy's pipeline initializers
    * @param directory the plugins directory, created if missing
    */
   public WarpPluginManager(
@@ -85,14 +94,17 @@ public final class WarpPluginManager implements PluginManager {
       ChannelRegistry channels,
       WarpCommandManager commands,
       PermissionRegistry permissions,
+      PipelineRegistry pipelines,
       Path directory) {
     this.proxy = proxy;
     this.events = events;
     this.channels = channels;
     this.commands = commands;
     this.permissions = permissions;
+    this.pipelines = pipelines;
     this.directory = directory;
     this.apiLoader = new ApiClassLoader(WarpPluginManager.class.getClassLoader());
+    this.networkApiLoader = new ApiClassLoader(WarpPluginManager.class.getClassLoader(), true);
   }
 
   // ---------------------------------------------------------------------------
@@ -234,16 +246,17 @@ public final class WarpPluginManager implements PluginManager {
     }
     PluginClassLoader loader;
     try {
+      ApiClassLoader parent =
+          description.hasCapability(Capability.NETWORK_PIPELINE) ? networkApiLoader : apiLoader;
       loader =
-          new PluginClassLoader(
-              description.id(), jar.toUri().toURL(), apiLoader, dependencyLoaders);
+          new PluginClassLoader(description.id(), jar.toUri().toURL(), parent, dependencyLoaders);
     } catch (MalformedURLException e) {
       fail(container, e);
       return;
     }
     container.setClassLoader(loader);
     WarpPluginContext context =
-        new WarpPluginContext(container, proxy, events, channels, commands, permissions);
+        new WarpPluginContext(container, proxy, events, channels, commands, permissions, pipelines);
     container.setContext(context);
 
     try {
@@ -265,9 +278,10 @@ public final class WarpPluginManager implements PluginManager {
     }
     container.enabled();
     logger.info(
-        "Enabled plugin {}{}",
+        "Enabled plugin {}{}{}",
         container,
-        description.authors().isEmpty() ? "" : " by " + String.join(", ", description.authors()));
+        description.authors().isEmpty() ? "" : " by " + String.join(", ", description.authors()),
+        describeCapabilities(description));
   }
 
   private Map<Class<?>, Object> injectables(WarpPluginContext context) {
@@ -282,7 +296,26 @@ public final class WarpPluginManager implements PluginManager {
     injectables.put(Messaging.class, context.messaging());
     injectables.put(CommandManager.class, context.commands());
     injectables.put(Permissions.class, context.permissions());
+    if (context.plugin().description().hasCapability(Capability.NETWORK_PIPELINE)) {
+      injectables.put(NetworkPipelines.class, context.network());
+    }
     return injectables;
+  }
+
+  /**
+   * Describes the low-level access a plugin declared, for the line that enables it: an
+   * administrator sees which plugins reach below the stable API.
+   *
+   * @param description the plugin's description
+   * @return e.g. {@code " (low-level access: network-pipeline)"}, or an empty string
+   */
+  static String describeCapabilities(PluginDescription description) {
+    if (description.capabilities().isEmpty()) {
+      return "";
+    }
+    return description.capabilities().stream()
+        .map(Capability::id)
+        .collect(Collectors.joining(", ", " (low-level access: ", ")"));
   }
 
   private void fail(WarpPluginContainer container, Throwable cause) {
@@ -305,9 +338,15 @@ public final class WarpPluginManager implements PluginManager {
               "Plugin {} cannot load: it uses class {}, which it cannot see. A plugin sees the Warp"
                   + " API, Adventure, SLF4J, its own jar and the plugins it depends on: shade the"
                   + " libraries it needs into its jar, or declare the plugin that provides them as"
-                  + " a dependency",
+                  + " a dependency{}",
               container,
               String.valueOf(e.getMessage()).replace('/', '.'),
+              String.valueOf(e.getMessage())
+                      .replace('/', '.')
+                      .startsWith(ApiClassLoader.NETTY_PACKAGE)
+                  ? ". To add handlers to the proxy's connections, declare the NETWORK_PIPELINE"
+                      + " capability in @Plugin: the plugin then sees the proxy's Netty"
+                  : "",
               e);
       default -> logger.error("Plugin {} failed to load", container, cause);
     }

@@ -52,21 +52,49 @@ final class ApiClassLoader extends ClassLoader {
       List.of(
           "net.kyori.adventure.text.serializer.gson.", "net.kyori.adventure.text.serializer.json.");
 
+  /**
+   * The proxy's Netty, exposed on top of the API to plugins that declare {@link
+   * dev.warp.api.plugin.Capability#NETWORK_PIPELINE}: their handlers go into the proxy's pipelines,
+   * so they must be built on the very same Netty classes.
+   */
+  static final String NETTY_PACKAGE = "io.netty.";
+
   private final ClassLoader proxyLoader;
+  private final boolean exposesNetty;
+
+  /**
+   * Creates the loader of plugins without low-level access.
+   *
+   * @param proxyLoader the loader of the proxy, which holds the API classes
+   */
+  ApiClassLoader(ClassLoader proxyLoader) {
+    this(proxyLoader, false);
+  }
 
   /**
    * Creates the loader.
    *
    * @param proxyLoader the loader of the proxy, which holds the API classes
+   * @param exposesNetty whether plugins also see the proxy's Netty (network pipeline capability)
    */
-  ApiClassLoader(ClassLoader proxyLoader) {
-    super("warp-api", ClassLoader.getPlatformClassLoader());
+  ApiClassLoader(ClassLoader proxyLoader, boolean exposesNetty) {
+    super(exposesNetty ? "warp-api-network" : "warp-api", ClassLoader.getPlatformClassLoader());
     this.proxyLoader = proxyLoader;
+    this.exposesNetty = exposesNetty;
+  }
+
+  /**
+   * Returns whether plugins of this loader see the proxy's Netty.
+   *
+   * @return {@code true} for plugins with the network pipeline capability
+   */
+  boolean exposesNetty() {
+    return exposesNetty;
   }
 
   @Override
   protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-    if (isExposed(name)) {
+    if (isExposed(name) || (exposesNetty && name.startsWith(NETTY_PACKAGE))) {
       return proxyLoader.loadClass(name);
     }
     // The JDK only: the platform loader, then findClass, which finds nothing.
@@ -109,7 +137,8 @@ final class ApiClassLoader extends ClassLoader {
     return false;
   }
 
-  private static boolean isExposedResource(String name) {
-    return isExposed(name.replace('/', '.'));
+  private boolean isExposedResource(String name) {
+    String className = name.replace('/', '.');
+    return isExposed(className) || (exposesNetty && className.startsWith(NETTY_PACKAGE));
   }
 }

@@ -103,4 +103,13 @@ public @interface Plugin {
    * @return the dependencies, possibly empty
    */
   Dependency[] dependencies() default {};
+
+  /**
+   * The low-level access the plugin needs beyond the regular API. Each capability is shown to
+   * administrators when the plugin is enabled, and the proxy refuses the access it grants to a
+   * plugin that did not declare it.
+   *
+   * @return the capabilities, usually empty
+   */
+  Capability[] capabilities() default {};
 }

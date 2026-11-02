@@ -34,6 +34,7 @@ import dev.warp.proxy.connection.ServerChannelInitializer;
 import dev.warp.proxy.connection.ServerLoginContext;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.network.PipelineRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.plugin.WarpPluginManager;
@@ -131,6 +132,9 @@ public final class WarpServer implements Warp {
   /** The permission providers plugins registered. */
   private final PermissionRegistry permissions = new PermissionRegistry();
 
+  /** The pipeline initializers plugins registered. */
+  private final PipelineRegistry pipelines = new PipelineRegistry();
+
   /** The plugins of the proxy's {@code plugins} directory. */
   private final WarpPluginManager pluginManager;
 
@@ -164,7 +168,7 @@ public final class WarpServer implements Warp {
     ProxyCommands.register(commands, serverRegistry);
     this.pluginManager =
         new WarpPluginManager(
-            this, events, channels, commands, permissions, directory.resolve("plugins"));
+            this, events, channels, commands, permissions, pipelines, directory.resolve("plugins"));
   }
 
   // ---------------------------------------------------------------------------
@@ -411,7 +415,8 @@ public final class WarpServer implements Warp {
         permissions,
         config.forwardingMode(),
         config.forwardingSecret(),
-        transport.clientChannelClass());
+        transport.clientChannelClass(),
+        pipelines);
   }
 
   /**

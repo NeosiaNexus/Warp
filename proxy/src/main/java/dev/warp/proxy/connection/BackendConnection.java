@@ -102,7 +102,7 @@ public final class BackendConnection {
     new Bootstrap()
         .group(player.clientConnection().channel().eventLoop())
         .channel(channelClass)
-        .handler(new BackendChannelInitializer(player))
+        .handler(new BackendChannelInitializer(player, server))
         .option(ChannelOption.TCP_NODELAY, true)
         .option(ChannelOption.SO_KEEPALIVE, true)
         .option(ChannelOption.IP_TOS, IP_TOS_LOW_LATENCY)

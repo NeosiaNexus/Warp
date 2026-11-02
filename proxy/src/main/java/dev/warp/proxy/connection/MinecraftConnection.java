@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.network.PipelinePosition;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.compress.FrameDecompressor;
@@ -24,21 +25,26 @@ import dev.warp.protocol.netty.CompressionEncoder;
 import dev.warp.protocol.netty.FrameForwarder;
 import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
+import dev.warp.protocol.netty.PacketDecompressor;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
+import dev.warp.proxy.network.PipelineHost;
 
 import java.io.IOException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NotYetConnectedException;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelOutboundBuffer;
+import io.netty.channel.ChannelPipeline;
 import io.netty.handler.timeout.ReadTimeoutException;
 import io.netty.util.ReferenceCountUtil;
 import org.jspecify.annotations.Nullable;
@@ -72,7 +78,8 @@ import org.slf4j.LoggerFactory;
  * <p>All methods must be called from the channel's event loop thread, which Netty guarantees for
  * pipeline handlers.
  */
-public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
+public final class MinecraftConnection extends ChannelInboundHandlerAdapter
+    implements PipelineHost {
 
   private static final Logger logger = LoggerFactory.getLogger(MinecraftConnection.class);
 
@@ -98,6 +105,12 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   private @Nullable MinecraftDecoder decoder;
   private @Nullable MinecraftEncoder encoder;
+
+  /** Whether plugin handlers read this connection's packets: see {@link #usePacketLevel()}. */
+  private boolean packetLevel;
+
+  /** Whether this connection switched to compressed frames. */
+  private boolean compressed;
 
   // ---------------------------------------------------------------------------
   // Constructor
@@ -173,8 +186,12 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
       if (routine != null) {
         logger.debug("{} ({}): {}", routine, channel.remoteAddress(), cause.toString());
       } else {
-        // Everything else is logged in full.
-        logger.error("Exception in pipeline for {}", channel.remoteAddress(), cause);
+        // Everything else is logged in full, naming the plugin handlers it may come from.
+        logger.error(
+            "Exception in pipeline for {}{}",
+            channel.remoteAddress(),
+            describePluginHandlers(ctx.pipeline().names()),
+            cause);
       }
     }
     if (ctx.channel().isActive()) {
@@ -209,6 +226,24 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
         + ", "
         + queued
         + " bytes queued to send)";
+  }
+
+  /**
+   * Names the plugin handlers of a pipeline, which are the first suspects of an exception in it.
+   * Plugin handlers are the only ones whose names hold a colon ({@code plugin-id:name}).
+   *
+   * @param names the pipeline's handler names
+   * @return e.g. {@code " (plugin handlers: viaversion:decoder, viaversion:encoder)"}, or an empty
+   *     string when there are none
+   */
+  static String describePluginHandlers(List<String> names) {
+    StringBuilder plugins = new StringBuilder();
+    for (String name : names) {
+      if (name.indexOf(':') > 0) {
+        plugins.append(plugins.isEmpty() ? " (plugin handlers: " : ", ").append(name);
+      }
+    }
+    return plugins.isEmpty() ? "" : plugins.append(')').toString();
   }
 
   /**
@@ -387,23 +422,136 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
    */
   public void enableCompression(
       int threshold, int level, boolean peerIsServer, boolean passthrough) {
-    decoder()
-        .enableCompression(
-            new FrameDecompressor(
-                threshold,
-                !peerIsServer,
-                FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE,
-                new JavaCompressor(level)),
-            peerIsServer && passthrough);
-    // The compression encoder frames and compresses in one pass, replacing the frame encoder.
+    FrameDecompressor decompressor =
+        new FrameDecompressor(
+            threshold,
+            !peerIsServer,
+            FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE,
+            new JavaCompressor(level));
+    if (packetLevel) {
+      // Every frame is inflated ahead of the plugin packet handlers, the decoder reads bare
+      // packets.
+      packetDecompressor().enableCompression(decompressor);
+    } else {
+      decoder().enableCompression(decompressor, peerIsServer && passthrough);
+    }
+    // The compression encoder frames and compresses in one pass, replacing the frame encoder in
+    // place: the plugin handlers on either side of it stay where they are.
     channel
         .pipeline()
         .replace(
             ServerChannelInitializer.FRAME_ENCODER,
             ServerChannelInitializer.COMPRESSION_ENCODER,
             new CompressionEncoder(threshold, new JavaCompressor(level)));
+    compressed = true;
     forwarder.compressionEnabled(threshold);
-    forwarder.setVerbatimEnabled(passthrough);
+    forwarder.setVerbatimEnabled(passthrough && !packetLevel);
+  }
+
+  /**
+   * Returns whether this connection switched to compressed frames.
+   *
+   * @return {@code true} once {@link #enableCompression} was called
+   */
+  public boolean isCompressed() {
+    return compressed;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Packet level (plugin packet handlers)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Hands this connection's packets decompressed to the plugin handlers placed between the framing
+   * layer and the {@link MinecraftDecoder}, for good. Idempotent.
+   *
+   * <p>A {@link PacketDecompressor} goes right after the framing encoder, ahead of every plugin
+   * packet handler: it unframes every frame and, once compressed, inflates it. The decoder then
+   * reads, and forwards, bare packets. Frames forwarded to this connection are never written
+   * verbatim, which would take them past the plugin handlers: they are re-encoded through the whole
+   * outbound pipeline. Both cost what compression passthrough saves, on this connection only.
+   */
+  public void usePacketLevel() {
+    if (packetLevel) {
+      return;
+    }
+    packetLevel = true;
+    ChannelPipeline pipeline = channel.pipeline();
+    pipeline.addAfter(
+        framingEncoder(pipeline),
+        ServerChannelInitializer.PACKET_DECOMPRESSOR,
+        new PacketDecompressor(decoder().usePacketInput()));
+    forwarder.setVerbatimEnabled(false);
+  }
+
+  /**
+   * Returns whether plugin handlers read this connection's packets.
+   *
+   * @return {@code true} once {@link #usePacketLevel()} was called
+   */
+  @Override
+  public boolean isPacketLevel() {
+    return packetLevel;
+  }
+
+  /**
+   * {@inheritDoc}
+   *
+   * <p>Frame handlers go right before the framing encoder, packet handlers right before the {@link
+   * MinecraftDecoder}: each after the plugin handlers already at its position (see {@link
+   * ServerChannelInitializer} for the layout).
+   */
+  @Override
+  public void addPluginHandler(PipelinePosition position, String name, ChannelHandler handler) {
+    ChannelPipeline pipeline = channel.pipeline();
+    if (pipeline.get(name) != null) {
+      throw new IllegalArgumentException("The pipeline already has a handler named " + name);
+    }
+    switch (position) {
+      case FRAME -> pipeline.addBefore(framingEncoder(pipeline), name, handler);
+      case PACKET -> {
+        usePacketLevel();
+        pipeline.addBefore(ServerChannelInitializer.MINECRAFT_DECODER, name, handler);
+      }
+    }
+  }
+
+  @Override
+  public List<String> pluginHandlers(PipelinePosition position) {
+    ChannelPipeline pipeline = channel.pipeline();
+    List<String> names = pipeline.names();
+    String framing = framingEncoder(pipeline);
+    int from =
+        names.indexOf(
+            switch (position) {
+              case FRAME -> ServerChannelInitializer.FRAME_DECODER;
+              case PACKET -> packetLevel ? ServerChannelInitializer.PACKET_DECOMPRESSOR : framing;
+            });
+    int to =
+        names.indexOf(
+            switch (position) {
+              case FRAME -> framing;
+              case PACKET -> ServerChannelInitializer.MINECRAFT_DECODER;
+            });
+    if (from < 0 || to < from) {
+      return List.of();
+    }
+    return names.subList(from + 1, to).stream().filter(name -> name.indexOf(':') > 0).toList();
+  }
+
+  /** The name of the handler that frames outgoing packets: compression replaces the plain one. */
+  private static String framingEncoder(ChannelPipeline pipeline) {
+    return pipeline.get(ServerChannelInitializer.COMPRESSION_ENCODER) != null
+        ? ServerChannelInitializer.COMPRESSION_ENCODER
+        : ServerChannelInitializer.FRAME_ENCODER;
+  }
+
+  private PacketDecompressor packetDecompressor() {
+    PacketDecompressor handler = channel.pipeline().get(PacketDecompressor.class);
+    if (handler == null) {
+      throw new IllegalStateException("PacketDecompressor not found in pipeline");
+    }
+    return handler;
   }
 
   // ---------------------------------------------------------------------------
@@ -442,6 +590,7 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
    *
    * @return the channel
    */
+  @Override
   public Channel channel() {
     return channel;
   }

@@ -16,12 +16,14 @@
  */
 package dev.warp.api.plugin.processor;
 
+import dev.warp.api.plugin.Capability;
 import dev.warp.api.plugin.Dependency;
 import dev.warp.api.plugin.Plugin;
 import dev.warp.api.plugin.PluginDescription;
 
 import java.io.IOException;
 import java.io.Writer;
+import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -162,6 +164,13 @@ public final class PluginProcessor extends AbstractProcessor {
         valid = false;
       }
     }
+    Set<Capability> declared = EnumSet.noneOf(Capability.class);
+    for (Capability capability : plugin.capabilities()) {
+      if (!declared.add(capability)) {
+        error(type, "Capability " + capability + " is declared twice");
+        valid = false;
+      }
+    }
     return valid;
   }
 
@@ -197,6 +206,15 @@ public final class PluginProcessor extends AbstractProcessor {
       json.append(", \"optional\": ").append(dependencies[i].optional()).append('}');
     }
     json.append(dependencies.length == 0 ? "],\n" : "\n  ],\n");
+    Capability[] capabilities = plugin.capabilities();
+    if (capabilities.length > 0) {
+      json.append("  \"capabilities\": [");
+      for (int i = 0; i < capabilities.length; i++) {
+        json.append(i == 0 ? "" : ", ");
+        string(json, capabilities[i].id());
+      }
+      json.append("],\n");
+    }
     field(json, "main", mainClass).append("\n}\n");
     return json.toString();
   }

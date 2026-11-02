@@ -24,6 +24,7 @@ import dev.warp.proxy.config.DuplicateLoginPolicy;
 import dev.warp.proxy.config.ForwardingMode;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.network.PipelineRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
@@ -172,7 +173,8 @@ final class TestLoginContexts {
         new PermissionRegistry(),
         ForwardingMode.NONE,
         new byte[0],
-        NioSocketChannel.class);
+        NioSocketChannel.class,
+        new PipelineRegistry());
   }
 
   private static KeyPair generateKeyPair() {
