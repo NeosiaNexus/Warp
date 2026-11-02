@@ -215,7 +215,8 @@ export function connect({ host, port, version, username, profileKeys = null, spa
     const handle = new Bot(bot, username, announcedProtocol(version), profileKeys !== null);
     const fail = (why) => {
       clearTimeout(timer);
-      bot.quit();
+      // The protocol client's own end: mineflayer's bot.quit() only exists once its plugins are in.
+      if (!bot._client.ended) bot._client.end('disconnect.quitting');
       reject(new Error(`${username}: ${why}`));
     };
     const timer = setTimeout(() => fail(`no spawn within ${spawnTimeoutMs / 1000}s`), spawnTimeoutMs);
@@ -223,10 +224,23 @@ export function connect({ host, port, version, username, profileKeys = null, spa
       clearTimeout(timer);
       resolve(handle);
     });
-    bot.once('kicked', (reason) => fail(`kicked before spawn: ${text(reason)}`));
+    watchKicks(bot._client, (reason) => fail(`kicked before spawn: ${text(reason)}`));
     bot.once('end', (reason) => fail(`connection ended before spawn: ${reason}`));
     bot.once('error', (e) => fail(`error before spawn: ${e?.stack ?? e}`));
   });
+}
+
+/**
+ * Calls `onKick` with the reason of the disconnect packet the server sends, in any state (login,
+ * configuration or play). Read from the protocol client, which reads every packet from the start,
+ * as the vanilla client does: mineflayer only turns these packets into its 'kicked' event once it
+ * has injected its plugins, a timer after createBot, and a server that refuses the player as soon
+ * as it reads the handshake can answer before that (a refused transfer). The bot then saw nothing
+ * but the connection close.
+ */
+function watchKicks(client, onKick) {
+  client.once('disconnect', (packet) => onKick(packet.reason)); // login and configuration states
+  client.once('kick_disconnect', (packet) => onKick(packet.reason)); // play state
 }
 
 /**
