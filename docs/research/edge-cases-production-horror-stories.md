@@ -269,7 +269,7 @@
 **Description** : Lors du lancement d'un evenement ou d'un reboot proxy, des centaines de joueurs se reconnectent en meme temps. Le proxy doit gerer simultanement : handshake MC, requete auth Mojang, connexion backend.
 
 **Comment les proxys existants echouent** :
-- BungeeCord : peut geler completement sous charge (#3358, le bug "frozen proxy")
+- BungeeCord : peut geler sous charge (rapports de gel comme #3358, jamais diagnostiques)
 - Velocity : gere mieux mais les auth Mojang deviennent le bottleneck (requetes HTTP externes)
 - Timeout par defaut trop bas : joueurs deconnectes avant de pouvoir se connecter
 
@@ -352,7 +352,7 @@
 **Description** : Un attaquant ouvre des centaines de connexions mais n'envoie jamais les paquets de handshake complets, ou les envoie tres lentement. Chaque connexion consomme un FD et un thread/handler.
 
 **Comment les proxys existants echouent** :
-- BungeeCord : gele completement (#3358)
+- BungeeCord : rapports de gel complet (#3358, cause jamais identifiee)
 - Velocity : meilleur grace a Netty event loop, mais toujours vulnerable si pas de timeout de handshake
 
 **Mitigation Warp** :
@@ -431,7 +431,7 @@
 **Description** : Derriere HAProxy/TCPShield, le proxy MC ne voit que l'IP de HAProxy. Le PROXY protocol v1/v2 transmet l'IP reelle en header avant les donnees MC. Les deux extremites (HAProxy + proxy MC) doivent supporter le PROXY protocol. Activer le PROXY protocol sans le configurer cote load-balancer = le proxy interpret l'IP du joueur comme l'entete PROXY protocol.
 
 **Comment les proxys existants echouent** :
-- Velocity #1229 : "pings forever" quand PROXY protocol est active mais HAProxy non configure
+- Velocity #1229 : "pings forever" quand PROXY protocol est active mais HAProxy non configure (mauvaise configuration, pas un bug de Velocity : le piege est l'absence de diagnostic)
 - BungeeCord #2590 : le connection throttle ne marche plus avec HAProxy (toutes les connexions viennent de la meme IP)
 - Documentation Velocity : "If you don't know what this is for, then don't enable it"
 
@@ -493,7 +493,7 @@
 
 ### 4.3 Attaques de bots / Login Flood
 
-**Description** : Des centaines de bots se connectent, font le handshake MC + auth Mojang, puis se deconnectent immediatement. Chaque tentative consomme : un FD, une requete HTTP a Mojang, du CPU pour le chiffrement. 200-300 bots/seconde suffisent a crasher BungeeCord (#2854).
+**Description** : Des centaines de bots se connectent, font le handshake MC + auth Mojang, puis se deconnectent immediatement. Chaque tentative consomme : un FD, une requete HTTP a Mojang, du CPU pour le chiffrement. 50 a 700 logins par seconde depuis des IP differentes ont suffi a faire bloquer un proxy par Mojang et a le geler par manque de memoire (Waterfall #528). Velocity a classe ce deni de service en WONTFIX : le dechiffrement RSA est impose par le protocole (Velocity #568).
 
 **Comment les proxys existants echouent** :
 - BungeeCord : crash avec 200-300 requetes/seconde
