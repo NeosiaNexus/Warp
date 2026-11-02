@@ -37,6 +37,10 @@ import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.config.ConfigPacket;
 import dev.warp.protocol.packet.config.FinishConfiguration;
+import dev.warp.protocol.packet.cookie.CookiePacket;
+import dev.warp.protocol.packet.cookie.CookieRequest;
+import dev.warp.protocol.packet.cookie.CookieResponse;
+import dev.warp.protocol.packet.cookie.StoreCookie;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.handshake.HandshakePacket;
 import dev.warp.protocol.packet.login.EncryptionRequest;
@@ -110,7 +114,8 @@ class StateRegistryTest {
               StatusPacket.class,
               LoginPacket.class,
               ConfigPacket.class,
-              PlayPacket.class)
+              PlayPacket.class,
+              CookiePacket.class)
           .flatMap(family -> Arrays.stream(family.getPermittedSubclasses()))
           .<Class<? extends Packet>>map(type -> type.asSubclass(Packet.class))
           .toList();
@@ -157,6 +162,8 @@ class StateRegistryTest {
                 ProtocolVersion.MINECRAFT_1_21_2),
             new PacketName(LOGIN, CLIENTBOUND, SetCompression.class, "minecraft:login_compression"),
             new PacketName(LOGIN, CLIENTBOUND, LoginPluginRequest.class, "minecraft:custom_query"),
+            new PacketName(LOGIN, SERVERBOUND, CookieResponse.class, "minecraft:cookie_response"),
+            new PacketName(LOGIN, CLIENTBOUND, CookieRequest.class, "minecraft:cookie_request"),
             new PacketName(
                 CONFIGURATION,
                 SERVERBOUND,
@@ -176,7 +183,16 @@ class StateRegistryTest {
                 FinishConfiguration.class,
                 "minecraft:finish_configuration"),
             new PacketName(CONFIGURATION, CLIENTBOUND, KeepAlive.class, "minecraft:keep_alive"),
+            new PacketName(
+                CONFIGURATION, SERVERBOUND, CookieResponse.class, "minecraft:cookie_response"),
+            new PacketName(
+                CONFIGURATION, CLIENTBOUND, CookieRequest.class, "minecraft:cookie_request"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, StoreCookie.class, "minecraft:store_cookie"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, Transfer.class, "minecraft:transfer"),
             new PacketName(PLAY, SERVERBOUND, KeepAlive.class, "minecraft:keep_alive"),
+            new PacketName(PLAY, SERVERBOUND, CookieResponse.class, "minecraft:cookie_response"),
+            new PacketName(PLAY, CLIENTBOUND, CookieRequest.class, "minecraft:cookie_request"),
+            new PacketName(PLAY, CLIENTBOUND, StoreCookie.class, "minecraft:store_cookie"),
             new PacketName(PLAY, SERVERBOUND, PlayPluginMessage.class, "minecraft:custom_payload"),
             new PacketName(
                 PLAY, SERVERBOUND, TabCompleteRequest.class, "minecraft:command_suggestion"),
@@ -336,6 +352,8 @@ class StateRegistryTest {
             new PacketName(LOGIN, CLIENTBOUND, LoginSuccess.class, "success"),
             new PacketName(LOGIN, CLIENTBOUND, SetCompression.class, "compress"),
             new PacketName(LOGIN, CLIENTBOUND, LoginPluginRequest.class, "login_plugin_request"),
+            new PacketName(LOGIN, SERVERBOUND, CookieResponse.class, "cookie_response"),
+            new PacketName(LOGIN, CLIENTBOUND, CookieRequest.class, "cookie_request"),
             new PacketName(CONFIGURATION, SERVERBOUND, ClientInformation.class, "settings"),
             new PacketName(
                 CONFIGURATION,
@@ -347,7 +365,14 @@ class StateRegistryTest {
             new PacketName(
                 CONFIGURATION, CLIENTBOUND, FinishConfiguration.class, "finish_configuration"),
             new PacketName(CONFIGURATION, CLIENTBOUND, KeepAlive.class, "keep_alive"),
+            new PacketName(CONFIGURATION, SERVERBOUND, CookieResponse.class, "cookie_response"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, CookieRequest.class, "cookie_request"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, StoreCookie.class, "store_cookie"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, Transfer.class, "transfer"),
             new PacketName(PLAY, SERVERBOUND, KeepAlive.class, "keep_alive"),
+            new PacketName(PLAY, SERVERBOUND, CookieResponse.class, "cookie_response"),
+            new PacketName(PLAY, CLIENTBOUND, CookieRequest.class, "cookie_request"),
+            new PacketName(PLAY, CLIENTBOUND, StoreCookie.class, "store_cookie"),
             new PacketName(PLAY, SERVERBOUND, PlayPluginMessage.class, "custom_payload"),
             new PacketName(PLAY, SERVERBOUND, TabCompleteRequest.class, "tab_complete"),
             new PacketName(PLAY, SERVERBOUND, LegacyChatMessage.class, "chat"),
@@ -498,6 +523,46 @@ class StateRegistryTest {
       assertThrows(
           IllegalArgumentException.class,
           () -> StateRegistry.get(PLAY, CLIENTBOUND).encoding(version, TabCompleteResponse.class));
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Transfer
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("transfer")
+  class TransferIds {
+
+    static Stream<ProtocolVersion> versionsFrom1205() {
+      return ProtocolVersion.values().stream()
+          .filter(v -> v.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versionsFrom1205")
+    @DisplayName("should write a transfer in configuration and play, and forward a server's own")
+    void encodeOnlyInBothStates(ProtocolVersion version) {
+      for (ProtocolState state : List.of(CONFIGURATION, PLAY)) {
+        PacketRegistry clientbound = StateRegistry.get(state, CLIENTBOUND);
+
+        PacketRegistry.Encoding encoding = clientbound.encoding(version, Transfer.class);
+
+        assertSame(Transfer.CODEC, encoding.codec());
+        assertNull(clientbound.lookup(version, encoding.packetId()));
+      }
+    }
+
+    @Test
+    @DisplayName("should not register a transfer before 1.20.5")
+    void absentBefore1205() {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_20_4;
+
+      for (ProtocolState state : List.of(CONFIGURATION, PLAY)) {
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> StateRegistry.get(state, CLIENTBOUND).encoding(version, Transfer.class));
+      }
     }
   }
 

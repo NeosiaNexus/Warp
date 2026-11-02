@@ -56,6 +56,8 @@ import dev.warp.protocol.packet.config.AcknowledgeFinishConfiguration;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.config.FinishConfiguration;
+import dev.warp.protocol.packet.cookie.CookieRequest;
+import dev.warp.protocol.packet.cookie.CookieResponse;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.login.EncryptionRequest;
 import dev.warp.protocol.packet.login.EncryptionResponse;
@@ -633,6 +635,8 @@ class MinecraftDecoderFuzzTest {
               v ->
                   new PlayClientSettings(
                       "en_us", (byte) 10, 0, true, (byte) 0, (byte) 0x7f, 1, false, true, 0)),
+          sample(CookieRequest.CODEC, v -> new CookieRequest("primemc:session")),
+          sample(CookieResponse.CODEC, v -> new CookieResponse("primemc:session", new byte[] {1})),
           sample(BundleDelimiter.CODEC, v -> new BundleDelimiter()),
           sample(PlayDisconnect.CODEC, v -> new PlayDisconnect(REASON)),
           sample(StartConfiguration.CODEC, v -> new StartConfiguration()),

@@ -54,6 +54,9 @@ import dev.warp.protocol.packet.config.AcknowledgeFinishConfiguration;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.config.FinishConfiguration;
+import dev.warp.protocol.packet.cookie.CookieRequest;
+import dev.warp.protocol.packet.cookie.CookieResponse;
+import dev.warp.protocol.packet.cookie.StoreCookie;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.login.EncryptionRequest;
 import dev.warp.protocol.packet.login.EncryptionResponse;
@@ -200,6 +203,10 @@ public final class StateRegistry {
 
   // ---------------------------------------------------------------------------
   // Login — stable IDs, version-gated packets
+  //
+  // From 1.20.5 a server may ask the client for a cookie during login: decoded both ways, so the
+  // proxy can ask during its own login with the client, and relay what a backend asks during the
+  // backend's login to a client already past its own.
   // ---------------------------------------------------------------------------
 
   private static void registerLogin() {
@@ -214,6 +221,7 @@ public final class StateRegistry {
                     LoginPluginResponse.class, LoginPluginResponse.CODEC, map(0x02, MINECRAFT_1_13))
                 .register(
                     LoginAcknowledged.class, LoginAcknowledged.CODEC, map(0x03, MINECRAFT_1_20_2))
+                .register(CookieResponse.class, CookieResponse.CODEC, map(0x04, MINECRAFT_1_20_5))
                 .build());
 
     directionMap(ProtocolState.LOGIN)
@@ -227,6 +235,7 @@ public final class StateRegistry {
                 .register(SetCompression.class, SetCompression.CODEC, map(0x03, MINECRAFT_1_8))
                 .register(
                     LoginPluginRequest.class, LoginPluginRequest.CODEC, map(0x04, MINECRAFT_1_13))
+                .register(CookieRequest.class, CookieRequest.CODEC, map(0x05, MINECRAFT_1_20_5))
                 .build());
   }
 
@@ -239,9 +248,12 @@ public final class StateRegistry {
    * blind-forwarded as raw bytes — faster, more resilient to protocol changes, and impossible to
    * corrupt through decode/re-encode cycles.
    *
-   * <p>Intercepted clientbound: Disconnect, FinishConfiguration, KeepAlive. Intercepted
-   * serverbound: AcknowledgeFinishConfiguration, KeepAlive. All other CONFIG packets (RegistryData,
-   * KnownPacks, PluginMessage, etc.) pass through as opaque ByteBufs via {@code handleBlind()}.
+   * <p>Intercepted clientbound: Disconnect, FinishConfiguration, KeepAlive, and from 1.20.5 Cookie
+   * Request (to route the client's answer back to the server that asked). Intercepted serverbound:
+   * AcknowledgeFinishConfiguration, KeepAlive, and from 1.20.5 Cookie Response. All other CONFIG
+   * packets (RegistryData, KnownPacks, PluginMessage, etc.) pass through as opaque ByteBufs via
+   * {@code handleBlind()}, including a server's Store Cookie and Transfer, which the proxy only
+   * writes itself (encode-only).
    */
   private static void registerConfiguration() {
     directionMap(ProtocolState.CONFIGURATION)
@@ -260,6 +272,7 @@ public final class StateRegistry {
                     KeepAlive.CODEC,
                     map(0x03, MINECRAFT_1_20_2),
                     map(0x04, MINECRAFT_1_20_5))
+                .register(CookieResponse.class, CookieResponse.CODEC, map(0x01, MINECRAFT_1_20_5))
                 .build());
 
     directionMap(ProtocolState.CONFIGURATION)
@@ -281,6 +294,17 @@ public final class StateRegistry {
                     KeepAlive.CODEC,
                     map(0x03, MINECRAFT_1_20_2),
                     map(0x04, MINECRAFT_1_20_5))
+                .register(CookieRequest.class, CookieRequest.CODEC, map(0x00, MINECRAFT_1_20_5))
+                .registerEncodeOnly(
+                    StoreCookie.class,
+                    StoreCookie.CODEC,
+                    map(0x0A, MINECRAFT_1_20_5),
+                    map(0x0B, MINECRAFT_26_3))
+                .registerEncodeOnly(
+                    Transfer.class,
+                    Transfer.CODEC,
+                    map(0x0B, MINECRAFT_1_20_5),
+                    map(0x0C, MINECRAFT_26_3))
                 .build());
   }
 
@@ -296,6 +320,9 @@ public final class StateRegistry {
   // also watches the packets that fill them (it reads their UUIDs in place and forwards their
   // frames untouched), and sends the ones that clear them, up to 1.20.1 only. From 1.20.2 the
   // configuration phase resets the client and those packets stay opaque.
+  //
+  // From 1.20.5 cookie requests and responses are decoded, to route each answer to whoever asked
+  // (the proxy or a backend); a server's Store Cookie and Transfer stay opaque.
   // ---------------------------------------------------------------------------
 
   private static void registerPlay() {
@@ -430,6 +457,13 @@ public final class StateRegistry {
                     map(0x30, MINECRAFT_1_21_6),
                     map(0x31, MINECRAFT_26_1),
                     map(0x32, MINECRAFT_26_3))
+                .register(
+                    CookieResponse.class,
+                    CookieResponse.CODEC,
+                    map(0x11, MINECRAFT_1_20_5),
+                    map(0x13, MINECRAFT_1_21_2),
+                    map(0x14, MINECRAFT_1_21_6),
+                    map(0x15, MINECRAFT_26_1))
                 .build());
 
     directionMap(ProtocolState.PLAY)
@@ -648,6 +682,20 @@ public final class StateRegistry {
                     map(0x7F, MINECRAFT_1_21_9),
                     map(0x81, MINECRAFT_26_1),
                     map(0x84, MINECRAFT_26_3))
+                .register(
+                    CookieRequest.class,
+                    CookieRequest.CODEC,
+                    map(0x16, MINECRAFT_1_20_5),
+                    map(0x15, MINECRAFT_1_21_5))
+                .registerEncodeOnly(
+                    StoreCookie.class,
+                    StoreCookie.CODEC,
+                    map(0x6B, MINECRAFT_1_20_5),
+                    map(0x72, MINECRAFT_1_21_2),
+                    map(0x71, MINECRAFT_1_21_5),
+                    map(0x76, MINECRAFT_1_21_9),
+                    map(0x78, MINECRAFT_26_1),
+                    map(0x7A, MINECRAFT_26_3))
                 .registerEncodeOnly(
                     TabCompleteResponse.class,
                     TabCompleteResponse.CODEC,
