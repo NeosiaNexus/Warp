@@ -58,7 +58,7 @@ class LibraryCacheTest {
   private static final byte[] LIBRARY =
       "pretend this is an ELF shared object".getBytes(StandardCharsets.US_ASCII);
 
-  @TempDir Path temp;
+  @TempDir private Path temp;
 
   @Nested
   @DisplayName("names")

@@ -37,7 +37,7 @@ import org.junit.jupiter.api.io.TempDir;
 @DisplayName("NativeLoader")
 class NativeLoaderTest {
 
-  @TempDir Path temp;
+  @TempDir private Path temp;
 
   @Nested
   @DisplayName("directories")

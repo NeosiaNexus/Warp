@@ -97,17 +97,7 @@ final class ThreadContexts {
    * @throws OutOfMemoryError if libdeflate cannot allocate it
    */
   long compressor(int level) {
-    long compressor = contexts.compressors[level];
-    if (compressor == 0) {
-      compressor = Libdeflate.allocCompressor(level);
-      if (compressor == 0) {
-        throw new OutOfMemoryError(
-            "libdeflate could not allocate a level " + level + " compressor");
-      }
-      contexts.compressors[level] = compressor;
-      LIVE.incrementAndGet();
-    }
-    return compressor;
+    return contexts.compressor(level);
   }
 
   /**
@@ -117,16 +107,7 @@ final class ThreadContexts {
    * @throws OutOfMemoryError if libdeflate cannot allocate it
    */
   long decompressor() {
-    long decompressor = contexts.decompressor;
-    if (decompressor == 0) {
-      decompressor = Libdeflate.allocDecompressor();
-      if (decompressor == 0) {
-        throw new OutOfMemoryError("libdeflate could not allocate a decompressor");
-      }
-      contexts.decompressor = decompressor;
-      LIVE.incrementAndGet();
-    }
-    return decompressor;
+    return contexts.decompressor();
   }
 
   /**
@@ -135,8 +116,35 @@ final class ThreadContexts {
    * these fields only after the owning thread has died and been collected.
    */
   private static final class Contexts implements Runnable {
-    final long[] compressors = new long[LibdeflateCodec.MAX_LEVEL + 1];
-    long decompressor;
+    private final long[] compressors = new long[LibdeflateCodec.MAX_LEVEL + 1];
+    private long decompressor;
+
+    long compressor(int level) {
+      long compressor = compressors[level];
+      if (compressor == 0) {
+        compressor = Libdeflate.allocCompressor(level);
+        if (compressor == 0) {
+          throw new OutOfMemoryError(
+              "libdeflate could not allocate a level " + level + " compressor");
+        }
+        compressors[level] = compressor;
+        LIVE.incrementAndGet();
+      }
+      return compressor;
+    }
+
+    long decompressor() {
+      long current = decompressor;
+      if (current == 0) {
+        current = Libdeflate.allocDecompressor();
+        if (current == 0) {
+          throw new OutOfMemoryError("libdeflate could not allocate a decompressor");
+        }
+        decompressor = current;
+        LIVE.incrementAndGet();
+      }
+      return current;
+    }
 
     @Override
     public void run() {
