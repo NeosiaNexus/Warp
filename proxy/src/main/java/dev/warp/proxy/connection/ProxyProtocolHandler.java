@@ -155,34 +155,45 @@ final class ProxyProtocolHandler extends ChannelInboundHandlerAdapter {
     if (header.command() == HAProxyCommand.LOCAL) {
       logger.debug("{}: PROXY protocol LOCAL connection (health check)", ctx.channel());
     } else {
-      switch (header.proxiedProtocol()) {
-        case TCP4, TCP6 -> {
-          InetSocketAddress client = clientAddress(header);
-          if (client == null) {
-            refuse(ctx, "invalid source address in its PROXY protocol header");
-            return;
-          }
-          connection.setProxiedAddress(client);
-          logger.debug("{}: client {} (PROXY protocol)", ctx.channel(), client);
-        }
-        case UNKNOWN ->
-            logger.debug(
-                "{}: PROXY protocol header without the client's address, keeping the proxy's",
-                ctx.channel());
-        case UDP4, UDP6, UNIX_STREAM, UNIX_DGRAM -> {
-          refuse(
-              ctx,
-              "its PROXY protocol header is for a "
-                  + header.proxiedProtocol()
-                  + " connection, and Warp accepts TCP over IPv4 or IPv6 only");
-          return;
-        }
+      // A switch expression, so that the compiler checks every family is handled.
+      String problem =
+          switch (header.proxiedProtocol()) {
+            case TCP4, TCP6 -> applyClientAddress(ctx, header);
+            case UNKNOWN -> {
+              logger.debug(
+                  "{}: PROXY protocol header without the client's address, keeping the proxy's",
+                  ctx.channel());
+              yield null;
+            }
+            case UDP4, UDP6, UNIX_STREAM, UNIX_DGRAM ->
+                "its PROXY protocol header is for a "
+                    + header.proxiedProtocol()
+                    + " connection, and Warp accepts TCP over IPv4 or IPv6 only";
+          };
+      if (problem != null) {
+        refuse(ctx, problem);
+        return;
       }
     }
     // Done: the decoder removes itself after this read and hands what followed the header to the
     // Minecraft pipeline.
     cancelTimeout();
     ctx.pipeline().remove(this);
+  }
+
+  /**
+   * Makes the source of a TCP header the connection's address.
+   *
+   * @return {@code null} once applied, or the problem with the header
+   */
+  private @Nullable String applyClientAddress(ChannelHandlerContext ctx, HAProxyMessage header) {
+    InetSocketAddress client = clientAddress(header);
+    if (client == null) {
+      return "invalid source address in its PROXY protocol header";
+    }
+    connection.setProxiedAddress(client);
+    logger.debug("{}: client {} (PROXY protocol)", ctx.channel(), client);
+    return null;
   }
 
   /**
