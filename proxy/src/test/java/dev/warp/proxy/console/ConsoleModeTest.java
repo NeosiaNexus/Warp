@@ -36,8 +36,11 @@ import org.junit.jupiter.params.provider.ValueSource;
 class ConsoleModeTest {
 
   private static ConsoleMode detect(boolean terminal, String... variables) {
+    if (variables.length % 2 != 0) {
+      throw new IllegalArgumentException("variables come in name and value pairs");
+    }
     Map<String, String> env = new HashMap<>();
-    for (int i = 0; i < variables.length; i += 2) {
+    for (int i = 0; i + 1 < variables.length; i += 2) {
       env.put(variables[i], variables[i + 1]);
     }
     return ConsoleMode.detect(env::get, terminal, StandardCharsets.UTF_8);
