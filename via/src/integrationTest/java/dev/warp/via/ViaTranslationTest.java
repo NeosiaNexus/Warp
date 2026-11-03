@@ -104,8 +104,15 @@ class ViaTranslationTest {
   private static final ProtocolVersion CLIENT = ProtocolVersion.MINECRAFT_1_21_7;
   private static final int THRESHOLD = 256;
 
+  /** A 1.20.1 backend, set in servers.yml: no configuration phase, which ViaVersion emulates. */
+  private static final ServerInfo LEGACY =
+      new ServerInfo("legacy", new InetSocketAddress(InetAddress.getLoopbackAddress(), 25567));
+
+  private static final ProtocolVersion LEGACY_VERSION = ProtocolVersion.MINECRAFT_1_20_1;
+
   private static final PipelineRegistry PIPELINES = new PipelineRegistry();
   private static final RegisteredServer LOBBY_SERVER = mock(RegisteredServer.class);
+  private static final RegisteredServer LEGACY_SERVER = mock(RegisteredServer.class);
 
   private final Player player = mock(Player.class);
   private final List<EmbeddedChannel> channels = new ArrayList<>();
@@ -114,13 +121,18 @@ class ViaTranslationTest {
   static void bootVia() throws IOException {
     Path data = Files.createTempDirectory("warp-via-it");
     Files.writeString(
-        data.resolve("servers.yml"), "servers:\n  lobby: \"1.21.4\"\n", StandardCharsets.UTF_8);
-    when(LOBBY_SERVER.name()).thenReturn(LOBBY.name());
-    when(LOBBY_SERVER.info()).thenReturn(LOBBY);
-    when(LOBBY_SERVER.ping(anyInt())).thenReturn(new CompletableFuture<>());
+        data.resolve("servers.yml"),
+        "servers:\n  lobby: \"1.21.4\"\n  legacy: \"1.20.1\"\n",
+        StandardCharsets.UTF_8);
+    for (RegisteredServer server : List.of(LOBBY_SERVER, LEGACY_SERVER)) {
+      ServerInfo info = server == LOBBY_SERVER ? LOBBY : LEGACY;
+      when(server.name()).thenReturn(info.name());
+      when(server.info()).thenReturn(info);
+      when(server.ping(anyInt())).thenReturn(new CompletableFuture<>());
+    }
 
     ServerRegistry servers = mock(ServerRegistry.class);
-    when(servers.servers()).thenReturn(List.of(LOBBY_SERVER));
+    when(servers.servers()).thenReturn(List.of(LOBBY_SERVER, LEGACY_SERVER));
     Warp proxy = mock(Warp.class);
     when(proxy.version()).thenReturn("test");
     when(proxy.servers()).thenReturn(servers);
@@ -252,6 +264,47 @@ class ViaTranslationTest {
     assertEquals("Alex", assertInstanceOf(LoginSuccess.class, received.packets.get(1)).username());
     assertFalse(
         sentToBackend(channel, ProtocolState.LOGIN, LoginAcknowledged.class, true).isEmpty());
+  }
+
+  @Test
+  @DisplayName(
+      "should read, in the configuration state, what ViaVersion held for a pre-1.20.2 backend until"
+          + " the proxy acknowledged its login")
+  void heldPacketsAfterTheLoginAcknowledgement() {
+    // A switch acknowledges the new server's login only once the client is in the configuration
+    // phase. Meanwhile the 1.20.1 server plays already, and ViaVersion holds its packets; the
+    // acknowledgement makes it pass them up, translated into the configuration state, before the
+    // write returns.
+    MinecraftConnection backend = backend(CLIENT);
+    EmbeddedChannel channel = (EmbeddedChannel) backend.channel();
+    Recorder login = new Recorder(backend);
+    PIPELINES.initializeBackend(backend, CLIENT.protocol(), player, LEGACY_SERVER);
+    backend.setSessionHandler(login);
+    backend.setState(ProtocolState.HANDSHAKE);
+    backend.writeAndFlush(new Handshake(CLIENT.protocol(), "legacy", 25567, 2));
+    backend.setState(ProtocolState.LOGIN);
+    backend.writeAndFlush(new LoginStart("Steve", UUID.randomUUID()));
+    assertEquals(
+        LEGACY_VERSION.protocol(),
+        sentToBackend(channel, ProtocolState.HANDSHAKE, Handshake.class, false, LEGACY_VERSION)
+            .getFirst()
+            .protocolVersion());
+    receive(channel, ProtocolState.LOGIN, new SetCompression(THRESHOLD), false, LEGACY_VERSION);
+    receive(
+        channel,
+        ProtocolState.LOGIN,
+        new LoginSuccess(UUID.randomUUID(), "Steve", List.of(), false, null),
+        true,
+        LEGACY_VERSION);
+    receive(channel, ProtocolState.PLAY, new KeepAlive(7), true, LEGACY_VERSION);
+    Recorder configuration = new Recorder(backend);
+
+    backend.acknowledgeStateChange(
+        new LoginAcknowledged(), ProtocolState.CONFIGURATION, configuration);
+
+    assertEquals(List.of(new KeepAlive(7)), configuration.packets);
+    assertTrue(channel.isOpen());
+    assertFalse(login.packets.contains(new KeepAlive(7)));
   }
 
   @Test
@@ -409,16 +462,26 @@ class ViaTranslationTest {
     return connection;
   }
 
-  /** The backend sends a packet, encoded in its own version. */
+  /** The 1.21.4 backend sends a packet, encoded in its own version. */
   private static void receive(
       EmbeddedChannel channel, ProtocolState state, Packet packet, boolean compressed) {
+    receive(channel, state, packet, compressed, BACKEND);
+  }
+
+  /** A backend of {@code version} sends a packet, encoded in that version. */
+  private static void receive(
+      EmbeddedChannel channel,
+      ProtocolState state,
+      Packet packet,
+      boolean compressed,
+      ProtocolVersion version) {
     ByteBuf body = Unpooled.buffer();
     PacketDirection direction = PacketDirection.CLIENTBOUND;
-    var encoding = StateRegistry.get(state, direction).encoding(BACKEND, packet.getClass());
+    var encoding = StateRegistry.get(state, direction).encoding(version, packet.getClass());
     VarInt.write(body, encoding.packetId());
     @SuppressWarnings("unchecked")
     PacketCodec<Packet> codec = (PacketCodec<Packet>) encoding.codec();
-    codec.encode(packet, body, BACKEND);
+    codec.encode(packet, body, version);
     ByteBuf frame = Unpooled.buffer();
     if (compressed) {
       // Below the threshold: sent uncompressed, with a Data Length of 0.
@@ -439,6 +502,18 @@ class ViaTranslationTest {
    */
   private static <T extends Packet> List<T> sentToBackend(
       EmbeddedChannel channel, ProtocolState state, Class<T> type, boolean compressed) {
+    return sentToBackend(channel, state, type, compressed, BACKEND);
+  }
+
+  /**
+   * As {@link #sentToBackend(EmbeddedChannel, ProtocolState, Class, boolean)}, in {@code version}.
+   */
+  private static <T extends Packet> List<T> sentToBackend(
+      EmbeddedChannel channel,
+      ProtocolState state,
+      Class<T> type,
+      boolean compressed,
+      ProtocolVersion version) {
     channel.runPendingTasks();
     EmbeddedChannel reader =
         new EmbeddedChannel(
@@ -454,17 +529,17 @@ class ViaTranslationTest {
     for (Object out = channel.readOutbound(); out != null; out = channel.readOutbound()) {
       reader.writeInbound(out);
     }
-    int id = packetId(state, PacketDirection.SERVERBOUND, type, BACKEND);
+    int id = packetId(state, PacketDirection.SERVERBOUND, type, version);
     @SuppressWarnings("unchecked")
     PacketCodec<T> codec =
         (PacketCodec<T>)
-            StateRegistry.get(state, PacketDirection.SERVERBOUND).encoding(BACKEND, type).codec();
+            StateRegistry.get(state, PacketDirection.SERVERBOUND).encoding(version, type).codec();
     List<T> found = new ArrayList<>();
     for (ByteBuf packet = reader.readInbound(); packet != null; packet = reader.readInbound()) {
       try {
         // In the handshake state only the first packet is the handshake: the login follows.
         if (VarInt.read(packet) == id && (state != ProtocolState.HANDSHAKE || found.isEmpty())) {
-          found.add(codec.decode(packet, BACKEND));
+          found.add(codec.decode(packet, version));
         }
       } finally {
         packet.release();

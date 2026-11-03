@@ -51,7 +51,7 @@ export const ALT_MAX_PLAYERS = 1;
  *   `paper`: the backends are Paper servers
  * @returns {Record<string, true|string>}
  */
-export function features(protocol, { direct = false, forwarding = 'none', online = false, plugin = false, bridged = false, paper = false } = {}) {
+export function features(protocol, { client = protocol, direct = false, forwarding = 'none', online = false, plugin = false, bridged = false, paper = false } = {}) {
   const proxy = direct ? 'no proxy in a control run' : true;
   return {
     proxy,
@@ -96,6 +96,13 @@ export function features(protocol, { direct = false, forwarding = 'none', online
     ),
     // The drain runs on a Warp of its own, which no ViaProxy bridge leads to.
     drain: all(proxy, !bridged || 'through ViaProxy, the bridges only lead to warp and warp-alt'),
+    // A draining Warp transfers players itself: that takes the bot's version only, whatever its
+    // server runs (`client`: the bots' protocol, newer than the backends' when Warp translates).
+    drainTransfers: all(
+      proxy,
+      client >= TRANSFER_PROTOCOL || 'no Transfer packet before 1.20.5',
+      !bridged || 'through ViaProxy, Warp sees the bridge’s handshake, not the bot’s',
+    ),
     // A backend plugin speaks the BungeeCord channel, which Warp answers: Paper loads it, vanilla
     // servers load no plugin.
     bungeeChannel: all(proxy, paper || 'vanilla servers load no plugin to speak the channel'),
@@ -1016,7 +1023,7 @@ async function drain(ctx) {
   await instance.start();
   let detail;
   try {
-    detail = has(ctx, 'transfers') ? await drainBySigterm(ctx, instance) : await drainByHttp(ctx, instance);
+    detail = has(ctx, 'drainTransfers') ? await drainBySigterm(ctx, instance) : await drainByHttp(ctx, instance);
   } finally {
     await instance.stop();
   }

@@ -32,8 +32,12 @@ import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.StateRegistry;
+import dev.warp.protocol.packet.config.AcknowledgeFinishConfiguration;
 import dev.warp.protocol.packet.cookie.CookieRequest;
 import dev.warp.protocol.packet.cookie.StoreCookie;
+import dev.warp.protocol.packet.play.BundleDelimiter;
+import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.PlayPluginMessage;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.status.StatusRequest;
 
@@ -45,11 +49,15 @@ import java.util.List;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelDuplexHandler;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelPromise;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.DecoderException;
 import io.netty.handler.timeout.ReadTimeoutException;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.LogEvent;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -333,6 +341,184 @@ class MinecraftConnectionTest {
 
     private static int packetId(ProtocolState state, Class<? extends Packet> type) {
       return StateRegistry.get(state, PacketDirection.CLIENTBOUND).packetId(VERSION, type);
+    }
+  }
+
+  @Nested
+  @DisplayName("acknowledging a state change the peer announced")
+  class AcknowledgedStateChanges {
+
+    private static final ProtocolVersion VERSION = ProtocolVersion.MINECRAFT_1_21_4;
+
+    @Test
+    @DisplayName(
+        "should hand what a handler answers during the acknowledgement, in the new state, to the"
+            + " next session handler once active")
+    void answersDuringTheAcknowledgement() {
+      // A handler in the pipeline that plays the backend, as ViaVersion's configuration bridge
+      // for a backend before 1.20.2 does: it takes the acknowledgement and passes up, before the
+      // write returns, the play packets it held. Play 0x00 is a Bundle Delimiter; read as
+      // configuration, it would be a Cookie Request and fail.
+      List<String> events = new ArrayList<>();
+      SynchronousPeer peer =
+          new SynchronousPeer(
+              events, encode(ProtocolState.PLAY, new BundleDelimiter(), new KeepAlive(42)));
+      EmbeddedChannel ch = backendChannel(peer);
+      MinecraftConnection conn = getConnection(ch);
+      RecordingHandler configuration = new RecordingHandler();
+      conn.setSessionHandler(configuration);
+      OrderedHandler play = new OrderedHandler(events, conn);
+
+      conn.acknowledgeStateChange(new AcknowledgeFinishConfiguration(), ProtocolState.PLAY, play);
+
+      assertEquals(
+          List.of(
+              "acknowledgement written",
+              "activated",
+              "handled BundleDelimiter",
+              "handled KeepAlive"),
+          events);
+      assertEquals(List.of(new BundleDelimiter(), new KeepAlive(42)), play.packets);
+      assertTrue(configuration.packets().isEmpty());
+      assertTrue(configuration.isDeactivated());
+      assertTrue(ch.isOpen());
+      ch.finishAndReleaseAll();
+    }
+
+    @Test
+    @DisplayName(
+        "should encode the acknowledgement in the state the peer leaves, and what follows it in the"
+            + " new one")
+    void encodesAcrossTheChange() {
+      List<String> events = new ArrayList<>();
+      EmbeddedChannel ch = backendChannel(new SynchronousPeer(events, List.of()));
+      MinecraftConnection conn = getConnection(ch);
+      OrderedHandler play = new OrderedHandler(events, conn);
+      play.writeOnActivation = new PlayPluginMessage("minecraft:register", new byte[] {'a'});
+
+      conn.acknowledgeStateChange(new AcknowledgeFinishConfiguration(), ProtocolState.PLAY, play);
+
+      assertEquals(
+          serverboundId(ProtocolState.CONFIGURATION, AcknowledgeFinishConfiguration.class),
+          nextPacketId(ch));
+      assertEquals(serverboundId(ProtocolState.PLAY, PlayPluginMessage.class), nextPacketId(ch));
+      assertEquals(ProtocolState.PLAY, conn.decoder().state());
+      assertEquals(ProtocolState.PLAY, conn.encoder().state());
+      ch.finishAndReleaseAll();
+    }
+
+    @Test
+    @DisplayName("should read what a server sends after the acknowledgement in the new state")
+    void serverAnswersLater() {
+      EmbeddedChannel ch = backendChannel(new SynchronousPeer(new ArrayList<>(), List.of()));
+      MinecraftConnection conn = getConnection(ch);
+      RecordingHandler play = new RecordingHandler();
+
+      conn.acknowledgeStateChange(new AcknowledgeFinishConfiguration(), ProtocolState.PLAY, play);
+      for (ByteBuf packet : encode(ProtocolState.PLAY, new BundleDelimiter())) {
+        ch.writeInbound(packet);
+      }
+
+      assertEquals(List.of(new BundleDelimiter()), play.packets());
+      ch.finishAndReleaseAll();
+    }
+
+    /** A backend connection: clientbound decoder, serverbound encoder, in CONFIGURATION. */
+    private static EmbeddedChannel backendChannel(SynchronousPeer peer) {
+      EmbeddedChannel ch =
+          new EmbeddedChannel(
+              peer,
+              new MinecraftDecoder(
+                  PacketDirection.CLIENTBOUND, VERSION, ProtocolState.CONFIGURATION),
+              new MinecraftEncoder(
+                  PacketDirection.SERVERBOUND, VERSION, ProtocolState.CONFIGURATION));
+      ch.pipeline().addLast(new MinecraftConnection(ch));
+      return ch;
+    }
+
+    /** The packets, encoded clientbound in {@code state}, each in its frame (uncompressed). */
+    private static List<ByteBuf> encode(ProtocolState state, Packet... packets) {
+      EmbeddedChannel encoder =
+          new EmbeddedChannel(new MinecraftEncoder(PacketDirection.CLIENTBOUND, VERSION, state));
+      List<ByteBuf> encoded = new ArrayList<>();
+      for (Packet packet : packets) {
+        encoder.writeOutbound(packet);
+        ByteBuf body = encoder.readOutbound();
+        ByteBuf frame = Unpooled.buffer();
+        VarInt.write(frame, body.readableBytes());
+        frame.writeBytes(body);
+        body.release();
+        encoded.add(frame);
+      }
+      encoder.finishAndReleaseAll();
+      return encoded;
+    }
+
+    private static int nextPacketId(EmbeddedChannel ch) {
+      ByteBuf packet = ch.readOutbound();
+      assertNotNull(packet, "expected a packet");
+      try {
+        return VarInt.read(packet);
+      } finally {
+        packet.release();
+      }
+    }
+
+    private static int serverboundId(ProtocolState state, Class<? extends Packet> type) {
+      return StateRegistry.get(state, PacketDirection.SERVERBOUND).packetId(VERSION, type);
+    }
+  }
+
+  /**
+   * Plays a peer that answers the first packet written to it before the write returns, by passing
+   * {@code answers} up the pipeline; the packet itself goes on.
+   */
+  private static final class SynchronousPeer extends ChannelDuplexHandler {
+    private final List<String> events;
+    private final List<ByteBuf> answers;
+
+    SynchronousPeer(List<String> events, List<ByteBuf> answers) {
+      this.events = events;
+      this.answers = new ArrayList<>(answers);
+    }
+
+    @Override
+    public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+      if (events.isEmpty()) {
+        events.add("acknowledgement written");
+        for (ByteBuf answer : answers) {
+          ctx.fireChannelRead(answer);
+        }
+        answers.clear();
+      }
+      ctx.write(msg, promise);
+    }
+  }
+
+  /** A session handler that records when it is activated and what it handles, in order. */
+  private static final class OrderedHandler implements SessionHandler {
+    private final List<String> events;
+    private final MinecraftConnection connection;
+    private final List<Packet> packets = new ArrayList<>();
+    private @Nullable Packet writeOnActivation;
+
+    OrderedHandler(List<String> events, MinecraftConnection connection) {
+      this.events = events;
+      this.connection = connection;
+    }
+
+    @Override
+    public void activated() {
+      events.add("activated");
+      if (writeOnActivation != null) {
+        connection.writeAndFlush(writeOnActivation);
+      }
+    }
+
+    @Override
+    public void handle(Packet packet) {
+      events.add("handled " + packet.getClass().getSimpleName());
+      packets.add(packet);
     }
   }
 

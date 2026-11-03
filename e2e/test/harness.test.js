@@ -242,6 +242,17 @@ describe('scenario features', () => {
     assert.equal(features(769, { direct: true }).drain, 'no proxy in a control run');
   });
 
+  it('drains by transfer when the bot can be transferred, whatever version its server runs', () => {
+    assert.equal(features(766).drainTransfers, true);
+    assert.equal(features(765).drainTransfers, 'no Transfer packet before 1.20.5');
+    // A 1.21.4 bot that Warp translates for 1.20.1 servers: Warp transfers it, the lobby could not.
+    assert.equal(features(763, { client: 769 }).drainTransfers, true);
+    assert.equal(features(763, { client: 769 }).transfers, 'no Transfer packet before 1.20.5');
+    assert.equal(features(763, { client: 765 }).drainTransfers, 'no Transfer packet before 1.20.5');
+    assert.equal(features(777, { bridged: true }).drainTransfers, 'through ViaProxy, Warp sees the bridge’s handshake, not the bot’s');
+    assert.equal(features(777, { direct: true }).drainTransfers, 'no proxy in a control run');
+  });
+
   it('signs chat from 1.20, whose servers take the keys that verify chat sessions from the mock', () => {
     assert.equal(features(47).signedChat, "before 1.20 a server trusts only Mojang's own key to verify chat");
     assert.notEqual(features(762).signedChat, true); // 1.19.4: Mojang's key is bundled in authlib
