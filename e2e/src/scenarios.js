@@ -158,8 +158,8 @@ export function checkServerList(component, current) {
   }
 }
 
-async function joinWarp(ctx, username, target = ctx.warp, profileKeys = null, transfer = false) {
-  return ctx.client.connect({ host: '127.0.0.1', port: target.port, username, profileKeys, transfer });
+async function joinWarp(ctx, username, target = ctx.warp, profileKeys = null, transfer = false, locale = null) {
+  return ctx.client.connect({ host: '127.0.0.1', port: target.port, username, profileKeys, transfer, locale });
 }
 
 /** Moves the bot to survival with Warp's /server, and waits until it plays there. */
@@ -687,26 +687,67 @@ async function waitForEmpty(ctx, port, timeoutMs = 10_000) {
   }
 }
 
+/**
+ * The players of `player-limit`, each in its language: what Warp answers it once it plays, and
+ * what refuses it at login when the server is full.
+ */
+export const LIMIT_PLAYERS = [
+  { name: 'e2e_limit_fr', locale: 'fr_FR', unknownServer: /^Serveur inconnu : nowhere\./, full: 'Le serveur est complet.' },
+  { name: 'e2e_limit_en', locale: 'en_US', unknownServer: /^Unknown server: nowhere\./, full: 'The server is full.' },
+];
+
+/** The first protocol whose client translates vanilla's server full key itself (1.13). */
+const SERVER_FULL_KEY_PROTOCOL = 393;
+
+/**
+ * Checks why a player of `player-limit` was refused: from 1.13 vanilla's key, which the client
+ * translates in its own language; before, Warp's text in the language the player last played in.
+ */
+export function checkFullReason(message, player, protocol) {
+  if (protocol >= SERVER_FULL_KEY_PROTOCOL) {
+    if (!message.includes('multiplayer.disconnect.server_full')) throw new Error(`${player.name} (${player.locale}) was not refused with vanilla's server full key: ${message}`);
+    return 'multiplayer.disconnect.server_full';
+  }
+  if (!message.includes(player.full)) throw new Error(`${player.name} (${player.locale}) was not told "${player.full}": ${message}`);
+  return player.full;
+}
+
 async function playerLimit(ctx) {
   // warp-alt lets one player in (player-limit = 1, shown as the maximum); the next one is refused.
   await waitForEmpty(ctx, ctx.warpAlt.port);
+  // Each player plays once, in its language: Warp answers it in that language, and remembers it
+  // for its next login, refused before its client says it again.
+  for (const player of LIMIT_PLAYERS) {
+    const bot = await joinWarp(ctx, player.name, ctx.warpAlt, null, false, player.locale);
+    try {
+      await bot.command('server nowhere', player.unknownServer);
+      bot.healthy();
+    } finally {
+      bot.quit();
+    }
+    await waitForEmpty(ctx, ctx.warpAlt.port);
+  }
   const first = await joinWarp(ctx, 'e2e_limit_in', ctx.warpAlt);
   try {
     const status = await ctx.client.ping({ host: '127.0.0.1', port: ctx.warpAlt.port });
     if (status?.players?.online !== 1 || status?.players?.max !== ALT_MAX_PLAYERS) {
       throw new Error(`warp-alt answers ${JSON.stringify(status?.players)} with one player in, for a limit of ${ALT_MAX_PLAYERS}`);
     }
-    const refused = await joinWarp(ctx, 'e2e_limit_out', ctx.warpAlt).then(
-      (bot) => {
-        bot.quit();
-        return null;
-      },
-      (e) => e,
-    );
-    if (refused === null) throw new Error(`a second player got in past player-limit = ${ALT_MAX_PLAYERS}`);
-    if (!/The server is full\./.test(refused.message)) throw new Error(`the second player was refused for another reason: ${refused.message}`);
+    const protocol = (ctx.clientEntry ?? ctx.entry).protocol;
+    const told = [];
+    for (const player of LIMIT_PLAYERS) {
+      const refused = await joinWarp(ctx, player.name, ctx.warpAlt, null, false, player.locale).then(
+        (bot) => {
+          bot.quit();
+          return null;
+        },
+        (e) => e,
+      );
+      if (refused === null) throw new Error(`${player.name} got in past player-limit = ${ALT_MAX_PLAYERS}`);
+      told.push(`${player.locale}: "${checkFullReason(refused.message, player, protocol)}"`);
+    }
     first.healthy();
-    return `one player in (the server list shows 1/${ALT_MAX_PLAYERS}), the next refused: "The server is full."`;
+    return `one player in (the server list shows 1/${ALT_MAX_PLAYERS}); /server answered in French and English; the next refused, ${told.join(', ')}`;
   } finally {
     first.quit();
   }

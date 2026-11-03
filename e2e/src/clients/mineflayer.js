@@ -271,7 +271,7 @@ export function library(version) {
  * With `transfer`, the bot connects as a client that a server sent there with a Transfer packet
  * (1.20.5+): its handshake declares the transfer intent (3) instead of the login one (2).
  */
-export function connect({ host, port, version, username, profileKeys = null, transfer = false, spawnTimeoutMs = 45_000 }) {
+export function connect({ host, port, version, username, profileKeys = null, transfer = false, locale = null, spawnTimeoutMs = 45_000 }) {
   correctProtocolData(version);
   const createBot = legacy.isLegacy(version) ? legacy.createBot : mineflayer.createBot;
   return new Promise((resolve, reject) => {
@@ -288,6 +288,7 @@ export function connect({ host, port, version, username, profileKeys = null, tra
     endTicks(bot._client, version);
     answerPacksByUuid(bot._client);
     if (transfer) declareTransfer(bot._client);
+    if (locale) announceLocale(bot._client, locale);
     const handle = new Bot(bot, username, announcedProtocol(version), profileKeys !== null);
     const fail = (why) => {
       clearTimeout(timer);
@@ -304,6 +305,15 @@ export function connect({ host, port, version, username, profileKeys = null, tra
     bot.once('end', (reason) => fail(`connection ended before spawn: ${reason}`));
     bot.once('error', (e) => fail(`error before spawn: ${e?.stack ?? e}`));
   });
+}
+
+/**
+ * Makes the client announce `locale` (such as `fr_FR`) in its client settings, in the play state
+ * or the configuration phase: mineflayer always announces `en_US`.
+ */
+export function announceLocale(client, locale) {
+  const write = client.write.bind(client);
+  client.write = (name, params) => write(name, typeof params?.locale === 'string' ? { ...params, locale } : params);
 }
 
 /** Handshake intent of a client a Transfer packet sent to the server it connects to (1.20.5+). */
