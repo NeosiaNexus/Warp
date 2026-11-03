@@ -234,9 +234,10 @@ public final class RemoteConsole {
    * @return such as {@code tokens ops [logs, commands]; commands from loopback only}
    */
   public String describe(boolean tls) {
-    List<String> tokens = new ArrayList<>();
-    for (Token token : config.tokens()) {
-      tokens.add(token.toString());
+    // Each holder's name and scopes (Token.toString), never a token's value.
+    List<String> holders = new ArrayList<>();
+    for (Token holder : config.tokens()) {
+      holders.add(holder.toString());
     }
     String commandsFrom;
     if (!config.runsCommands()) {
@@ -248,7 +249,7 @@ public final class RemoteConsole {
     } else {
       commandsFrom = "commands from loopback and " + config.trustedNetworks() + " only (no TLS)";
     }
-    return "tokens " + String.join(", ", tokens) + "; " + commandsFrom;
+    return "tokens " + String.join(", ", holders) + "; " + commandsFrom;
   }
 
   /**
