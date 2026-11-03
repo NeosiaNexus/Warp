@@ -94,6 +94,12 @@ public final class StatusLine {
     if (draining != null) {
       out.append(Style.MUTED, dot).append(Style.CAUTION, draining);
     }
+    // A focused console hides lines: the status line keeps saying so, until /log filter off.
+    ConsoleOutput output = ConsoleOutput.get();
+    String filter = output == null ? null : output.filter();
+    if (filter != null) {
+      out.append(Style.MUTED, dot).append(Style.CAUTION, "only " + filter);
+    }
     out.append(Style.MUTED, dot)
         .append(Style.NUMBER, Long.toString(snapshot.usedBytes() >> 20))
         .append(Style.MUTED, "/" + (snapshot.maxBytes() >> 20) + " MiB");

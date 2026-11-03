@@ -52,6 +52,7 @@ import org.jspecify.annotations.Nullable;
  *   <li>{@code /warp}: version and build, uptime, Java, players and servers, compression, memory,
  *       plugins, the drain when one runs
  *   <li>{@code /warp plugins}: every plugin, its version and state, why it failed on hover
+ *   <li>{@code /warp startup}: where the startup's time went, phase by phase and plugin by plugin
  *   <li>{@code /warp antibot ...}: see {@link AntiBotCommand}
  * </ul>
  */
@@ -217,6 +218,7 @@ final class WarpCommand {
     List<Component> links = new ArrayList<>();
     if (source.hasPermission(PERMISSION)) {
       links.add(subcommand("/warp plugins"));
+      links.add(subcommand("/warp startup"));
     }
     if (antiBot && source.hasPermission(AntiBotCommand.PERMISSION)) {
       links.add(subcommand("/warp antibot"));
