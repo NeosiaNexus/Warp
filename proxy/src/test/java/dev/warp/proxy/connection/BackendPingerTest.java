@@ -47,6 +47,7 @@ import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 @DisplayName("BackendPinger")
@@ -61,134 +62,160 @@ class BackendPingerTest {
     group.shutdownGracefully(0, 1, TimeUnit.SECONDS).awaitUninterruptibly();
   }
 
-  @Test
-  @DisplayName("should time out a server that accepts the connection and never answers")
-  void silentServer() throws IOException {
-    try (ServerSocket silent = listen()) {
-      Thread acceptor = Thread.ofVirtual().start(() -> acceptAndHold(silent));
-      long start = System.nanoTime();
+  @Nested
+  @DisplayName("when the ping fails")
+  class Failures {
 
-      ServerPingException failure = failure(pinger.ping(info(silent), Duration.ofMillis(300)));
+    @Test
+    @DisplayName("should time out a server that accepts the connection and never answers")
+    void silentServer() throws IOException {
+      try (ServerSocket silent = listen()) {
+        Thread acceptor = Thread.ofVirtual().start(() -> acceptAndHold(silent));
 
-      long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
-      assertEquals(ServerPingException.Reason.TIMED_OUT, failure.reason());
-      assertTrue(elapsedMs < 3_000, "the deadline covers the whole ping, took " + elapsedMs);
-      acceptor.interrupt();
-    }
-  }
+        ServerPingException failure = failure(pinger.ping(info(silent), Duration.ofMillis(300)));
 
-  @Test
-  @DisplayName("should report a refused connection as UNREACHABLE")
-  void refused() throws IOException {
-    ServerInfo closed;
-    try (ServerSocket socket = listen()) {
-      closed = info(socket);
+        // The ping's own deadline, not the connection's: it covers the whole ping.
+        assertEquals(ServerPingException.Reason.TIMED_OUT, failure.reason());
+        assertEquals(
+            "Ping of backend (" + info(silent).address() + ") failed: no answer within 300 ms",
+            failure.getMessage());
+        acceptor.interrupt();
+      }
     }
 
-    ServerPingException failure = failure(pinger.ping(closed, Duration.ofSeconds(5)));
+    @Test
+    @DisplayName("should report a refused connection as UNREACHABLE")
+    void refused() throws IOException {
+      ServerInfo closed;
+      try (ServerSocket socket = listen()) {
+        closed = info(socket);
+      }
 
-    assertEquals(ServerPingException.Reason.UNREACHABLE, failure.reason());
-    assertEquals(closed, failure.server());
-  }
-
-  @Test
-  @DisplayName("should report a server that closes without answering as CLOSED")
-  void closesWithoutAnswer() throws IOException {
-    try (ServerSocket socket = listen()) {
-      Thread.ofVirtual()
-          .start(
-              () -> {
-                try (Socket client = socket.accept()) {
-                  client.getInputStream().read();
-                } catch (IOException ignored) {
-                  // The test is over.
-                }
-              });
-
-      ServerPingException failure = failure(pinger.ping(info(socket), Duration.ofSeconds(5)));
-
-      assertEquals(ServerPingException.Reason.CLOSED, failure.reason());
-    }
-  }
-
-  @Test
-  @DisplayName("should report an answer that is no server list entry as INVALID_RESPONSE")
-  void invalidAnswer() throws IOException {
-    try (ServerSocket socket = listen()) {
-      Thread.ofVirtual().start(() -> answer(socket, "not json"));
-
-      ServerPingException failure = failure(pinger.ping(info(socket), Duration.ofSeconds(5)));
-
-      assertEquals(ServerPingException.Reason.INVALID_RESPONSE, failure.reason());
-    }
-  }
-
-  @Test
-  @DisplayName("should read the answer, completing off the event loop")
-  void answers() throws Exception {
-    try (ServerSocket socket = listen()) {
-      Thread.ofVirtual()
-          .start(
-              () ->
-                  answer(
-                      socket,
-                      "{\"version\":{\"name\":\"Paper 1.21.4\",\"protocol\":769},"
-                          + "\"players\":{\"online\":3,\"max\":100},\"description\":\"Lobby\"}"));
-      AtomicBoolean onVirtualThread = new AtomicBoolean();
-
-      ServerPing ping =
-          pinger
-              .ping(info(socket), Duration.ofSeconds(5))
-              .whenComplete((p, e) -> onVirtualThread.set(Thread.currentThread().isVirtual()))
-              .get(10, TimeUnit.SECONDS);
-
-      assertEquals(769, ping.version().protocol());
-      assertEquals(3, ping.playerInfo().orElseThrow().online());
-      assertTrue(onVirtualThread.get(), "a blocking callback must not stall an event loop");
-    }
-  }
-
-  @Test
-  @DisplayName("should fail at once, without hanging, once the event loops are shut down")
-  void shutDown() throws IOException {
-    group.shutdownGracefully(0, 0, TimeUnit.SECONDS).awaitUninterruptibly();
-    try (ServerSocket socket = listen()) {
-
-      ServerPingException failure = failure(pinger.ping(info(socket), Duration.ofSeconds(5)));
+      ServerPingException failure = failure(pinger.ping(closed, Duration.ofSeconds(5)));
 
       assertEquals(ServerPingException.Reason.UNREACHABLE, failure.reason());
+      assertEquals(closed, failure.server());
+    }
+
+    @Test
+    @DisplayName("should report a server that closes without answering as CLOSED")
+    void closesWithoutAnswer() throws IOException {
+      try (ServerSocket socket = listen()) {
+        Thread.ofVirtual()
+            .start(
+                () -> {
+                  try (Socket client = socket.accept()) {
+                    client.getInputStream().read();
+                  } catch (IOException ignored) {
+                    // The test is over.
+                  }
+                });
+
+        ServerPingException failure = failure(pinger.ping(info(socket), Duration.ofSeconds(5)));
+
+        assertEquals(ServerPingException.Reason.CLOSED, failure.reason());
+      }
+    }
+
+    @Test
+    @DisplayName("should report an answer that is no server list entry as INVALID_RESPONSE")
+    void invalidAnswer() throws IOException {
+      try (ServerSocket socket = listen()) {
+        var _ = answerWhenAsked(socket, "not json");
+
+        ServerPingException failure = failure(pinger.ping(info(socket), Duration.ofSeconds(5)));
+
+        assertEquals(ServerPingException.Reason.INVALID_RESPONSE, failure.reason());
+      }
+    }
+
+    @Test
+    @DisplayName("should fail at once, without hanging, once the event loops are shut down")
+    void shutDown() throws IOException {
+      group.shutdownGracefully(0, 0, TimeUnit.SECONDS).awaitUninterruptibly();
+      try (ServerSocket socket = listen()) {
+
+        ServerPingException failure = failure(pinger.ping(info(socket), Duration.ofSeconds(5)));
+
+        assertEquals(ServerPingException.Reason.UNREACHABLE, failure.reason());
+      }
     }
   }
 
-  @Test
-  @DisplayName("should announce the protocol asked for, -1 included, and read the server's own")
-  void announcesRequestedProtocol() throws Exception {
-    try (ServerSocket socket = listen()) {
-      CompletableFuture<Integer> announced = answerOnce(socket);
+  @Nested
+  @DisplayName("when the server answers")
+  class Answers {
 
-      ServerPing ping =
-          pinger.ping(info(socket), -1, Duration.ofSeconds(5)).get(10, TimeUnit.SECONDS);
+    @Test
+    @DisplayName("should read the answer, completing off the event loop")
+    void answers() throws Exception {
+      try (ServerSocket socket = listen()) {
+        var _ =
+            answerWhenAsked(
+                socket,
+                "{\"version\":{\"name\":\"Paper 1.21.4\",\"protocol\":769},"
+                    + "\"players\":{\"online\":3,\"max\":100},\"description\":\"Lobby\"}");
+        AtomicBoolean onVirtualThread = new AtomicBoolean();
 
-      assertEquals(-1, announced.get(10, TimeUnit.SECONDS));
-      assertEquals(769, ping.version().protocol());
+        ServerPing ping =
+            pinger
+                .ping(info(socket), Duration.ofSeconds(5))
+                .whenComplete((p, e) -> onVirtualThread.set(Thread.currentThread().isVirtual()))
+                .get(10, TimeUnit.SECONDS);
+
+        assertEquals(769, ping.version().protocol());
+        assertEquals(3, ping.playerInfo().orElseThrow().online());
+        assertTrue(onVirtualThread.get(), "a blocking callback must not stall an event loop");
+      }
     }
-  }
 
-  @Test
-  @DisplayName("should announce the newest protocol by default")
-  void announcesLatestByDefault() throws Exception {
-    try (ServerSocket socket = listen()) {
-      CompletableFuture<Integer> announced = answerOnce(socket);
+    @Test
+    @DisplayName("should read an answer the server sends before it is asked")
+    void answerBeforeTheRequest() throws Exception {
+      try (ServerSocket socket = listen()) {
+        Thread.ofVirtual().start(() -> answerUnasked(socket, STATUS));
 
-      var _ = pinger.ping(info(socket), Duration.ofSeconds(5)).get(10, TimeUnit.SECONDS);
+        ServerPing ping =
+            pinger.ping(info(socket), Duration.ofSeconds(5)).get(10, TimeUnit.SECONDS);
 
-      assertEquals(ProtocolVersion.latest().protocol(), announced.get(10, TimeUnit.SECONDS));
+        assertEquals(769, ping.version().protocol());
+      }
+    }
+
+    @Test
+    @DisplayName("should announce the protocol asked for, -1 included, and read the server's own")
+    void announcesRequestedProtocol() throws Exception {
+      try (ServerSocket socket = listen()) {
+        CompletableFuture<Integer> announced = answerWhenAsked(socket, STATUS);
+
+        ServerPing ping =
+            pinger.ping(info(socket), -1, Duration.ofSeconds(5)).get(10, TimeUnit.SECONDS);
+
+        assertEquals(-1, announced.get(10, TimeUnit.SECONDS));
+        assertEquals(769, ping.version().protocol());
+      }
+    }
+
+    @Test
+    @DisplayName("should announce the newest protocol by default")
+    void announcesLatestByDefault() throws Exception {
+      try (ServerSocket socket = listen()) {
+        CompletableFuture<Integer> announced = answerWhenAsked(socket, STATUS);
+
+        var _ = pinger.ping(info(socket), Duration.ofSeconds(5)).get(10, TimeUnit.SECONDS);
+
+        assertEquals(ProtocolVersion.latest().protocol(), announced.get(10, TimeUnit.SECONDS));
+      }
     }
   }
 
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  /** A server list entry of protocol 769. */
+  private static final String STATUS =
+      "{\"version\":{\"name\":\"1.21.4\",\"protocol\":769},\"description\":{\"text\":\"hi\"}}";
 
   private static ServerSocket listen() throws IOException {
     return new ServerSocket(0, 50, InetAddress.getLoopbackAddress());
@@ -213,24 +240,32 @@ class BackendPingerTest {
     }
   }
 
-  /** Accepts one ping and answers its status request with {@code json}, unchecked. */
-  private static void answer(ServerSocket socket, String json) {
+  /**
+   * Plays a server that answers before it is asked: on accepting the connection, it sends {@code
+   * json} as its status response, then reads until the pinger closes the connection.
+   */
+  private static void answerUnasked(ServerSocket socket, String json) {
     try (Socket client = socket.accept()) {
-      byte[] text = json.getBytes(StandardCharsets.UTF_8);
-      ByteArrayOutputStream body = new ByteArrayOutputStream();
-      body.write(0x00); // Status Response
-      writeVarInt(body, text.length);
-      body.write(text);
       OutputStream out = client.getOutputStream();
-      ByteArrayOutputStream frame = new ByteArrayOutputStream();
-      writeVarInt(frame, body.size());
-      body.writeTo(frame);
-      out.write(frame.toByteArray());
+      out.write(statusResponse(json));
       out.flush();
       client.getInputStream().readAllBytes();
     } catch (IOException ignored) {
       // The pinger closed the connection once answered.
     }
+  }
+
+  /** The frame of a status response carrying {@code json}, unchecked. */
+  private static byte[] statusResponse(String json) {
+    byte[] text = json.getBytes(StandardCharsets.UTF_8);
+    ByteArrayOutputStream body = new ByteArrayOutputStream();
+    writeVarInt(body, 0); // Status Response
+    writeVarInt(body, text.length);
+    body.write(text, 0, text.length);
+    ByteArrayOutputStream frame = new ByteArrayOutputStream();
+    writeVarInt(frame, body.size());
+    frame.write(body.toByteArray(), 0, body.size());
+    return frame.toByteArray();
   }
 
   private static void writeVarInt(ByteArrayOutputStream out, int value) {
@@ -242,8 +277,12 @@ class BackendPingerTest {
     out.write(remaining);
   }
 
-  /** Plays a server answering one status ping; completes with the protocol of its handshake. */
-  private static CompletableFuture<Integer> answerOnce(ServerSocket socket) {
+  /**
+   * Plays a server answering one status ping as servers do: once it has read the handshake and the
+   * status request, it answers with {@code json}, unchecked, then reads until the pinger closes the
+   * connection. Completes with the protocol the handshake announced.
+   */
+  private static CompletableFuture<Integer> answerWhenAsked(ServerSocket socket, String json) {
     CompletableFuture<Integer> announced = new CompletableFuture<>();
     Thread.ofVirtual()
         .start(
@@ -252,25 +291,15 @@ class BackendPingerTest {
                   DataInputStream in = new DataInputStream(client.getInputStream())) {
                 readVarInt(in); // handshake frame length
                 readVarInt(in); // packet id 0
-                announced.complete(readVarInt(in));
+                int protocol = readVarInt(in);
                 in.readFully(new byte[readVarInt(in)]); // host
                 in.readUnsignedShort(); // port
                 readVarInt(in); // intent
                 readVarInt(in); // status request frame length
                 readVarInt(in); // packet id 0
-                ByteArrayOutputStream body = new ByteArrayOutputStream();
-                byte[] json =
-                    ("{\"version\":{\"name\":\"1.21.4\",\"protocol\":769},"
-                            + "\"description\":{\"text\":\"hi\"}}")
-                        .getBytes(StandardCharsets.UTF_8);
-                writeVarInt(body, 0);
-                writeVarInt(body, json.length);
-                body.write(json);
-                ByteArrayOutputStream frame = new ByteArrayOutputStream();
-                writeVarInt(frame, body.size());
-                body.writeTo(frame);
+                announced.complete(protocol);
                 OutputStream out = client.getOutputStream();
-                out.write(frame.toByteArray());
+                out.write(statusResponse(json));
                 out.flush();
                 // Wait for the pinger to close the connection.
                 while (in.read() >= 0) {

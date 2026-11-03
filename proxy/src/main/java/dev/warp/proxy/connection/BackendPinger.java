@@ -131,6 +131,9 @@ public final class BackendPinger implements ServerPinger {
             .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, (int) timeoutMillis)
             .option(ChannelOption.TCP_NODELAY, true)
             .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
+            // Nothing is read before the session handler is in place (below): the connection may
+            // be up, and the server's first bytes in, before the listener that installs it runs.
+            .option(ChannelOption.AUTO_READ, false)
             .handler(
                 new ChannelInitializer<>() {
                   @Override
@@ -196,6 +199,7 @@ public final class BackendPinger implements ServerPinger {
                   channel
                       .closeFuture()
                       .addListener(_ -> outcome.completeExceptionally(closed(server, null)));
+              channel.config().setAutoRead(true);
             });
     // Callbacks of the caller never run on the event loop.
     CompletableFuture<ServerPing> result = new CompletableFuture<>();
