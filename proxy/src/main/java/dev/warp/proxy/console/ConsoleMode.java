@@ -22,6 +22,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.function.UnaryOperator;
 
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.ansi.ANSIComponentSerializer;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -102,6 +105,12 @@ public record ConsoleMode(
   public static final String THEME_PROPERTY = "warp.console.theme";
 
   /**
+   * The system property that, set to {@code false}, links no file paths: the remote console's
+   * client sets it, since the paths in a remote proxy's lines name files of the proxy's machine.
+   */
+  public static final String FILE_LINKS_PROPERTY = "warp.console.file-links";
+
+  /**
    * Creates a mode in the dark theme, without links.
    *
    * @param colors the colours of the output
@@ -169,6 +178,24 @@ public record ConsoleMode(
    */
   Palette palette() {
     return Palette.of(colors, theme, hyperlinks);
+  }
+
+  /**
+   * Renders a component as the console writes a command's reply: in colour, its colours adjusted to
+   * read on the theme's background, or as plain text on an output without colours.
+   *
+   * @param component the component
+   * @return the text to write
+   */
+  public String render(Component component) {
+    Palette palette = palette();
+    if (!palette.colored()) {
+      return PlainTextComponentSerializer.plainText().serialize(component);
+    }
+    return ANSIComponentSerializer.builder()
+        .colorLevel(palette.depth().adventureLevel())
+        .build()
+        .serialize(LineFormatter.readable(component, palette.theme()));
   }
 
   /** Plain text without cursor tricks: for tests, and whenever nothing better is known. */

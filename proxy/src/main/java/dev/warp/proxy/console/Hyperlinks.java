@@ -56,6 +56,10 @@ final class Hyperlinks {
 
   private static final Path WORKING_DIRECTORY = Path.of("").toAbsolutePath();
 
+  /** Whether file paths are linked: not at the remote console's client. */
+  private static final boolean FILE_LINKS =
+      !"false".equalsIgnoreCase(System.getProperty(ConsoleMode.FILE_LINKS_PROPERTY));
+
   private static final String HOST = host();
 
   private Hyperlinks() {}
@@ -105,7 +109,7 @@ final class Hyperlinks {
         found = url;
         uri = url.length() > "https://".length() ? url : null;
       } else {
-        uri = fileUri(found);
+        uri = FILE_LINKS ? fileUri(found) : null;
       }
       if (uri == null) {
         continue;

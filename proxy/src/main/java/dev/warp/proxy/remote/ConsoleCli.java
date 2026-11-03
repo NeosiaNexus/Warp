@@ -42,7 +42,6 @@ import javax.net.ssl.SSLContext;
 
 import com.google.gson.JsonElement;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.serializer.ansi.ANSIComponentSerializer;
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
 import org.jspecify.annotations.Nullable;
 
@@ -144,6 +143,10 @@ public final class ConsoleCli {
     if (System.getProperty("log4j2.configurationFile") == null) {
       System.setProperty("log4j2.configurationFile", LOG_CONFIGURATION);
     }
+    // A path in a proxy's line names a file of the proxy's machine: never linked here.
+    if (System.getProperty(ConsoleMode.FILE_LINKS_PROPERTY) == null) {
+      System.setProperty(ConsoleMode.FILE_LINKS_PROPERTY, "false");
+    }
     PrintStream err = System.err;
     List<String> list = List.of(args);
     if (list.isEmpty() || list.contains("--help") || list.contains("-h")) {
@@ -206,11 +209,11 @@ public final class ConsoleCli {
       System.err.println("warp console: " + target.target().name() + ": " + answer.error());
       return answer.status() == 400 ? USAGE : REFUSED;
     }
-    boolean colors = ConsoleMode.detect().colors().colored();
+    ConsoleMode mode = ConsoleMode.detect();
     JsonElement output = answer.body().get("output");
     if (output != null && output.isJsonArray()) {
       for (JsonElement line : output.getAsJsonArray()) {
-        System.out.println(render(line, colors));
+        System.out.println(render(line, mode));
       }
     }
     JsonElement error = answer.body().get("error");
@@ -222,15 +225,16 @@ public final class ConsoleCli {
     return found != null && found.isJsonPrimitive() && !found.getAsBoolean() ? COMMAND_FAILED : OK;
   }
 
-  private static String render(JsonElement line, boolean colors) {
+  /** A line of a command's answer, in the console's theme (WARP_THEME) when it has colours. */
+  private static String render(JsonElement line, ConsoleMode mode) {
     if (!line.isJsonObject()) {
       return "";
     }
     JsonElement component = line.getAsJsonObject().get("component");
-    if (colors && component != null && component.isJsonObject()) {
+    if (mode.colors().colored() && component != null && component.isJsonObject()) {
       try {
         Component parsed = GsonComponentSerializer.gson().deserializeFromTree(component);
-        return ANSIComponentSerializer.ansi().serialize(parsed);
+        return mode.render(parsed);
       } catch (RuntimeException e) {
         // Its text, then.
       }

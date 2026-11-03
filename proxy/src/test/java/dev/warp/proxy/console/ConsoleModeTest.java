@@ -26,6 +26,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -248,6 +250,23 @@ class ConsoleModeTest {
       // then
       assertEquals(Theme.DARK, theme);
       assertTrue(mode.probeBackground());
+    }
+
+    @Test
+    @DisplayName("renders a reply in its colours, readable on its background, or as plain text")
+    void rendersReplies() {
+      // given: aqua, as Minecraft's chat has it, washed out on a white terminal
+      ConsoleMode light = detect(false, "WARP_COLOR", "truecolor", "WARP_THEME", "light");
+      Component reply = Component.text("ready", NamedTextColor.AQUA);
+
+      // when
+      String colored = light.render(reply);
+      String plain = ConsoleMode.PLAIN.render(reply);
+
+      // then
+      assertEquals("ready", plain);
+      assertTrue(colored.contains("ready") && colored.contains("\u001B["), colored);
+      assertFalse(colored.contains("38;2;85;255;255"), colored);
     }
 
     @Test
