@@ -100,6 +100,7 @@ public class ConsoleLogBenchmark {
   private ConsoleOutput output;
   private LoggerContext context;
   private Logger logger;
+  private Logger baseline;
   private InetSocketAddress address;
 
   /** Builds the formatters, and a logging setup whose console writes to nowhere. */
@@ -131,6 +132,7 @@ public class ConsoleLogBenchmark {
     ConfigurationBuilder<BuiltConfiguration> builder =
         ConfigurationBuilderFactory.newConfigurationBuilder();
     builder.add(builder.newAsyncLogger("bench", Level.INFO).addAttribute("additivity", false));
+    builder.add(builder.newAsyncLogger("baseline", Level.INFO).addAttribute("additivity", false));
     builder.add(builder.newRootLogger(Level.WARN));
     context = Configurator.initialize(builder.build());
     Configuration configuration = context.getConfiguration();
@@ -144,8 +146,17 @@ public class ConsoleLogBenchmark {
     console.start();
     configuration.addAppender(console);
     configuration.getLoggerConfig("bench").addAppender(console, null, null);
+    AbstractAppender nothing =
+        new AbstractAppender("nothing", null, null, true, Property.EMPTY_ARRAY) {
+          @Override
+          public void append(LogEvent logEvent) {}
+        };
+    nothing.start();
+    configuration.addAppender(nothing);
+    configuration.getLoggerConfig("baseline").addAppender(nothing, null, null);
     context.updateLoggers();
     logger = context.getLogger("bench");
+    baseline = context.getLogger("baseline");
   }
 
   /** Stops the logging setup. */
@@ -169,6 +180,16 @@ public class ConsoleLogBenchmark {
   @Benchmark
   public void logCallPaced() {
     logger.info("{} switched to {} from {} in {} ms", "Steve", "survival", address, 42);
+    Blackhole.consumeCPU(PACING_TOKENS);
+  }
+
+  /**
+   * {@link #logCallPaced} through a logger whose appender does nothing: what the calling thread
+   * pays without the console, for comparison.
+   */
+  @Benchmark
+  public void logCallPacedWithoutConsole() {
+    baseline.info("{} switched to {} from {} in {} ms", "Steve", "survival", address, 42);
     Blackhole.consumeCPU(PACING_TOKENS);
   }
 
