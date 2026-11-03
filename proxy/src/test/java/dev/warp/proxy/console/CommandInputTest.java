@@ -214,7 +214,8 @@ class CommandInputTest {
   class Completion {
 
     private final CommandLineSupport support =
-        new CommandLineSupport(commands, source, ColorDepth.TRUE_COLOR);
+        new CommandLineSupport(
+            commands, source, Palette.of(ColorDepth.TRUE_COLOR, Theme.DARK, false));
 
     @Test
     @DisplayName("offers the dispatcher's suggestions with their tooltips")
@@ -241,8 +242,12 @@ class CommandInputTest {
       AttributedString line = support.render("send Steve", analyse("send Steve"));
 
       assertEquals("send Steve", line.toString());
-      assertEquals(Style.ACCENT.jline(ColorDepth.TRUE_COLOR), line.styleAt(0));
-      assertEquals(Style.ARGUMENT.jline(ColorDepth.TRUE_COLOR), line.styleAt(5));
+      assertEquals(
+          Palette.of(ColorDepth.TRUE_COLOR, Theme.DARK, false).jline(Style.ACCENT),
+          line.styleAt(0));
+      assertEquals(
+          Palette.of(ColorDepth.TRUE_COLOR, Theme.DARK, false).jline(Style.ARGUMENT),
+          line.styleAt(5));
     }
   }
 

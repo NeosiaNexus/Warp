@@ -34,6 +34,7 @@ import dev.warp.api.plugin.WarpPlugin;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.console.SourceTags;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.logging.LogSinkRegistry;
 import dev.warp.proxy.logging.Plural;
 import dev.warp.proxy.management.ReadinessHolds;
@@ -45,7 +46,9 @@ import java.io.IOException;
 import java.net.MalformedURLException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -83,6 +86,9 @@ public final class WarpPluginManager implements PluginManager {
 
   /** Every plugin found, in load order (plugins that cannot load at the end). */
   private volatile List<WarpPluginContainer> plugins = List.of();
+
+  /** How long each plugin took to load and enable, in nanoseconds, in load order. */
+  private volatile Map<String, Long> loadNanos = Map.of();
 
   /**
    * Creates a manager for a plugins directory.
@@ -124,6 +130,15 @@ public final class WarpPluginManager implements PluginManager {
   // Lifecycle
   // ---------------------------------------------------------------------------
 
+  /**
+   * Returns how long each plugin took to load and enable, for the startup's breakdown.
+   *
+   * @return nanoseconds by plugin id, in load order
+   */
+  public Map<String, Long> loadNanos() {
+    return loadNanos;
+  }
+
   /** Finds, constructs and enables every plugin. Called once, before the proxy accepts players. */
   public void loadAll() {
     List<PluginCandidate> candidates = PluginDiscovery.discover(directory);
@@ -142,15 +157,20 @@ public final class WarpPluginManager implements PluginManager {
       if (reason != null) {
         WarpPluginContainer container = container(candidate);
         container.failed(new PluginLoadException(reason));
-        logger.error("Plugin {} cannot load: {}", container, reason);
+        logger.error(
+            LogCode.PLUGIN_CANNOT_LOAD.marker(), "Plugin {} cannot load: {}", container, reason);
         containers.add(container);
       }
     }
     this.plugins = List.copyOf(containers);
 
+    Map<String, Long> times = new LinkedHashMap<>();
     for (WarpPluginContainer container : loadOrder) {
+      long start = System.nanoTime();
       load(container, byId);
+      times.put(container.description().id(), System.nanoTime() - start);
     }
+    this.loadNanos = Collections.unmodifiableMap(times);
 
     long enabled = containers.stream().filter(c -> c.state() == PluginState.ENABLED).count();
     if (!containers.isEmpty()) {
@@ -177,7 +197,11 @@ public final class WarpPluginManager implements PluginManager {
         try {
           withContextLoader(loader, plugin::disable);
         } catch (Throwable t) {
-          logger.error("Plugin {} failed to disable cleanly", container, t);
+          logger.error(
+              LogCode.PLUGIN_DISABLE_FAILED.marker(),
+              "Plugin {} failed to disable cleanly",
+              container,
+              t);
         }
       }
       WarpPluginContext context = container.context();
@@ -355,14 +379,20 @@ public final class WarpPluginManager implements PluginManager {
     close(container);
     switch (cause) {
       case PluginLoadException e ->
-          logger.error("Plugin {} cannot load: {}", container, e.getMessage());
+          logger.error(
+              LogCode.PLUGIN_CANNOT_LOAD.marker(),
+              "Plugin {} cannot load: {}",
+              container,
+              e.getMessage());
       case ClassNotFoundException e ->
           logger.error(
+              LogCode.PLUGIN_MAIN_CLASS_MISSING.marker(),
               "Plugin {} cannot load: its main class {} is not in its jar",
               container,
               e.getMessage());
       case NoClassDefFoundError e ->
           logger.error(
+              LogCode.PLUGIN_CLASS_NOT_VISIBLE.marker(),
               "Plugin {} cannot load: it uses class {}, which it cannot see. A plugin sees the Warp"
                   + " API, Adventure, SLF4J, its own jar and the plugins it depends on: shade the"
                   + " libraries it needs into its jar, or declare the plugin that provides them as"
@@ -376,7 +406,9 @@ public final class WarpPluginManager implements PluginManager {
                       + " capability in @Plugin: the plugin then sees the proxy's Netty"
                   : "",
               e);
-      default -> logger.error("Plugin {} failed to load", container, cause);
+      default ->
+          logger.error(
+              LogCode.PLUGIN_LOAD_FAILED.marker(), "Plugin {} failed to load", container, cause);
     }
   }
 

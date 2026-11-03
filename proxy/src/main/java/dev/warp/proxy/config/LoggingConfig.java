@@ -18,6 +18,10 @@ package dev.warp.proxy.config;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.function.UnaryOperator;
 
 import org.jspecify.annotations.Nullable;
@@ -26,8 +30,9 @@ import org.spongepowered.configurate.ConfigurationNode;
 import org.spongepowered.configurate.hocon.HoconConfigurationLoader;
 
 /**
- * The {@code logging} section of {@code warp.conf}: the format of the log lines, and which routine
- * events get a line each.
+ * The {@code logging} section of {@code warp.conf}: the format of the log lines, which routine
+ * events get a line each, and the levels of log sources kept across restarts. Also reads {@code
+ * console.theme}, which logging needs before the rest of the configuration.
  *
  * @param format how log lines are written to standard output
  * @param connections whether players logging in, leaving and moving between servers are logged
@@ -36,19 +41,48 @@ import org.spongepowered.configurate.hocon.HoconConfigurationLoader;
  *     by default there too)
  * @param commands whether each command a player sends is logged (Velocity's {@code
  *     log-command-executions}, off by default there too)
+ * @param levels the level of each log source (a console tag such as {@code antibot}, or a logger
+ *     name), in the order of the file: {@code logging.levels}
  */
 public record LoggingConfig(
-    LogFormat format, boolean connections, boolean pings, boolean commands) {
+    LogFormat format,
+    boolean connections,
+    boolean pings,
+    boolean commands,
+    Map<String, String> levels) {
 
   /** The environment variable that sets the format, ahead of {@code logging.format}. */
   public static final String ENV_FORMAT = "WARP_LOG_FORMAT";
+
+  /** The levels {@code logging.levels} takes. */
+  public static final List<String> LEVELS = List.of("error", "warn", "info", "debug", "trace");
+
+  /** The themes {@code console.theme} takes. */
+  public static final List<String> THEMES = List.of("auto", "dark", "light", "colorblind");
 
   /** The settings of a {@code warp.conf} without {@code logging} section. */
   public static final LoggingConfig DEFAULTS =
       new LoggingConfig(LogFormat.TEXT, true, false, false);
 
+  /** Copies the levels, so that the record stays immutable. */
+  public LoggingConfig {
+    levels = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(levels));
+  }
+
   /**
-   * Reads the section.
+   * Creates the section without levels.
+   *
+   * @param format how log lines are written to standard output
+   * @param connections whether connections are logged
+   * @param pings whether pings are logged
+   * @param commands whether players' commands are logged
+   */
+  public LoggingConfig(LogFormat format, boolean connections, boolean pings, boolean commands) {
+    this(format, connections, pings, commands, Map.of());
+  }
+
+  /**
+   * Reads the section, and checks {@code console.theme}.
    *
    * @param root the configuration's root node
    * @param env reads an environment variable, {@code null} when unset
@@ -69,11 +103,50 @@ public record LoggingConfig(
             : LogFormat.parse(
                 WarpConfig.stringValue(node.node("format"), DEFAULTS.format().configName()),
                 "logging.format");
+    Map<String, String> levels = new LinkedHashMap<>();
+    CommentedConfigurationNode levelsNode = node.node("levels");
+    if (!levelsNode.virtual() && !levelsNode.isMap()) {
+      throw new ConfigurationException(
+          "logging.levels must be a block, for example levels { antibot = debug }");
+    }
+    readLevels(levelsNode, "", levels);
+    CommentedConfigurationNode console = root.node("console");
+    if (!console.virtual() && !console.isMap()) {
+      throw new ConfigurationException(
+          "console must be a block, for example console { theme = light }");
+    }
+    String theme = WarpConfig.stringValue(console.node("theme"), "auto");
+    if (!THEMES.contains(theme.strip().toLowerCase(Locale.ROOT))) {
+      throw ConfigurationException.invalid("console.theme", String.join(", ", THEMES), theme);
+    }
     return new LoggingConfig(
         format,
         WarpConfig.booleanValue(node.node("connections"), DEFAULTS.connections()),
         WarpConfig.booleanValue(node.node("pings"), DEFAULTS.pings()),
-        WarpConfig.booleanValue(node.node("commands"), DEFAULTS.commands()));
+        WarpConfig.booleanValue(node.node("commands"), DEFAULTS.commands()),
+        levels);
+  }
+
+  /**
+   * Reads {@code logging.levels}, where an unquoted logger name ({@code dev.warp.proxy = debug})
+   * nests blocks: their keys join back into the name.
+   */
+  private static void readLevels(ConfigurationNode node, String prefix, Map<String, String> levels)
+      throws ConfigurationException {
+    for (Map.Entry<Object, ? extends ConfigurationNode> child : node.childrenMap().entrySet()) {
+      String name = prefix + child.getKey();
+      ConfigurationNode value = child.getValue();
+      if (value.isMap()) {
+        readLevels(value, name + ".", levels);
+        continue;
+      }
+      String level = WarpConfig.stringValue(value, "");
+      if (!LEVELS.contains(level.strip().toLowerCase(Locale.ROOT))) {
+        throw ConfigurationException.invalid(
+            "logging.levels." + name, String.join(", ", LEVELS), level);
+      }
+      levels.put(name, level.strip().toLowerCase(Locale.ROOT));
+    }
   }
 
   /**
@@ -92,16 +165,37 @@ public record LoggingConfig(
       if (fromEnv != null && !fromEnv.isBlank()) {
         return LogFormat.parse(fromEnv, ENV_FORMAT);
       }
-      Path file = directory.resolve(WarpConfig.CONFIG_FILE);
-      if (!Files.isRegularFile(file)) {
-        return DEFAULTS.format();
-      }
-      ConfigurationNode value =
-          HoconConfigurationLoader.builder().path(file).build().load().node("logging", "format");
-      String text = value.virtual() || value.isMap() || value.isList() ? null : value.getString();
+      String text = readEarly(directory, "logging", "format");
       return text == null ? DEFAULTS.format() : LogFormat.parse(text, "logging.format");
     } catch (Exception e) {
       return DEFAULTS.format();
     }
+  }
+
+  /**
+   * Reads {@code console.theme} before logging starts, so that the banner already has the colours
+   * of the theme. Never throws and logs nothing: the configuration's full load reports an invalid
+   * value.
+   *
+   * @param directory the proxy's working directory
+   * @return the theme as written, or {@code null} when unset or unreadable
+   */
+  public static @Nullable String selectTheme(Path directory) {
+    try {
+      return readEarly(directory, "console", "theme");
+    } catch (Exception e) {
+      return null;
+    }
+  }
+
+  /** Reads one value of {@code warp.conf}, or {@code null} when it has none. */
+  private static @Nullable String readEarly(Path directory, String... path) throws Exception {
+    Path file = directory.resolve(WarpConfig.CONFIG_FILE);
+    if (!Files.isRegularFile(file)) {
+      return null;
+    }
+    ConfigurationNode value =
+        HoconConfigurationLoader.builder().path(file).build().load().node((Object[]) path);
+    return value.virtual() || value.isMap() || value.isList() ? null : value.getString();
   }
 }

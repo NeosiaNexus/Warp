@@ -26,5 +26,19 @@ import org.jspecify.annotations.Nullable;
  * @param text the text, possibly coloured, possibly several lines, without the final line feed
  * @param repeatKey the text without its time, to recognise a line repeating the previous one;
  *     {@code null} for lines never collapsed (stack traces, blocks, command replies)
+ * @param tag the source tag of a log line, which /log filter selects on; {@code null} for lines
+ *     without source
  */
-record ConsoleLine(Level level, String text, @Nullable String repeatKey) {}
+record ConsoleLine(Level level, String text, @Nullable String repeatKey, @Nullable String tag) {
+
+  /**
+   * Creates a line without source: a block, a command reply, a notice of the console.
+   *
+   * @param level the level
+   * @param text the text
+   * @param repeatKey the text without its time, or {@code null}
+   */
+  ConsoleLine(Level level, String text, @Nullable String repeatKey) {
+    this(level, text, repeatKey, null);
+  }
+}

@@ -18,6 +18,7 @@ package dev.warp.proxy.console;
 
 import dev.warp.api.command.CommandSource;
 import dev.warp.proxy.command.WarpCommandManager;
+import dev.warp.proxy.logging.LogCode;
 
 import java.io.BufferedReader;
 import java.io.IOError;
@@ -140,14 +141,16 @@ public final class WarpConsole implements AutoCloseable {
       lineReader = lineReader(terminal, output.mode());
     } catch (RuntimeException | IOError e) {
       logger.warn(
-          "The interactive console could not start ({}): reading plain lines", e.toString());
+          LogCode.CONSOLE_PROMPT_FAILED.marker(),
+          "The interactive console could not start ({}): reading plain lines",
+          e.toString());
       plain();
       return;
     }
     reader = lineReader;
     output.attach(lineReader);
     String prompt =
-        new Styled(output.mode().colors(), Glyphs.of(output.mode().unicode()))
+        new Styled(output.mode().palette(), Glyphs.of(output.mode().unicode()))
             .append(Style.ACCENT, Glyphs.of(output.mode().unicode()).arrow())
             .append(' ')
             .toString();
@@ -171,7 +174,10 @@ public final class WarpConsole implements AutoCloseable {
     } catch (RuntimeException | IOError e) {
       // Velocity#882: a terminal error once shut the proxy down. Here it only ends the prompt.
       if (running) {
-        logger.warn("The console stopped reading commands: {}", e.toString());
+        logger.warn(
+            LogCode.CONSOLE_INPUT_STOPPED.marker(),
+            "The console stopped reading commands: {}",
+            e.toString());
       }
     } finally {
       output.detach();
@@ -181,7 +187,7 @@ public final class WarpConsole implements AutoCloseable {
   }
 
   private LineReader lineReader(Terminal terminal, ConsoleMode mode) {
-    CommandLineSupport support = new CommandLineSupport(commands, source, mode.colors());
+    CommandLineSupport support = new CommandLineSupport(commands, source, mode.palette());
     DefaultParser parser = new DefaultParser();
     // A quote or a backslash is text: no line ever waits for its closing quote.
     parser.setEscapeChars(null);
@@ -283,7 +289,8 @@ public final class WarpConsole implements AutoCloseable {
             .whenComplete(
                 (found, error) -> {
                   if (error != null) {
-                    logger.error("Command {} failed", command, error);
+                    logger.error(
+                        LogCode.COMMAND_FAILED.marker(), "Command {} failed", command, error);
                   } else if (!found) {
                     source.sendMessage(unknown(command));
                   }

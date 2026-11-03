@@ -131,6 +131,79 @@ class ConsoleOutputTest {
       return bytes.toString(StandardCharsets.UTF_8).lines().toList();
     }
 
+    private LogEvent event(String logger, Level level, String message) {
+      return Log4jLogEvent.newBuilder()
+          .setLoggerName(logger)
+          .setLevel(level)
+          .setMessage(new SimpleMessage(message))
+          .setTimeMillis(0)
+          .build();
+    }
+
+    @Test
+    @DisplayName("shows only the filtered source, and errors from any, while a filter is on")
+    void filters() {
+      // given
+      ConsoleOutput output = output();
+      output.filter("antibot");
+
+      // when
+      output.submit(event("dev.warp.proxy.antibot.AttackDetector", Level.INFO, "attack over"));
+      output.submit(event("dev.warp.proxy.connection.X", Level.INFO, "Steve joined"));
+      output.submit(event("dev.warp.proxy.drain.Y", Level.ERROR, "drain step failed"));
+      output.filter(null);
+      output.submit(event("dev.warp.proxy.connection.X", Level.INFO, "Alex joined"));
+      output.close();
+
+      // then
+      String text = String.join("\n", written());
+      assertTrue(text.contains("attack over"));
+      assertFalse(text.contains("Steve joined"), text);
+      assertTrue(text.contains("drain step failed"));
+      assertTrue(text.contains("Alex joined"));
+    }
+
+    @Test
+    @DisplayName("replays the last lines, hidden ones included, between two rules")
+    void replays() {
+      // given
+      ConsoleOutput output = output();
+      output.filter("antibot");
+      output.submit(event("dev.warp.proxy.connection.X", Level.INFO, "Steve joined"));
+      output.submit(event("dev.warp.proxy.connection.X", Level.INFO, "Alex joined"));
+      output.filter(null);
+
+      // when
+      int replayed = output.replay(2);
+      output.close();
+
+      // then
+      assertEquals(2, replayed);
+      List<String> lines = written();
+      assertEquals(4, lines.size(), String.join("\n", lines));
+      assertTrue(lines.get(0).contains("last 2 lines"));
+      assertTrue(lines.get(1).endsWith("Steve joined"));
+      assertTrue(lines.get(2).endsWith("Alex joined"));
+    }
+
+    @Test
+    @DisplayName("replays only what the current filter shows")
+    void replaysFiltered() {
+      // given
+      ConsoleOutput output = output();
+      output.submit(event("dev.warp.proxy.connection.X", Level.INFO, "Steve joined"));
+      output.submit(event("dev.warp.proxy.antibot.Z", Level.INFO, "calm"));
+      output.filter("antibot");
+
+      // when
+      int replayed = output.replay(10);
+      output.close();
+
+      // then
+      assertEquals(1, replayed);
+      assertTrue(String.join("\n", written()).contains("last line"));
+    }
+
     @Test
     @DisplayName("writes every line queued before it closes")
     void drains() {

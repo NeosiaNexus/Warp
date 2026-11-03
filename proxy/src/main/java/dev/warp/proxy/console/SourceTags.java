@@ -16,7 +16,12 @@
  */
 package dev.warp.proxy.console;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
+import java.util.SortedSet;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -102,6 +107,90 @@ public final class SourceTags {
       }
     }
     return false;
+  }
+
+  /**
+   * Returns the loggers a tag stands for, to change their level: the package of a tag of the proxy
+   * ({@code conn} is {@code dev.warp.proxy.connection}), a library's package, a plugin's logger and
+   * its classes' package, the classes of the proxy's own package for {@code warp}; a name with a
+   * dot is a logger name itself.
+   *
+   * @param target a tag or a logger name
+   * @param existing the names of the loggers that exist, for the tags that cover several
+   * @return the logger names, empty when the tag stands for nothing known
+   */
+  public static List<String> loggersOf(String target, Collection<String> existing) {
+    String tag = target.strip();
+    List<String> names = new ArrayList<>();
+    if (tag.startsWith("plugin:")) {
+      String id = tag.substring("plugin:".length());
+      if (!id.isEmpty()) {
+        names.add(id);
+        for (Map.Entry<String, String> plugin : PLUGIN_PACKAGES.entrySet()) {
+          if (plugin.getValue().equals(tag)) {
+            String prefix = plugin.getKey();
+            names.add(prefix.substring(0, prefix.length() - 1));
+          }
+        }
+      }
+      return names;
+    }
+    for (Map.Entry<String, String> library : LIBRARIES.entrySet()) {
+      if (library.getValue().equals(tag)) {
+        String prefix = library.getKey();
+        names.add(prefix.substring(0, prefix.length() - 1));
+      }
+    }
+    switch (tag) {
+      case "stdout", "stderr" -> names.add(tag.toUpperCase(java.util.Locale.ROOT));
+      case "protocol", "api" -> names.add(WARP + tag);
+      case "natives" -> names.add(WARP + "jni");
+      case "warp" -> {
+        for (String name : existing) {
+          if (name.startsWith(PROXY) && name.indexOf('.', PROXY.length()) < 0) {
+            names.add(name);
+          }
+        }
+      }
+      default -> {
+        if (!names.isEmpty()) {
+          return names;
+        }
+        if (tag.indexOf('.') >= 0) {
+          names.add(tag);
+          return names;
+        }
+        String pkg = tag;
+        for (Map.Entry<String, String> alias : PROXY_ALIASES.entrySet()) {
+          if (alias.getValue().equals(tag)) {
+            pkg = alias.getKey();
+          }
+        }
+        String prefix = PROXY + pkg + ".";
+        if (existing.stream().anyMatch(name -> name.startsWith(prefix))) {
+          names.add(PROXY + pkg);
+        }
+      }
+    }
+    return names;
+  }
+
+  /**
+   * Returns the tags of the loggers that exist, with those of the known libraries and plugins: the
+   * suggestions of {@code /log}.
+   *
+   * @param existing the names of the loggers that exist
+   * @return the tags, sorted
+   */
+  public static SortedSet<String> known(Collection<String> existing) {
+    SortedSet<String> tags = new TreeSet<>();
+    for (String name : existing) {
+      tags.add(of(name));
+    }
+    tags.addAll(LIBRARIES.values());
+    tags.addAll(PLUGIN_PACKAGES.values());
+    tags.remove("root");
+    return tags;
   }
 
   private static String compute(String name) {

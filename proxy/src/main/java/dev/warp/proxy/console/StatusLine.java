@@ -66,7 +66,7 @@ public final class StatusLine {
    */
   public static String render(Snapshot snapshot, ConsoleMode mode) {
     Glyphs glyphs = Glyphs.of(mode.unicode());
-    Styled out = new Styled(mode.colors(), glyphs);
+    Styled out = new Styled(mode.palette(), glyphs);
     String dot = " " + glyphs.dot() + " ";
     out.append(' ').append(snapshot.attack() ? Style.BAD : Style.GOOD, glyphs.up()).append(' ');
     out.append(Style.NUMBER, Integer.toString(snapshot.players()))

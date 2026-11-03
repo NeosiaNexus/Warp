@@ -46,7 +46,7 @@ final class CommandLineSupport implements Completer, Highlighter {
 
   private final WarpCommandManager commands;
   private final CommandSource source;
-  private final ColorDepth depth;
+  private final Palette palette;
 
   /** The line as it was when Tab listed its candidates, or {@code null}; the reader's thread. */
   private volatile @Nullable String listed;
@@ -56,12 +56,12 @@ final class CommandLineSupport implements Completer, Highlighter {
    *
    * @param commands the commands
    * @param source the console
-   * @param depth the colours of the terminal
+   * @param palette the colours of the terminal
    */
-  CommandLineSupport(WarpCommandManager commands, CommandSource source, ColorDepth depth) {
+  CommandLineSupport(WarpCommandManager commands, CommandSource source, Palette palette) {
     this.commands = commands;
     this.source = source;
-    this.depth = depth;
+    this.palette = palette;
   }
 
   @Override
@@ -148,7 +148,7 @@ final class CommandLineSupport implements Completer, Highlighter {
       int start = Math.clamp(span.start(), position, buffer.length());
       int end = Math.clamp(span.end(), start, buffer.length());
       out.append(buffer, position, start);
-      out.styled(span.style().jline(depth), buffer.substring(start, end));
+      out.styled(palette.jline(span.style()), buffer.substring(start, end));
       position = end;
     }
     out.append(buffer, position, buffer.length());

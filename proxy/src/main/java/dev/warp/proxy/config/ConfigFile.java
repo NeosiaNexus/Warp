@@ -57,7 +57,11 @@ final class ConfigFile {
    * Blocks whose keys the operator names, such as the servers: {@code *} stands for any name in
    * {@link #normalize}.
    */
-  private static final List<String> NAMED_BLOCKS = List.of("servers", "bungeecord-channel.allow");
+  private static final List<String> NAMED_BLOCKS =
+      List.of("servers", "bungeecord-channel.allow", "logging.levels");
+
+  /** Named blocks whose names may hold dots: a logger name such as dev.warp.proxy.antibot. */
+  private static final String DOTTED_NAMES = "logging.levels";
 
   private final Map<String, Entry> entries;
 
@@ -184,6 +188,9 @@ final class ConfigFile {
   static String normalize(String key) {
     for (String block : NAMED_BLOCKS) {
       if (key.startsWith(block + ".")) {
+        if (block.equals(DOTTED_NAMES)) {
+          return block + ".*";
+        }
         String rest = key.substring(block.length() + 1);
         int dot = rest.indexOf('.');
         return block + ".*" + (dot < 0 ? "" : rest.substring(dot));

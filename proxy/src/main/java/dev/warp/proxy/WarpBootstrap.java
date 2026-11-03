@@ -20,10 +20,15 @@ import dev.warp.proxy.config.ConfigurationException;
 import dev.warp.proxy.config.LogFormat;
 import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.config.WarpConfig;
+import dev.warp.proxy.console.ConsoleMode;
 import dev.warp.proxy.console.ConsoleOutput;
+import dev.warp.proxy.console.StartupTimings;
 import dev.warp.proxy.console.Summaries;
+import dev.warp.proxy.logging.LogCode;
 
+import java.lang.management.ManagementFactory;
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 import java.util.function.UnaryOperator;
 
 import org.apache.logging.log4j.Level;
@@ -50,6 +55,8 @@ public final class WarpBootstrap {
    * @param args command-line arguments (currently unused)
    */
   public static void main(String[] args) {
+    long jvmMillis = ManagementFactory.getRuntimeMXBean().getUptime();
+    long mainStart = System.nanoTime();
     // Before anything touches them: java.util.logging (JLine, some libraries) goes through Log4j,
     // rather than printing its own two-line records to standard error; System.console() is the
     // JDK's plain implementation, not its built-in JLine, which would compete with Warp's.
@@ -59,6 +66,10 @@ public final class WarpBootstrap {
     // Before the first logger: Log4j reads the format once, when it starts, so that every line has
     // the same format, the configuration's own included. Hence no static logger in this class.
     LogFormat format = selectLogFormat(directory, System::getenv);
+    String theme = LoggingConfig.selectTheme(directory);
+    if (theme != null) {
+      setDefault(ConsoleMode.THEME_PROPERTY, theme);
+    }
     Logger logger = LoggerFactory.getLogger(WarpBootstrap.class);
     captureStandardStreams(logger);
     // First, before the configuration and its warnings: the banner (in the log file, the line
@@ -70,19 +81,21 @@ public final class WarpBootstrap {
     ConsoleOutput console = ConsoleOutput.get();
     String consoleWarning = console == null ? null : console.mode().warning();
     if (consoleWarning != null) {
-      logger.warn(consoleWarning);
+      logger.warn(LogCode.CONSOLE_SETTING_INVALID.marker(), consoleWarning);
     }
 
+    long configStart = System.nanoTime();
     WarpConfig config;
     try {
       config = WarpConfig.load(directory);
     } catch (ConfigurationException e) {
-      logger.error(describe(e));
+      logger.error(LogCode.CONFIG_INVALID.marker(), describe(e));
       exit(StartupException.CONFIGURATION);
       return; // unreachable, but keeps the compiler happy
     }
     if (config.logging().format() != format) {
       logger.warn(
+          LogCode.LOG_FORMAT_UNREAD.marker(),
           "The log format is {}, not logging.format = {}: {} could not be read before logging"
               + " started",
           format.configName(),
@@ -91,15 +104,21 @@ public final class WarpBootstrap {
     }
 
     try {
+      long configEnd = System.nanoTime();
       WarpServer server = new WarpServer(config, directory);
+      StartupTimings startup = server.startupTimings();
+      startup.record("jvm", TimeUnit.MILLISECONDS.toNanos(jvmMillis));
+      startup.record("logging", configStart - mainStart);
+      startup.record("config", configEnd - configStart);
+      startup.record("setup", System.nanoTime() - configEnd);
       server.start();
       server.startConsole();
     } catch (StartupException e) {
       // The operator's to fix, and the message says how: no stack trace.
-      logger.error("Warp cannot start. {}", e.getMessage());
+      logger.error(e.code().marker(), "Warp cannot start. {}", e.getMessage());
       exit(e.exitCode());
     } catch (RuntimeException e) {
-      logger.error("Failed to start Warp", e);
+      logger.error(LogCode.START_FAILED.marker(), "Failed to start Warp", e);
       exit(1);
     }
   }
@@ -164,7 +183,11 @@ public final class WarpBootstrap {
             .buildPrintStream());
     Thread.setDefaultUncaughtExceptionHandler(
         (thread, error) ->
-            logger.error("Uncaught exception in thread {}", thread.getName(), error));
+            logger.error(
+                LogCode.UNCAUGHT_EXCEPTION.marker(),
+                "Uncaught exception in thread {}",
+                thread.getName(),
+                error));
   }
 
   /**

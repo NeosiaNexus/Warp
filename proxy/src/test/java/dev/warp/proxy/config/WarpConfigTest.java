@@ -555,6 +555,62 @@ class WarpConfigTest {
     }
 
     @Test
+    @DisplayName("should read levels kept across restarts, logger names with dots included")
+    void levels() throws Exception {
+      // given
+      String text =
+          "logging { levels { antibot = DEBUG, \"plugin:showcase\" = trace,"
+              + " dev.warp.proxy.drain = warn } }";
+
+      // when
+      LoggingConfig logging = load(text).logging();
+
+      // then
+      assertEquals(
+          java.util.Map.of(
+              "antibot", "debug", "plugin:showcase", "trace", "dev.warp.proxy.drain", "warn"),
+          logging.levels());
+    }
+
+    @Test
+    @DisplayName("should refuse an unknown level and an unknown console theme")
+    void unknownLevelAndTheme() throws Exception {
+      // given
+      CommentedConfigurationNode levels = parse("logging { levels { antibot = loud } }");
+      CommentedConfigurationNode theme = parse("console { theme = solarized }");
+
+      // when
+      ConfigurationException level =
+          assertThrows(ConfigurationException.class, () -> LoggingConfig.parse(levels, n -> null));
+      ConfigurationException console =
+          assertThrows(ConfigurationException.class, () -> LoggingConfig.parse(theme, n -> null));
+
+      // then
+      assertTrue(
+          String.valueOf(level.getMessage()).contains("logging.levels.antibot"),
+          level.getMessage());
+      assertTrue(
+          String.valueOf(console.getMessage()).contains("console.theme"), console.getMessage());
+    }
+
+    @Test
+    @DisplayName("should read console.theme before logging starts, and nothing from a bad file")
+    void earlyTheme(@org.junit.jupiter.api.io.TempDir java.nio.file.Path directory)
+        throws Exception {
+      // given
+      java.nio.file.Files.writeString(
+          directory.resolve("warp.conf"), "console { theme = light }\n");
+
+      // when
+      String theme = LoggingConfig.selectTheme(directory);
+
+      // then
+      assertEquals("light", theme);
+      java.nio.file.Files.writeString(directory.resolve("warp.conf"), "console { theme = ");
+      assertEquals(null, LoggingConfig.selectTheme(directory));
+    }
+
+    @Test
     @DisplayName("should let WARP_LOG_FORMAT override logging.format")
     void environmentWins() throws Exception {
       CommentedConfigurationNode root = parse("logging { format = text }");
