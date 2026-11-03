@@ -14,6 +14,8 @@ through pywinpty): the interactive console, with JLine, its prompt and its statu
 from __future__ import annotations
 
 import argparse
+import codecs
+import locale
 import os
 import re
 import shutil
@@ -29,6 +31,8 @@ ESC = "\x1b"
 ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
 READY = re.compile(r"Ready in [0-9.]+ s")
 STOPPED = re.compile(r"Stopped in [0-9.]+ s")
+# Java writes to a pipe in the platform's encoding: the ANSI code page on Windows, UTF-8 elsewhere.
+PIPE_ENCODING = locale.getpreferredencoding(False) if os.name == "nt" else "utf-8"
 
 # What is typed, and what the reply must contain once escape sequences are removed.
 COMMANDS = [
@@ -80,8 +84,9 @@ class PipeProcess(Process):
 
     def _read(self) -> None:
         assert self.process.stdout is not None
+        decoder = codecs.getincrementaldecoder(PIPE_ENCODING)("replace")
         while chunk := self.process.stdout.read1(65536):
-            self.append(chunk.decode("utf-8", "replace"))
+            self.append(decoder.decode(chunk))
 
     def send(self, line: str) -> None:
         assert self.process.stdin is not None
@@ -117,6 +122,8 @@ class PosixPtyProcess(Process):
         threading.Thread(target=self._read, daemon=True).start()
 
     def _read(self) -> None:
+        # Incremental: a character split between two reads is still one character.
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
         while True:
             try:
                 chunk = os.read(self.fd, 65536)
@@ -124,7 +131,7 @@ class PosixPtyProcess(Process):
                 return
             if not chunk:
                 return
-            self.append(chunk.decode("utf-8", "replace"))
+            self.append(decoder.decode(chunk))
 
     def send(self, line: str) -> None:
         os.write(self.fd, (line + "\r").encode())
@@ -203,6 +210,8 @@ def wait_for(process: Process, pattern: re.Pattern[str], start: int, timeout: fl
 
 
 def main() -> int:
+    # The output printed below may hold any character; a Windows runner's stdout is cp1252.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--jar", required=True, type=Path)
     parser.add_argument("--mode", choices=["pipe", "pty"], required=True)
@@ -252,6 +261,8 @@ def main() -> int:
             process.kill()
 
     output = process.text()
+    if "\ufffd" in output:
+        failures.append("the console wrote bytes that are not in the encoding it declares")
     if args.mode == "pipe" and ESC in output:
         failures.append("the plain console (a pipe) wrote escape sequences")
     if args.mode == "pty":
