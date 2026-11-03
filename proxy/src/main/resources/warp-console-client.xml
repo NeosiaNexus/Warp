@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The logging of `java -jar warp.jar console ...`, the remote console's client: Warp's console only
+  (colours, the prompt), never the proxy's log files. The lines of the remote proxies reach the same
+  appender, so that they look as they do on the proxy's own console.
+-->
+<Configuration status="WARN">
+    <Appenders>
+        <WarpConsole name="Console"/>
+    </Appenders>
+    <Loggers>
+        <!-- Its "Ctrl+C at the console: stopping Warp" would be wrong here: only the client stops. -->
+        <Logger name="dev.warp.proxy.console.WarpConsole" level="WARN"/>
+        <Logger name="io.netty" level="WARN"/>
+        <Logger name="jdk.internal.httpclient" level="WARN"/>
+        <Root level="INFO">
+            <AppenderRef ref="Console"/>
+        </Root>
+    </Loggers>
+</Configuration>

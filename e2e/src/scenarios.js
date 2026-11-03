@@ -9,9 +9,9 @@ import { dirname, join } from 'node:path';
 import { flood } from './flood.js';
 import { FORWARDED_PLAYER, mojangUuid, offlineUuid } from './mojang.js';
 import { sha1 } from './packs.js';
-import { sleep } from './proc.js';
+import { ManagedProcess, sleep } from './proc.js';
 import { FIRST_PROTOCOL, LAST_PROTOCOL, createProfileKeys, createSigner } from './profile-keys.js';
-import { Warp } from './warp.js';
+import { WARP_FAILURES, Warp } from './warp.js';
 
 export const LOBBY_MODE = 'creative';
 export const SURVIVAL_MODE = 'adventure';
@@ -1087,6 +1087,83 @@ async function drainByHttp(ctx, instance) {
   return 'POST /drain?wait: the player, whose client cannot be transferred, was kept until it left; then the drain answered "drained" and warp-drain exited with 0';
 }
 
+/** The remote console's tokens: at least 32 characters, as Warp requires. */
+const CONSOLE_TOKEN = `e2e-console-${'c'.repeat(32)}`;
+const CONSOLE_READER = `e2e-reader-${'r'.repeat(32)}`;
+
+/**
+ * The remote console, as an operator without a terminal uses it: a Warp of its own with the console
+ * on its management server, and `java -jar warp.jar console attach` (the same jar) attached to it
+ * through a pipe. The client must show a bot's login line as it streams by, run `/glist` typed on
+ * its standard input and show the answer; Warp must audit the command. `console run` runs one
+ * command for scripts; a read-only token is refused commands and a wrong token is refused outright.
+ */
+async function remoteConsole(ctx) {
+  const base = ctx.warp.instance;
+  const name = `warp-console-${ctx.variant.name}`;
+  const instance = new Warp({
+    ...base,
+    name,
+    dir: join(dirname(base.dir), name),
+    port: ctx.ports.drain,
+    acceptsTransfers: false,
+    jvmArgs: [],
+    management: { http: ctx.ports.drainHttp, agent: ctx.ports.drainAgent, token: DRAIN_TOKEN },
+    console: { token: CONSOLE_TOKEN, reader: CONSOLE_READER },
+    drain: null,
+  });
+  instance.prepare();
+  await instance.start();
+  const url = `http://127.0.0.1:${ctx.ports.drainHttp}`;
+  const client = consoleClient(base, instance, `${name}-client`, ['attach', '--url', url, '--replay', '0']);
+  let detail;
+  try {
+    client.start();
+    await client.waitFor(/Attached to http:\/\/127\.0\.0\.1:\d+ \(Warp .*\) as e2e, reads the log and runs commands/, 30_000);
+    const bot = await joinWarp(ctx, 'e2e_remote', { port: instance.port });
+    try {
+      await bot.waitForGameMode(LOBBY_MODE, 20_000);
+      await client.waitFor(/ INFO .*Player e2e_remote \(.*\) logged in from /, 10_000);
+      const mark = client.mark();
+      client.send('glist');
+      await client.waitFor(/^\s+1 player online/, 10_000, mark);
+      await client.waitFor(/^\s+- lobby\b.*1/, 5_000, mark);
+      await instance.process.waitFor(/Remote console: e2e \(operator "[^"]+"\) from 127\.0\.0\.1 ran "glist"/, 5_000);
+      const run = consoleClient(base, instance, `${name}-run`, ['run', '--url', url, 'glist', 'lobby']);
+      run.start();
+      const ran = await run.exited;
+      const names = run.lines.join('\n');
+      if (ran.code !== 0 || !names.includes('e2e_remote')) {
+        throw new Error(`console run glist lobby exited with ${ran.code}: ${names}`);
+      }
+      const refused = await fetch(`${url}/console/command`, { method: 'POST', headers: { Authorization: `Bearer ${CONSOLE_READER}` }, body: 'glist' });
+      if (refused.status !== 403) throw new Error(`a read-only token running a command got ${refused.status}, expected 403`);
+      const wrong = await fetch(`${url}/console/logs`, { headers: { Authorization: 'Bearer wrong' } });
+      if (wrong.status !== 401) throw new Error(`a wrong token got ${wrong.status}, expected 401`);
+      bot.healthy();
+      detail = `console attach streamed e2e_remote's login and ran /glist (1 player, audited); console run glist lobby listed it; a read-only token was refused commands (403), a wrong token the stream (401)`;
+    } finally {
+      bot.quit();
+    }
+  } finally {
+    await client.stop({ graceMs: 5_000 });
+    await instance.stop();
+  }
+  const failures = [...instance.failures(), ...client.failures()];
+  if (failures.length) throw new Error(`${name}: ${failures[0]}`);
+  return detail;
+}
+
+/** `java -jar warp.jar console ...` from the Warp instance's own jar, its token in the environment. */
+function consoleClient(base, instance, name, args) {
+  return new ManagedProcess(name, base.java, ['-jar', join(instance.dir, 'warp.jar'), 'console', ...args], {
+    cwd: instance.dir,
+    env: { WARP_CONSOLE_TOKEN: CONSOLE_TOKEN, NO_COLOR: '1', WARP_COLOR: 'never' },
+    logFile: join(base.logDir, `${name}.log`),
+    failures: WARP_FAILURES,
+  });
+}
+
 /** Checks warp-drain's readiness probe and HAProxy agent check. */
 async function expectReadiness(instance, status, agent) {
   const response = await fetch(`http://127.0.0.1:${instance.management.http}/readyz`);
@@ -1251,6 +1328,7 @@ export const SCENARIOS = [
   { name: 'admin-commands', run: adminCommands, requires: 'adminCommands' },
   { name: 'bungeecord', run: bungeeCord, requires: 'bungeeChannel' },
   { name: 'transfer', run: transfer, requires: 'transfers' },
+  { name: 'remote-console', run: remoteConsole, requires: 'proxy' },
   { name: 'drain', run: drain, requires: 'drain' },
   { name: 'player-limit', run: playerLimit, requires: 'proxy' },
   { name: 'flood', run: (ctx) => flood(ctx, joinWarp, LOBBY_MODE), requires: 'proxy' },

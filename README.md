@@ -319,6 +319,59 @@ Velocity reads), and `-Dwarp.profilekeys.signer=<file>`, the RSA public key (PEM
 sign the chat signing keys of 1.19 to 1.19.2 players instead of Mojang's (online mode). Warp warns
 at startup when either is set.
 
+### Remote console
+
+Where no terminal is at hand (Kubernetes, `docker run` without `-it`, panels, a fleet of proxies),
+the management server can stream the log and run commands. It is off by default:
+
+```hocon
+management {
+  enabled = true
+  bind = "127.0.0.1:9901"
+  console {
+    enabled = true
+    tokens = [
+      { name = "ops", scopes = [logs, commands], file = "console-ops.token" }  # openssl rand -hex 32
+      { name = "dashboard", scopes = [logs], env = "WARP_CONSOLE_DASHBOARD_TOKEN" }
+    ]
+  }
+}
+```
+
+Attach with the proxy's own jar: the log renders as on the proxy's console (colours, highlighting),
+and the prompt completes commands, hints at their arguments and keeps a history:
+
+```bash
+java -jar warp.jar console attach --url http://127.0.0.1:9901 --token-file console-ops.token
+java -jar warp.jar console attach --url eu=https://eu.example:9901 --url us=https://us.example:9901 \
+    --commands eu --level warn --tags=-netty     # a fleet: lines prefixed, commands to eu only
+java -jar warp.jar console run --url http://127.0.0.1:9901 glist all   # one command, for scripts
+```
+
+The token comes from `--token-file` or `WARP_CONSOLE_TOKEN`, never from the command line. The client
+reconnects on its own and resumes where it left off; a refused token is not retried.
+
+- **Scoped tokens.** Each token has a name, which the audit log shows, and scopes: `logs` reads the
+  stream, `commands` runs commands. Tokens have at least 32 characters, can be given as their
+  SHA-256 (`sha256 = "..."`) so that the proxy never stores them, and can never be the drain token.
+- **Lockout.** Tokens are compared in constant time. An address that sends `lockout-after` (5)
+  wrong tokens is locked out for `lockout-duration` (15 minutes); IPv6 clients count by their /64.
+  Commands, completions and open streams are rate-limited per token.
+- **TLS or a trusted path.** Warp refuses to start if a token may run commands while the port
+  listens beyond loopback in plain text. Set `management.tls { certificate, key }` (PEM, the key in
+  PKCS#8; renewed files are read again, as cert-manager writes them), bind to `127.0.0.1` and come
+  through `kubectl port-forward` or an SSH tunnel, or list in `trusted-networks` the ingress that
+  terminates TLS in front of Warp. Probes then use `scheme: HTTPS`.
+- **Audit.** Every command is logged with who ran it, from where (the client named by a trusted
+  proxy's `X-Forwarded-For`) and the operator the client names; so are attachments and refusals.
+- **No secrets in the stream.** The tokens, the drain token and the forwarding secret are masked
+  wherever they appear, as is whatever follows `Bearer`, `token=` or `password=`.
+
+The endpoints are plain HTTP for other tools: `GET /console/logs` (Server-Sent Events; `?level=`,
+`?tags=`, `?grep=`, `?replay=N`, `Last-Event-ID` to resume), `POST /console/command` (the command as
+the body, or `{"command": ...}`; answers its output as JSON), `POST /console/suggest` and
+`GET /console/commands`, each with `Authorization: Bearer <token>`.
+
 ## Project Structure
 
 ```

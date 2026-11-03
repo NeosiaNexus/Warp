@@ -17,6 +17,7 @@
 package dev.warp.proxy.management;
 
 import dev.warp.proxy.config.ManagementConfig;
+import dev.warp.proxy.management.console.RemoteConsole;
 
 import java.net.InetSocketAddress;
 import java.util.concurrent.TimeUnit;
@@ -62,6 +63,8 @@ public final class ManagementServer {
   private final ManagementConfig config;
   private final ProxyHealth health;
   private final byte @Nullable [] tokenDigest;
+  private final @Nullable RemoteConsole console;
+  private final @Nullable TlsFiles tls;
 
   private @Nullable MultiThreadIoEventLoopGroup group;
   private @Nullable Channel http;
@@ -74,10 +77,25 @@ public final class ManagementServer {
    * @param health the proxy
    */
   public ManagementServer(ManagementConfig config, ProxyHealth health) {
+    this(config, health, null);
+  }
+
+  /**
+   * Creates the server with the remote console, not started.
+   *
+   * @param config the {@code management} section
+   * @param health the proxy
+   * @param console the remote console, answering under {@code /console}, or {@code null}
+   */
+  public ManagementServer(
+      ManagementConfig config, ProxyHealth health, @Nullable RemoteConsole console) {
     this.config = config;
     this.health = health;
+    this.console = console;
     String token = config.token();
     this.tokenDigest = token == null ? null : ManagementHttpHandler.sha256(token);
+    ManagementConfig.Tls files = config.tls();
+    this.tls = files == null ? null : new TlsFiles(files.certificate(), files.key());
   }
 
   /**
@@ -91,7 +109,18 @@ public final class ManagementServer {
             1, new DefaultThreadFactory("warp-management", true), NioIoHandler.newFactory());
     this.group = loop;
     boolean requireServer = config.readyRequiresServer();
+    RemoteConsole remote = console;
+    TlsFiles certificates = tls;
     try {
+      if (certificates != null) {
+        certificates.load();
+        var _ =
+            loop.scheduleAtFixedRate(
+                () -> Thread.ofVirtual().name("warp-management-tls").start(certificates::reload),
+                TlsFiles.RELOAD_SECONDS,
+                TlsFiles.RELOAD_SECONDS,
+                TimeUnit.SECONDS);
+      }
       this.http =
           new ServerBootstrap()
               .group(loop)
@@ -100,12 +129,17 @@ public final class ManagementServer {
                   new ChannelInitializer<SocketChannel>() {
                     @Override
                     protected void initChannel(SocketChannel channel) {
+                      if (certificates != null) {
+                        channel.pipeline().addLast(certificates.newHandler(channel.alloc()));
+                      }
                       channel
                           .pipeline()
                           .addLast(new ReadTimeoutHandler(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS))
                           .addLast(new HttpServerCodec(MAX_LINE, MAX_HEADERS, MAX_BODY))
                           .addLast(new HttpObjectAggregator(MAX_BODY))
-                          .addLast(new ManagementHttpHandler(health, requireServer, tokenDigest));
+                          .addLast(
+                              new ManagementHttpHandler(
+                                  health, requireServer, tokenDigest, remote));
                     }
                   })
               .bind(config.bind())
@@ -144,10 +178,18 @@ public final class ManagementServer {
     }
     InetSocketAddress agentBound = agentCheckAddress();
     logger.info(
-        "Management server on http://{} (/livez, /startupz, /readyz, /drain){}{}",
+        "Management server on {}://{} (/livez, /startupz, /readyz, /drain){}{}",
+        certificates == null ? "http" : "https",
         format(httpAddress()),
         agentBound == null ? "" : ", HAProxy agent check on " + format(agentBound),
         tokenDigest == null ? "; no token: POST /drain refused" : "");
+    if (remote != null) {
+      logger.info(
+          "Remote console on {}://{}/console: {}",
+          certificates == null ? "http" : "https",
+          format(httpAddress()),
+          remote.describe(certificates != null));
+    }
   }
 
   /**
