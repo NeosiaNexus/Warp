@@ -553,6 +553,58 @@ class CommandsTest {
       assertTrue(setup.sentToClient().isEmpty());
     }
 
+    @Test
+    @DisplayName(
+        "should swap the server's command for the proxy's of the same name as its permission comes"
+            + " and goes, and send what is typed to the one shown")
+    void sameNameAsTheServers() {
+      SwitchHarness setup = playingOnLobby();
+      plugin(setup)
+          .register(
+              LiteralArgumentBuilder.<CommandSource>literal("tell")
+                  .requires(source -> source.hasPermission("proxy.admin"))
+                  .then(
+                      LiteralArgumentBuilder.<CommandSource>literal("everyone")
+                          .executes(context -> Command.SINGLE_SUCCESS)));
+      Permissions permissions =
+          new PluginPermissions(setup.player.loginContext().permissions(), "perms", s -> {});
+      var _ =
+          permissions.register(
+              0,
+              (player, permission) ->
+                  permission.equals("proxy.admin") ? Tristate.of(admin.get()) : Tristate.UNDEFINED);
+      WarpCommandManager commands = setup.player.loginContext().commands();
+      setup.sentToClient();
+      setup.receive(setup.current(), frame(VERSION, DeclareCommands.of(backendTree(), VERSION)));
+      assertFalse(proxysTellShown(setup));
+      assertFalse(commands.owns(setup.player.api(), "tell everyone"));
+
+      admin.set(true);
+      permissions.changed(setup.player.api());
+      afterRefreshDelay(setup);
+
+      assertTrue(proxysTellShown(setup));
+      assertTrue(commands.owns(setup.player.api(), "tell everyone"));
+
+      admin.set(false);
+      permissions.changed(setup.player.api());
+      afterRefreshDelay(setup);
+
+      assertFalse(proxysTellShown(setup));
+      assertFalse(commands.owns(setup.player.api(), "tell everyone"));
+    }
+
+    /**
+     * Whether the list sent last shows the proxy's {@code /tell}, the one with {@code everyone}.
+     */
+    private static boolean proxysTellShown(SwitchHarness setup) {
+      DeclareCommands packet = setup.sentToClient().getLast().as(DeclareCommands.class);
+      CommandTree tree =
+          assertInstanceOf(CommandTreeDecoding.Decoded.class, packet.tree(VERSION)).tree();
+      int tell = tree.topLevel("tell").orElseThrow();
+      return tree.child(tell, "everyone").isPresent();
+    }
+
     /**
      * Registers {@code /admin}, behind {@code proxy.admin}, and a provider granting it on demand.
      */

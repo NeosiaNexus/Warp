@@ -46,7 +46,8 @@ public final class ConsoleCommandSource implements CommandSource {
 
   /** Creates the console of a proxy without messages of its own: Warp's, in American English. */
   public ConsoleCommandSource() {
-    this(PlayerMessages::bundled);
+    PlayerMessages bundled = PlayerMessages.bundled();
+    this(() -> bundled);
   }
 
   /**
