@@ -4,7 +4,7 @@ netty = "4.2.18.Final"
 adventure = "5.2.0"
 brigadier = "1.3.10"
 log4j = "2.26.1"
-slf4j = "2.0.17"
+slf4j = "2.0.20"
 # Interactive console: JLine with its FFM terminal provider only (no JNA, no JNI library).
 jline = "4.4.8"
 # The lowest Guava any configuration resolves (warp.java-conventions), for the libraries and build
