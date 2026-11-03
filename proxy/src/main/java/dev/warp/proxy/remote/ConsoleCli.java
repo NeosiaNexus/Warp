@@ -26,6 +26,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
 import java.security.GeneralSecurityException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HexFormat;
@@ -198,7 +199,7 @@ public final class ConsoleCli {
       answer = target.command(command);
     } catch (IOException e) {
       System.err.println(
-          "warp console: " + target.target() + " cannot be reached: " + e.getMessage());
+          "warp console: " + target.target() + " cannot be reached: " + ConsoleHttp.explain(e));
       return REFUSED;
     }
     if (answer.status() != 200) {
@@ -265,10 +266,11 @@ public final class ConsoleCli {
     Map<String, String> query = new LinkedHashMap<>();
     Path caFile = null;
     List<String> words = new ArrayList<>();
-    for (int i = 1; i < args.size(); i++) {
-      String arg = args.get(i);
+    ArrayDeque<String> rest = new ArrayDeque<>(args.subList(1, args.size()));
+    while (!rest.isEmpty()) {
+      String arg = rest.poll();
       if (arg.equals("--")) {
-        words.addAll(args.subList(i + 1, args.size()));
+        words.addAll(rest);
         break;
       }
       if (!arg.startsWith("--")) {
@@ -293,10 +295,10 @@ public final class ConsoleCli {
                 + ENV_TOKEN);
       }
       if (value == null) {
-        if (i + 1 >= args.size()) {
+        value = rest.poll();
+        if (value == null) {
           throw new UsageException(name + " needs a value");
         }
-        value = args.get(++i);
       }
       switch (name) {
         case "--url" -> urls.add(value);

@@ -247,6 +247,27 @@ final class ConsoleHttp {
   }
 
   /**
+   * Describes why a proxy cannot be reached, with what to do about an untrusted certificate.
+   *
+   * @param e the failure
+   * @return its description
+   */
+  static String explain(IOException e) {
+    String message = e.getMessage();
+    if (message == null || message.isBlank()) {
+      message = e.getClass().getSimpleName();
+    }
+    if (message.contains("PKIX") || message.contains("certificate_unknown")) {
+      return "its certificate is not trusted; give its authority (or the certificate itself) with"
+          + " --ca-file";
+    }
+    if (message.contains("No subject alternative") || message.contains("No name matching")) {
+      return "its certificate does not name this address: " + message;
+    }
+    return message;
+  }
+
+  /**
    * Returns the base of a target's addresses, for messages.
    *
    * @param uri the address

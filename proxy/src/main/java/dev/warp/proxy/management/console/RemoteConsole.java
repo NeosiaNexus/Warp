@@ -101,7 +101,7 @@ public final class RemoteConsole {
   private static final Logger logger = LoggerFactory.getLogger(RemoteConsole.class);
 
   /** The audit trail: who did what, from where. */
-  private static final Logger audit =
+  private static final Logger AUDIT =
       LoggerFactory.getLogger("dev.warp.proxy.management.console.Audit");
 
   /** The header a client names its session with, so that it does not see its output twice. */
@@ -326,7 +326,7 @@ public final class RemoteConsole {
     }
     String who = who(token, request, peer);
     if (!token.allows(endpoint.scope)) {
-      audit.warn(
+      AUDIT.warn(
           "Remote console: refused {} {}: the token lacks the {} scope",
           who,
           uri.path(),
@@ -338,7 +338,7 @@ public final class RemoteConsole {
       return;
     }
     if (endpoint.scope == Scope.COMMANDS && !secure(ctx, peer.getAddress())) {
-      audit.warn(
+      AUDIT.warn(
           "Remote console: refused {} {}: commands without TLS are accepted from loopback and"
               + " management.console.trusted-networks only",
           who,
@@ -387,14 +387,14 @@ public final class RemoteConsole {
       case ConsoleAuth.Result.Missing _ -> unauthorized(ctx, "missing bearer token");
       case ConsoleAuth.Result.Wrong wrong -> {
         if (wrong.lockedOut()) {
-          audit.warn(
+          AUDIT.warn(
               "Remote console: locked out {} for {} after {} wrong tokens (last on {})",
               ConsoleAuth.key(peer.getAddress()),
               Durations.format(config.lockoutDuration()),
               wrong.failures(),
               path);
         } else {
-          audit.warn(
+          AUDIT.warn(
               "Remote console: refused a wrong token from {} on {} ({} of {} before a lockout)",
               address(peer),
               path,
@@ -484,10 +484,10 @@ public final class RemoteConsole {
     hello.add("filter", filter.json());
     stream.open(hello, lines, resumed);
     long started = System.nanoTime();
-    audit.info(
+    AUDIT.info(
         "Remote console: {} attached to the log ({}{})",
         who,
-        describe(filter),
+        describeFilter(filter),
         resumed ? ", resumed" : "");
     var _ =
         ctx.channel()
@@ -498,7 +498,7 @@ public final class RemoteConsole {
                   streams.remove(stream);
                   auth.closeStream(token);
                   long sent = stream.closed();
-                  audit.info(
+                  AUDIT.info(
                       "Remote console: {} detached from the log after {} ({} lines)",
                       who,
                       Durations.format(
@@ -546,7 +546,7 @@ public final class RemoteConsole {
     }
   }
 
-  private static String describe(LogFilter filter) {
+  private static String describeFilter(LogFilter filter) {
     StringBuilder text =
         new StringBuilder("level ").append(filter.level().name().toLowerCase(Locale.ROOT));
     if (!filter.include().isEmpty() || !filter.exclude().isEmpty()) {
@@ -574,7 +574,7 @@ public final class RemoteConsole {
       return;
     }
     if (!auth.allowCommand(token)) {
-      audit.warn(
+      AUDIT.warn(
           "Remote console: refused {}: more than {} commands in {}",
           who,
           ConsoleAuth.COMMANDS_PER_WINDOW,
@@ -587,7 +587,7 @@ public final class RemoteConsole {
     try (var _ =
         CloseableThreadContext.put(ConsoleRecord.USER_KEY, token.name())
             .put(ConsoleRecord.SESSION_KEY, session)) {
-      audit.info("Remote console: {} ran \"{}\"", who, line);
+      AUDIT.info("Remote console: {} ran \"{}\"", who, line);
     }
     var _ =
         Thread.ofVirtual()

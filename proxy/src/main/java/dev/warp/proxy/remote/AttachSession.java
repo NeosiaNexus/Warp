@@ -210,7 +210,10 @@ final class AttachSession {
     } catch (IOException e) {
       source.sendMessage(
           Component.text(
-              name + " cannot be reached (" + e.getMessage() + "): the command was not sent",
+              name
+                  + " cannot be reached ("
+                  + ConsoleHttp.explain(e)
+                  + "): the command was not sent",
               NamedTextColor.RED));
       return 0;
     } catch (InterruptedException e) {
@@ -421,8 +424,7 @@ final class AttachSession {
   }
 
   private static String describe(IOException e) {
-    String message = e.getMessage();
-    return message == null || message.isBlank() ? e.getClass().getSimpleName() : message;
+    return ConsoleHttp.explain(e);
   }
 
   private static String scopes(JsonObject hello) {
