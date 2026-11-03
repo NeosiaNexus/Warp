@@ -26,5 +26,11 @@ public enum DrainTrigger {
   HTTP,
 
   /** A plugin called {@link dev.warp.api.Warp#drain()}. */
-  PLUGIN
+  PLUGIN,
+
+  /**
+   * The {@code /shutdown} command, typed at the console or by a player granted {@code
+   * warp.command.shutdown}.
+   */
+  COMMAND
 }

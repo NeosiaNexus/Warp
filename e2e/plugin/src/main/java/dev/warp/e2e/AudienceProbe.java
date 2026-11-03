@@ -17,6 +17,7 @@
 package dev.warp.e2e;
 
 import dev.warp.api.command.SimpleCommand;
+import dev.warp.api.permission.Tristate;
 import dev.warp.api.player.Player;
 import dev.warp.api.plugin.Plugin;
 import dev.warp.api.plugin.PluginContext;
@@ -45,6 +46,10 @@ import net.kyori.adventure.text.Component;
  * updates arrive across its server switches: one sent while its client has no bar (in the
  * configuration phase from 1.20.2) fails the run. The pack comes from the system properties {@code
  * warp.e2e.pack.url}, {@code warp.e2e.pack.sha1} and {@code warp.e2e.pack.id}.
+ *
+ * <p>It is also the run's permission provider: players whose name starts with {@value
+ * #ADMIN_PREFIX} hold every {@code warp.command.*} permission, for the {@code admin-commands}
+ * scenario, and nobody else holds any.
  */
 @Plugin(
     id = "e2e-audience",
@@ -55,6 +60,9 @@ public final class AudienceProbe implements WarpPlugin {
   /** The sound both plays use, in every version's sound list since 1.9 (a name before). */
   private static final Sound SOUND =
       Sound.sound(Key.key("entity.experience_orb.pickup"), Sound.Source.PLAYER, 1, 1);
+
+  /** Players whose name starts with this hold the proxy's command permissions. */
+  static final String ADMIN_PREFIX = "e2e_admin";
 
   private final PluginContext context;
 
@@ -79,6 +87,16 @@ public final class AudienceProbe implements WarpPlugin {
   @Override
   public void enable() {
     context.commands().register("audience", this::show);
+    var _ =
+        context
+            .permissions()
+            .register(
+                0,
+                (player, permission) ->
+                    player.username().startsWith(ADMIN_PREFIX)
+                            && permission.startsWith("warp.command.")
+                        ? Tristate.TRUE
+                        : Tristate.UNDEFINED);
     var _ = animation.scheduleAtFixedRate(this::animate, 100, 100, TimeUnit.MILLISECONDS);
   }
 

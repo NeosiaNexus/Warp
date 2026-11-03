@@ -99,6 +99,7 @@ public final class DrainController<P extends DrainCandidate> {
   private volatile int kept;
   private final AtomicInteger kicked = new AtomicInteger();
   private volatile @Nullable DrainOutcome outcome;
+  private volatile @Nullable Component message;
 
   // Scheduler only.
   private final Deque<Pending<P>> queue = new ArrayDeque<>();
@@ -139,9 +140,24 @@ public final class DrainController<P extends DrainCandidate> {
    *     {@link DrainHost#shutdown}; the same future for every call
    */
   public CompletableFuture<DrainStatus> start(DrainTrigger by) {
+    return start(by, null);
+  }
+
+  /**
+   * Starts the drain with a message of its own, if it has not started yet: {@code /shutdown} with a
+   * reason.
+   *
+   * @param by what starts it
+   * @param reason shown in place of {@code drain.message} to the players kicked and the logins
+   *     refused, or {@code null} for {@code drain.message}; ignored if the drain had started
+   * @return completed with the final status once the proxy is empty or the time-out expired, before
+   *     {@link DrainHost#shutdown}; the same future for every call
+   */
+  public CompletableFuture<DrainStatus> start(DrainTrigger by, @Nullable Component reason) {
     if (!started.compareAndSet(false, true)) {
       return done;
     }
+    message = reason;
     trigger = by;
     startedAt = scheduler.now();
     startNanos = scheduler.nanoTime();
@@ -203,6 +219,17 @@ public final class DrainController<P extends DrainCandidate> {
         });
   }
 
+  /**
+   * Returns what the players the drain disconnects are told: the reason it started with, or {@code
+   * drain.message}.
+   *
+   * @return the message
+   */
+  public Component message() {
+    Component reason = message;
+    return reason != null ? reason : config.message();
+  }
+
   /** Counts a login refused because the proxy drains. */
   public void loginRefused() {
     refused.incrementAndGet();
@@ -221,7 +248,7 @@ public final class DrainController<P extends DrainCandidate> {
       return new Transfer(target.host(), target.port());
     }
     return config.cannotTransfer() == DrainConfig.CannotTransfer.KICK
-        ? new Kick(config.message())
+        ? new Kick(message())
         : new Keep();
   }
 
@@ -581,7 +608,7 @@ public final class DrainController<P extends DrainCandidate> {
 
   private void cannotTransfer(P player) {
     if (config.cannotTransfer() == DrainConfig.CannotTransfer.KICK) {
-      kick(player, config.message());
+      kick(player, message());
     } else {
       keep(player);
     }
@@ -640,6 +667,7 @@ public final class DrainController<P extends DrainCandidate> {
       case SIGNAL -> "SIGTERM";
       case HTTP -> "POST /drain";
       case PLUGIN -> "a plugin";
+      case COMMAND -> "/shutdown";
     };
   }
 

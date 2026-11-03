@@ -16,6 +16,8 @@
  */
 package dev.warp.api.command;
 
+import dev.warp.api.permission.Tristate;
+
 import net.kyori.adventure.audience.Audience;
 
 /**
@@ -35,4 +37,20 @@ public interface CommandSource extends Audience {
    * @return {@code true} if granted
    */
   boolean hasPermission(String permission);
+
+  /**
+   * Returns what the source's permission providers answer for a permission, telling a permission
+   * nobody set ({@link Tristate#UNDEFINED}) from one denied ({@link Tristate#FALSE}). A command
+   * open to everyone unless an administrator denies it, such as the proxy's {@code /server}, checks
+   * this rather than {@link #hasPermission}. The console answers {@link Tristate#TRUE}.
+   *
+   * <p>The default answers {@link Tristate#TRUE} when {@link #hasPermission} grants the permission
+   * and {@link Tristate#UNDEFINED} otherwise; players answer what their providers say.
+   *
+   * @param permission the permission node
+   * @return the providers' answer
+   */
+  default Tristate permissionValue(String permission) {
+    return hasPermission(permission) ? Tristate.TRUE : Tristate.UNDEFINED;
+  }
 }

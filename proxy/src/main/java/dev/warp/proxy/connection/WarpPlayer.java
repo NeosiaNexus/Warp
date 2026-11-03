@@ -17,6 +17,7 @@
 package dev.warp.proxy.connection;
 
 import dev.warp.api.messaging.ChannelIdentifier;
+import dev.warp.api.permission.Tristate;
 import dev.warp.api.player.AudienceFeature;
 import dev.warp.api.player.ConnectionResult;
 import dev.warp.api.player.GameProfile;
@@ -344,6 +345,11 @@ public final class WarpPlayer implements Player {
   @Override
   public boolean hasPermission(String permission) {
     return player.loginContext().permissions().check(this, permission);
+  }
+
+  @Override
+  public Tristate permissionValue(String permission) {
+    return player.loginContext().permissions().value(this, permission);
   }
 
   @Override

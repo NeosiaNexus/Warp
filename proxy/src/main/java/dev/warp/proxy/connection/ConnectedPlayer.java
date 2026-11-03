@@ -2881,7 +2881,7 @@ public final class ConnectedPlayer {
       log(logger, Level.INFO).log("{} ran the command /{}", username, commandLine);
     }
     WarpCommandManager commands = loginContext.commands();
-    boolean proxyCommand = commands.owns(commandLine);
+    boolean proxyCommand = commands.owns(api, commandLine);
     WarpEventBus events = loginContext.events();
     if (!events.hasHandlers(CommandExecuteEventImpl.class)) {
       if (proxyCommand) {
@@ -2942,7 +2942,7 @@ public final class ConnectedPlayer {
     if (protocolVersion.isOlderThan(ProtocolVersion.MINECRAFT_1_13)
         || !text.startsWith("/")
         || text.indexOf(' ') < 0
-        || !loginContext.commands().owns(text.substring(1))) {
+        || !loginContext.commands().owns(api, text.substring(1))) {
       forward.run();
       return;
     }

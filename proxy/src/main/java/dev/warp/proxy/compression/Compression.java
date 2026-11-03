@@ -63,6 +63,19 @@ public final class Compression {
   }
 
   /**
+   * Describes the implementation that compresses packets, for {@code /warp}: the native library and
+   * its version, or {@code java.util.zip} and why.
+   *
+   * @return a short description
+   */
+  public static String describe() {
+    NativeStatus status = Natives.compression();
+    return status.available()
+        ? status.detail()
+        : "java.util.zip (native libdeflate " + status.detail() + ")";
+  }
+
+  /**
    * Loads and tests the native library now, then logs which implementation compresses packets, and
    * why when it is not the native one. Called once at startup, before any connection, so that the
    * log says what will actually run.

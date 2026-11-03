@@ -30,6 +30,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.regex.Pattern;
 
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.CommandDispatcher;
@@ -37,8 +38,12 @@ import com.mojang.brigadier.ParseResults;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
+import com.mojang.brigadier.context.CommandContextBuilder;
+import com.mojang.brigadier.context.SuggestionContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.suggestion.Suggestions;
+import com.mojang.brigadier.suggestion.SuggestionsBuilder;
+import com.mojang.brigadier.tree.CommandNode;
 import com.mojang.brigadier.tree.LiteralCommandNode;
 import com.mojang.brigadier.tree.RootCommandNode;
 import net.kyori.adventure.text.Component;
@@ -63,6 +68,8 @@ public final class WarpCommandManager implements AutoCloseable {
 
   /** The owner of the proxy's own commands. */
   public static final String PROXY = "warp";
+
+  private static final Pattern SPACES = Pattern.compile(" {2,}");
 
   private final Map<String, Registered> registrations = new LinkedHashMap<>();
   private volatile CommandDispatcher<CommandSource> dispatcher = new CommandDispatcher<>();
@@ -253,16 +260,20 @@ public final class WarpCommandManager implements AutoCloseable {
   // ---------------------------------------------------------------------------
 
   /**
-   * Returns whether a command line starts with a command the proxy runs.
+   * Returns whether a command line starts with a command the proxy runs for this source. A proxy
+   * command the source may not use is not the proxy's to answer: the backend gets it, so that a
+   * backend command of the same name still works for the players the proxy's is not meant for.
    *
+   * @param source who typed it
    * @param commandLine the command line, without {@code /}
-   * @return {@code true} if the proxy owns its first word
+   * @return {@code true} if the proxy owns its first word and the source may use it
    */
-  public boolean owns(String commandLine) {
+  public boolean owns(CommandSource source, String commandLine) {
     int space = commandLine.indexOf(' ');
     String name =
         (space < 0 ? commandLine : commandLine.substring(0, space)).toLowerCase(Locale.ROOT);
-    return dispatcher.getRoot().getChild(name) != null;
+    var node = dispatcher.getRoot().getChild(name);
+    return node != null && node.canUse(source);
   }
 
   /**
@@ -297,17 +308,18 @@ public final class WarpCommandManager implements AutoCloseable {
   }
 
   /**
-   * Runs a command line on a virtual thread. Syntax errors and failures are told to the source.
+   * Runs a command line on a virtual thread. Syntax errors and failures are told to the source. A
+   * command the source may not use is not run, as if it did not exist.
    *
    * @param source who runs it
    * @param typed the command line, without {@code /}; the command's name in any case
    * @return completed with {@code true} if a proxy command matched it
    */
   public CompletableFuture<Boolean> execute(CommandSource source, String typed) {
-    if (!owns(typed)) {
+    if (!owns(source, typed)) {
       return CompletableFuture.completedFuture(false);
     }
-    String commandLine = normalize(typed);
+    String commandLine = collapseSpaces(normalize(typed));
     CommandDispatcher<CommandSource> current = dispatcher;
     return CompletableFuture.supplyAsync(
         () -> {
@@ -337,7 +349,37 @@ public final class WarpCommandManager implements AutoCloseable {
     String commandLine = normalize(typed);
     CommandDispatcher<CommandSource> current = dispatcher;
     return CompletableFuture.supplyAsync(() -> current.parse(commandLine, source), executor)
-        .thenCompose(current::getCompletionSuggestions);
+        .thenCompose(parsed -> suggestions(parsed, source));
+  }
+
+  /**
+   * Brigadier's {@link CommandDispatcher#getCompletionSuggestions}, without the nodes the source
+   * may not use: Brigadier suggests every child, so a subcommand behind a permission would show its
+   * name to everyone.
+   */
+  private static CompletableFuture<Suggestions> suggestions(
+      ParseResults<CommandSource> parsed, CommandSource source) {
+    CommandContextBuilder<CommandSource> context = parsed.getContext();
+    String input = parsed.getReader().getString();
+    SuggestionContext<CommandSource> before = context.findSuggestionContext(input.length());
+    int start = Math.min(before.startPos, input.length());
+    String lowerCase = input.toLowerCase(Locale.ROOT);
+    List<CompletableFuture<Suggestions>> futures = new ArrayList<>();
+    for (CommandNode<CommandSource> node : before.parent.getChildren()) {
+      if (!node.canUse(source)) {
+        continue;
+      }
+      try {
+        futures.add(
+            node.listSuggestions(
+                context.build(input), new SuggestionsBuilder(input, lowerCase, start)));
+      } catch (CommandSyntaxException e) {
+        // No suggestion from this node, as in Brigadier.
+      }
+    }
+    return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new))
+        .thenApply(
+            _ -> Suggestions.merge(input, futures.stream().map(CompletableFuture::join).toList()));
   }
 
   /**
@@ -348,6 +390,15 @@ public final class WarpCommandManager implements AutoCloseable {
     return space < 0
         ? commandLine.toLowerCase(Locale.ROOT)
         : commandLine.substring(0, space).toLowerCase(Locale.ROOT) + commandLine.substring(space);
+  }
+
+  /**
+   * Removes the spaces Brigadier would trip over: leading, trailing, and runs of them between words
+   * ({@code /send Steve lobby} runs as {@code /send Steve lobby}). Only for running a command: a
+   * trailing space while typing asks for the next argument's suggestions.
+   */
+  static String collapseSpaces(String commandLine) {
+    return SPACES.matcher(commandLine.strip()).replaceAll(" ");
   }
 
   private static String describe(@Nullable String owner) {

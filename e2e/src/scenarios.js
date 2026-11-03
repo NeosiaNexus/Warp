@@ -92,6 +92,8 @@ export function features(protocol, { direct = false, forwarding = 'none', online
     // A backend plugin speaks the BungeeCord channel, which Warp answers: Paper loads it, vanilla
     // servers load no plugin.
     bungeeChannel: all(proxy, paper || 'vanilla servers load no plugin to speak the channel'),
+    // The e2e plugin grants the admin bot Warp's command permissions: nobody holds them without it.
+    adminCommands: all(proxy, plugin || 'no e2e plugin to grant the command permissions (--jar without --plugin)'),
   };
 }
 
@@ -771,6 +773,47 @@ async function switchRefused(ctx) {
 }
 
 /**
+ * Warp's administration commands, typed by a bot the e2e plugin grants every `warp.command.*`
+ * permission (`e2e_admin`): `/glist` counts the lobby and lists its players by name, `/send` moves
+ * another bot to survival through Warp's normal connection path and answers on one line, a player
+ * already there is not moved, an unknown player or server is named, and `/send <server>` brings
+ * everyone back. The other bot holds no permission: its `/glist` goes to its backend, which does not
+ * know it, rather than to Warp.
+ */
+async function adminCommands(ctx) {
+  const admin = await joinWarp(ctx, 'e2e_admin');
+  try {
+    const sent = await joinWarp(ctx, 'e2e_sent');
+    try {
+      await admin.waitForChunks(20, 30_000, 0);
+      await sent.waitForChunks(20, 30_000, 0);
+      const overview = await admin.command('glist', /players? online/);
+      if (!/^- lobby \d+$/m.test(overview)) throw new Error(`/glist does not count the lobby: ${overview}`);
+      const names = await admin.command('glist lobby', /^lobby · \d+ players?/);
+      for (const name of ['e2e_admin', 'e2e_sent']) {
+        if (!names.includes(name)) throw new Error(`/glist lobby does not list ${name}: ${names}`);
+      }
+      await admin.command('send e2e_sent survival', /^Sent e2e_sent to survival\./);
+      await sent.waitForGameMode(SURVIVAL_MODE, 20_000);
+      await admin.command('send e2e_sent survival', /^Nothing to do: 1 player is already on survival\./);
+      await admin.command('send e2e_nobody survival', /^No player or server is named e2e_nobody\./);
+      await admin.command('send all nowhere', /^Unknown server: nowhere/);
+      const back = await admin.command('send survival lobby', /^Sent \d+ of \d+ from survival to lobby/);
+      await sent.waitForGameMode(LOBBY_MODE, 20_000);
+      await sent.command('glist', /unknown (or incomplete )?command/i);
+      await sleep(500);
+      admin.healthy();
+      sent.healthy();
+      return `/glist and /send answered (${back.trim()}); /glist without permission reached the backend`;
+    } finally {
+      sent.quit();
+    }
+  } finally {
+    admin.quit();
+  }
+}
+
+/**
  * The BungeeCord plugin messaging channel, as thousands of Paper plugins speak it: the lobby's probe
  * plugin (plugins/bungee-probe) sends requests through the bot's connection with
  * `Player#sendPluginMessage` on `BungeeCord` (Bukkit's `bungeecord:main` from 1.13), which Paper
@@ -1129,6 +1172,7 @@ export const SCENARIOS = [
   { name: 'fallback-unreachable', run: fallbackUnreachable, requires: 'proxy' },
   { name: 'fallback-rejected', run: fallbackRejected, requires: 'proxy' },
   { name: 'switch-refused', run: switchRefused, requires: 'switching' },
+  { name: 'admin-commands', run: adminCommands, requires: 'adminCommands' },
   { name: 'bungeecord', run: bungeeCord, requires: 'bungeeChannel' },
   { name: 'transfer', run: transfer, requires: 'transfers' },
   { name: 'drain', run: drain, requires: 'drain' },
