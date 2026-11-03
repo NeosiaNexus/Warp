@@ -16,6 +16,8 @@
  */
 package dev.warp.proxy.management;
 
+import dev.warp.proxy.logging.LogCode;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -101,7 +103,10 @@ final class TlsFiles {
       load();
       logger.info("Management TLS: read the renewed certificate {}", certificate);
     } catch (IOException | IllegalStateException e) {
-      logger.warn("Management TLS: keeping the previous certificate: {}", e.getMessage());
+      logger.warn(
+          LogCode.MANAGEMENT_TLS_RENEWAL_UNREADABLE.marker(),
+          "Management TLS: keeping the previous certificate: {}",
+          e.getMessage());
     }
   }
 

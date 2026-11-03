@@ -23,6 +23,7 @@ import dev.warp.proxy.config.RemoteConsoleConfig.Scope;
 import dev.warp.proxy.config.RemoteConsoleConfig.Token;
 import dev.warp.proxy.console.Ansi;
 import dev.warp.proxy.i18n.PlayerMessages;
+import dev.warp.proxy.logging.LogCode;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -327,6 +328,7 @@ public final class RemoteConsole {
     String who = who(token, request, peer);
     if (!token.allows(endpoint.scope)) {
       AUDIT.warn(
+          LogCode.REMOTE_CONSOLE_SCOPE_REFUSED.marker(),
           "Remote console: refused {} {}: the token lacks the {} scope",
           who,
           uri.path(),
@@ -339,6 +341,7 @@ public final class RemoteConsole {
     }
     if (endpoint.scope == Scope.COMMANDS && !secure(ctx, peer.getAddress())) {
       AUDIT.warn(
+          LogCode.REMOTE_CONSOLE_PLAINTEXT_REFUSED.marker(),
           "Remote console: refused {} {}: commands without TLS are accepted from loopback and"
               + " management.console.trusted-networks only",
           who,
@@ -388,6 +391,7 @@ public final class RemoteConsole {
       case ConsoleAuth.Result.Wrong wrong -> {
         if (wrong.lockedOut()) {
           AUDIT.warn(
+              LogCode.REMOTE_CONSOLE_LOCKED_OUT.marker(),
               "Remote console: locked out {} for {} after {} wrong tokens (last on {})",
               ConsoleAuth.key(peer.getAddress()),
               Durations.format(config.lockoutDuration()),
@@ -395,6 +399,7 @@ public final class RemoteConsole {
               path);
         } else {
           AUDIT.warn(
+              LogCode.REMOTE_CONSOLE_WRONG_TOKEN.marker(),
               "Remote console: refused a wrong token from {} on {} ({} of {} before a lockout)",
               address(peer),
               path,
@@ -575,6 +580,7 @@ public final class RemoteConsole {
     }
     if (!auth.allowCommand(token)) {
       AUDIT.warn(
+          LogCode.REMOTE_CONSOLE_RATE_LIMITED.marker(),
           "Remote console: refused {}: more than {} commands in {}",
           who,
           ConsoleAuth.COMMANDS_PER_WINDOW,

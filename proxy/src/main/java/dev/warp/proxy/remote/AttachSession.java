@@ -19,6 +19,7 @@ package dev.warp.proxy.remote;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.console.ConsoleCommandSource;
 import dev.warp.proxy.console.WarpConsole;
+import dev.warp.proxy.logging.LogCode;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -168,6 +169,7 @@ final class AttachSession {
         logger.debug("{} lets this token run {} commands", target.target().name(), count);
       } else {
         logger.warn(
+            LogCode.REMOTE_CONSOLE_CLIENT_NO_COMMANDS.marker(),
             "{} refuses to run commands for this token: {}",
             target.target().name(),
             answer.error());
@@ -281,12 +283,17 @@ final class AttachSession {
             if (!running) {
               return;
             }
-            logger.warn("Lost {}: reconnecting", name);
+            logger.warn(
+                LogCode.REMOTE_CONSOLE_CLIENT_UNREACHABLE.marker(), "Lost {}: reconnecting", name);
             wait = MIN_BACKOFF_MILLIS;
           } else {
             String error = errorOf(response);
             if (status == 401 || status == 403) {
-              logger.error("{} refused the log stream: {}", name, error);
+              logger.error(
+                  LogCode.REMOTE_CONSOLE_CLIENT_REFUSED.marker(),
+                  "{} refused the log stream: {}",
+                  name,
+                  error);
               return;
             }
             if (status == 429) {
@@ -295,15 +302,25 @@ final class AttachSession {
                       .map(seconds -> seconds * 1000)
                       .findFirst()
                       .orElse(MAX_BACKOFF_MILLIS);
-              logger.warn("{} refused the log stream for now: {}", name, error);
+              logger.warn(
+                  LogCode.REMOTE_CONSOLE_CLIENT_THROTTLED.marker(),
+                  "{} refused the log stream for now: {}",
+                  name,
+                  error);
             } else {
               wait = backoff;
-              logger.warn("{} answered {}: {}; retrying", name, status, error);
+              logger.warn(
+                  LogCode.REMOTE_CONSOLE_CLIENT_UNEXPECTED_ANSWER.marker(),
+                  "{} answered {}: {}; retrying",
+                  name,
+                  status,
+                  error);
             }
           }
         } catch (IOException e) {
           wait = backoff;
           logger.warn(
+              LogCode.REMOTE_CONSOLE_CLIENT_UNREACHABLE.marker(),
               "{} {} ({}); retrying in {} s",
               name,
               wasConnected ? "is unreachable" : "cannot be reached",
@@ -379,6 +396,7 @@ final class AttachSession {
       }
       case "gap" ->
           logger.warn(
+              LogCode.REMOTE_CONSOLE_CLIENT_LINES_MISSED.marker(),
               "{}: {} lines missed ({})",
               name,
               text(data, "missed"),

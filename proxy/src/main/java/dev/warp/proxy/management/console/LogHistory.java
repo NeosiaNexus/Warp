@@ -16,6 +16,8 @@
  */
 package dev.warp.proxy.management.console;
 
+import dev.warp.proxy.logging.LogCode;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -198,7 +200,9 @@ final class LogHistory {
   /** Adds the appender to every logger that writes to the console. */
   void install() {
     if (!(LogManager.getContext(false) instanceof LoggerContext context)) {
-      logger.warn("The remote console streams nothing: the logging backend is not Log4j Core");
+      logger.warn(
+          LogCode.REMOTE_CONSOLE_NO_LOG.marker(),
+          "The remote console streams nothing: the logging backend is not Log4j Core");
       return;
     }
     Configuration configuration = context.getConfiguration();

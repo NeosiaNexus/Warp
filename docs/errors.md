@@ -78,6 +78,19 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-BOT-010](#w-bot-010) | warning | The anti-bot journal was cut short |
 | [W-LOG-001](#w-log-001) | warning | Log sinks receive nothing |
 | [W-MGMT-001](#w-mgmt-001) | warning | A management request was refused |
+| [W-MGMT-002](#w-mgmt-002) | warning | A renewed management certificate could not be read |
+| [W-RCON-001](#w-rcon-001) | warning | The remote console streams nothing |
+| [W-RCON-002](#w-rcon-002) | warning | A remote console token lacks a scope |
+| [W-RCON-003](#w-rcon-003) | warning | A remote command arrived without TLS from an untrusted address |
+| [W-RCON-004](#w-rcon-004) | warning | A wrong remote console token |
+| [W-RCON-005](#w-rcon-005) | warning | An address was locked out of the remote console |
+| [W-RCON-006](#w-rcon-006) | warning | A remote console token ran too many commands |
+| [W-RCON-007](#w-rcon-007) | warning | The proxy runs no commands for this token |
+| [W-RCON-008](#w-rcon-008) | warning | The remote console client cannot reach a proxy |
+| [W-RCON-009](#w-rcon-009) | error | A proxy refused the remote console client's token |
+| [W-RCON-010](#w-rcon-010) | warning | A proxy asked the remote console client to wait |
+| [W-RCON-011](#w-rcon-011) | warning | A proxy answered the remote console client unexpectedly |
+| [W-RCON-012](#w-rcon-012) | warning | The remote console client missed lines |
 | [W-MSG-001](#w-msg-001) | warning | A BungeeCord sub-channel is not allowed |
 | [W-MSG-002](#w-msg-002) | warning | BungeeCord Connect to an unknown server |
 | [W-MSG-003](#w-msg-003) | warning | BungeeCord Forward to an unknown server |
@@ -685,6 +698,112 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** A POST to the management endpoint had no bearer token, or the wrong one.
 
 **Fix.** Send Authorization: Bearer <management.token>; if you did not, someone else is trying.
+
+### W-MGMT-002
+
+**A renewed management certificate could not be read** (warning)
+
+**Cause.** The files of management.tls changed, but the new certificate or key could not be read: a renewal caught halfway, a key not in PKCS#8, or a certificate that does not match the key. Warp keeps serving the previous certificate.
+
+**Fix.** Check the files the message names: PEM, the key in PKCS#8 (openssl pkcs8 -topk8 -nocrypt, or privateKey.encoding: PKCS8 in cert-manager). Warp reads them again when they next change.
+
+## Remote console
+
+### W-RCON-001
+
+**The remote console streams nothing** (warning)
+
+**Cause.** The logging backend is not Log4j Core (another SLF4J binding is first on the class path), so the remote console has no log to stream; commands still run.
+
+**Fix.** Run Warp from its own jar, without another logging backend.
+
+### W-RCON-002
+
+**A remote console token lacks a scope** (warning)
+
+**Cause.** A valid token asked for an endpoint its scopes do not cover: running commands, completing them or reading the command tree needs the commands scope, the log stream needs logs.
+
+**Fix.** Give that token the scope in management.console.tokens if it should have it, or attach with --read-only. Otherwise someone holding the token tried more than it allows.
+
+### W-RCON-003
+
+**A remote command arrived without TLS from an untrusted address** (warning)
+
+**Cause.** The management server runs without TLS, and a command (or a completion) came from an address that is neither loopback nor in management.console.trusted-networks: its token would have crossed the network in plain text.
+
+**Fix.** Set management.tls, come through kubectl port-forward or an SSH tunnel to 127.0.0.1, or list the TLS-terminating proxy in front of Warp in trusted-networks. Change the token if it crossed a network you do not trust.
+
+### W-RCON-004
+
+**A wrong remote console token** (warning)
+
+**Cause.** A request to /console carried a bearer token that matches none of management.console.tokens. After lockout-after of them, the address is locked out.
+
+**Fix.** Check the client's --token-file or WARP_CONSOLE_TOKEN. If no one of yours is attaching, someone is guessing: keep the port on loopback or behind TLS and a firewall.
+
+### W-RCON-005
+
+**An address was locked out of the remote console** (warning)
+
+**Cause.** It sent lockout-after wrong tokens without a right one in between; its requests get 429 for lockout-duration, before their token is read. IPv6 addresses count by their /64.
+
+**Fix.** If it is yours, fix its token and wait for the lockout to end (or restart Warp). If not, block it upstream.
+
+### W-RCON-006
+
+**A remote console token ran too many commands** (warning)
+
+**Cause.** A token sent more commands in ten seconds than the remote console accepts; the extra ones were refused with 429 and not run.
+
+**Fix.** Slow the script down, or run its commands in fewer requests.
+
+### W-RCON-007
+
+**The proxy runs no commands for this token** (warning)
+
+**Cause.** The client attached with a prompt, but the proxy refused to list the commands of its token: the token lacks the commands scope, or commands without TLS are refused from this address. The log still streams, and /log filter and /log tail still work.
+
+**Fix.** Use a token with the commands scope, connect over TLS (or through a tunnel to the proxy's loopback), or attach with --read-only.
+
+### W-RCON-008
+
+**The remote console client cannot reach a proxy** (warning)
+
+**Cause.** The log stream of a proxy ended (the proxy stopped, a network or an ingress cut it), or the client cannot connect to it. It retries on its own, waiting from 1 s up to 30 s, and resumes where it left off.
+
+**Fix.** Nothing, if the proxy is restarting. Otherwise check the --url, that management is enabled and listening there, and what lies between (firewall, port-forward, ingress timeouts).
+
+### W-RCON-009
+
+**A proxy refused the remote console client's token** (error)
+
+**Cause.** The proxy answered 401 or 403 to the log stream: the token is wrong, lacks the logs scope, or the remote console is off. The client stops following that proxy and never retries, so that it cannot lock its operator out.
+
+**Fix.** Check --token-file (or WARP_CONSOLE_TOKEN) against management.console.tokens, and that management.console.enabled is true.
+
+### W-RCON-010
+
+**A proxy asked the remote console client to wait** (warning)
+
+**Cause.** The proxy answered 429: its address is locked out after wrong tokens, or the token has too many streams open (4 per token, 32 in all). The client waits as long as the proxy asks, then retries.
+
+**Fix.** Close the clients you no longer use, or fix the token that locked the address out.
+
+### W-RCON-011
+
+**A proxy answered the remote console client unexpectedly** (warning)
+
+**Cause.** The log stream got an HTTP status other than 200, 401, 403 or 429: the --url points at something other than Warp's management server, or a proxy in between answered. The client retries.
+
+**Fix.** Check the --url (scheme, host, port) and what lies between the client and Warp.
+
+### W-RCON-012
+
+**The remote console client missed lines** (warning)
+
+**Cause.** The client read too slowly and the proxy dropped lines for it, or it reconnected after the proxy had stopped keeping the lines it missed. The log file on the proxy has them all.
+
+**Fix.** Narrow the stream (--level, --tags, --grep) on a busy proxy, or read logs/warp.log there.
 
 ## BungeeCord channel
 

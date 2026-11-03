@@ -54,9 +54,9 @@ class LogCodeTest {
 
   private static final Pattern ID = Pattern.compile("W-([A-Z]+)-(\\d{3})");
 
-  /** A call to a logger's warn or error. */
+  /** A call to a logger's warn or error (an audit logger's included). */
   private static final Pattern WARN_OR_ERROR =
-      Pattern.compile("\\b(\\w*(?:log|LOG)\\w*)\\.(warn|error)\\(");
+      Pattern.compile("\\b(\\w*(?:log|LOG|audit|AUDIT)\\w*)\\.(warn|error)\\(");
 
   /** {@code LogCode.X.marker(),} or {@code e.code().marker(),}: a code as the first argument. */
   private static final Pattern FIRST_ARGUMENT_MARKER =
@@ -78,6 +78,7 @@ class LogCodeTest {
     CATEGORIES.put("BOT", "Anti-bot");
     CATEGORIES.put("LOG", "Logging");
     CATEGORIES.put("MGMT", "Management");
+    CATEGORIES.put("RCON", "Remote console");
     CATEGORIES.put("MSG", "BungeeCord channel");
     CATEGORIES.put("BACK", "Backends");
     CATEGORIES.put("AUTH", "Authentication and login");
