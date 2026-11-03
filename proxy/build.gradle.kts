@@ -4,6 +4,7 @@ plugins {
     id("warp.checkstyle-conventions")
     id("warp.jacoco-conventions")
     id("warp.pitest-conventions")
+    id("warp.jmh-conventions")
     id("com.gradleup.shadow")
     application
 }
@@ -66,6 +67,15 @@ dependencies {
     implementation(libs.bundles.log4j)
     implementation(libs.disruptor)
 
+    // Console: JLine through its FFM provider (Java 22+), without the JNI library it otherwise
+    // brings; colours for Adventure components.
+    implementation(libs.bundles.jline) {
+        exclude(group = "org.jline", module = "jline-native")
+    }
+    implementation(libs.adventure.text.serializer.ansi)
+    // Log4j's plugin processor indexes the console appender (WarpConsole in log4j2.xml).
+    annotationProcessor(libs.log4j.core)
+
     // Utilities
     implementation(libs.caffeine)
     implementation(libs.gson)
@@ -74,6 +84,13 @@ dependencies {
 
     // Native crypto
     implementation(libs.netty.tcnative.boringssl)
+}
+
+tasks.compileJava {
+    // Options of Log4j's GraalVM metadata processor, which runs alongside its plugin processor.
+    options.compilerArgs.addAll(
+        listOf("-Alog4j.graalvm.groupId=dev.warp", "-Alog4j.graalvm.artifactId=warp-proxy"),
+    )
 }
 
 tasks.shadowJar {

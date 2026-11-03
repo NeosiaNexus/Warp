@@ -39,6 +39,7 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.suggestion.Suggestions;
+import com.mojang.brigadier.tree.CommandNode;
 import com.mojang.brigadier.tree.LiteralCommandNode;
 import com.mojang.brigadier.tree.RootCommandNode;
 import net.kyori.adventure.text.Component;
@@ -324,6 +325,31 @@ public final class WarpCommandManager implements AutoCloseable {
           return true;
         },
         executor);
+  }
+
+  /**
+   * Parses a command line without running it, on the calling thread: for the console, which
+   * highlights the line being typed and hints at the arguments that follow.
+   *
+   * @param source who types it
+   * @param typed the command line so far, without {@code /}
+   * @return the parse
+   */
+  public ParseResults<CommandSource> parse(CommandSource source, String typed) {
+    return dispatcher.parse(normalize(typed), source);
+  }
+
+  /**
+   * Returns the usage of each child of a node that the source may use, as Brigadier writes it:
+   * {@code <player> <server>}, {@code (on|off)}.
+   *
+   * @param node a node of a {@link #parse} result, or the {@link #root()}
+   * @param source who types the command
+   * @return each child's usage, in the order of the children
+   */
+  public Map<CommandNode<CommandSource>, String> usage(
+      CommandNode<CommandSource> node, CommandSource source) {
+    return dispatcher.getSmartUsage(node, source);
   }
 
   /**

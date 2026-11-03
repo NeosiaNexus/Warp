@@ -70,12 +70,12 @@ public final class Compression {
   public static void logImplementation() {
     NativeStatus status = Natives.compression();
     if (status.available()) {
-      logger.info("Compression: {}", status.detail());
+      logger.debug("Compression: {}", status.detail());
       if (!status.advice().isEmpty()) {
         logger.warn("{}.", status.advice());
       }
     } else if (status.advice().isEmpty()) {
-      logger.info("Compression: java.util.zip (native libdeflate {})", status.detail());
+      logger.debug("Compression: java.util.zip (native libdeflate {})", status.detail());
     } else {
       logger.warn(
           "Compression: java.util.zip, which is slower, because native libdeflate is"

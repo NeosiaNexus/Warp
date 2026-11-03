@@ -20,11 +20,15 @@ import dev.warp.proxy.config.ConfigurationException;
 import dev.warp.proxy.config.LogFormat;
 import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.config.WarpConfig;
+import dev.warp.proxy.console.ConsoleOutput;
+import dev.warp.proxy.console.Summaries;
 
 import java.nio.file.Path;
 import java.util.function.UnaryOperator;
 
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.io.IoBuilder;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,11 +50,28 @@ public final class WarpBootstrap {
    * @param args command-line arguments (currently unused)
    */
   public static void main(String[] args) {
+    // Before anything touches them: java.util.logging (JLine, some libraries) goes through Log4j,
+    // rather than printing its own two-line records to standard error; System.console() is the
+    // JDK's plain implementation, not its built-in JLine, which would compete with Warp's.
+    setDefault("java.util.logging.manager", "org.apache.logging.log4j.jul.LogManager");
+    setDefault("jdk.console", "java.base");
     Path directory = Path.of(".");
     // Before the first logger: Log4j reads the format once, when it starts, so that every line has
     // the same format, the configuration's own included. Hence no static logger in this class.
     LogFormat format = selectLogFormat(directory, System::getenv);
     Logger logger = LoggerFactory.getLogger(WarpBootstrap.class);
+    captureStandardStreams(logger);
+    // First, before the configuration and its warnings: the banner (in the log file, the line
+    // "Starting Warp <version> (commit: <sha>, branch: <branch>)").
+    LogManager.getLogger(WarpBootstrap.class)
+        .info(
+            Summaries.banner(
+                WarpBuildInfo.VERSION, WarpBuildInfo.GIT_COMMIT, WarpBuildInfo.GIT_BRANCH));
+    ConsoleOutput console = ConsoleOutput.get();
+    String consoleWarning = console == null ? null : console.mode().warning();
+    if (consoleWarning != null) {
+      logger.warn(consoleWarning);
+    }
 
     WarpConfig config;
     try {
@@ -70,7 +91,9 @@ public final class WarpBootstrap {
     }
 
     try {
-      new WarpServer(config, directory).start();
+      WarpServer server = new WarpServer(config, directory);
+      server.start();
+      server.startConsole();
     } catch (RuntimeException e) {
       logger.error("Failed to start Warp", e);
       exit(1);
@@ -90,6 +113,32 @@ public final class WarpBootstrap {
     LogFormat format = LoggingConfig.selectFormat(directory, env);
     System.setProperty(LogFormat.SYSTEM_PROPERTY, format.configName());
     return format;
+  }
+
+  private static void setDefault(String property, String value) {
+    if (System.getProperty(property) == null) {
+      System.setProperty(property, value);
+    }
+  }
+
+  /**
+   * Sends what is printed to {@link System#out} and {@link System#err} (by a library, a plugin, the
+   * JVM's default handler of uncaught exceptions) to the log: it reaches the log file, keeps the
+   * JSON format one object per line, and never breaks the line being typed at the console. Uncaught
+   * exceptions are logged as errors, with their thread.
+   */
+  private static void captureStandardStreams(Logger logger) {
+    System.setOut(
+        IoBuilder.forLogger(LogManager.getLogger("STDOUT"))
+            .setLevel(Level.INFO)
+            .buildPrintStream());
+    System.setErr(
+        IoBuilder.forLogger(LogManager.getLogger("STDERR"))
+            .setLevel(Level.WARN)
+            .buildPrintStream());
+    Thread.setDefaultUncaughtExceptionHandler(
+        (thread, error) ->
+            logger.error("Uncaught exception in thread {}", thread.getName(), error));
   }
 
   /**

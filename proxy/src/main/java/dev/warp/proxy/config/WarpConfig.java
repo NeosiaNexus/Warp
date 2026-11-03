@@ -17,6 +17,7 @@
 package dev.warp.proxy.config;
 
 import dev.warp.api.server.Favicon;
+import dev.warp.proxy.console.ConsoleMarkers;
 import dev.warp.proxy.messaging.BungeeCordSettings;
 import dev.warp.proxy.messaging.BungeeCordSubchannel;
 import dev.warp.proxy.network.CidrRange;
@@ -1596,26 +1597,33 @@ public final class WarpConfig {
   }
 
   private static void logConfig(WarpConfig config) {
-    logger.info("Configuration loaded:");
-    logger.info("  bind: {}", config.bind);
-    logger.info("  online-mode: {}", config.onlineMode);
+    logger.info(ConsoleMarkers.FILE_ONLY, "Configuration loaded:");
+    logger.info(ConsoleMarkers.FILE_ONLY, "  bind: {}", config.bind);
+    logger.info(ConsoleMarkers.FILE_ONLY, "  online-mode: {}", config.onlineMode);
     if (config.servers.isEmpty()) {
-      logger.info("  servers: none configured, registered at runtime by plugins");
+      logger.info(
+          ConsoleMarkers.FILE_ONLY, "  servers: none configured, registered at runtime by plugins");
     } else {
-      logger.info("  default-server: {}", config.defaultServer);
+      logger.info(ConsoleMarkers.FILE_ONLY, "  default-server: {}", config.defaultServer);
       for (var entry : config.servers.entrySet()) {
-        logger.info("  server '{}': {}", entry.getKey(), entry.getValue());
+        logger.info(
+            ConsoleMarkers.FILE_ONLY, "  server '{}': {}", entry.getKey(), entry.getValue());
       }
-      logger.info("  fallback-order: {}", config.fallbackOrder);
+      logger.info(ConsoleMarkers.FILE_ONLY, "  fallback-order: {}", config.fallbackOrder);
     }
     logger.info(
+        ConsoleMarkers.FILE_ONLY,
         "  duplicate-login: {}",
         config.duplicateLoginPolicy.name().toLowerCase(Locale.ROOT).replace('_', '-'));
-    logger.info("  accepts-transfers: {}", config.acceptsTransfers);
-    logger.info("  management: {}", config.management);
-    logger.info("  drain: {}", config.drain);
-    logger.info("  forwarding: {}", config.forwardingMode.name().toLowerCase(Locale.ROOT));
+    logger.info(ConsoleMarkers.FILE_ONLY, "  accepts-transfers: {}", config.acceptsTransfers);
+    logger.info(ConsoleMarkers.FILE_ONLY, "  management: {}", config.management);
+    logger.info(ConsoleMarkers.FILE_ONLY, "  drain: {}", config.drain);
     logger.info(
+        ConsoleMarkers.FILE_ONLY,
+        "  forwarding: {}",
+        config.forwardingMode.name().toLowerCase(Locale.ROOT));
+    logger.info(
+        ConsoleMarkers.FILE_ONLY,
         "  compression: threshold={}, level={}, passthrough={}",
         config.compressionThreshold,
         config.compressionLevel,
@@ -1623,9 +1631,11 @@ public final class WarpConfig {
     StatusSettings status = config.status;
     Favicon favicon = status.favicon();
     logger.info(
+        ConsoleMarkers.FILE_ONLY,
         "  player-limit: {}",
         status.playerLimit() == StatusSettings.NO_LIMIT ? "none" : status.playerLimit());
     logger.info(
+        ConsoleMarkers.FILE_ONLY,
         "  status: max-players shown={}, show-player-count={}, sample-size={}, favicon={}",
         status.maxPlayers() == StatusSettings.ONE_MORE_THAN_ONLINE
             ? "one more than online"
@@ -1635,24 +1645,27 @@ public final class WarpConfig {
         favicon == null ? "none" : favicon.uri().length() + " characters");
     if (config.proxyProtocol.enabled()) {
       logger.info(
+          ConsoleMarkers.FILE_ONLY,
           "  proxy-protocol: required from trusted proxies {}",
           config.proxyProtocol.trustedProxies());
     } else {
-      logger.info("  proxy-protocol: disabled");
+      logger.info(ConsoleMarkers.FILE_ONLY, "  proxy-protocol: disabled");
     }
-    logger.info("  timeouts: {}", config.timeouts);
-    logger.info("  tcp-fast-open: {}", config.tcpFastOpen);
+    logger.info(ConsoleMarkers.FILE_ONLY, "  timeouts: {}", config.timeouts);
+    logger.info(ConsoleMarkers.FILE_ONLY, "  tcp-fast-open: {}", config.tcpFastOpen);
     LoggingConfig logging = config.logging;
     logger.info(
+        ConsoleMarkers.FILE_ONLY,
         "  logging: format={}, connections={}, pings={}, commands={}",
         logging.format().configName(),
         logging.connections(),
         logging.pings(),
         logging.commands());
-    logger.info("  bungeecord-channel: {}", config.bungeeCord.describe());
+    logger.info(ConsoleMarkers.FILE_ONLY, "  bungeecord-channel: {}", config.bungeeCord.describe());
     LimitsConfig limits = config.limits;
     if (limits.enabled()) {
       logger.info(
+          ConsoleMarkers.FILE_ONLY,
           "  limits per address: connections {}, server list pings {}, logins {} with {} in"
               + " progress at most; exempt {}",
           limits.connections(),
@@ -1663,12 +1676,14 @@ public final class WarpConfig {
               : limits.maxConcurrentLoginsPerAddress(),
           limits.exempt());
       logger.info(
+          ConsoleMarkers.FILE_ONLY,
           "  limits: {} authentications at once, logins time out after {}",
           limits.maxConcurrentAuthentications() == 0
               ? "any number of"
               : limits.maxConcurrentAuthentications(),
           limits.loginTimeout().isZero() ? "never" : LimitsConfig.format(limits.loginTimeout()));
       logger.info(
+          ConsoleMarkers.FILE_ONLY,
           "  limits: {} connections not logged in at once, handshakes within {}, server list pings"
               + " within {}",
           limits.maxPendingConnections() == 0 ? "any number of" : limits.maxPendingConnections(),
@@ -1679,8 +1694,8 @@ public final class WarpConfig {
               ? "any time"
               : LimitsConfig.format(limits.statusTimeout()));
     } else {
-      logger.info("  limits: disabled");
+      logger.info(ConsoleMarkers.FILE_ONLY, "  limits: disabled");
     }
-    logger.info("  anti-bot: {}", config.antiBot);
+    logger.info(ConsoleMarkers.FILE_ONLY, "  anti-bot: {}", config.antiBot);
   }
 }

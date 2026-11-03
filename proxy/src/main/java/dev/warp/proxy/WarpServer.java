@@ -19,13 +19,20 @@ package dev.warp.proxy;
 import dev.warp.api.Warp;
 import dev.warp.api.WarpProvider;
 import dev.warp.api.antibot.AntiBot;
+import dev.warp.api.antibot.AttackLevel;
+import dev.warp.api.antibot.Signal;
 import dev.warp.api.event.proxy.ProxyReadyEvent;
 import dev.warp.api.event.proxy.ProxyShutdownEvent;
 import dev.warp.api.lifecycle.DrainOutcome;
+import dev.warp.api.lifecycle.DrainPhase;
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
 import dev.warp.api.player.Player;
+import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginManager;
+import dev.warp.api.plugin.PluginState;
+import dev.warp.jni.NativeStatus;
+import dev.warp.jni.Natives;
 import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
@@ -39,6 +46,13 @@ import dev.warp.proxy.connection.ConnectedPlayer;
 import dev.warp.proxy.connection.PlaySession;
 import dev.warp.proxy.connection.ServerChannelInitializer;
 import dev.warp.proxy.connection.ServerLoginContext;
+import dev.warp.proxy.console.ConsoleCommandSource;
+import dev.warp.proxy.console.ConsoleOutput;
+import dev.warp.proxy.console.NameDirectory;
+import dev.warp.proxy.console.ServerChecks;
+import dev.warp.proxy.console.StatusLine;
+import dev.warp.proxy.console.Summaries;
+import dev.warp.proxy.console.WarpConsole;
 import dev.warp.proxy.drain.ExecutorDrainScheduler;
 import dev.warp.proxy.drain.ProxyDrain;
 import dev.warp.proxy.event.WarpEventBus;
@@ -60,14 +74,18 @@ import dev.warp.proxy.server.ServerRegistry;
 import dev.warp.proxy.status.ServerList;
 
 import java.io.IOException;
+import java.lang.management.ManagementFactory;
+import java.net.InetSocketAddress;
 import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
 import java.security.spec.InvalidKeySpecException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -91,6 +109,7 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.util.concurrent.Future;
 import net.kyori.adventure.text.Component;
+import org.apache.logging.log4j.LogManager;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -136,6 +155,19 @@ public final class WarpServer implements Warp {
    * only carries each connection's 16-byte shared secret during login.
    */
   private static final int RSA_KEY_SIZE = 1024;
+
+  /** Logs the console's blocks (banner, summaries), which SLF4J cannot carry. */
+  private static final org.apache.logging.log4j.Logger BLOCKS =
+      LogManager.getLogger(WarpServer.class);
+
+  /** Why the proxy stops when nothing says otherwise: a call to {@link #stop()}. */
+  private static final String DEFAULT_STOP_CAUSE = "stop requested";
+
+  /** How long the startup's status pings of the backend servers may take, at most. */
+  private static final Duration STARTUP_PING_TIMEOUT = Duration.ofSeconds(2);
+
+  /** How often the backend servers are pinged while the console's status line shows them. */
+  private static final long STATUS_PING_SECONDS = 10;
 
   /** How long shutdown waits for the handlers of {@link ProxyShutdownEvent}. */
   private static final long SHUTDOWN_EVENT_TIMEOUT_SECONDS = 30;
@@ -187,6 +219,23 @@ public final class WarpServer implements Warp {
 
   /** The proxy's commands, its own and the plugins'. */
   private final WarpCommandManager commands = new WarpCommandManager();
+
+  /** The console as a command source: every permission, its messages logged. */
+  private final ConsoleCommandSource consoleSource = new ConsoleCommandSource();
+
+  /** Pings the backend servers for the startup summary and the status line. */
+  private final ServerChecks serverChecks = new ServerChecks();
+
+  private @Nullable WarpConsole console;
+
+  /** Why the proxy stops, for the shutdown summary. */
+  private volatile String stopCause = DEFAULT_STOP_CAUSE;
+
+  /** How a drain ended, for the shutdown summary; {@code null} without one. */
+  private volatile @Nullable String drainSummary;
+
+  /** When the proxy became ready, for the uptime of the shutdown summary. */
+  private volatile long readyNanos;
 
   /** The permission providers plugins registered. */
   private final PermissionRegistry permissions = new PermissionRegistry();
@@ -324,11 +373,10 @@ public final class WarpServer implements Warp {
       throw new IllegalStateException("Server is already running.");
     }
 
-    logger.info(
-        "Starting Warp {} (commit: {}, branch: {})",
-        WarpBuildInfo.VERSION,
-        WarpBuildInfo.GIT_COMMIT,
-        WarpBuildInfo.GIT_BRANCH);
+    ConsoleOutput output = ConsoleOutput.get();
+    if (output != null) {
+      output.names(names());
+    }
 
     TransportInfo transport = detectTransport();
     this.transportInfo = transport;
@@ -371,6 +419,13 @@ public final class WarpServer implements Warp {
     }
 
     serverRegistry.setPinger(new BackendPinger(workerGroup, transport.clientChannelClass()));
+    // Answered while plugins load; the summary waits for what is left once the port is bound.
+    Duration pingTimeout =
+        config.timeouts().ping().compareTo(STARTUP_PING_TIMEOUT) < 0
+            ? config.timeouts().ping()
+            : STARTUP_PING_TIMEOUT;
+    CompletableFuture<List<Summaries.Server>> checks =
+        serverChecks.check(serverRegistry.servers(), pingTimeout);
 
     // Probes get an answer (503) while plugins load, and the agent check from the start.
     startManagement();
@@ -427,8 +482,50 @@ public final class WarpServer implements Warp {
 
     this.running = true;
     this.started = true;
-    logger.info("Warp is listening on {}", config.bind());
+    BLOCKS.info(Summaries.startup(startupFacts(transport, awaitChecks(checks, pingTimeout))));
+    this.readyNanos = System.nanoTime();
+    logger.info(
+        "Ready in {} s",
+        String.format(
+            Locale.ROOT, "%.2f", ManagementFactory.getRuntimeMXBean().getUptime() / 1000.0));
     var _ = events.fire(new ProxyReadyEvent(serverChannel.localAddress()));
+  }
+
+  /**
+   * Starts reading commands at the console, and shows the status line on an interactive terminal.
+   * Called by {@link WarpBootstrap} once the proxy started: an embedded proxy (tests, a plugin test
+   * harness) leaves standard input alone.
+   */
+  public void startConsole() {
+    WarpConsole reader =
+        new WarpConsole(
+            commands,
+            consoleSource,
+            directory.resolve(".console_history"),
+            () -> {
+              stopCause = "stopped at the console";
+              var _ = Thread.ofPlatform().name("warp-stop").start(() -> exit.accept(0));
+            });
+    this.console = reader;
+    reader.start();
+    ConsoleOutput output = ConsoleOutput.get();
+    MultiThreadIoEventLoopGroup workers = workerGroup;
+    if (output != null && output.mode().interactive() && workers != null) {
+      var _ =
+          workers.scheduleAtFixedRate(
+              () -> {
+                var _ = serverChecks.check(serverRegistry.servers(), STARTUP_PING_TIMEOUT);
+              },
+              STATUS_PING_SECONDS,
+              STATUS_PING_SECONDS,
+              TimeUnit.SECONDS);
+      output.status(() -> StatusLine.render(statusSnapshot(), output.mode()));
+    }
+  }
+
+  @Override
+  public ConsoleCommandSource console() {
+    return consoleSource;
   }
 
   /**
@@ -456,14 +553,24 @@ public final class WarpServer implements Warp {
         return false;
       }
       running = false;
-      logger.info("Shutting down Warp...");
+      long stopStart = System.nanoTime();
+      WarpConsole reader = console;
+      if (reader != null) {
+        reader.close();
+      }
+      ConsoleOutput output = ConsoleOutput.get();
+      if (output != null) {
+        output.status(null);
+        output.endInteractive();
+      }
+      logger.info("Shutting down: {}", stopCause);
 
       if (serverChannel != null) {
         serverChannel
             .close()
             .awaitUninterruptibly(LISTENER_CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
       }
-      disconnectPlayers(reason);
+      int disconnected = disconnectPlayers(reason);
       awaitShutdownHandlers();
       pluginManager.disableAll();
       logSinks.close();
@@ -483,7 +590,15 @@ public final class WarpServer implements Warp {
       // Last: the agent check and the liveness probe answer until the very end.
       stopManagement();
 
-      logger.info("Warp has been stopped.");
+      long readyAt = readyNanos;
+      Duration uptime =
+          readyAt == 0 ? Duration.ZERO : Duration.ofNanos(System.nanoTime() - readyAt);
+      BLOCKS.info(
+          Summaries.shutdown(
+              new Summaries.Shutdown(stopCause, uptime, disconnected, drainSummary)));
+      logger.info(
+          "Stopped in {} s",
+          String.format(Locale.ROOT, "%.2f", (System.nanoTime() - stopStart) / 1e9));
       return true;
     } finally {
       stopped.complete(null);
@@ -507,12 +622,25 @@ public final class WarpServer implements Warp {
    * that the proxy can log its shutdown.
    */
   private void onJvmShutdown() {
+    if (!stopping.get() && stopCause.equals(DEFAULT_STOP_CAUSE)) {
+      stopCause = "JVM shutdown (SIGINT, SIGTERM or System.exit)";
+    }
     stop();
     org.apache.logging.log4j.LogManager.shutdown();
   }
 
   /** Phase 3 of a drain: stops the proxy, then ends the process with the drain's outcome. */
   private void stopAfterDrain(DrainStatus status) {
+    stopCause = "drain finished";
+    drainSummary =
+        String.format(
+            Locale.ROOT,
+            "%s after %s: %d moved, %d kept, %d disconnected",
+            status.outcome() == DrainOutcome.TIMED_OUT ? "timed out" : "completed",
+            status.elapsed().toSeconds() + " s",
+            status.transferred(),
+            status.kept(),
+            status.kicked());
     if (stop(config.drain().message())) {
       int code = status.outcome() == DrainOutcome.TIMED_OUT ? EXIT_DRAIN_TIMED_OUT : EXIT_DRAINED;
       logger.info("Exiting with code {}", code);
@@ -520,11 +648,11 @@ public final class WarpServer implements Warp {
     }
   }
 
-  /** Disconnects every player, telling them the proxy is shutting down. */
-  private void disconnectPlayers(@Nullable Component reason) {
+  /** Disconnects every player, telling them the proxy is shutting down; returns how many. */
+  private int disconnectPlayers(@Nullable Component reason) {
     List<ConnectedPlayer> players = playerRegistry.all();
     if (players.isEmpty()) {
-      return;
+      return 0;
     }
     logger.info("Disconnecting {} players", players.size());
     for (ConnectedPlayer player : players) {
@@ -534,6 +662,7 @@ public final class WarpServer implements Warp {
         player.disconnectShutdown(reason);
       }
     }
+    return players.size();
   }
 
   /** Starts the management server, if enabled. */
@@ -905,7 +1034,7 @@ public final class WarpServer implements Warp {
     try {
       Class<?> epoll = Class.forName("io.netty.channel.epoll.Epoll");
       if ((boolean) epoll.getMethod("isAvailable").invoke(null)) {
-        logger.info("Using epoll native transport");
+        logger.debug("Using epoll native transport");
         IoHandlerFactory factory =
             (IoHandlerFactory)
                 Class.forName("io.netty.channel.epoll.EpollIoHandler")
@@ -917,7 +1046,7 @@ public final class WarpServer implements Warp {
         Class<? extends SocketChannel> clientClass =
             (Class<? extends SocketChannel>)
                 Class.forName("io.netty.channel.epoll.EpollSocketChannel");
-        return new TransportInfo(factory, serverClass, clientClass, true);
+        return new TransportInfo("epoll", factory, serverClass, clientClass, true);
       }
     } catch (ReflectiveOperationException | UnsatisfiedLinkError e) {
       logger.trace("Epoll not available", e);
@@ -926,7 +1055,7 @@ public final class WarpServer implements Warp {
     try {
       Class<?> kqueue = Class.forName("io.netty.channel.kqueue.KQueue");
       if ((boolean) kqueue.getMethod("isAvailable").invoke(null)) {
-        logger.info("Using kqueue native transport");
+        logger.debug("Using kqueue native transport");
         IoHandlerFactory factory =
             (IoHandlerFactory)
                 Class.forName("io.netty.channel.kqueue.KQueueIoHandler")
@@ -938,15 +1067,131 @@ public final class WarpServer implements Warp {
         Class<? extends SocketChannel> clientClass =
             (Class<? extends SocketChannel>)
                 Class.forName("io.netty.channel.kqueue.KQueueSocketChannel");
-        return new TransportInfo(factory, serverClass, clientClass, false);
+        return new TransportInfo("kqueue", factory, serverClass, clientClass, false);
       }
     } catch (ReflectiveOperationException | UnsatisfiedLinkError e) {
       logger.trace("KQueue not available", e);
     }
 
-    logger.info("Using NIO transport (native transport unavailable)");
+    logger.debug("Using NIO transport (native transport unavailable)");
     return new TransportInfo(
-        NioIoHandler.newFactory(), NioServerSocketChannel.class, NioSocketChannel.class, false);
+        "NIO",
+        NioIoHandler.newFactory(),
+        NioServerSocketChannel.class,
+        NioSocketChannel.class,
+        false);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Console
+  // ---------------------------------------------------------------------------
+
+  /** Player and server names, for the console's highlighting; lookups in concurrent maps. */
+  private NameDirectory names() {
+    return new NameDirectory() {
+      @Override
+      public boolean isPlayer(String name) {
+        return playerRegistry.get(name) != null;
+      }
+
+      @Override
+      public boolean isServer(String name) {
+        return serverRegistry.getServer(name) != null;
+      }
+    };
+  }
+
+  /** The results of the startup's pings, those not over in time as unreachable. */
+  private List<Summaries.Server> awaitChecks(
+      CompletableFuture<List<Summaries.Server>> checks, Duration timeout) {
+    try {
+      return checks.get(timeout.toMillis() + 500, TimeUnit.MILLISECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    } catch (ExecutionException | TimeoutException e) {
+      logger.debug("The startup's pings of the backend servers did not finish", e);
+    }
+    List<Summaries.Server> unknown = new ArrayList<>();
+    for (var server : serverRegistry.servers()) {
+      unknown.add(
+          new Summaries.Server(server.name(), server.info().address().toString(), -1, null));
+    }
+    return unknown;
+  }
+
+  private Summaries.Startup startupFacts(TransportInfo transport, List<Summaries.Server> servers) {
+    Runtime runtime = Runtime.getRuntime();
+    NativeStatus compression = Natives.compression();
+    List<String> plugins = new ArrayList<>();
+    int failed = 0;
+    for (PluginContainer plugin : pluginManager.plugins()) {
+      if (plugin.state() == PluginState.ENABLED) {
+        plugins.add(plugin.description().id() + " " + plugin.description().version());
+      } else if (plugin.failure().isPresent()) {
+        failed++;
+      }
+    }
+    AntiBotService bots = antiBot;
+    String antiBotState =
+        bots == null || !bots.isEnabled()
+            ? "off"
+            : (bots.level() == AttackLevel.ATTACK ? "on, under attack" : "on, calm")
+                + (bots.isLockdown() ? ", lockdown" : "");
+    String managementAddress =
+        config.management().enabled() ? address(config.management().bind()) : null;
+    return new Summaries.Startup(
+        System.getProperty("java.version") + " (" + System.getProperty("java.vendor") + ")",
+        runtime.availableProcessors(),
+        runtime.maxMemory(),
+        transport.name(),
+        address(config.bind()),
+        config.tcpFastOpen() && transport.tcpFastOpen(),
+        compression.available()
+            ? compression.detail().split(" from ", 2)[0] + ", native"
+            : "java.util.zip (native libdeflate unavailable)",
+        compression.available(),
+        config.onlineMode(),
+        config.forwardingMode().name().toLowerCase(Locale.ROOT),
+        config.proxyProtocol().enabled(),
+        List.copyOf(servers),
+        List.copyOf(plugins),
+        failed,
+        antiBotState,
+        managementAddress);
+  }
+
+  private StatusLine.Snapshot statusSnapshot() {
+    Runtime runtime = Runtime.getRuntime();
+    AntiBotService bots = antiBot;
+    long connections = 0;
+    boolean attack = false;
+    boolean lockdown = false;
+    if (bots != null) {
+      connections = bots.status().signals().lastSecond().getOrDefault(Signal.CONNECTIONS, 0L);
+      attack = bots.level() == AttackLevel.ATTACK;
+      lockdown = bots.isLockdown();
+    }
+    DrainStatus drainState = drain.status();
+    String draining =
+        drainState.phase() == DrainPhase.NONE
+            ? null
+            : "draining, " + drainState.players() + " left";
+    var servers = serverRegistry.servers();
+    return new StatusLine.Snapshot(
+        playerRegistry.count(),
+        serverChecks.countUp(servers),
+        servers.size(),
+        connections,
+        attack,
+        lockdown,
+        draining,
+        runtime.totalMemory() - runtime.freeMemory(),
+        runtime.maxMemory());
+  }
+
+  private static String address(InetSocketAddress address) {
+    String host = address.getHostString();
+    return (host.indexOf(':') >= 0 ? "[" + host + "]" : host) + ":" + address.getPort();
   }
 
   /** Registers this server as the {@link WarpProvider} singleton. */
@@ -964,6 +1209,7 @@ public final class WarpServer implements Warp {
    *     outgoing connections (epoll only)
    */
   private record TransportInfo(
+      String name,
       IoHandlerFactory ioFactory,
       Class<? extends ServerSocketChannel> serverChannelClass,
       Class<? extends SocketChannel> clientChannelClass,

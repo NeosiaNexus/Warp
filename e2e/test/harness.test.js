@@ -326,6 +326,9 @@ describe('failure patterns', () => {
     for (const line of [
       '2026-10-06 01:21:01.123 [epollEventLoopGroup-3-1] ERROR dev.warp.proxy.connection.MinecraftConnection - Exception in pipeline for /127.0.0.1:5000',
       '2026-10-06 01:21:01.123 [main] FATAL dev.warp.proxy.WarpBootstrap - boom',
+      '01:21:01 ERROR conn       Exception in pipeline for /127.0.0.1:5000',
+      '01:21:01 ERROR warp       Uncaught exception in thread warp-stop',
+      '01:21:01 FATAL plugin:probe Cannot start',
       '2026-10-06 01:21:01.123 [epollEventLoopGroup-3-1] ERROR io.netty.util.ResourceLeakDetector - LEAK: ByteBuf.release() was not called before it\'s garbage-collected.',
       'Exception in thread "main" java.lang.NoClassDefFoundError: dev/warp/Foo',
       '# A fatal error has been detected by the Java Runtime Environment:',
@@ -340,6 +343,10 @@ describe('failure patterns', () => {
   it('ignore normal Warp output, including warnings', () => {
     for (const line of [
       '2026-10-06 01:21:01.123 [main] INFO  dev.warp.proxy.WarpServer - Warp is listening on 127.0.0.1:26102',
+      '01:21:01 INFO  warp       Ready in 1.42 s',
+      '01:21:01 WARN  conn       Backend 127.0.0.1:26100 compresses packets from 64 bytes but players use 256',
+      '01:21:01 INFO  conn       Player e2e_login disconnected (ERROR handling is fine)',
+      '  ERROR in a summary block is not a log line',
       '2026-10-06 01:21:01.123 [epollEventLoopGroup-3-1] WARN  dev.warp.proxy.connection.BackendLoginSessionHandler - Backend 127.0.0.1:26100 compresses packets from 64 bytes but players use 256',
       '2026-10-06 01:21:01.123 [epollEventLoopGroup-3-1] INFO  dev.warp.proxy.connection.ConnectedPlayer - Player e2e_login disconnected (ERROR handling is fine)',
     ]) {
