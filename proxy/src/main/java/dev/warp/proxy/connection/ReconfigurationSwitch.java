@@ -223,9 +223,10 @@ final class ReconfigurationSwitch implements ServerSwitch {
   private void configure(MinecraftConnection backend) {
     // The server owns the configuration's pace from here on.
     player.configurationStarted();
-    backend.writeAndFlush(new LoginAcknowledged());
-    backend.setState(ProtocolState.CONFIGURATION);
-    backend.setSessionHandler(new BackendConfigSessionHandler(player, backend));
+    backend.acknowledgeStateChange(
+        new LoginAcknowledged(),
+        ProtocolState.CONFIGURATION,
+        new BackendConfigSessionHandler(player, backend));
   }
 
   @Override

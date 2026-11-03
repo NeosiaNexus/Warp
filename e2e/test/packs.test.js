@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { crc32 } from 'node:zlib';
 
-import { resourcePack, sha1, startPackServer, storedZip } from '../src/packs.js';
+import { packsSeenBy, resourcePack, sha1, startPackServer, storedZip, viaPackId } from '../src/packs.js';
 
 /** Reads a zip of stored entries as unzip does: from the central directory at its end. */
 function unzip(zip) {
@@ -63,5 +63,33 @@ describe('resource packs', () => {
     } finally {
       await server.close();
     }
+  });
+});
+
+describe('packs as the bots see them', () => {
+  const packs = {
+    lobby: { url: 'http://127.0.0.1:44965/lobby.zip', sha1: 'a', id: '7b79cb3a-a963-4a2f-97ea-971bc14b586b' },
+    survival: { url: 'http://127.0.0.1:44965/survival.zip', sha1: 'b', id: '0e7b4c3a-5c1e-4c55-9d59-0a0f0ecbd0a1' },
+    proxy: { url: 'http://127.0.0.1:44965/proxy.zip', sha1: 'c', id: 'a3a5d0a2-6e0e-4f25-8f53-2b8a6a3f3c11' },
+  };
+
+  it('derives the UUID ViaVersion gives a URL, as Java’s UUID.nameUUIDFromBytes does', () => {
+    // What a 1.21.4 bot received through Warp for the pack of a 1.20.1 lobby.
+    assert.equal(viaPackId('http://127.0.0.1:44965/lobby.zip'), 'ea4ea4ae-95f4-35c9-a3f9-eaa7932d0f44');
+  });
+
+  it('gives the packs of servers before 1.20.3 the derived UUID for bots of 1.20.3 or newer', () => {
+    const seen = packsSeenBy(packs, 769, { lobby: 763, survival: 769 });
+
+    assert.equal(seen.lobby.id, viaPackId(packs.lobby.url));
+    assert.equal(seen.lobby.url, packs.lobby.url);
+    assert.equal(seen.lobby.sha1, packs.lobby.sha1);
+    assert.deepEqual(seen.survival, packs.survival, 'a 1.20.3+ server sends its own UUID');
+    assert.deepEqual(seen.proxy, packs.proxy, 'Warp sends its own pack, untranslated');
+  });
+
+  it('keeps the configured UUIDs when bots and servers are on the same side of 1.20.3', () => {
+    assert.deepEqual(packsSeenBy(packs, 769, { lobby: 769, survival: 769 }), packs);
+    assert.deepEqual(packsSeenBy(packs, 764, { lobby: 763, survival: 763 }), packs, 'no UUID before 1.20.3');
   });
 });

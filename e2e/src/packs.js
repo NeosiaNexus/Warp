@@ -43,6 +43,40 @@ export function startPackServer(names) {
   });
 }
 
+/** The first protocol whose pack offers carry a UUID (1.20.3). */
+export const PACK_IDS = 765;
+
+/**
+ * The UUID ViaVersion gives a pack offered by a server before 1.20.3 to a newer player: the one
+ * Java's `UUID.nameUUIDFromBytes` derives from its URL (Protocol1_20_2To1_20_3), an MD5 UUID.
+ */
+export function viaPackId(url) {
+  const bytes = createHash('md5').update(url, 'utf8').digest();
+  bytes[6] = (bytes[6] & 0x0f) | 0x30;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/**
+ * The packs as bots of `client` see them: a server before 1.20.3 sends no UUID with its pack, so
+ * when Warp translates for a bot of 1.20.3 or newer, the pack comes with the UUID ViaVersion
+ * derives from its URL instead of the one the harness configured.
+ *
+ * @param packs from {@link startPackServer}
+ * @param client the bots' protocol
+ * @param servers the protocol of the server that offers each pack, by name
+ */
+export function packsSeenBy(packs, client, servers) {
+  return Object.fromEntries(
+    Object.entries(packs).map(([name, pack]) => {
+      const server = servers[name];
+      const derived = server !== undefined && server < PACK_IDS && client >= PACK_IDS;
+      return [name, derived ? { ...pack, id: viaPackId(pack.url) } : pack];
+    }),
+  );
+}
+
 /**
  * A zip archive whose entries are stored uncompressed, dated 1980-01-01: the same files always give
  * the same bytes, so the same SHA-1.

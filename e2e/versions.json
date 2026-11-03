@@ -81,6 +81,14 @@
           "why": "A newer player than its backend: ViaVersion."
         },
         {
+          "mc": "1.20.1",
+          "client": "1.21.4",
+          "variants": [
+            "offline"
+          ],
+          "why": "A player with a configuration phase on a backend without one (before 1.20.2): ViaVersion emulates it, and answers Warp's acknowledgements at once."
+        },
+        {
           "mc": "1.21.4",
           "client": "1.8.8",
           "variants": [
@@ -160,6 +168,14 @@
             "offline"
           ],
           "why": "A newer player than its backend: ViaVersion."
+        },
+        {
+          "mc": "1.20.1",
+          "client": "1.21.4",
+          "variants": [
+            "offline"
+          ],
+          "why": "A player with a configuration phase on a backend without one (before 1.20.2): ViaVersion emulates it, and answers Warp's acknowledgements at once."
         },
         {
           "mc": "1.21.4",

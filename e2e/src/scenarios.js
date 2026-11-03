@@ -22,6 +22,9 @@ const BRANDS = { paper: /Paper/, vanilla: /vanilla/ };
 /** First protocol (1.20) whose servers can be made to trust the mock Mojang's key (see mojang.js). */
 export const SIGNED_CHAT = 763;
 
+/** From 1.20.5, ViaVersion withholds a player's chat session from an older server that does not enforce secure chat. */
+const CHAT_SESSION_WITHHELD = 766;
+
 /** The first protocol with transfers: 1.20.5. */
 export const TRANSFER_PROTOCOL = 766;
 
@@ -51,7 +54,7 @@ export const ALT_MAX_PLAYERS = 1;
  *   `paper`: the backends are Paper servers
  * @returns {Record<string, true|string>}
  */
-export function features(protocol, { direct = false, forwarding = 'none', online = false, plugin = false, bridged = false, paper = false } = {}) {
+export function features(protocol, { client = protocol, direct = false, forwarding = 'none', online = false, plugin = false, bridged = false, paper = false } = {}) {
   const proxy = direct ? 'no proxy in a control run' : true;
   return {
     proxy,
@@ -86,7 +89,14 @@ export function features(protocol, { direct = false, forwarding = 'none', online
     // Bots can sign their chat: from 1.20 a server fetches the keys that verify chat sessions from
     // the services host, which the harness mocks. Before, it only trusts Mojang's own key, bundled in
     // authlib, so no bot can open a chat session there.
-    signedChat: protocol >= SIGNED_CHAT || "before 1.20 a server trusts only Mojang's own key to verify chat",
+    // Through ViaVersion, a bot of 1.20.5 or newer keeps its chat session from a server before 1.20.5
+    // that does not enforce secure chat, as the harness's do not (Protocol1_20_3To1_20_5), and chats
+    // unsigned there.
+    signedChat: all(
+      protocol >= SIGNED_CHAT || "before 1.20 a server trusts only Mojang's own key to verify chat",
+      client < CHAT_SESSION_WITHHELD || protocol >= CHAT_SESSION_WITHHELD
+        || 'ViaVersion keeps a 1.20.5+ chat session from a server before 1.20.5 that does not enforce secure chat',
+    ),
     // Transfers arrived in 1.20.5. The bot declares the transfer intent in its own handshake, which
     // a bridge would replace with the one it opens to Warp.
     transfers: all(
@@ -98,6 +108,13 @@ export function features(protocol, { direct = false, forwarding = 'none', online
     drain: all(proxy, !bridged || 'through ViaProxy, the bridges only lead to warp and warp-alt'),
     // So does the remote console, whose bot must log in to it to have a line to stream.
     remoteConsole: all(proxy, !bridged || 'through ViaProxy, the bridges only lead to warp and warp-alt'),
+    // A draining Warp transfers players itself: that takes the bot's version only, whatever its
+    // server runs (`client`: the bots' protocol, newer than the backends' when Warp translates).
+    drainTransfers: all(
+      proxy,
+      client >= TRANSFER_PROTOCOL || 'no Transfer packet before 1.20.5',
+      !bridged || 'through ViaProxy, Warp sees the bridge’s handshake, not the bot’s',
+    ),
     // A backend plugin speaks the BungeeCord channel, which Warp answers: Paper loads it, vanilla
     // servers load no plugin.
     bungeeChannel: all(proxy, paper || 'vanilla servers load no plugin to speak the channel'),
@@ -1018,7 +1035,7 @@ async function drain(ctx) {
   await instance.start();
   let detail;
   try {
-    detail = has(ctx, 'transfers') ? await drainBySigterm(ctx, instance) : await drainByHttp(ctx, instance);
+    detail = has(ctx, 'drainTransfers') ? await drainBySigterm(ctx, instance) : await drainByHttp(ctx, instance);
   } finally {
     await instance.stop();
   }
