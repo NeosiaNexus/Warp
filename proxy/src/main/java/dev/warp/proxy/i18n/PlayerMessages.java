@@ -26,6 +26,7 @@ import java.io.Reader;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.text.NumberFormat;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -41,6 +42,7 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import net.kyori.adventure.key.Key;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.TextComponent;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.text.minimessage.tag.Tag;
@@ -81,13 +83,22 @@ public final class PlayerMessages {
   /** How long Warp remembers the language of a player who does not come back. */
   private static final Duration REMEMBERED_FOR = Duration.ofDays(30);
 
+  /**
+   * How many messages deep a message may hold others: a server's reason, inside the reason a player
+   * was not sent, inside the failures of a /send summary.
+   */
+  private static final int MAX_DEPTH = 8;
+
+  /** The language being rendered, for the numbers of the messages rendered. */
+  private static final ScopedValue<Locale> RENDERING = ScopedValue.newInstance();
+
   private static final Pattern LOCALE =
       Pattern.compile("([a-zA-Z]{2,3})(?:[_-]([a-zA-Z]{2}|\\d{3}))?");
 
   /**
-   * The style tags every message may use, the same as the commands' (PR #163): {@code <value>} for
-   * names and numbers, {@code <good>} for success, {@code <bad>} for failures, {@code <warn>} for
-   * what needs attention, {@code <dim>} for hints. An override keeps the theme by using them.
+   * The style tags every message may use, the proxy's commands' included: {@code <value>} for names
+   * and numbers, {@code <good>} for success, {@code <bad>} for failures, {@code <warn>} for what
+   * needs attention, {@code <dim>} for hints. An override keeps the theme by using them.
    */
   public static final TagResolver STYLES =
       TagResolver.resolver(
@@ -230,9 +241,15 @@ public final class PlayerMessages {
    * @return the rendered component
    */
   public Component render(Component component, Locale locale, ProtocolVersion version) {
+    // Numbers are formatted while the messages holding them are rendered: in this language.
+    return ScopedValue.where(RENDERING, locale).call(() -> renderIn(component, locale, version));
+  }
+
+  private Component renderIn(Component component, Locale locale, ProtocolVersion version) {
     Component rendered = component;
-    // A message's arguments may be messages themselves: a reason inside "could not connect".
-    for (int pass = 0; pass < 3; pass++) {
+    // A message's arguments may be messages themselves: a reason inside "could not connect", a
+    // server's own reason inside the reason a player was not sent, inside a /send summary.
+    for (int pass = 0; pass < MAX_DEPTH; pass++) {
       Component next = GlobalTranslator.render(renderer.render(rendered, locale), locale);
       if (next.equals(rendered)) {
         break;
@@ -245,6 +262,34 @@ public final class PlayerMessages {
               .render(rendered, locale);
     }
     return rendered;
+  }
+
+  /**
+   * Formats a number the way the language being rendered writes it ({@code 12,345} in English,
+   * {@code 12 345} in French), with plain spaces: a non-breaking one shows as garbage on some
+   * clients (Velocity #595).
+   *
+   * @param number the number
+   * @return the text, in English outside a rendering
+   */
+  static String formatNumber(long number) {
+    Locale locale = RENDERING.isBound() ? RENDERING.get() : Locale.ENGLISH;
+    return NumberFormat.getIntegerInstance(locale)
+        .format(number)
+        .replace(' ', ' ')
+        .replace(' ', ' ');
+  }
+
+  /**
+   * Returns whether a rendered message shows nothing: a chat line its override emptied.
+   *
+   * @param rendered the rendered message
+   * @return {@code true} if it has no text at all, whatever its style
+   */
+  public static boolean isEmpty(Component rendered) {
+    return rendered instanceof TextComponent text
+        && text.content().isEmpty()
+        && rendered.children().isEmpty();
   }
 
   /**

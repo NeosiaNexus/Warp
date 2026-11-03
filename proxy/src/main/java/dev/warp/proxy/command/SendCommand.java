@@ -22,6 +22,8 @@ import dev.warp.api.player.ConnectionResult;
 import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerConnection;
+import dev.warp.proxy.i18n.Message;
+import dev.warp.proxy.i18n.PlayerMessages;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -196,14 +198,14 @@ final class SendCommand {
   // ---------------------------------------------------------------------------
 
   private static Selection all(Warp proxy) {
-    return new Players(List.copyOf(proxy.players()), Message.SEND_TARGET_ALL.render(), false);
+    return new Players(List.copyOf(proxy.players()), Message.SEND_TARGET_ALL.of(), false);
   }
 
   private static Selection current(CommandSource source) {
     Optional<ServerConnection> current =
         source instanceof Player player ? player.currentServer() : Optional.empty();
     if (current.isEmpty()) {
-      return new Refusal(Message.SEND_NO_CURRENT.render());
+      return new Refusal(Message.SEND_NO_CURRENT.of());
     }
     return onServer(current.get().server());
   }
@@ -212,7 +214,7 @@ final class SendCommand {
     return proxy
         .player(name)
         .<Selection>map(player -> new Players(List.of(player), Component.empty(), true))
-        .orElseGet(() -> new Refusal(Message.UNKNOWN_PLAYER.render(Message.text("player", name))));
+        .orElseGet(() -> new Refusal(Message.UNKNOWN_PLAYER.with(Message.text("player", name))));
   }
 
   private static Selection server(Warp proxy, String name) {
@@ -220,13 +222,13 @@ final class SendCommand {
         .servers()
         .server(name)
         .map(SendCommand::onServer)
-        .orElseGet(() -> new Refusal(Message.UNKNOWN_SERVER.render(Message.text("server", name))));
+        .orElseGet(() -> new Refusal(Message.UNKNOWN_SERVER.with(Message.text("server", name))));
   }
 
   private static Selection onServer(RegisteredServer server) {
     return new Players(
         List.copyOf(server.players()),
-        Message.SEND_TARGET_SERVER.render(Message.text("server", server.name())),
+        Message.SEND_TARGET_SERVER.with(Message.text("server", server.name())),
         false);
   }
 
@@ -235,7 +237,7 @@ final class SendCommand {
     boolean isServer = proxy.servers().server(name).isPresent();
     boolean isPlayer = proxy.player(name).isPresent();
     if (isServer && isPlayer) {
-      return new Refusal(Message.SEND_AMBIGUOUS.render(Message.text("target", name)));
+      return new Refusal(Message.SEND_AMBIGUOUS.with(Message.text("target", name)));
     }
     if (isServer) {
       return server(proxy, name);
@@ -243,7 +245,7 @@ final class SendCommand {
     if (isPlayer) {
       return player(proxy, name);
     }
-    return new Refusal(Message.SEND_UNKNOWN_TARGET.render(Message.text("target", name)));
+    return new Refusal(Message.SEND_UNKNOWN_TARGET.with(Message.text("target", name)));
   }
 
   // ---------------------------------------------------------------------------
@@ -254,16 +256,17 @@ final class SendCommand {
       Warp proxy, CommandSource source, Selection selection, String destinationName) {
     Optional<RegisteredServer> found = proxy.servers().server(destinationName);
     if (found.isEmpty()) {
-      source.sendMessage(Message.UNKNOWN_SERVER.render(Message.text("server", destinationName)));
+      CommandSupport.tell(
+          source, Message.UNKNOWN_SERVER.with(Message.text("server", destinationName)));
       return 0;
     }
     RegisteredServer destination = found.get();
     if (!(selection instanceof Players(List<Player> players, Component from, boolean single))) {
-      source.sendMessage(((Refusal) selection).message());
+      CommandSupport.tell(source, ((Refusal) selection).message());
       return 0;
     }
     if (players.isEmpty()) {
-      source.sendMessage(Message.SEND_NOBODY.render(Message.component("target", from)));
+      CommandSupport.tell(source, Message.SEND_NOBODY.with(Message.component("target", from)));
       return 0;
     }
     List<Player> moving = new ArrayList<>();
@@ -272,30 +275,33 @@ final class SendCommand {
       (isOn(player, destination) ? there : moving).add(player);
     }
     if (moving.isEmpty()) {
-      source.sendMessage(
-          Message.SEND_ALREADY_THERE.render(
+      CommandSupport.tell(
+          source,
+          Message.SEND_ALREADY_THERE.with(
               Message.count(there.size()), Message.text("server", destination.name())));
       return 0;
     }
     if (!single) {
       String unreachable = unreachable(destination);
       if (unreachable != null) {
-        source.sendMessage(
-            Message.SEND_UNREACHABLE.render(
+        CommandSupport.tell(
+            source,
+            Message.SEND_UNREACHABLE.with(
                 Message.text("server", destination.name()), Message.text("error", unreachable)));
         return 0;
       }
-      source.sendMessage(
-          Message.SEND_STARTED.render(
-              Message.text("count", Message.number(moving.size())),
+      CommandSupport.tell(
+          source,
+          Message.SEND_STARTED.with(
+              Message.number("count", moving.size()),
               Message.component("target", from),
               Message.text("server", destination.name())));
     }
     List<Outcome> outcomes = new ArrayList<>(moveAll(moving, destination));
     for (Player player : there) {
-      outcomes.add(new Outcome(player, Message.SEND_REASON_ALREADY.render()));
+      outcomes.add(new Outcome(player, Message.SEND_REASON_ALREADY.of()));
     }
-    source.sendMessage(summary(outcomes, from, destination, single));
+    CommandSupport.tell(source, summary(outcomes, from, destination, single));
     return Command.SINGLE_SUCCESS;
   }
 
@@ -361,8 +367,7 @@ final class SendCommand {
               ? failure.getCause()
               : failure;
       return cause instanceof TimeoutException
-          ? Message.SEND_REASON_TIMEOUT.render(
-              Message.text("seconds", "" + MOVE_TIMEOUT.toSeconds()))
+          ? Message.SEND_REASON_TIMEOUT.with(Message.text("seconds", "" + MOVE_TIMEOUT.toSeconds()))
           : error(cause);
     }
     if (result == null) {
@@ -370,20 +375,19 @@ final class SendCommand {
     }
     return switch (result) {
       case ConnectionResult.Connected _, ConnectionResult.AlreadyConnected _ -> null;
-      case ConnectionResult.InProgress _ -> Message.SEND_REASON_SWITCHING.render();
-      case ConnectionResult.Denied _ -> Message.SEND_REASON_DENIED.render();
+      case ConnectionResult.InProgress _ -> Message.SEND_REASON_SWITCHING.of();
+      case ConnectionResult.Denied _ -> Message.SEND_REASON_DENIED.of();
       case ConnectionResult.Failed failed ->
           failed
               .serverReason()
-              .map(
-                  reason -> Message.SEND_REASON_REFUSED.render(Message.component("reason", reason)))
-              .orElseGet(Message.SEND_REASON_UNREACHABLE::render);
-      case ConnectionResult.Disconnected _ -> Message.SEND_REASON_LEFT.render();
+              .map(reason -> Message.SEND_REASON_REFUSED.with(Message.component("reason", reason)))
+              .orElseGet(Message.SEND_REASON_UNREACHABLE::of);
+      case ConnectionResult.Disconnected _ -> Message.SEND_REASON_LEFT.of();
     };
   }
 
   private static Component error(Throwable failure) {
-    return Message.SEND_REASON_ERROR.render(
+    return Message.SEND_REASON_ERROR.with(
         Message.text(
             "error",
             failure.getMessage() != null
@@ -410,10 +414,10 @@ final class SendCommand {
       Outcome outcome = outcomes.getFirst();
       Component reason = outcome.reason();
       return reason == null
-          ? Message.SEND_ONE_DONE.render(
+          ? Message.SEND_ONE_DONE.with(
               Message.text("player", outcome.player().username()),
               Message.text("server", destination.name()))
-          : Message.SEND_ONE_FAILED.render(
+          : Message.SEND_ONE_FAILED.with(
               Message.text("player", outcome.player().username()),
               Message.text("server", destination.name()),
               Message.component("reason", reason));
@@ -428,7 +432,9 @@ final class SendCommand {
         sent++;
       } else {
         failures
-            .computeIfAbsent(PLAIN.serialize(reason), _ -> new Failure(reason, new ArrayList<>()))
+            .computeIfAbsent(
+                PLAIN.serialize(PlayerMessages.english(reason)),
+                _ -> new Failure(reason, new ArrayList<>()))
             .players()
             .add(outcome.player());
       }
@@ -439,18 +445,18 @@ final class SendCommand {
       for (Failure group : failures.values()) {
         groups.add(
             Message.SEND_FAILURE_GROUP
-                .render(
-                    Message.text("count", Message.number(group.players().size())),
+                .with(
+                    Message.number("count", group.players().size()),
                     Message.component("reason", group.reason()))
                 .hoverEvent(HoverEvent.showText(names(group.players()))));
       }
       details =
-          Message.SEND_FAILURES.render(
+          Message.SEND_FAILURES.with(
               Message.component("groups", CommandSupport.join(groups, ", ")));
     }
-    return Message.SEND_SUMMARY.render(
-        Message.text("sent", Message.number(sent)),
-        Message.text("count", Message.number(outcomes.size())),
+    return Message.SEND_SUMMARY.with(
+        Message.number("sent", sent),
+        Message.number("count", outcomes.size()),
         Message.component("target", from),
         Message.text("server", destination.name()),
         Message.component("failures", details));
@@ -462,10 +468,10 @@ final class SendCommand {
         group.stream().map(Player::username).sorted(String.CASE_INSENSITIVE_ORDER).toList();
     String shown = String.join(", ", names.subList(0, Math.min(names.size(), MAX_NAMES_SHOWN)));
     if (names.size() <= MAX_NAMES_SHOWN) {
-      return Message.VALUE.render(Message.text("text", shown));
+      return Message.VALUE.with(Message.text("text", shown));
     }
-    return Message.SEND_MORE.render(
-        Message.component("names", Message.VALUE.render(Message.text("text", shown))),
-        Message.text("count", Message.number(names.size() - MAX_NAMES_SHOWN)));
+    return Message.SEND_MORE.with(
+        Message.component("names", Message.VALUE.with(Message.text("text", shown))),
+        Message.number("count", names.size() - MAX_NAMES_SHOWN));
   }
 }

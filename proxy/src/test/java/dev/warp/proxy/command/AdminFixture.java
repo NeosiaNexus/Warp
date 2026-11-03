@@ -68,6 +68,11 @@ final class AdminFixture {
 
   static final PlainTextComponentSerializer PLAIN = PlainTextComponentSerializer.plainText();
 
+  /** A message rendered in English, as the console gets it, in plain text. */
+  static String plain(Component message) {
+    return PLAIN.serialize(PlayerMessages.english(message));
+  }
+
   final Warp proxy = mock(Warp.class);
   final ServerRegistry servers = mock(ServerRegistry.class);
   final PluginManager plugins = mock(PluginManager.class);
@@ -337,7 +342,7 @@ final class AdminFixture {
   /** The text every hover of a component and its children shows, one per line. */
   static String hovers(Component component) {
     StringBuilder text = new StringBuilder();
-    collectHovers(component, text);
+    collectHovers(PlayerMessages.english(component), text);
     return text.toString();
   }
 

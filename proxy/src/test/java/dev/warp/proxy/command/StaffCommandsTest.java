@@ -28,6 +28,7 @@ import dev.warp.api.permission.Tristate;
 import dev.warp.api.player.ConnectionResult;
 import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
+import dev.warp.proxy.i18n.PlayerMessages;
 
 import java.util.HashSet;
 import java.util.List;
@@ -115,7 +116,8 @@ class StaffCommandsTest {
       assertEquals(List.of("[Alert] Restart in 5 minutes"), proxy.told(steve));
       assertEquals(proxy.told(steve), proxy.told(notch));
       assertEquals(
-          NamedTextColor.RED, proxy.components(steve).getFirst().children().getFirst().color());
+          NamedTextColor.RED,
+          PlayerMessages.english(proxy.components(steve).getFirst()).children().getFirst().color());
       assertEquals("Alert sent to 2 players.", source.last());
     }
 

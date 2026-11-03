@@ -349,6 +349,10 @@ final class MessageOverrides {
             # empty. The multiplayer.* messages are vanilla's: unless overridden, each player's game
             # shows them in its own language.
             #
+            # Warp's style tags keep every message alike: <value> (names and numbers), <good>,
+            # <bad>, <warn> and <dim>; plain text in a chat line is gray. Where a message has <count>
+            # and <n>, <n:'0#players|1#player|2#players'> picks the words that agree with the count.
+            #
             # Warp reads these files when it starts, and refuses to start on an unknown message or
             # placeholder, saying which file and line.
             """);

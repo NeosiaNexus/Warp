@@ -20,6 +20,7 @@ import dev.warp.api.Warp;
 import dev.warp.api.command.CommandSource;
 import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
+import dev.warp.proxy.i18n.Message;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -71,7 +72,7 @@ final class GlistCommand {
         .requires(source -> source.hasPermission(PERMISSION))
         .executes(
             context -> {
-              context.getSource().sendMessage(overview(proxy));
+              CommandSupport.tell(context.getSource(), overview(proxy));
               return Command.SINGLE_SUCCESS;
             })
         .then(
@@ -108,7 +109,7 @@ final class GlistCommand {
   static Component overview(Warp proxy) {
     int total = proxy.playerCount();
     List<Component> lines = new ArrayList<>();
-    lines.add(Message.GLIST_TOTAL.render(Message.count(total)));
+    lines.add(Message.GLIST_TOTAL.with(Message.count(total)));
     List<String> empty = new ArrayList<>();
     int onServers = 0;
     for (RegisteredServer server : proxy.servers().servers()) {
@@ -119,17 +120,15 @@ final class GlistCommand {
       }
       onServers += count;
       lines.add(
-          Message.GLIST_SERVER.render(
+          Message.GLIST_SERVER.with(
               Message.component("server", serverLink(server.name())),
-              Message.text("count", Message.number(count))));
+              Message.number("count", count)));
     }
     if (!empty.isEmpty()) {
-      lines.add(Message.GLIST_EMPTY.render(Message.text("servers", String.join(", ", empty))));
+      lines.add(Message.GLIST_EMPTY.with(Message.text("servers", String.join(", ", empty))));
     }
     if (total > onServers) {
-      lines.add(
-          Message.GLIST_CONNECTING.render(
-              Message.text("count", Message.number(total - onServers))));
+      lines.add(Message.GLIST_CONNECTING.with(Message.number("count", total - onServers)));
     }
     return Component.join(JoinConfiguration.newlines(), lines);
   }
@@ -137,9 +136,9 @@ final class GlistCommand {
   /** A server's name, a link to the names of its players. */
   static Component serverLink(String server) {
     return CommandSupport.runs(
-        Message.VALUE.render(Message.text("text", server)),
+        Message.VALUE.with(Message.text("text", server)),
         "/glist " + CommandSupport.quoteIfNeeded(server),
-        Message.GLIST_SERVER_HOVER.render(Message.text("server", server)));
+        Message.GLIST_SERVER_HOVER.with(Message.text("server", server)));
   }
 
   /** {@code /glist <server|all> [page]}. */
@@ -151,12 +150,12 @@ final class GlistCommand {
     } else {
       Optional<RegisteredServer> server = proxy.servers().server(target);
       if (server.isEmpty()) {
-        source.sendMessage(Message.UNKNOWN_SERVER.render(Message.text("server", target)));
+        CommandSupport.tell(source, Message.UNKNOWN_SERVER.with(Message.text("server", target)));
         return 0;
       }
       servers = List.of(server.get());
     }
-    source.sendMessage(names(servers, all, page));
+    CommandSupport.tell(source, names(servers, all, page));
     return Command.SINGLE_SUCCESS;
   }
 
@@ -180,21 +179,20 @@ final class GlistCommand {
     String name = all ? ALL : servers.getFirst().name();
     if (entries.isEmpty()) {
       return all
-          ? Message.GLIST_NOBODY_ALL.render()
-          : Message.GLIST_NOBODY.render(Message.text("server", name));
+          ? Message.GLIST_NOBODY_ALL.of()
+          : Message.GLIST_NOBODY.with(Message.text("server", name));
     }
     CommandSupport.Page slice = CommandSupport.Page.of(entries.size(), PAGE_SIZE, page);
     if (slice == null) {
-      return Message.PAGE_OUT_OF_RANGE.render(
-          Message.text("page", Message.number(page)),
-          Message.text(
-              "pages", Message.number(CommandSupport.Page.count(entries.size(), PAGE_SIZE))));
+      return Message.PAGE_OUT_OF_RANGE.with(
+          Message.number("page", page),
+          Message.number("pages", CommandSupport.Page.count(entries.size(), PAGE_SIZE)));
     }
     List<Component> lines = new ArrayList<>();
     lines.add(
         all
-            ? Message.GLIST_HEADER_ALL.render(Message.count(entries.size()))
-            : Message.GLIST_HEADER.render(
+            ? Message.GLIST_HEADER_ALL.with(Message.count(entries.size()))
+            : Message.GLIST_HEADER.with(
                 Message.text("server", name), Message.count(entries.size())));
     List<Entry> shown = entries.subList(slice.from(), slice.to());
     int start = 0;
@@ -209,7 +207,7 @@ final class GlistCommand {
       Component players = Component.text(String.join(", ", group), NamedTextColor.WHITE);
       lines.add(
           all
-              ? Message.GLIST_GROUP.render(
+              ? Message.GLIST_GROUP.with(
                   Message.component("server", serverLink(server)),
                   Message.component("names", players))
               : players);

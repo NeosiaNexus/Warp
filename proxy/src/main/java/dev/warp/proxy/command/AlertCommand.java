@@ -19,6 +19,8 @@ package dev.warp.proxy.command;
 import dev.warp.api.Warp;
 import dev.warp.api.command.CommandSource;
 import dev.warp.api.player.Player;
+import dev.warp.proxy.i18n.Message;
+import dev.warp.proxy.i18n.PlayerMessages;
 
 import java.util.List;
 
@@ -70,8 +72,10 @@ final class AlertCommand {
                           "Alert from {} to {} players: {}",
                           source instanceof Player player ? player.username() : "the console",
                           players.size(),
-                          PlainTextComponentSerializer.plainText().serialize(alert));
-                      source.sendMessage(Message.ALERT_SENT.render(Message.count(players.size())));
+                          PlainTextComponentSerializer.plainText()
+                              .serialize(PlayerMessages.english(alert)));
+                      CommandSupport.tell(
+                          source, Message.ALERT_SENT.with(Message.count(players.size())));
                       return Command.SINGLE_SUCCESS;
                     }));
   }
@@ -83,7 +87,7 @@ final class AlertCommand {
    * @return the alert
    */
   static Component alert(String typed) {
-    return Message.ALERT.render(
+    return Message.ALERT.with(
         Message.component("message", MiniMessage.miniMessage().deserialize(typed)));
   }
 }

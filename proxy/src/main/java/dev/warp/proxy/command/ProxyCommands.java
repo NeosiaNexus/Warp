@@ -25,7 +25,6 @@ import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerRegistry;
 import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.i18n.Message;
-import dev.warp.proxy.i18n.PlayerMessages;
 
 import java.util.Comparator;
 import java.util.List;
@@ -138,7 +137,7 @@ public final class ProxyCommands {
                       .map(RegisteredServer::name)
                       .sorted(Comparator.naturalOrder())
                       .toList();
-              tell(source, serverList(names, current));
+              CommandSupport.tell(source, serverList(names, current));
               return Command.SINGLE_SUCCESS;
             })
         .then(
@@ -148,14 +147,11 @@ public final class ProxyCommands {
                       String name = StringArgumentType.getString(context, "server");
                       Optional<RegisteredServer> target = servers.server(name);
                       if (target.isEmpty()) {
-                        tell(context.getSource(), Message.UNKNOWN_SERVER.of(name));
+                        CommandSupport.tell(context.getSource(), Message.UNKNOWN_SERVER.of(name));
                         return 0;
                       }
                       if (!(context.getSource() instanceof Player player)) {
-                        context
-                            .getSource()
-                            .sendMessage(
-                                dev.warp.proxy.command.Message.SERVER_NOT_A_PLAYER.render());
+                        CommandSupport.tell(context.getSource(), Message.SERVER_NOT_A_PLAYER.of());
                         return 0;
                       }
                       var _ =
@@ -179,17 +175,6 @@ public final class ProxyCommands {
                                   });
                       return Command.SINGLE_SUCCESS;
                     }));
-  }
-
-  /**
-   * Tells a source a message: a player in its own language, anyone else, such as the console, in
-   * English.
-   *
-   * @param source who is told
-   * @param message the message
-   */
-  static void tell(CommandSource source, Component message) {
-    source.sendMessage(source instanceof Player ? message : PlayerMessages.english(message));
   }
 
   /**

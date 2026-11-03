@@ -20,6 +20,8 @@ import dev.warp.api.command.CommandSource;
 import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerRegistry;
+import dev.warp.proxy.i18n.Message;
+import dev.warp.proxy.i18n.PlayerMessages;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -224,19 +226,19 @@ final class CommandSupport {
       if (page > 1) {
         parts.add(
             runs(
-                Message.PAGE_PREVIOUS.render(),
+                Message.PAGE_PREVIOUS.of(),
                 command + " " + (page - 1),
-                Message.PAGE_PREVIOUS_HOVER.render(Message.text("page", "" + (page - 1)))));
+                Message.PAGE_PREVIOUS_HOVER.with(Message.text("page", "" + (page - 1)))));
       }
       parts.add(
-          Message.PAGE_STATUS.render(
+          Message.PAGE_STATUS.with(
               Message.text("page", "" + page), Message.text("pages", "" + pages)));
       if (page < pages) {
         parts.add(
             runs(
-                Message.PAGE_NEXT.render(),
+                Message.PAGE_NEXT.of(),
                 command + " " + (page + 1),
-                Message.PAGE_NEXT_HOVER.render(Message.text("page", "" + (page + 1)))));
+                Message.PAGE_NEXT_HOVER.with(Message.text("page", "" + (page + 1)))));
       }
       return join(parts, " ");
     }
@@ -247,27 +249,53 @@ final class CommandSupport {
   // ---------------------------------------------------------------------------
 
   /**
-   * Formats a duration for people: {@code 3d 4h}, {@code 4h 12m}, {@code 12m 5s}, {@code 5s}.
+   * A duration for people, in the reader's language: {@code 3d 4h}, {@code 4h 12m}, {@code 12m 5s},
+   * {@code 30m}, {@code 5s} in English, {@code 3 j 4 h} or {@code 12 min 5 s} in French. The second
+   * unit is left out when it is zero.
    *
    * @param duration the duration
-   * @return the text
+   * @return the message
    */
-  static String duration(Duration duration) {
+  static Component duration(Duration duration) {
     long seconds = Math.max(0, duration.toSeconds());
     long days = seconds / 86_400;
     long hours = seconds % 86_400 / 3_600;
     long minutes = seconds % 3_600 / 60;
     long secs = seconds % 60;
     if (days > 0) {
-      return days + "d " + hours + "h";
+      return hours == 0
+          ? Message.DURATION_DAYS_ONLY.with(Message.number("days", days))
+          : Message.DURATION_DAYS.with(
+              Message.number("days", days), Message.number("hours", hours));
     }
     if (hours > 0) {
-      return hours + "h " + minutes + "m";
+      return minutes == 0
+          ? Message.DURATION_HOURS_ONLY.with(Message.number("hours", hours))
+          : Message.DURATION_HOURS.with(
+              Message.number("hours", hours), Message.number("minutes", minutes));
     }
     if (minutes > 0) {
-      return minutes + "m " + secs + "s";
+      return secs == 0
+          ? Message.DURATION_MINUTES_ONLY.with(Message.number("minutes", minutes))
+          : Message.DURATION_MINUTES.with(
+              Message.number("minutes", minutes), Message.number("seconds", secs));
     }
-    return secs + "s";
+    return Message.DURATION_SECONDS.with(Message.number("seconds", secs));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Replies
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Tells a source a message: a player in its own language (the player renders it when it is
+   * written), anyone else, such as the console, in English.
+   *
+   * @param source who is told
+   * @param message the message
+   */
+  static void tell(CommandSource source, Component message) {
+    source.sendMessage(source instanceof Player ? message : PlayerMessages.english(message));
   }
 
   /**

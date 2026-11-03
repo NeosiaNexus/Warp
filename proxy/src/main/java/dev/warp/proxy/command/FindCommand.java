@@ -20,6 +20,7 @@ import dev.warp.api.Warp;
 import dev.warp.api.command.CommandSource;
 import dev.warp.api.player.Player;
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.proxy.i18n.Message;
 
 import java.util.Optional;
 
@@ -68,12 +69,12 @@ final class FindCommand {
                       String name = StringArgumentType.getString(context, "player");
                       Optional<Player> player = proxy.player(name);
                       if (player.isEmpty()) {
-                        source.sendMessage(
-                            Message.UNKNOWN_PLAYER.render(Message.text("player", name)));
+                        CommandSupport.tell(
+                            source, Message.UNKNOWN_PLAYER.with(Message.text("player", name)));
                         return 0;
                       }
-                      source.sendMessage(
-                          describe(player.get(), source.hasPermission(ADDRESS_PERMISSION)));
+                      CommandSupport.tell(
+                          source, describe(player.get(), source.hasPermission(ADDRESS_PERMISSION)));
                       return Command.SINGLE_SUCCESS;
                     }));
   }
@@ -89,7 +90,7 @@ final class FindCommand {
     ProtocolVersion version = ProtocolVersion.byProtocolId(player.protocolVersion());
     Component where =
         address
-            ? Message.FIND_ADDRESS.render(
+            ? Message.FIND_ADDRESS.with(
                 Message.text("address", player.remoteAddress().getAddress().getHostAddress()))
             : Component.empty();
     String versionName = version != null ? version.name() : "protocol " + player.protocolVersion();
@@ -97,16 +98,16 @@ final class FindCommand {
         .currentServer()
         .map(
             connection ->
-                Message.FIND_ON.render(
+                Message.FIND_ON.with(
                     Message.text("player", player.username()),
                     Message.component(
                         "server", GlistCommand.serverLink(connection.server().name())),
-                    Message.text("ping", Message.number(player.ping())),
+                    Message.number("ping", player.ping()),
                     Message.text("version", versionName),
                     Message.component("address", where)))
         .orElseGet(
             () ->
-                Message.FIND_CONNECTING.render(
+                Message.FIND_CONNECTING.with(
                     Message.text("player", player.username()),
                     Message.text("version", versionName),
                     Message.component("address", where)));

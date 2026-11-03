@@ -23,12 +23,12 @@ import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginDescription;
 import dev.warp.api.plugin.PluginState;
 import dev.warp.proxy.WarpBuildInfo;
+import dev.warp.proxy.i18n.Message;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 import com.mojang.brigadier.Command;
@@ -80,7 +80,8 @@ final class WarpCommand {
             .executes(
                 context -> {
                   CommandSource source = context.getSource();
-                  source.sendMessage(
+                  CommandSupport.tell(
+                      source,
                       source.hasPermission(PERMISSION)
                           ? overview(proxy, control, source, antiBot != null)
                           : subcommands(source, antiBot != null));
@@ -91,7 +92,8 @@ final class WarpCommand {
                     .requires(source -> source.hasPermission(PERMISSION))
                     .executes(
                         context -> {
-                          context.getSource().sendMessage(plugins(proxy.plugins().plugins()));
+                          CommandSupport.tell(
+                              context.getSource(), plugins(proxy.plugins().plugins()));
                           return Command.SINGLE_SUCCESS;
                         }));
     if (antiBot != null) {
@@ -119,15 +121,15 @@ final class WarpCommand {
     String copy = "Warp " + WarpBuildInfo.VERSION + " (" + WarpBuildInfo.GIT_COMMIT + ")";
     lines.add(
         Message.WARP_VERSION
-            .render(
+            .with(
                 Message.text("version", WarpBuildInfo.VERSION),
                 Message.text("commit", abbreviate(WarpBuildInfo.GIT_COMMIT)),
                 Message.text("branch", WarpBuildInfo.GIT_BRANCH))
             .clickEvent(ClickEvent.copyToClipboard(copy))
-            .hoverEvent(HoverEvent.showText(Message.WARP_VERSION_HOVER.render())));
+            .hoverEvent(HoverEvent.showText(Message.WARP_VERSION_HOVER.of())));
     lines.add(
-        Message.WARP_RUNTIME.render(
-            Message.text("uptime", CommandSupport.duration(control.uptime())),
+        Message.WARP_RUNTIME.with(
+            Message.component("uptime", CommandSupport.duration(control.uptime())),
             Message.text("java", Runtime.version().toString()),
             Message.text(
                 "vm",
@@ -135,33 +137,32 @@ final class WarpCommand {
                     + ", "
                     + System.getProperty("java.vm.vendor", "?"))));
     lines.add(
-        Message.WARP_PLAYERS.render(
-            Message.text("players", Message.number(proxy.playerCount())),
-            Message.text("servers", Message.number(proxy.servers().servers().size()))));
-    lines.add(Message.WARP_COMPRESSION.render(Message.text("compression", control.compression())));
+        Message.WARP_PLAYERS.with(
+            Message.number("players", proxy.playerCount()),
+            Message.number("servers", proxy.servers().servers().size())));
+    lines.add(Message.WARP_COMPRESSION.with(Message.text("compression", control.compression())));
     Runtime runtime = Runtime.getRuntime();
     long direct = PlatformDependent.usedDirectMemory();
     lines.add(
-        Message.WARP_MEMORY.render(
-            Message.text(
-                "used", Message.number((runtime.totalMemory() - runtime.freeMemory()) / MIB)),
-            Message.text("max", Message.number(runtime.maxMemory() / MIB)),
-            Message.text("direct", direct < 0 ? "?" : Message.number(direct / MIB))));
+        Message.WARP_MEMORY.with(
+            Message.number("used", (runtime.totalMemory() - runtime.freeMemory()) / MIB),
+            Message.number("max", runtime.maxMemory() / MIB),
+            direct < 0 ? Message.text("direct", "?") : Message.number("direct", direct / MIB)));
     List<PluginContainer> plugins = proxy.plugins().plugins();
     lines.add(
         plugins.isEmpty()
-            ? Message.WARP_PLUGINS_NONE.render()
-            : Message.WARP_PLUGINS.render(
-                Message.text("count", Message.number(plugins.size())),
+            ? Message.WARP_PLUGINS_NONE.of()
+            : Message.WARP_PLUGINS.with(
+                Message.number("count", plugins.size()),
                 Message.component("states", states(plugins))));
     if (proxy.isDraining()) {
       DrainStatus drain = proxy.drainStatus();
       lines.add(
-          Message.WARP_DRAINING.render(
-              Message.text("elapsed", CommandSupport.duration(drain.elapsed())),
-              Message.text("phase", drain.phase().name().toLowerCase(Locale.ROOT)),
-              Message.text("trigger", ShutdownCommand.describe(drain.trigger())),
-              Message.text("players", Message.number(drain.players()))));
+          Message.WARP_DRAINING.with(
+              Message.component("elapsed", CommandSupport.duration(drain.elapsed())),
+              Message.component("phase", ShutdownCommand.describe(drain.phase())),
+              Message.component("trigger", ShutdownCommand.describe(drain.trigger())),
+              Message.number("players", drain.players())));
     }
     lines.add(subcommands(source, antiBot));
     return Component.join(JoinConfiguration.newlines(), lines);
@@ -176,15 +177,15 @@ final class WarpCommand {
     if (antiBot && source.hasPermission(AntiBotCommand.PERMISSION)) {
       links.add(subcommand("/warp antibot"));
     }
-    return Message.WARP_SUBCOMMANDS.render(
+    return Message.WARP_SUBCOMMANDS.with(
         Message.component("commands", CommandSupport.join(links, ", ")));
   }
 
   private static Component subcommand(String command) {
     return CommandSupport.suggests(
-        Message.VALUE.render(Message.text("text", command)),
+        Message.VALUE.with(Message.text("text", command)),
         command,
-        Message.WARP_SUBCOMMAND_HOVER.render(Message.text("command", command)));
+        Message.WARP_SUBCOMMAND_HOVER.with(Message.text("command", command)));
   }
 
   private static String abbreviate(String commit) {
@@ -203,11 +204,11 @@ final class WarpCommand {
    */
   static Component plugins(List<PluginContainer> plugins) {
     if (plugins.isEmpty()) {
-      return Message.PLUGINS_NONE.render();
+      return Message.PLUGINS_NONE.of();
     }
     List<Component> lines = new ArrayList<>();
     lines.add(
-        Message.PLUGINS_HEADER.render(
+        Message.PLUGINS_HEADER.with(
             Message.count(plugins.size()), Message.component("states", states(plugins))));
     plugins.stream()
         .sorted(Comparator.comparing(plugin -> plugin.description().id()))
@@ -218,29 +219,27 @@ final class WarpCommand {
   private static Component line(PluginContainer plugin) {
     PluginDescription description = plugin.description();
     Component hover =
-        Message.PLUGINS_HOVER.render(
+        Message.PLUGINS_HOVER.with(
             Message.text("id", description.id()),
             Message.text("version", description.version()),
             Message.text("description", description.description()));
     if (!description.authors().isEmpty()) {
       hover =
           hover.append(
-              Message.PLUGINS_HOVER_AUTHORS.render(
+              Message.PLUGINS_HOVER_AUTHORS.with(
                   Message.text("authors", String.join(", ", description.authors()))));
     }
     if (!description.url().isEmpty()) {
-      hover =
-          hover.append(Message.PLUGINS_HOVER_URL.render(Message.text("url", description.url())));
+      hover = hover.append(Message.PLUGINS_HOVER_URL.with(Message.text("url", description.url())));
     }
     Throwable failure = plugin.failure().orElse(null);
     if (failure != null) {
       hover =
           hover.append(
-              Message.PLUGINS_HOVER_FAILURE.render(
-                  Message.text("failure", String.valueOf(failure))));
+              Message.PLUGINS_HOVER_FAILURE.with(Message.text("failure", String.valueOf(failure))));
     }
     return Message.PLUGINS_LINE
-        .render(
+        .with(
             Message.text("name", description.name()),
             Message.text("version", description.version()),
             Message.component("state", state(plugin.state())))
@@ -257,18 +256,17 @@ final class WarpCommand {
     counts.forEach(
         (state, count) ->
             parts.add(
-                Message.PLUGIN_STATE_COUNT.render(
-                    Message.text("count", Message.number(count)),
-                    Message.component("state", state(state)))));
+                Message.PLUGIN_STATE_COUNT.with(
+                    Message.number("count", count), Message.component("state", state(state)))));
     return CommandSupport.join(parts, ", ");
   }
 
   private static Component state(PluginState state) {
     return switch (state) {
-      case LOADING -> Message.PLUGIN_STATE_LOADING.render();
-      case ENABLED -> Message.PLUGIN_STATE_ENABLED.render();
-      case FAILED -> Message.PLUGIN_STATE_FAILED.render();
-      case DISABLED -> Message.PLUGIN_STATE_DISABLED.render();
+      case LOADING -> Message.PLUGIN_STATE_LOADING.of();
+      case ENABLED -> Message.PLUGIN_STATE_ENABLED.of();
+      case FAILED -> Message.PLUGIN_STATE_FAILED.of();
+      case DISABLED -> Message.PLUGIN_STATE_DISABLED.of();
     };
   }
 }

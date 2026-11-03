@@ -18,13 +18,15 @@ package dev.warp.proxy.command;
 
 import dev.warp.api.Warp;
 import dev.warp.api.command.CommandSource;
+import dev.warp.api.lifecycle.DrainPhase;
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
 import dev.warp.api.player.Player;
 import dev.warp.proxy.config.DrainConfig;
+import dev.warp.proxy.i18n.Message;
+import dev.warp.proxy.i18n.PlayerMessages;
 
 import java.util.List;
-import java.util.Locale;
 
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -46,8 +48,8 @@ import org.slf4j.LoggerFactory;
  * players to {@code drain.transfer-to}, or kicks or keeps them as {@code drain.cannot-transfer}
  * says, and the proxy stops once it is empty or {@code drain.timeout} expired. The players kicked,
  * the logins refused meanwhile and those still connected at the end see the reason, written in
- * MiniMessage, or {@code drain.message} without one. A second {@code /shutdown} says where the
- * first one stands.
+ * MiniMessage, or the message {@code warp.disconnect.restarting} without one, each player in its
+ * language. A second {@code /shutdown} says where the first one stands.
  */
 final class ShutdownCommand {
 
@@ -84,7 +86,7 @@ final class ShutdownCommand {
   private static int shutdown(
       Warp proxy, ProxyControl control, CommandSource source, @Nullable String typed) {
     if (proxy.isDraining()) {
-      source.sendMessage(already(proxy.drainStatus()));
+      CommandSupport.tell(source, already(proxy.drainStatus()));
       return 0;
     }
     Component reason = typed == null ? null : reason(typed);
@@ -92,19 +94,24 @@ final class ShutdownCommand {
     try {
       var _ = control.shutdown(reason);
     } catch (IllegalStateException e) {
-      source.sendMessage(
-          Message.SHUTDOWN_REFUSED.render(Message.text("error", String.valueOf(e.getMessage()))));
+      CommandSupport.tell(
+          source,
+          Message.SHUTDOWN_REFUSED.with(Message.text("error", String.valueOf(e.getMessage()))));
       return 0;
     }
     logger.info(
         "Shutdown requested by {}{}",
         source instanceof Player player ? player.username() : "the console",
-        reason == null ? "" : ": " + PlainTextComponentSerializer.plainText().serialize(reason));
+        reason == null
+            ? ""
+            : ": "
+                + PlainTextComponentSerializer.plainText()
+                    .serialize(PlayerMessages.english(reason)));
     Component announcement = reason != null ? reason : control.drain().message();
     for (Player player : players) {
       player.sendMessage(announcement);
     }
-    source.sendMessage(started(control.drain(), players.size()));
+    CommandSupport.tell(source, started(control.drain(), players.size()));
     return Command.SINGLE_SUCCESS;
   }
 
@@ -115,7 +122,7 @@ final class ShutdownCommand {
    * @return the message
    */
   static Component reason(String typed) {
-    return Message.SHUTDOWN_REASON.render(
+    return Message.SHUTDOWN_REASON.with(
         Message.component("reason", MiniMessage.miniMessage().deserialize(typed)));
   }
 
@@ -128,28 +135,28 @@ final class ShutdownCommand {
    * @return the message
    */
   static Component started(DrainConfig drain, int players) {
-    String delay = DrainConfig.format(drain.propagationDelay());
+    Component delay = CommandSupport.duration(drain.propagationDelay());
     Component fallback =
         drain.cannotTransfer() == DrainConfig.CannotTransfer.KICK
-            ? Message.SHUTDOWN_FALLBACK_KICK.render()
-            : Message.SHUTDOWN_FALLBACK_KEEP.render();
+            ? Message.SHUTDOWN_FALLBACK_KICK.of()
+            : Message.SHUTDOWN_FALLBACK_KEEP.of();
     DrainConfig.Target target = drain.transferTo();
     Component plan;
     if (target != null) {
       plan =
-          Message.SHUTDOWN_PLAN_TRANSFER.render(
+          Message.SHUTDOWN_PLAN_TRANSFER.with(
               Message.text("target", target.toString()),
-              Message.text("delay", delay),
+              Message.component("delay", delay),
               Message.component("fallback", fallback));
     } else if (drain.cannotTransfer() == DrainConfig.CannotTransfer.KICK) {
-      plan = Message.SHUTDOWN_PLAN_KICK.render(Message.text("delay", delay));
+      plan = Message.SHUTDOWN_PLAN_KICK.with(Message.component("delay", delay));
     } else {
-      plan = Message.SHUTDOWN_PLAN_KEEP.render();
+      plan = Message.SHUTDOWN_PLAN_KEEP.of();
     }
-    return Message.SHUTDOWN_STARTED.render(
+    return Message.SHUTDOWN_STARTED.with(
         Message.count(players),
         Message.component("plan", plan),
-        Message.text("timeout", DrainConfig.format(drain.timeout())));
+        Message.component("timeout", CommandSupport.duration(drain.timeout())));
   }
 
   /**
@@ -159,28 +166,44 @@ final class ShutdownCommand {
    * @return the message
    */
   static Component already(DrainStatus status) {
-    return Message.SHUTDOWN_ALREADY.render(
-        Message.text("elapsed", CommandSupport.duration(status.elapsed())),
-        Message.text("phase", status.phase().name().toLowerCase(Locale.ROOT)),
-        Message.text("trigger", describe(status.trigger())),
-        Message.text("players", Message.number(status.players())));
+    return Message.SHUTDOWN_ALREADY.with(
+        Message.component("elapsed", CommandSupport.duration(status.elapsed())),
+        Message.component("phase", describe(status.phase())),
+        Message.component("trigger", describe(status.trigger())),
+        Message.number("players", status.players()));
   }
 
   /**
    * Names what started a drain.
    *
    * @param trigger the trigger
-   * @return such as {@code SIGTERM}
+   * @return such as {@code SIGTERM}, or "a plugin" in the reader's language
    */
-  static String describe(@Nullable DrainTrigger trigger) {
+  static Component describe(@Nullable DrainTrigger trigger) {
     if (trigger == null) {
-      return "?";
+      return Component.text("?");
     }
     return switch (trigger) {
-      case SIGNAL -> "SIGTERM";
-      case HTTP -> "POST /drain";
-      case PLUGIN -> "a plugin";
-      case COMMAND -> "/shutdown";
+      case SIGNAL -> Message.TRIGGER_SIGNAL.of();
+      case HTTP -> Message.TRIGGER_HTTP.of();
+      case PLUGIN -> Message.TRIGGER_PLUGIN.of();
+      case COMMAND -> Message.TRIGGER_COMMAND.of();
+    };
+  }
+
+  /**
+   * Names where a drain stands.
+   *
+   * @param phase the phase
+   * @return such as "transferring", in the reader's language
+   */
+  static Component describe(DrainPhase phase) {
+    return switch (phase) {
+      case NONE -> Message.PHASE_NONE.of();
+      case ANNOUNCING -> Message.PHASE_ANNOUNCING.of();
+      case TRANSFERRING -> Message.PHASE_TRANSFERRING.of();
+      case WAITING -> Message.PHASE_WAITING.of();
+      case STOPPING -> Message.PHASE_STOPPING.of();
     };
   }
 }

@@ -52,8 +52,8 @@ public interface ProxyControl {
   /**
    * Starts the drain for {@code /shutdown}, or returns the one in progress.
    *
-   * @param reason shown to the players it disconnects in place of {@code drain.message}, or {@code
-   *     null} for {@code drain.message}
+   * @param reason shown to the players it disconnects in place of {@code
+   *     warp.disconnect.restarting}, or {@code null} for {@code warp.disconnect.restarting}
    * @return completed with the drain's final status
    * @throws IllegalStateException if the proxy is not running
    */

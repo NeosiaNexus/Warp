@@ -283,5 +283,16 @@ class PlayerMessagesTest {
         assertFalse(text.contains(" ") || text.contains(" "), message.key());
       }
     }
+
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({"en", "fr"})
+    @DisplayName("should never write an em dash")
+    void noEmDash(String language) {
+      for (Message message : Message.values()) {
+        String text =
+            String.valueOf(PlayerMessages.bundledText(Locale.of(language), message.key()));
+        assertFalse(text.indexOf(0x2014) >= 0, message.key() + " in " + language);
+      }
+    }
   }
 }

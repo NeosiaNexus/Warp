@@ -1319,7 +1319,7 @@ public final class ConnectedPlayer {
     Component rendered = render(message);
     if (message instanceof TranslatableComponent translatable
         && Message.byKey(translatable.key()) != null
-        && rendered.equals(Component.empty())) {
+        && PlayerMessages.isEmpty(rendered)) {
       return null;
     }
     return ComponentPackets.chat(rendered, protocolVersion);

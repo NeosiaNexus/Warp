@@ -331,7 +331,7 @@ class SendCommandTest {
       assertEquals(
           List.of(
               "No player or server is named nobody.",
-              "Unknown server: nowhere",
+              "Unknown server: nowhere. Type /server to list the servers.",
               "No player named nobody is connected."),
           console.told());
     }

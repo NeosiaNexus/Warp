@@ -172,7 +172,7 @@ class ClientPlaySessionHandlerTest {
       ByteBuf body = Unpooled.wrappedBuffer(session.toPlayer());
       assertEquals(0x0F, VarInt.read(body));
       assertEquals(
-          "{\"color\":\"gray\",\"extra\":[{\"color\":\"green\",\"text\":\"[lobby]\"}],"
+          "{\"italic\":false,\"color\":\"gray\",\"extra\":[{\"color\":\"green\",\"text\":\"[lobby]\"}],"
               + "\"text\":\"Servers: \"}",
           McString.read(body));
       assertEquals(1, body.readByte()); // system message

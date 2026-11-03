@@ -28,6 +28,7 @@ import dev.warp.api.lifecycle.DrainTrigger;
 import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.proxy.config.DrainConfig;
+import dev.warp.proxy.i18n.PlayerMessages;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -62,11 +63,10 @@ class ShutdownCommandTest {
       assertEquals(1, proxy.control.shutdowns.size());
       Component reason = proxy.control.shutdowns.getFirst();
       assertNotNull(reason);
-      assertEquals(
-          "The server is shutting down: Back in 5 minutes", AdminFixture.PLAIN.serialize(reason));
+      assertEquals("The server is shutting down: Back in 5 minutes", AdminFixture.plain(reason));
       assertEquals(List.of("The server is shutting down: Back in 5 minutes"), proxy.told(steve));
       assertEquals(proxy.told(steve), proxy.told(alex));
-      assertTrue(hasColor(reason, NamedTextColor.RED), reason.toString());
+      assertTrue(hasColor(PlayerMessages.english(reason), NamedTextColor.RED), reason.toString());
     }
 
     @Test
@@ -119,8 +119,8 @@ class ShutdownCommandTest {
               Duration.ofMinutes(30),
               Component.text("Bye"));
 
-      String kicked = AdminFixture.PLAIN.serialize(ShutdownCommand.started(kick, 2));
-      String kept = AdminFixture.PLAIN.serialize(ShutdownCommand.started(keep, 0));
+      String kicked = AdminFixture.plain(ShutdownCommand.started(kick, 2));
+      String kept = AdminFixture.plain(ShutdownCommand.started(keep, 0));
 
       assertTrue(kicked.contains("2 players are kicked from 5s on"), kicked);
       assertTrue(kept.contains("0 players are kept until they leave"), kept);

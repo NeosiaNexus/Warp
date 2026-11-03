@@ -157,7 +157,10 @@ class GlistCommandTest {
       proxy.run(console, "glist nowhere");
 
       assertEquals(
-          List.of("Nobody is on lobby.", "Nobody is online.", "Unknown server: nowhere"),
+          List.of(
+              "Nobody is on lobby.",
+              "Nobody is online.",
+              "Unknown server: nowhere. Type /server to list the servers."),
           console.told());
     }
   }

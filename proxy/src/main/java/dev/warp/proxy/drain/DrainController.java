@@ -148,8 +148,9 @@ public final class DrainController<P extends DrainCandidate> {
    * reason.
    *
    * @param by what starts it
-   * @param reason shown in place of {@code drain.message} to the players kicked and the logins
-   *     refused, or {@code null} for {@code drain.message}; ignored if the drain had started
+   * @param reason shown in place of {@code warp.disconnect.restarting} to the players kicked and
+   *     the logins refused, or {@code null} for {@code warp.disconnect.restarting}; ignored if the
+   *     drain had started
    * @return completed with the final status once the proxy is empty or the time-out expired, before
    *     {@link DrainHost#shutdown}; the same future for every call
    */
@@ -220,8 +221,8 @@ public final class DrainController<P extends DrainCandidate> {
   }
 
   /**
-   * Returns what the players the drain disconnects are told: the reason it started with, or {@code
-   * drain.message}.
+   * Returns what the players the drain disconnects are told: the reason it started with, or the
+   * message {@code warp.disconnect.restarting}, in each player's language.
    *
    * @return the message
    */

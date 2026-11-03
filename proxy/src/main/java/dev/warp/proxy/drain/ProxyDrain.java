@@ -103,8 +103,8 @@ public final class ProxyDrain implements DrainHost<PlayerCandidate> {
    * Starts the drain with a message of its own, if it has not started yet.
    *
    * @param trigger what starts it
-   * @param reason shown in place of {@code drain.message}, or {@code null}; ignored if the drain
-   *     had started
+   * @param reason shown in place of {@code warp.disconnect.restarting}, or {@code null}; ignored if
+   *     the drain had started
    * @return completed with the final status before the proxy shuts down; the same for every call
    */
   public CompletableFuture<DrainStatus> start(DrainTrigger trigger, @Nullable Component reason) {
@@ -119,7 +119,7 @@ public final class ProxyDrain implements DrainHost<PlayerCandidate> {
   /**
    * Returns what the players the drain disconnects are told.
    *
-   * @return the reason the drain started with, or {@code drain.message}
+   * @return the reason the drain started with, or {@code warp.disconnect.restarting}
    */
   public Component message() {
     return controller.message();
