@@ -14,6 +14,7 @@ import { parseArgs } from 'node:util';
 import { Backend, backendGroups, fetchPreseeded, fetchServerJar, serverCacheDir } from './backend.js';
 import { connectClient } from './clients/index.js';
 import { library } from './clients/mineflayer.js';
+import { JarNotFoundError, findJar, fixedJar, gradleVersion, versionTasks } from './jars.js';
 import { findJava } from './java.js';
 import { buildProbePlugin } from './probe-plugin.js';
 import { startMockMojang } from './mojang.js';
@@ -575,9 +576,8 @@ async function reservePorts(base) {
 
 async function buildViaPlugin() {
   log('building the via plugin (./gradlew :via:jar)');
-  await run(join(ROOT, 'gradlew'), ['--quiet', ':via:jar'], { cwd: ROOT });
-  const version = readFileSync(join(ROOT, 'version.txt'), 'utf8').trim();
-  return join(ROOT, 'via', 'build', 'libs', `warp-via-${version}.jar`);
+  const out = await run(join(ROOT, 'gradlew'), ['--quiet', ':via:jar', ...versionTasks(':via')], { cwd: ROOT });
+  return findJar(join(ROOT, 'via', 'build', 'libs'), 'warp-via', gradleVersion(out), '--via-jar');
 }
 
 /**
@@ -601,11 +601,10 @@ function translationFailures(instance, { translated }) {
 async function buildWarp(plugin) {
   const tasks = plugin ? [':proxy:shadowJar'] : [':proxy:shadowJar', ':e2e-plugin:jar'];
   log(`building Warp (./gradlew ${tasks.join(' ')})`);
-  await run(join(ROOT, 'gradlew'), ['--quiet', ...tasks], { cwd: ROOT });
-  const version = readFileSync(join(ROOT, 'version.txt'), 'utf8').trim();
+  const out = await run(join(ROOT, 'gradlew'), ['--quiet', ...tasks, ...versionTasks(':proxy')], { cwd: ROOT });
   return {
-    jar: join(ROOT, 'proxy', 'build', 'libs', `warp-${version}.jar`),
-    plugin: plugin ? resolve(plugin) : join(E2E_DIR, 'plugin', 'build', 'libs', 'e2e-audience-probe.jar'),
+    jar: findJar(join(ROOT, 'proxy', 'build', 'libs'), 'warp', gradleVersion(out), '--jar'),
+    plugin: plugin ? resolve(plugin) : fixedJar(join(E2E_DIR, 'plugin', 'build', 'libs'), 'e2e-audience-probe.jar', '--plugin'),
   };
 }
 
@@ -695,7 +694,7 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 main().then(
   (code) => { killAll(); process.exit(code ?? 0); },
   (e) => {
-    console.error(e instanceof UsageError ? `error: ${e.message}\n\n${HELP}` : e.stack ?? e);
+    console.error(e instanceof UsageError ? `error: ${e.message}\n\n${HELP}` : e instanceof JarNotFoundError ? `error: ${e.message}` : e.stack ?? e);
     killAll();
     process.exit(2);
   },

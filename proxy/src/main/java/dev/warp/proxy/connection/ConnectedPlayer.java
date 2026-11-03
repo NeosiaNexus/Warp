@@ -67,6 +67,8 @@ import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.event.player.KickedFromServerEventImpl;
 import dev.warp.proxy.event.player.PlayerChooseInitialServerEventImpl;
 import dev.warp.proxy.event.player.ServerPreConnectEventImpl;
+import dev.warp.proxy.i18n.Message;
+import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.messaging.BungeeCordChannel;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.messaging.PluginMessageEventImpl;
@@ -106,11 +108,9 @@ import net.kyori.adventure.resource.ResourcePackRequest;
 import net.kyori.adventure.sound.Sound;
 import net.kyori.adventure.sound.SoundStop;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.TranslatableComponent;
 import net.kyori.adventure.title.Title;
 import net.kyori.adventure.title.TitlePart;
-import net.kyori.adventure.translation.GlobalTranslator;
-import net.kyori.adventure.translation.Translator;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -275,6 +275,18 @@ public final class ConnectedPlayer {
 
   /** Servers that failed during the current fallback chain. Reset on successful switch. */
   private @Nullable Set<String> failedFallbackServers;
+
+  /** The server whose loss started the current fallback chain. Client event loop only. */
+  private @Nullable String lossServer;
+
+  /** The reason that server gave, if any: told to the player wherever the chain ends. */
+  private @Nullable Component lossReason;
+
+  /**
+   * What the player is told once it is on the fallback it is moved to: why it left its server.
+   * Client event loop only.
+   */
+  private @Nullable Component arrivalNotice;
 
   /**
    * Whether the client is inside a bundle session (between two {@link BundleDelimiter} packets).
@@ -555,12 +567,32 @@ public final class ConnectedPlayer {
    * dev.warp.protocol.packet.play.PlayClientSettings PlayClientSettings} during PLAY. The cached
    * value is replayed to new backends in {@link BackendConfigSessionHandler#activated()} to ensure
    * the backend always receives the player's current settings, even if the client does not resend
-   * them during a server switch.
+   * them during a server switch. The player's language is remembered for its next logins, whose
+   * refusals come before its client says it again (see {@link PlayerMessages#localeOf}).
    *
    * @param settings the client settings to cache
    */
   void cacheClientSettings(ClientInformation settings) {
+    ClientInformation previous = this.cachedClientSettings;
     this.cachedClientSettings = settings;
+    if (previous == null || !previous.locale().equals(settings.locale())) {
+      Locale locale = PlayerMessages.parseLocale(settings.locale());
+      if (locale != null) {
+        loginContext.messages().remember(username, locale);
+      }
+    }
+  }
+
+  /**
+   * Returns the language to talk to the player in: its client's, else the one it last played in,
+   * else the configured default.
+   *
+   * @return the language
+   */
+  public Locale locale() {
+    ClientInformation settings = cachedClientSettings;
+    Locale locale = settings == null ? null : PlayerMessages.parseLocale(settings.locale());
+    return locale != null ? locale : loginContext.messages().localeOf(username);
   }
 
   /**
@@ -782,12 +814,11 @@ public final class ConnectedPlayer {
       case ServerPreConnectEvent.Denied() -> {
         if (initial) {
           disconnectFor(
-              DisconnectEvent.Cause.DISCONNECTED_BY_PROXY,
-              "You cannot join this server right now.");
+              DisconnectEvent.Cause.DISCONNECTED_BY_PROXY, Message.INITIAL_SERVER_DENIED.of());
         } else {
           complete(result, new ConnectionResult.Denied(target));
           if (tell) {
-            sendSystemMessage("You cannot join " + target.name() + " right now.");
+            sendMessage(Message.CONNECT_DENIED.of(target.name()));
           }
         }
       }
@@ -814,14 +845,14 @@ public final class ConnectedPlayer {
       BackendServer pending = connectingTo;
       complete(result, new ConnectionResult.InProgress(pending != null ? pending : target));
       if (tell) {
-        sendSystemMessage("Already switching servers.");
+        sendMessage(Message.ALREADY_SWITCHING.of());
       }
       return;
     }
     if (target.name().equals(currentServerName)) {
       complete(result, new ConnectionResult.AlreadyConnected(target));
       if (tell) {
-        sendSystemMessage("Already connected to " + target.name() + ".");
+        sendMessage(Message.ALREADY_ON_SERVER.of(target.name()));
       }
       return;
     }
@@ -868,11 +899,11 @@ public final class ConnectedPlayer {
    */
   void switchServer(ServerInfo target) {
     if (switching) {
-      sendSystemMessage("Already switching servers.");
+      sendMessage(Message.ALREADY_SWITCHING.of());
       return;
     }
     if (target.name().equals(currentServerName)) {
-      sendSystemMessage("Already connected to " + target.name() + ".");
+      sendMessage(Message.ALREADY_ON_SERVER.of(target.name()));
       return;
     }
     beginSwitch(target);
@@ -1095,7 +1126,7 @@ public final class ConnectedPlayer {
       // its own gets here. The player cannot wait for ever.
       logger.warn(
           "Plugins held {} longer than their handlers' time-outs allow: disconnecting", username);
-      disconnectFor(DisconnectEvent.Cause.DISCONNECTED_BY_PROXY, HOLD_OVERRUN);
+      disconnectFor(DisconnectEvent.Cause.DISCONNECTED_BY_PROXY, Message.WAIT_TIMED_OUT.of());
       return;
     }
     if (switchWatched && switching) {
@@ -1124,9 +1155,6 @@ public final class ConnectedPlayer {
   // ---------------------------------------------------------------------------
   // Plugin holds
   // ---------------------------------------------------------------------------
-
-  /** What a player is told when plugins held it past their time-outs. */
-  private static final String HOLD_OVERRUN = "Timed out waiting for a server.";
 
   /**
    * Fires an event the player's next move waits for (which server it joins first, whether it may
@@ -1228,16 +1256,6 @@ public final class ConnectedPlayer {
     sendMessage(Component.text(message));
   }
 
-  /**
-   * Sends a disconnect reason to the client and then disconnects, in whatever state the client is
-   * (see {@link #disconnect(Component)}).
-   *
-   * @param reason the plain text shown to the player
-   */
-  void disconnectWithReason(String reason) {
-    disconnect(Component.text(reason));
-  }
-
   // ---------------------------------------------------------------------------
   // Components: what the plugin API's Player delegates to
   //
@@ -1285,7 +1303,26 @@ public final class ConnectedPlayer {
    * @throws IllegalArgumentException if the message is too large for the player's client
    */
   public void sendMessage(Component message) {
-    sendPlay(List.of(ComponentPackets.chat(render(message), protocolVersion)), false);
+    PlayPacket packet = chatPacket(message);
+    if (packet != null) {
+      sendPlay(List.of(packet), false);
+    }
+  }
+
+  /**
+   * Returns the chat packet of a message, rendered for the player.
+   *
+   * @return the packet, or {@code null} for one of the proxy's messages the operator emptied
+   * @throws IllegalArgumentException if the message is too large for the player's client
+   */
+  private @Nullable PlayPacket chatPacket(Component message) {
+    Component rendered = render(message);
+    if (message instanceof TranslatableComponent translatable
+        && Message.byKey(translatable.key()) != null
+        && PlayerMessages.isEmpty(rendered)) {
+      return null;
+    }
+    return ComponentPackets.chat(rendered, protocolVersion);
   }
 
   /**
@@ -1385,6 +1422,18 @@ public final class ConnectedPlayer {
    */
   void joinedGame() {
     inGame = true;
+    Component notice = arrivalNotice;
+    arrivalNotice = null;
+    if (notice != null) {
+      try {
+        PlayPacket packet = chatPacket(notice);
+        if (packet != null) {
+          pendingPackets.addFirst(packet);
+        }
+      } catch (IllegalArgumentException tooLarge) {
+        logger.debug("Fallback notice to {} too large for its client: {}", username, tooLarge);
+      }
+    }
     if (droppedPending) {
       logger.debug("Dropped proxy messages to {} beyond {}", username, MAX_PENDING_PACKETS);
       droppedPending = false;
@@ -1426,15 +1475,14 @@ public final class ConnectedPlayer {
   }
 
   /**
-   * Renders the translations plugins registered, in the player's language.
+   * Renders the proxy's messages and the translations plugins registered, in the player's language
+   * (see {@link PlayerMessages#render}).
    *
    * @param component the component
    * @return it rendered
    */
   Component render(Component component) {
-    ClientInformation settings = cachedClientSettings;
-    Locale locale = settings == null ? null : Translator.parseLocale(settings.locale());
-    return GlobalTranslator.render(component, locale != null ? locale : Locale.US);
+    return loginContext.messages().render(component, locale(), protocolVersion);
   }
 
   /**
@@ -1491,7 +1539,8 @@ public final class ConnectedPlayer {
       packet = ComponentPackets.disconnect(reason, state, protocolVersion);
     } catch (IllegalArgumentException tooLarge) {
       logger.warn("Disconnect reason for {} too large for its client: {}", username, tooLarge);
-      packet = ComponentPackets.disconnect(Component.text("Disconnected"), state, protocolVersion);
+      packet =
+          ComponentPackets.disconnect(render(Message.REASON_TOO_LONG.of()), state, protocolVersion);
     }
     if (packet == null) {
       disconnect();
@@ -1861,8 +1910,13 @@ public final class ConnectedPlayer {
       KickedFromServerEvent.Cause baseCause,
       boolean duringConnect,
       boolean stillOnCurrent) {
+    Component reason = backend == null ? null : backend.channel().attr(KICK_REASON).get();
     if (failedFallbackServers == null) {
+      // The first loss of a chain of fallbacks: its reason is the one the player is told, even
+      // when the fallbacks fail without one of their own.
       failedFallbackServers = new HashSet<>();
+      lossServer = lostName;
+      lossReason = reason;
     }
     Set<String> excluded = failedFallbackServers;
     excluded.add(lostName);
@@ -1871,7 +1925,6 @@ public final class ConnectedPlayer {
       excluded.add(currentServerName);
     }
 
-    Component reason = backend == null ? null : backend.channel().attr(KICK_REASON).get();
     KickedFromServerEvent.Cause cause =
         reason != null ? KickedFromServerEvent.Cause.KICKED : baseCause;
     BackendServer lost = lostServer(lostName);
@@ -1884,9 +1937,15 @@ public final class ConnectedPlayer {
       fallback = loginContext.serverRegistry().nextFallback(excluded);
       proposed =
           fallback != null
-              ? new KickedFromServerEvent.Redirect(fallback, null)
+              ? new KickedFromServerEvent.Redirect(
+                  fallback,
+                  lossServer != null
+                      ? movedTo(lossServer, fallback, lossReason)
+                      : movedTo(lostName, fallback, reason))
               : new KickedFromServerEvent.DisconnectPlayer(
-                  reason != null ? reason : Component.text(NO_SERVER_LEFT));
+                  reason != null
+                      ? reason
+                      : lossReason != null ? lossReason : Message.NO_SERVER_LEFT.of());
     }
 
     if (!stillOnCurrent) {
@@ -1946,12 +2005,11 @@ public final class ConnectedPlayer {
               "Refusing to redirect {} to '{}', which already failed: disconnecting",
               username,
               server.name());
-          disconnectFor(DisconnectEvent.Cause.NO_SERVER_AVAILABLE, NO_SERVER_LEFT);
+          disconnectFor(DisconnectEvent.Cause.NO_SERVER_AVAILABLE, Message.NO_SERVER_LEFT.of());
           return;
         }
-        if (message != null) {
-          sendMessage(message);
-        }
+        // Told once the player is on the fallback, where it explains why it is there.
+        arrivalNotice = message;
         redirect(lostName, target);
       }
     }
@@ -1978,7 +2036,7 @@ public final class ConnectedPlayer {
           } else {
             disconnectFor(
                 DisconnectEvent.Cause.DISCONNECTED_BY_PROXY,
-                "You cannot join " + target.name() + " right now.");
+                Message.FALLBACK_DENIED.of(target.name()));
           }
         });
   }
@@ -1996,15 +2054,23 @@ public final class ConnectedPlayer {
   }
 
   private static Component couldNotConnect(String server, @Nullable Component reason) {
-    String text = "Could not connect to " + server;
     if (reason == null || reason.equals(Component.empty())) {
-      return Component.text(text + ".", NamedTextColor.RED);
+      return Message.CONNECT_FAILED.of(server);
     }
-    return Component.text(text + ": ", NamedTextColor.RED).append(reason);
+    return Message.CONNECT_FAILED_REASON.of(server, reason);
   }
 
-  /** What a player is told when no server can take it. */
-  private static final String NO_SERVER_LEFT = "Could not connect to any available server.";
+  /**
+   * What a player moved to a fallback is told: why it left its server, and where it is now. Nothing
+   * when it never reached a server, and its first one was down: it simply lands on the fallback.
+   */
+  private @Nullable Component movedTo(
+      String lostName, BackendServer fallback, @Nullable Component reason) {
+    if (reason != null && !reason.equals(Component.empty())) {
+      return Message.FALLBACK_KICKED.of(lostName, fallback.name(), reason);
+    }
+    return currentServer == null ? null : Message.FALLBACK_LOST.of(lostName, fallback.name());
+  }
 
   // ---------------------------------------------------------------------------
   // KeepAlive system
@@ -2498,12 +2564,12 @@ public final class ConnectedPlayer {
     loginContext.playerRegistry().unregister(this);
     endSession();
     logger.info("Disconnecting {}: the same account logged in again", username);
-    onEventLoop(() -> disconnectWithReason("You logged in from another location"));
+    onEventLoop(() -> disconnect(Message.DUPLICATE_LOGIN.of()));
   }
 
   /** Disconnects the player because the proxy is shutting down. Thread-safe. */
   public void disconnectShutdown() {
-    disconnectShutdown("The proxy is shutting down.");
+    disconnectShutdown(Message.SERVER_SHUTDOWN.of());
   }
 
   /**
@@ -2881,7 +2947,7 @@ public final class ConnectedPlayer {
       log(logger, Level.INFO).log("{} ran the command /{}", username, commandLine);
     }
     WarpCommandManager commands = loginContext.commands();
-    boolean proxyCommand = commands.owns(commandLine);
+    boolean proxyCommand = commands.owns(api, commandLine);
     WarpEventBus events = loginContext.events();
     if (!events.hasHandlers(CommandExecuteEventImpl.class)) {
       if (proxyCommand) {
@@ -2942,7 +3008,7 @@ public final class ConnectedPlayer {
     if (protocolVersion.isOlderThan(ProtocolVersion.MINECRAFT_1_13)
         || !text.startsWith("/")
         || text.indexOf(' ') < 0
-        || !loginContext.commands().owns(text.substring(1))) {
+        || !loginContext.commands().owns(api, text.substring(1))) {
       forward.run();
       return;
     }
@@ -2982,6 +3048,42 @@ public final class ConnectedPlayer {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Command list
+  // ---------------------------------------------------------------------------
+
+  /**
+   * How long a refresh of the command list waits for more changes: a permission plugin applying an
+   * edit changes many nodes, a plugin being enabled registers many commands.
+   */
+  static final Duration COMMAND_REFRESH_DELAY = Duration.ofMillis(100);
+
+  /**
+   * A server's last command list, kept to merge the proxy's commands into it again when they or the
+   * player's permissions change. Kept as the packet's raw bytes (some 20 KiB for a vanilla
+   * operator), not as a decoded tree (hundreds of KiB): it is decoded again only for a refresh.
+   * Compared by identity: each packet the server sends is a list of its own, even if it is the
+   * same.
+   */
+  private static final class ServerCommands {
+    private final MinecraftConnection backend;
+    private final DeclareCommands packet;
+
+    private ServerCommands(MinecraftConnection backend, DeclareCommands packet) {
+      this.backend = backend;
+      this.packet = packet;
+    }
+  }
+
+  /**
+   * The current server's last command list, or {@code null} before it sent one, or when the proxy
+   * could not read it.
+   */
+  private volatile @Nullable ServerCommands serverCommands;
+
+  /** Whether a refresh of the command list is scheduled and has not started yet. */
+  private final AtomicBoolean commandRefreshScheduled = new AtomicBoolean();
+
   /**
    * Sends the client its server's command list with the proxy's commands merged in, as {@link
    * PlayerAvailableCommandsEvent} leaves it. A list the proxy cannot read goes as it came. Runs on
@@ -2999,11 +3101,14 @@ public final class ConnectedPlayer {
       decoding = packet.tree(protocolVersion);
     } catch (RuntimeException e) {
       // A tree the client would refuse too: let it judge, as it would without a proxy.
+      serverCommands = null;
       clientConnection.writeAndFlush(packet);
       return;
     }
     switch (decoding) {
       case CommandTreeDecoding.Opaque opaque -> {
+        // Nothing to refresh: the proxy's commands are not in it.
+        serverCommands = null;
         if (!opaqueCommandsLogged) {
           opaqueCommandsLogged = true;
           logger.info("Proxy commands not shown to {}: {}", username, opaque.message());
@@ -3011,32 +3116,110 @@ public final class ConnectedPlayer {
         clientConnection.writeAndFlush(packet);
       }
       case CommandTreeDecoding.Decoded(CommandTree tree) -> {
-        CommandTree merged =
-            tree.merge(
-                loginContext.commands().treeFor(api, protocolVersion), NameConflict.PROXY_WINS);
-        WarpEventBus events = loginContext.events();
-        if (!events.hasHandlers(PlayerAvailableCommandsEventImpl.class)) {
-          clientConnection.writeAndFlush(DeclareCommands.of(merged, protocolVersion));
-          return;
-        }
-        var event = new PlayerAvailableCommandsEventImpl(api, merged.topLevelNames());
-        var _ =
-            events
-                .fire(event, uuid)
-                .whenComplete(
-                    (done, _) ->
-                        onEventLoop(
-                            () -> {
-                              if (!clientConnection.channel().isActive()) {
-                                return;
-                              }
-                              CommandTree shown =
-                                  merged.withoutTopLevel(node -> !done.keeps(topLevelName(node)));
-                              clientConnection.writeAndFlush(
-                                  DeclareCommands.of(shown, protocolVersion));
-                            }));
+        ServerCommands origin = new ServerCommands(backend, packet);
+        serverCommands = origin;
+        sendMerged(tree, origin);
       }
     }
+  }
+
+  /**
+   * Sends the player its command list again: the current server's last list, with the proxy's
+   * commands it may use now. Debounced by {@link #COMMAND_REFRESH_DELAY}; the permission checks run
+   * on the command executor, the write on the client event loop. Safe from any thread.
+   *
+   * <p>Nothing happens for a client older than 1.13 (no command list), before the server sent a
+   * list, while the client is between two servers or in the configuration phase (the next server
+   * sends its own), or when the server's list is opaque to the proxy (it shows no proxy commands).
+   */
+  public void refreshCommands() {
+    if (protocolVersion.isOlderThan(ProtocolVersion.MINECRAFT_1_13)
+        || !clientConnection.channel().isActive()
+        || !commandRefreshScheduled.compareAndSet(false, true)) {
+      return;
+    }
+    var _ =
+        clientConnection
+            .channel()
+            .eventLoop()
+            .schedule(
+                this::startCommandRefresh, COMMAND_REFRESH_DELAY.toMillis(), TimeUnit.MILLISECONDS);
+  }
+
+  /** Starts a scheduled refresh: on the client event loop, once the delay is over. */
+  private void startCommandRefresh() {
+    // Cleared first: a change from here on may come after the checks read the permissions.
+    commandRefreshScheduled.set(false);
+    ServerCommands origin = serverCommands;
+    if (origin == null || !canDeclareCommands(origin)) {
+      return;
+    }
+    try {
+      loginContext.commands().executor().execute(() -> rebuildCommands(origin));
+    } catch (RejectedExecutionException e) {
+      // The proxy is shutting down.
+      logger.trace("Command list of {} not refreshed: shutting down", username);
+    }
+  }
+
+  /** Merges the proxy's commands into the server's last list again. Off the event loop. */
+  private void rebuildCommands(ServerCommands origin) {
+    try {
+      if (origin.packet.tree(protocolVersion)
+          instanceof CommandTreeDecoding.Decoded(CommandTree tree)) {
+        sendMerged(tree, origin);
+      }
+    } catch (RuntimeException e) {
+      // A plugin's requirement that throws, typically: the client keeps the list it has.
+      logger.warn("Could not refresh the command list of {}", username, e);
+    }
+  }
+
+  /**
+   * Merges the proxy's commands the player may use into a server's tree, fires {@link
+   * PlayerAvailableCommandsEvent} if anyone listens, and sends the result, unless a newer list or
+   * another state replaced {@code origin} meanwhile.
+   */
+  private void sendMerged(CommandTree tree, ServerCommands origin) {
+    CommandTree merged =
+        tree.merge(loginContext.commands().treeFor(api, protocolVersion), NameConflict.PROXY_WINS);
+    WarpEventBus events = loginContext.events();
+    if (!events.hasHandlers(PlayerAvailableCommandsEventImpl.class)) {
+      declareCommands(DeclareCommands.of(merged, protocolVersion), origin);
+      return;
+    }
+    var event = new PlayerAvailableCommandsEventImpl(api, merged.topLevelNames());
+    var _ =
+        events
+            .fire(event, uuid)
+            .whenComplete(
+                (done, _) -> {
+                  CommandTree shown =
+                      merged.withoutTopLevel(node -> !done.keeps(topLevelName(node)));
+                  declareCommands(DeclareCommands.of(shown, protocolVersion), origin);
+                });
+  }
+
+  /** Writes a command list on the client event loop, if {@code origin} is still current. */
+  private void declareCommands(DeclareCommands packet, ServerCommands origin) {
+    onEventLoop(
+        () -> {
+          if (canDeclareCommands(origin)) {
+            clientConnection.writeAndFlush(packet);
+          }
+        });
+  }
+
+  /**
+   * Whether a list merged into {@code origin} may go to the client: it is the current server's last
+   * list, and the client plays on that server, outside a state change.
+   */
+  private boolean canDeclareCommands(ServerCommands origin) {
+    return serverCommands == origin
+        && isPlayingOn(origin.backend)
+        && clientConnection.channel().isActive()
+        && clientConnection.encoder().state() == ProtocolState.PLAY
+        && !clientConnection.isStateChangePending();
   }
 
   private static String topLevelName(dev.warp.protocol.command.CommandNode node) {

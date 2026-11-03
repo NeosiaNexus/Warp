@@ -17,6 +17,7 @@
 package dev.warp.api;
 
 import dev.warp.api.antibot.AntiBot;
+import dev.warp.api.command.CommandSource;
 import dev.warp.api.lifecycle.DrainPhase;
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.player.Player;
@@ -96,6 +97,15 @@ public interface Warp {
    * @return the anti-bot
    */
   AntiBot antiBot();
+
+  /**
+   * Returns the console, as the command source that runs the commands typed at it. It has every
+   * permission, and it is an audience: a component sent to it is logged, rendered in colour on the
+   * console and as plain text in the log file.
+   *
+   * @return the console
+   */
+  CommandSource console();
 
   // ---------------------------------------------------------------------------
   // Drain (readiness holds belong to plugins: see PluginContext#holdReadiness)

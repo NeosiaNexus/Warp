@@ -441,7 +441,7 @@ class PlayerComponentsTest {
 
       List<SwitchHarness.Sent> sent = setup.sentToClient();
       assertEquals(
-          Component.text("Disconnected"),
+          Component.text("You were disconnected. The reason was too long for your game to show."),
           sent.getFirst().as(PlayDisconnect.class).decodedReason(version));
       assertFalse(setup.client.channel().isOpen());
     }

@@ -44,6 +44,8 @@ import dev.warp.protocol.text.ComponentCodec;
 import dev.warp.proxy.command.ProxyCommands;
 import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.config.TimeoutsConfig;
+import dev.warp.proxy.i18n.Message;
+import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
@@ -55,6 +57,7 @@ import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -68,7 +71,6 @@ import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -155,8 +157,7 @@ class ClientPlaySessionHandlerTest {
       session.handler().handle(command(version, "server nowhere"));
 
       byte[] content =
-          ComponentCodec.encode(
-              Component.text("Unknown server: nowhere", NamedTextColor.RED), version);
+          ComponentCodec.encode(rendered(Message.UNKNOWN_SERVER.of("nowhere"), version), version);
       assertArrayEquals(concat(new byte[] {(byte) packetId}, content, trailer), session.toPlayer());
       assertNull(session.toBackend());
     }
@@ -171,7 +172,7 @@ class ClientPlaySessionHandlerTest {
       ByteBuf body = Unpooled.wrappedBuffer(session.toPlayer());
       assertEquals(0x0F, VarInt.read(body));
       assertEquals(
-          "{\"color\":\"gray\",\"extra\":[{\"color\":\"green\",\"text\":\"[lobby]\"}],"
+          "{\"italic\":false,\"color\":\"gray\",\"extra\":[{\"color\":\"green\",\"text\":\"[lobby]\"}],"
               + "\"text\":\"Servers: \"}",
           McString.read(body));
       assertEquals(1, body.readByte()); // system message
@@ -191,8 +192,7 @@ class ClientPlaySessionHandlerTest {
       session.handler().handle(command(version, "server survival"));
 
       byte[] content =
-          ComponentCodec.encode(
-              Component.text("Could not connect to survival.", NamedTextColor.RED), version);
+          ComponentCodec.encode(rendered(Message.CONNECT_FAILED.of("survival"), version), version);
       byte[] answer = session.toPlayer();
       assertArrayEquals(content, Arrays.copyOfRange(answer, 1, 1 + content.length));
       assertNull(session.nextToPlayer(), "no StartConfiguration");
@@ -433,12 +433,19 @@ class ClientPlaySessionHandlerTest {
   /** The answer to {@code /server} on the lobby, encoded for {@code version}. */
   private static byte[] serverList(Session session, ProtocolVersion version) {
     return ComponentCodec.encode(
-        ProxyCommands.serverList(
-            session.player().loginContext().serverRegistry().allServers().stream()
-                .map(BackendServer::name)
-                .toList(),
-            "lobby"),
+        rendered(
+            ProxyCommands.serverList(
+                session.player().loginContext().serverRegistry().allServers().stream()
+                    .map(BackendServer::name)
+                    .toList(),
+                "lobby"),
+            version),
         version);
+  }
+
+  /** A message of the proxy as a player of {@code version} reads it, in American English. */
+  private static Component rendered(Component message, ProtocolVersion version) {
+    return PlayerMessages.bundled().render(message, Locale.US, version);
   }
 
   /** How a client of {@code version} sends a command: as a chat line before 1.19. */
@@ -453,6 +460,8 @@ class ClientPlaySessionHandlerTest {
     EmbeddedChannel backend = channel(PacketDirection.CLIENTBOUND, version);
 
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
+
+    when(loginContext.messages()).thenReturn(dev.warp.proxy.i18n.PlayerMessages.bundled());
 
     when(loginContext.logging()).thenReturn(LoggingConfig.DEFAULTS);
 

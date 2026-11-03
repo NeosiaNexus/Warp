@@ -17,6 +17,7 @@
 package dev.warp.api.permission;
 
 import dev.warp.api.event.Subscription;
+import dev.warp.api.player.Player;
 
 /**
  * Registers a plugin's permission providers. Each plugin has its own, from {@link
@@ -36,4 +37,25 @@ public interface Permissions {
    * @return the registration; closing it removes the provider
    */
   Subscription register(int priority, PermissionProvider provider);
+
+  /**
+   * Tells the proxy that a player's permissions changed: a node was granted or taken, the player
+   * joined or left a group. The proxy refreshes what it built from them, its command list, so that
+   * the commands it completes are those it may run now (see {@link Player#refreshCommands()}).
+   *
+   * <p>Call it once the provider answers with the new permissions. Safe from any thread and cheap:
+   * changes in quick succession, such as each node of an edit, are merged into one refresh. A
+   * player who is offline is ignored. Registering or removing a provider refreshes every player by
+   * itself.
+   *
+   * @param player the player whose permissions changed
+   */
+  void changed(Player player);
+
+  /**
+   * Tells the proxy that the permissions of any online player may have changed, as when a group
+   * everyone inherits was edited or the permission data was reloaded: refreshes every player as
+   * {@link #changed(Player)} does.
+   */
+  void allChanged();
 }

@@ -22,14 +22,14 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.warp.proxy.i18n.Message;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 
-import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.minimessage.MiniMessage;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -59,10 +59,7 @@ class DrainConfigTest {
     assertEquals(DrainConfig.CannotTransfer.KEEP, drain.cannotTransfer());
     assertEquals(DrainConfig.NewPlayers.ACCEPT, drain.newPlayers());
     assertEquals(Duration.ofMinutes(30), drain.timeout());
-    assertEquals(
-        MiniMessage.miniMessage()
-            .deserialize("<yellow>This proxy is restarting. Please reconnect."),
-        drain.message());
+    assertEquals(Message.RESTARTING.of(), drain.message());
   }
 
   @Test
@@ -91,7 +88,6 @@ class DrainConfigTest {
               cannot-transfer = kick
               new-players = refuse
               timeout = 2h
-              message = "Back in a minute"
             }
             """);
 
@@ -102,7 +98,6 @@ class DrainConfigTest {
     assertEquals(DrainConfig.CannotTransfer.KICK, drain.cannotTransfer());
     assertEquals(DrainConfig.NewPlayers.REFUSE, drain.newPlayers());
     assertEquals(Duration.ofHours(2), drain.timeout());
-    assertEquals(Component.text("Back in a minute"), drain.message());
   }
 
   @Nested
@@ -168,22 +163,14 @@ class DrainConfigTest {
     }
 
     @Test
-    @DisplayName("should read the message in MiniMessage")
-    void messageMiniMessage() throws Exception {
-      DrainConfig drain = load("drain {\n  message = \"<red>Back <bold>soon\"\n}\n");
-
-      assertEquals(MiniMessage.miniMessage().deserialize("<red>Back <bold>soon"), drain.message());
-    }
-
-    @Test
-    @DisplayName("should refuse a message made of tags only, which shows nothing")
-    void messageTagsOnly() {
+    @DisplayName("should point a drain.message of an older layout to the message that replaced it")
+    void messageMoved() {
       ConfigurationException error =
           assertThrows(
-              ConfigurationException.class, () -> load("drain {\n  message = \"<red>\"\n}\n"));
+              ConfigurationException.class, () -> load("drain {\n  message = \"<red>Back\"\n}\n"));
 
       assertTrue(
-          String.valueOf(error.getMessage()).contains("drain.message must not be blank"),
+          String.valueOf(error.getMessage()).contains("warp.disconnect.restarting"),
           error.getMessage());
     }
 
@@ -196,12 +183,6 @@ class DrainConfigTest {
       assertTrue(
           String.valueOf(error.getMessage()).contains("drain.timeout needs a unit"),
           error.getMessage());
-    }
-
-    @Test
-    @DisplayName("should refuse a blank message")
-    void blankMessage() {
-      assertThrows(ConfigurationException.class, () -> load("drain {\n  message = \" \"\n}\n"));
     }
 
     @Test

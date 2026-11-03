@@ -32,6 +32,8 @@ import dev.warp.api.command.SimpleCommand;
 import dev.warp.api.event.EventBus;
 import dev.warp.api.event.Subscription;
 import dev.warp.api.logging.LogRecord;
+import dev.warp.api.permission.Permissions;
+import dev.warp.api.permission.Tristate;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.command.CommandTree;
@@ -47,15 +49,20 @@ import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.logging.LogCapture;
+import dev.warp.proxy.permission.PluginPermissions;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.arguments.LongArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
+import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -132,6 +139,24 @@ class CommandsTest {
     }
 
     @Test
+    @DisplayName("should tell its listener once commands are registered or removed")
+    void changes() {
+      AtomicInteger changes = new AtomicInteger();
+      commands.onChange(changes::incrementAndGet);
+
+      Subscription registration =
+          commands.register(
+              "test",
+              LiteralArgumentBuilder.<CommandSource>literal("hub")
+                  .executes(context -> Command.SINGLE_SUCCESS));
+      registration.close();
+      boolean removedAgain = commands.unregister("hub");
+
+      assertEquals(2, changes.get());
+      assertFalse(removedAgain);
+    }
+
+    @Test
     @DisplayName("should let a plugin remove the proxy's own /server")
     void unregisterBuiltIn() {
       WarpCommandManager withServer =
@@ -140,7 +165,7 @@ class CommandsTest {
 
       assertTrue(new PluginCommandManager(withServer, "router", s -> {}).unregister("server"));
 
-      assertFalse(withServer.owns("server lobby"));
+      assertFalse(withServer.owns(source(), "server lobby"));
     }
 
     @Test
@@ -371,18 +396,239 @@ class CommandsTest {
           .findFirst()
           .orElseThrow();
     }
+  }
 
-    private CommandTree backendTree() {
-      CommandTree.Builder builder = CommandTree.builder();
-      int tell = builder.literal(builder.root(), "tell");
-      builder.executable(tell);
-      return builder.build();
+  @Nested
+  @DisplayName("command list refresh")
+  class Refresh {
+
+    /** The node the fake permission provider grants, flipped by the tests. */
+    private final AtomicBoolean admin = new AtomicBoolean();
+
+    @Test
+    @DisplayName("should show a command once its permission is granted and the provider says so")
+    void granted() {
+      SwitchHarness setup = playingOnLobby();
+      Permissions permissions = adminCommandAndProvider(setup);
+      setup.receive(setup.current(), frame(VERSION, DeclareCommands.of(backendTree(), VERSION)));
+      assertFalse(shownCommands(setup).contains("admin"));
+
+      admin.set(true);
+      permissions.changed(setup.player.api());
+      afterRefreshDelay(setup);
+
+      List<String> names = shownCommands(setup);
+      assertTrue(names.contains("admin"), names.toString());
+      assertTrue(names.contains("tell"), "the server's commands stay: " + names);
     }
 
-    private List<String> shownCommands(SwitchHarness setup) {
-      DeclareCommands packet = setup.sentToClient().getFirst().as(DeclareCommands.class);
-      CommandTreeDecoding decoding = packet.tree(VERSION);
-      return assertInstanceOf(CommandTreeDecoding.Decoded.class, decoding).tree().topLevelNames();
+    @Test
+    @DisplayName("should hide a command once its permission is taken and the provider says so")
+    void taken() {
+      SwitchHarness setup = playingOnLobby();
+      admin.set(true);
+      Permissions permissions = adminCommandAndProvider(setup);
+      setup.player.loginContext().permissions().trackPlayers(() -> List.of(setup.player.api()));
+      setup.receive(setup.current(), frame(VERSION, DeclareCommands.of(backendTree(), VERSION)));
+      assertTrue(shownCommands(setup).contains("admin"));
+
+      admin.set(false);
+      permissions.allChanged();
+      afterRefreshDelay(setup);
+
+      assertFalse(shownCommands(setup).contains("admin"));
+    }
+
+    @Test
+    @DisplayName("should send one list for a burst of changes, once the delay is over")
+    void debounced() {
+      SwitchHarness setup = playingOnLobby();
+      Permissions permissions = adminCommandAndProvider(setup);
+      setup.receive(setup.current(), frame(VERSION, DeclareCommands.of(backendTree(), VERSION)));
+      setup.sentToClient();
+
+      admin.set(true);
+      for (int i = 0; i < 5; i++) {
+        permissions.changed(setup.player.api());
+      }
+      setup.runPendingTasks();
+      List<SwitchHarness.Sent> early = setup.sentToClient();
+      afterRefreshDelay(setup);
+      List<SwitchHarness.Sent> sent = setup.sentToClient();
+
+      assertTrue(early.isEmpty(), early.toString());
+      assertEquals(1, sent.size(), sent.toString());
+      assertEquals(DeclareCommands.class, sent.getFirst().type());
+    }
+
+    @Test
+    @DisplayName("should refresh again for a change after a refresh started")
+    void later() {
+      SwitchHarness setup = playingOnLobby();
+      Permissions permissions = adminCommandAndProvider(setup);
+      setup.receive(setup.current(), frame(VERSION, DeclareCommands.of(backendTree(), VERSION)));
+      setup.sentToClient();
+      permissions.changed(setup.player.api());
+      afterRefreshDelay(setup);
+      assertFalse(shownCommands(setup).contains("admin"));
+
+      admin.set(true);
+      permissions.changed(setup.player.api());
+      afterRefreshDelay(setup);
+
+      assertTrue(shownCommands(setup).contains("admin"));
+    }
+
+    @Test
+    @DisplayName("should run the handlers of PlayerAvailableCommandsEvent again")
+    void eventFiredAgain() {
+      SwitchHarness setup = playingOnLobby();
+      List<String> offered = new CopyOnWriteArrayList<>();
+      events.subscribe(
+          PlayerAvailableCommandsEvent.class,
+          event -> {
+            offered.add(String.join(",", event.commands()));
+            event.removeIf(name -> name.equals("tell"));
+          });
+      setup.receive(setup.current(), frame(VERSION, DeclareCommands.of(backendTree(), VERSION)));
+      setup.sentToClient();
+
+      setup.player.api().refreshCommands();
+      afterRefreshDelay(setup);
+
+      assertEquals(2, offered.size(), offered.toString());
+      assertFalse(shownCommands(setup).contains("tell"));
+    }
+
+    @Test
+    @DisplayName("should send nothing before the server sent a list")
+    void noServerList() {
+      SwitchHarness setup = playingOnLobby();
+      setup.sentToClient();
+
+      setup.player.api().refreshCommands();
+      afterRefreshDelay(setup);
+
+      assertTrue(setup.sentToClient().isEmpty());
+    }
+
+    @Test
+    @DisplayName("should drop a refresh when the player leaves the server before it runs")
+    void leftMeanwhile() {
+      SwitchHarness setup = playingOnLobby();
+      setup.receive(setup.current(), frame(VERSION, DeclareCommands.of(backendTree(), VERSION)));
+      setup.sentToClient();
+
+      setup.player.api().refreshCommands();
+      // Moving to the configuration phase of a server switch: no play packet may reach the client.
+      setup.player.playOn(null);
+      afterRefreshDelay(setup);
+
+      assertTrue(setup.sentToClient().isEmpty());
+    }
+
+    @Test
+    @DisplayName("should send nothing while the client is in the configuration phase")
+    void configuring() {
+      SwitchHarness setup = playingOnLobby();
+      setup.receive(setup.current(), frame(VERSION, DeclareCommands.of(backendTree(), VERSION)));
+      setup.sentToClient();
+
+      setup.client.setState(ProtocolState.CONFIGURATION);
+      setup.player.api().refreshCommands();
+      afterRefreshDelay(setup);
+
+      assertTrue(setup.sentToClient().isEmpty());
+    }
+
+    @Test
+    @DisplayName("should do nothing for a client older than 1.13, which has no command list")
+    void beforeDeclareCommands() {
+      SwitchHarness setup = playingOnLobby(ProtocolVersion.MINECRAFT_1_12_2);
+      setup.sentToClient();
+
+      setup.player.api().refreshCommands();
+      afterRefreshDelay(setup);
+
+      assertTrue(setup.sentToClient().isEmpty());
+    }
+
+    @Test
+    @DisplayName(
+        "should swap the server's command for the proxy's of the same name as its permission comes"
+            + " and goes, and send what is typed to the one shown")
+    void sameNameAsTheServers() {
+      SwitchHarness setup = playingOnLobby();
+      plugin(setup)
+          .register(
+              LiteralArgumentBuilder.<CommandSource>literal("tell")
+                  .requires(source -> source.hasPermission("proxy.admin"))
+                  .then(
+                      LiteralArgumentBuilder.<CommandSource>literal("everyone")
+                          .executes(context -> Command.SINGLE_SUCCESS)));
+      Permissions permissions =
+          new PluginPermissions(setup.player.loginContext().permissions(), "perms", s -> {});
+      var _ =
+          permissions.register(
+              0,
+              (player, permission) ->
+                  permission.equals("proxy.admin") ? Tristate.of(admin.get()) : Tristate.UNDEFINED);
+      WarpCommandManager commands = setup.player.loginContext().commands();
+      setup.sentToClient();
+      setup.receive(setup.current(), frame(VERSION, DeclareCommands.of(backendTree(), VERSION)));
+      assertFalse(proxysTellShown(setup));
+      assertFalse(commands.owns(setup.player.api(), "tell everyone"));
+
+      admin.set(true);
+      permissions.changed(setup.player.api());
+      afterRefreshDelay(setup);
+
+      assertTrue(proxysTellShown(setup));
+      assertTrue(commands.owns(setup.player.api(), "tell everyone"));
+
+      admin.set(false);
+      permissions.changed(setup.player.api());
+      afterRefreshDelay(setup);
+
+      assertFalse(proxysTellShown(setup));
+      assertFalse(commands.owns(setup.player.api(), "tell everyone"));
+    }
+
+    /**
+     * Whether the list sent last shows the proxy's {@code /tell}, the one with {@code everyone}.
+     */
+    private static boolean proxysTellShown(SwitchHarness setup) {
+      DeclareCommands packet = setup.sentToClient().getLast().as(DeclareCommands.class);
+      CommandTree tree =
+          assertInstanceOf(CommandTreeDecoding.Decoded.class, packet.tree(VERSION)).tree();
+      int tell = tree.topLevel("tell").orElseThrow();
+      return tree.child(tell, "everyone").isPresent();
+    }
+
+    /**
+     * Registers {@code /admin}, behind {@code proxy.admin}, and a provider granting it on demand.
+     */
+    private Permissions adminCommandAndProvider(SwitchHarness setup) {
+      plugin(setup)
+          .register(
+              LiteralArgumentBuilder.<CommandSource>literal("admin")
+                  .requires(source -> source.hasPermission("proxy.admin"))
+                  .executes(context -> Command.SINGLE_SUCCESS));
+      Permissions permissions =
+          new PluginPermissions(setup.player.loginContext().permissions(), "perms", s -> {});
+      var _ =
+          permissions.register(
+              0,
+              (player, permission) ->
+                  permission.equals("proxy.admin") ? Tristate.of(admin.get()) : Tristate.UNDEFINED);
+      setup.sentToClient();
+      return permissions;
+    }
+
+    private void afterRefreshDelay(SwitchHarness setup) {
+      ((EmbeddedChannel) setup.client.channel())
+          .advanceTimeBy(ConnectedPlayer.COMMAND_REFRESH_DELAY.toMillis(), TimeUnit.MILLISECONDS);
+      setup.runPendingTasks();
     }
   }
 
@@ -402,6 +648,19 @@ class CommandsTest {
     };
   }
 
+  private static CommandTree backendTree() {
+    CommandTree.Builder builder = CommandTree.builder();
+    int tell = builder.literal(builder.root(), "tell");
+    builder.executable(tell);
+    return builder.build();
+  }
+
+  private static List<String> shownCommands(SwitchHarness setup) {
+    DeclareCommands packet = setup.sentToClient().getFirst().as(DeclareCommands.class);
+    CommandTreeDecoding decoding = packet.tree(VERSION);
+    return assertInstanceOf(CommandTreeDecoding.Decoded.class, decoding).tree().topLevelNames();
+  }
+
   private PluginCommandManager plugin(SwitchHarness setup) {
     return new PluginCommandManager(setup.player.loginContext().commands(), "test", s -> {});
   }
@@ -412,7 +671,11 @@ class CommandsTest {
   }
 
   private SwitchHarness playingOnLobby() {
-    SwitchHarness setup = new SwitchHarness(VERSION, List.of(), ProtocolState.PLAY);
+    return playingOnLobby(VERSION);
+  }
+
+  private SwitchHarness playingOnLobby(ProtocolVersion version) {
+    SwitchHarness setup = new SwitchHarness(version, List.of(), ProtocolState.PLAY);
     when(setup.player.loginContext().events()).thenReturn(bus);
     harnesses.add(setup);
     MinecraftConnection lobby = setup.backend(ProtocolState.PLAY);

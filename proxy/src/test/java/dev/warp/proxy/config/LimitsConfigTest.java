@@ -213,8 +213,7 @@ class LimitsConfigTest {
               () -> load("limits { logins { interval = \"" + value + "\" } }"));
 
       assertTrue(
-          String.valueOf(error.getMessage())
-              .startsWith("limits.logins.interval must be a duration"),
+          String.valueOf(error.getMessage()).contains("limits.logins.interval must be a duration"),
           error.getMessage());
     }
 
@@ -238,7 +237,7 @@ class LimitsConfigTest {
               () -> load("limits { logins { max-concurrent-per-address = \"" + value + "\" } }"));
 
       assertTrue(
-          String.valueOf(error.getMessage()).startsWith("limits.logins.max-concurrent-per-address"),
+          String.valueOf(error.getMessage()).contains("limits.logins.max-concurrent-per-address"),
           error.getMessage());
     }
 
@@ -249,7 +248,7 @@ class LimitsConfigTest {
           assertThrows(
               ConfigurationException.class, () -> load("limits { exempt = [\"localhost\"] }"));
 
-      assertTrue(String.valueOf(error.getMessage()).startsWith("limits.exempt:"));
+      assertTrue(String.valueOf(error.getMessage()).contains("limits.exempt:"));
     }
 
     @Test
