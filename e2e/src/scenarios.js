@@ -22,6 +22,9 @@ const BRANDS = { paper: /Paper/, vanilla: /vanilla/ };
 /** First protocol (1.20) whose servers can be made to trust the mock Mojang's key (see mojang.js). */
 export const SIGNED_CHAT = 763;
 
+/** From 1.20.5, ViaVersion withholds a player's chat session from an older server that does not enforce secure chat. */
+const CHAT_SESSION_WITHHELD = 766;
+
 /** The first protocol with transfers: 1.20.5. */
 export const TRANSFER_PROTOCOL = 766;
 
@@ -86,7 +89,14 @@ export function features(protocol, { client = protocol, direct = false, forwardi
     // Bots can sign their chat: from 1.20 a server fetches the keys that verify chat sessions from
     // the services host, which the harness mocks. Before, it only trusts Mojang's own key, bundled in
     // authlib, so no bot can open a chat session there.
-    signedChat: protocol >= SIGNED_CHAT || "before 1.20 a server trusts only Mojang's own key to verify chat",
+    // Through ViaVersion, a bot of 1.20.5 or newer keeps its chat session from a server before 1.20.5
+    // that does not enforce secure chat, as the harness's do not (Protocol1_20_3To1_20_5), and chats
+    // unsigned there.
+    signedChat: all(
+      protocol >= SIGNED_CHAT || "before 1.20 a server trusts only Mojang's own key to verify chat",
+      client < CHAT_SESSION_WITHHELD || protocol >= CHAT_SESSION_WITHHELD
+        || 'ViaVersion keeps a 1.20.5+ chat session from a server before 1.20.5 that does not enforce secure chat',
+    ),
     // Transfers arrived in 1.20.5. The bot declares the transfer intent in its own handshake, which
     // a bridge would replace with the one it opens to Warp.
     transfers: all(

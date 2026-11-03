@@ -260,6 +260,12 @@ describe('scenario features', () => {
     assert.equal(features(769).signedChat, true);
   });
 
+  it('chats unsigned when ViaVersion withholds a 1.20.5+ bot’s chat session from an older server', () => {
+    assert.equal(features(763, { client: 769 }).signedChat, 'ViaVersion keeps a 1.20.5+ chat session from a server before 1.20.5 that does not enforce secure chat');
+    assert.equal(features(763, { client: 765 }).signedChat, true, '1.20.4 bots on 1.20.1: no 1.20.5 boundary crossed');
+    assert.equal(features(769, { client: 772 }).signedChat, true, 'both sides from 1.20.5');
+  });
+
   it('knows every feature a scenario requires', () => {
     const known = Object.keys(features(769));
     for (const s of SCENARIOS.filter((x) => x.requires)) assert.ok(known.includes(s.requires), `${s.name} requires "${s.requires}"`);
