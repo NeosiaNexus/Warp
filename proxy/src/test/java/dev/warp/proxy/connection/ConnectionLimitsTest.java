@@ -34,6 +34,7 @@ import dev.warp.proxy.auth.AuthenticationException;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.config.LimitsConfig;
 import dev.warp.proxy.config.ProxyProtocolConfig;
+import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.limit.Refusal;
 import dev.warp.proxy.network.CidrRanges;
@@ -60,6 +61,8 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.util.NetUtil;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
 import org.apache.logging.log4j.Level;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -251,7 +254,7 @@ class ConnectionLimitsTest {
       refused.writeInbound(loginHandshake(), loginStart("Steve"));
 
       assertEquals(
-          "You are logging in too fast. Please try again in 3 seconds.", disconnectReason(refused));
+          "You are logging in too fast. Please try again in 3 s.", disconnectReason(refused));
       assertFalse(refused.isActive());
       assertTrue(
           warningsAndInfo(loginLog).stream()
@@ -271,7 +274,7 @@ class ConnectionLimitsTest {
       EmbeddedChannel refused = connect(CLIENT, initializer);
       refused.writeInbound(loginHandshake(), loginStart("Steve"));
 
-      assertEquals(LoginSessionHandler.TOO_MANY_LOGINS_REASON, disconnectReason(refused));
+      assertEquals(english(LoginSessionHandler.TOO_MANY_LOGINS_REASON), disconnectReason(refused));
       var _ = first.close();
       startOnlineLogin(initializer);
     }
@@ -292,7 +295,7 @@ class ConnectionLimitsTest {
       stalled.advanceTimeBy(1, TimeUnit.SECONDS);
       stalled.runPendingTasks();
 
-      assertEquals(LoginSessionHandler.TIMED_OUT_REASON, disconnectReason(stalled));
+      assertEquals(english(LoginSessionHandler.TIMED_OUT_REASON), disconnectReason(stalled));
       assertFalse(stalled.isActive());
       startOnlineLogin(initializer);
       limits.report();
@@ -345,7 +348,8 @@ class ConnectionLimitsTest {
       channel.runScheduledPendingTasks();
 
       assertEquals(
-          LoginSessionHandler.busyReason(Duration.ofSeconds(10)), disconnectReason(channel));
+          english(LoginSessionHandler.busyReason(Duration.ofSeconds(10))),
+          disconnectReason(channel));
       assertEquals(0, limits.lane().waiting());
       assertEquals(1, limits.refusals(Refusal.AUTHENTICATION_BUSY));
     }
@@ -715,7 +719,14 @@ class ConnectionLimitsTest {
     }
   }
 
-  /** Reads a Login Disconnect and returns its reason as plain text. */
+  /**
+   * What a player is told, as English plain text: vanilla messages too, as the client shows them.
+   */
+  private static String english(Component reason) {
+    return PlayerMessages.bundled().plainEnglish(reason);
+  }
+
+  /** Reads a Login Disconnect and returns its reason as English plain text. */
   private static String disconnectReason(EmbeddedChannel channel) {
     ByteBuf frame = channel.readOutbound();
     assertNotNull(frame, "expected a Login Disconnect");
@@ -723,9 +734,7 @@ class ConnectionLimitsTest {
       VarInt.read(frame);
       assertEquals(0x00, VarInt.read(frame), "Login Disconnect");
       String json = McString.read(frame);
-      String prefix = "{\"text\":\"";
-      assertTrue(json.startsWith(prefix) && json.endsWith("\"}"), json);
-      return json.substring(prefix.length(), json.length() - 2);
+      return english(GsonComponentSerializer.gson().deserialize(json));
     } finally {
       frame.release();
     }

@@ -52,3 +52,9 @@ allow-dependencies-licenses:
   # whose only license text is
   # `Bundle-License: "Apache 2.0";link="http://www.apache.org/licenses/LICENSE-2.0.txt"`.
   - pkg:maven/com.google.errorprone/error_prone_annotations
+  # The interactive console (JLine 4). BSD-3-Clause: its POM names "The BSD License" with the
+  # BSD-3-Clause URL and the repository's LICENSE.txt at tag 4.4.8 is the BSD-3-Clause text, but
+  # GitHub's license data reports the POM's unversioned name as LicenseRef-bad-non-standard.
+  - pkg:maven/org.jline/jline-reader
+  - pkg:maven/org.jline/jline-terminal
+  - pkg:maven/org.jline/jline-terminal-ffm

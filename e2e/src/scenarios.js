@@ -74,6 +74,13 @@ export function features(protocol, { direct = false, forwarding = 'none', online
       protocol >= 47 || 'the 1.7 bot does not follow boss bars, sounds or plugin message packs',
       !bridged || 'ViaProxy translates what the bot receives',
     ),
+    // The probe plugin grants a permission and tells Warp, which re-sends the command list.
+    commandRefresh: all(
+      proxy,
+      plugin || 'no probe plugin (--jar without --plugin)',
+      protocol >= COMMANDS_PACKET || 'no command list before 1.13: clients ask for completions',
+      !bridged || 'ViaProxy translates the command list the bot receives',
+    ),
     // 1.19 to 1.19.2 clients send their chat signing key in Login Start.
     profileKeys: (protocol >= FIRST_PROTOCOL && protocol <= LAST_PROTOCOL) || 'only 1.19 to 1.19.2 clients send a profile key in Login Start',
     // Bots can sign their chat: from 1.20 a server fetches the keys that verify chat sessions from
@@ -92,6 +99,8 @@ export function features(protocol, { direct = false, forwarding = 'none', online
     // A backend plugin speaks the BungeeCord channel, which Warp answers: Paper loads it, vanilla
     // servers load no plugin.
     bungeeChannel: all(proxy, paper || 'vanilla servers load no plugin to speak the channel'),
+    // The e2e plugin grants the admin bot Warp's command permissions: nobody holds them without it.
+    adminCommands: all(proxy, plugin || 'no e2e plugin to grant the command permissions (--jar without --plugin)'),
   };
 }
 
@@ -158,8 +167,8 @@ export function checkServerList(component, current) {
   }
 }
 
-async function joinWarp(ctx, username, target = ctx.warp, profileKeys = null, transfer = false) {
-  return ctx.client.connect({ host: '127.0.0.1', port: target.port, username, profileKeys, transfer });
+async function joinWarp(ctx, username, target = ctx.warp, profileKeys = null, transfer = false, locale = null) {
+  return ctx.client.connect({ host: '127.0.0.1', port: target.port, username, profileKeys, transfer, locale });
 }
 
 /** Moves the bot to survival with Warp's /server, and waits until it plays there. */
@@ -448,7 +457,34 @@ const BOSS_BARS = 107;
 const ENTITY_SOUNDS = 477;
 const NAMED_ENTITY_SOUNDS = 761;
 const CONFIGURATION = 764;
+/** The first protocol with a command list (Declare Commands): 1.13. */
+const COMMANDS_PACKET = 393;
 const MULTIPLE_PACKS = 765;
+
+/**
+ * A permission granted, then taken, while the player stays on its server: the probe plugin's
+ * /e2egrant flips the permission /e2eperm requires and tells Warp, which must send the command list
+ * again with /e2eperm, then without it (Velocity #352: the list stays stale until a switch).
+ */
+async function commandRefresh(ctx) {
+  const bot = await joinWarp(ctx, 'e2e_commands');
+  // Whether each command list from here on offers /e2eperm. The name is in the packet as is,
+  // whatever minecraft-protocol makes of the version's argument types.
+  const lists = [];
+  bot.bot._client.on('raw.declare_commands', (buffer) => lists.push(buffer.includes('e2eperm')));
+  try {
+    let from = lists.length;
+    await bot.command('e2egrant', /^e2egrant on$/);
+    await bot.waitFor(() => lists.slice(from).includes(true), 'a command list offering /e2eperm once granted', 10_000);
+    from = lists.length;
+    await bot.command('e2egrant', /^e2egrant off$/);
+    await bot.waitFor(() => lists.length > from && !lists.at(-1), 'a command list without /e2eperm once taken', 10_000);
+    bot.healthy();
+    return `command list re-sent with /e2eperm once granted, without it once taken (${lists.length} lists)`;
+  } finally {
+    bot.quit();
+  }
+}
 
 /** What the audience probe plugin shows: its bar, and the sound both its plays name. */
 const PROBE_BAR = 'Warp e2e';
@@ -687,26 +723,67 @@ async function waitForEmpty(ctx, port, timeoutMs = 10_000) {
   }
 }
 
+/**
+ * The players of `player-limit`, each in its language: what Warp answers it once it plays, and
+ * what refuses it at login when the server is full.
+ */
+export const LIMIT_PLAYERS = [
+  { name: 'e2e_limit_fr', locale: 'fr_FR', unknownServer: /^Serveur inconnu : nowhere\./, full: 'Le serveur est complet.' },
+  { name: 'e2e_limit_en', locale: 'en_US', unknownServer: /^Unknown server: nowhere\./, full: 'The server is full.' },
+];
+
+/** The first protocol whose client translates vanilla's server full key itself (1.13). */
+const SERVER_FULL_KEY_PROTOCOL = 393;
+
+/**
+ * Checks why a player of `player-limit` was refused: from 1.13 vanilla's key, which the client
+ * translates in its own language; before, Warp's text in the language the player last played in.
+ */
+export function checkFullReason(message, player, protocol) {
+  if (protocol >= SERVER_FULL_KEY_PROTOCOL) {
+    if (!message.includes('multiplayer.disconnect.server_full')) throw new Error(`${player.name} (${player.locale}) was not refused with vanilla's server full key: ${message}`);
+    return 'multiplayer.disconnect.server_full';
+  }
+  if (!message.includes(player.full)) throw new Error(`${player.name} (${player.locale}) was not told "${player.full}": ${message}`);
+  return player.full;
+}
+
 async function playerLimit(ctx) {
   // warp-alt lets one player in (player-limit = 1, shown as the maximum); the next one is refused.
   await waitForEmpty(ctx, ctx.warpAlt.port);
+  // Each player plays once, in its language: Warp answers it in that language, and remembers it
+  // for its next login, refused before its client says it again.
+  for (const player of LIMIT_PLAYERS) {
+    const bot = await joinWarp(ctx, player.name, ctx.warpAlt, null, false, player.locale);
+    try {
+      await bot.command('server nowhere', player.unknownServer);
+      bot.healthy();
+    } finally {
+      bot.quit();
+    }
+    await waitForEmpty(ctx, ctx.warpAlt.port);
+  }
   const first = await joinWarp(ctx, 'e2e_limit_in', ctx.warpAlt);
   try {
     const status = await ctx.client.ping({ host: '127.0.0.1', port: ctx.warpAlt.port });
     if (status?.players?.online !== 1 || status?.players?.max !== ALT_MAX_PLAYERS) {
       throw new Error(`warp-alt answers ${JSON.stringify(status?.players)} with one player in, for a limit of ${ALT_MAX_PLAYERS}`);
     }
-    const refused = await joinWarp(ctx, 'e2e_limit_out', ctx.warpAlt).then(
-      (bot) => {
-        bot.quit();
-        return null;
-      },
-      (e) => e,
-    );
-    if (refused === null) throw new Error(`a second player got in past player-limit = ${ALT_MAX_PLAYERS}`);
-    if (!/The server is full\./.test(refused.message)) throw new Error(`the second player was refused for another reason: ${refused.message}`);
+    const protocol = (ctx.clientEntry ?? ctx.entry).protocol;
+    const told = [];
+    for (const player of LIMIT_PLAYERS) {
+      const refused = await joinWarp(ctx, player.name, ctx.warpAlt, null, false, player.locale).then(
+        (bot) => {
+          bot.quit();
+          return null;
+        },
+        (e) => e,
+      );
+      if (refused === null) throw new Error(`${player.name} got in past player-limit = ${ALT_MAX_PLAYERS}`);
+      told.push(`${player.locale}: "${checkFullReason(refused.message, player, protocol)}"`);
+    }
     first.healthy();
-    return `one player in (the server list shows 1/${ALT_MAX_PLAYERS}), the next refused: "The server is full."`;
+    return `one player in (the server list shows 1/${ALT_MAX_PLAYERS}); /server answered in French and English; the next refused, ${told.join(', ')}`;
   } finally {
     first.quit();
   }
@@ -767,6 +844,47 @@ async function switchRefused(ctx) {
     }
   } finally {
     await ctx.survival.command('whitelist off', /white-?list/i);
+  }
+}
+
+/**
+ * Warp's administration commands, typed by a bot the e2e plugin grants every `warp.command.*`
+ * permission (`e2e_admin`): `/glist` counts the lobby and lists its players by name, `/send` moves
+ * another bot to survival through Warp's normal connection path and answers on one line, a player
+ * already there is not moved, an unknown player or server is named, and `/send <server>` brings
+ * everyone back. The other bot holds no permission: its `/glist` goes to its backend, which does not
+ * know it, rather than to Warp.
+ */
+async function adminCommands(ctx) {
+  const admin = await joinWarp(ctx, 'e2e_admin');
+  try {
+    const sent = await joinWarp(ctx, 'e2e_sent');
+    try {
+      await admin.waitForChunks(20, 30_000, 0);
+      await sent.waitForChunks(20, 30_000, 0);
+      const overview = await admin.command('glist', /players? online/);
+      if (!/^- lobby \d+$/m.test(overview)) throw new Error(`/glist does not count the lobby: ${overview}`);
+      const names = await admin.command('glist lobby', /^lobby · \d+ players?/);
+      for (const name of ['e2e_admin', 'e2e_sent']) {
+        if (!names.includes(name)) throw new Error(`/glist lobby does not list ${name}: ${names}`);
+      }
+      await admin.command('send e2e_sent survival', /^Sent e2e_sent to survival\./);
+      await sent.waitForGameMode(SURVIVAL_MODE, 20_000);
+      await admin.command('send e2e_sent survival', /^Nothing to do: 1 player is already on survival\./);
+      await admin.command('send e2e_nobody survival', /^No player or server is named e2e_nobody\./);
+      await admin.command('send all nowhere', /^Unknown server: nowhere/);
+      const back = await admin.command('send survival lobby', /^Sent \d+ of \d+ from survival to lobby/);
+      await sent.waitForGameMode(LOBBY_MODE, 20_000);
+      await sent.command('glist', /unknown (or incomplete )?command/i);
+      await sleep(500);
+      admin.healthy();
+      sent.healthy();
+      return `/glist and /send answered (${back.trim()}); /glist without permission reached the backend`;
+    } finally {
+      sent.quit();
+    }
+  } finally {
+    admin.quit();
   }
 }
 
@@ -1122,6 +1240,7 @@ export const SCENARIOS = [
   { name: 'player-chat', run: playerChat },
   { name: 'resource-pack', run: resourcePack, requires: 'resourcePack' },
   { name: 'audience', run: audience, requires: 'audience' },
+  { name: 'command-refresh', run: commandRefresh, requires: 'commandRefresh' },
   { name: 'switching', run: switching, requires: 'switching' },
   { name: 'tab-list', run: tabList, requires: 'switching' },
   { name: 'profile-key', run: profileKey, requires: 'profileKeys' },
@@ -1129,6 +1248,7 @@ export const SCENARIOS = [
   { name: 'fallback-unreachable', run: fallbackUnreachable, requires: 'proxy' },
   { name: 'fallback-rejected', run: fallbackRejected, requires: 'proxy' },
   { name: 'switch-refused', run: switchRefused, requires: 'switching' },
+  { name: 'admin-commands', run: adminCommands, requires: 'adminCommands' },
   { name: 'bungeecord', run: bungeeCord, requires: 'bungeeChannel' },
   { name: 'transfer', run: transfer, requires: 'transfers' },
   { name: 'drain', run: drain, requires: 'drain' },

@@ -13,7 +13,8 @@ import { ManagedProcess, run } from './proc.js';
  * never do, so one is a hang somewhere between them).
  */
 export const WARP_FAILURES = [
-  /^\S+ \S+ \[[^\]]*\] (ERROR|FATAL) /,
+  // The console's `14:02:11 ERROR source  message`, and the older `date time [thread] ERROR logger`.
+  /^(?:\d{2}:\d{2}:\d{2}|\S+ \S+ \[[^\]]*\]) (ERROR|FATAL) /,
   /LEAK: /,
   /^Exception in thread /,
   /^# A fatal error has been detected by the Java Runtime Environment/,
@@ -131,7 +132,7 @@ ${this.management ? managementSection(this.management) : ''}${this.drain ? drain
       logFile: join(this.logDir, `${this.name}.log`),
       failures: WARP_FAILURES,
     }).start();
-    return this.process.waitFor(/Warp is listening/, 60_000);
+    return this.process.waitFor(/ Ready in \d/, 60_000);
   }
 
   /**

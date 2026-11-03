@@ -27,6 +27,7 @@ import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
 import dev.warp.api.player.TransferResult;
 import dev.warp.proxy.config.DrainConfig;
+import dev.warp.proxy.logging.Plural;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -99,6 +100,7 @@ public final class DrainController<P extends DrainCandidate> {
   private volatile int kept;
   private final AtomicInteger kicked = new AtomicInteger();
   private volatile @Nullable DrainOutcome outcome;
+  private volatile @Nullable Component message;
 
   // Scheduler only.
   private final Deque<Pending<P>> queue = new ArrayDeque<>();
@@ -139,9 +141,25 @@ public final class DrainController<P extends DrainCandidate> {
    *     {@link DrainHost#shutdown}; the same future for every call
    */
   public CompletableFuture<DrainStatus> start(DrainTrigger by) {
+    return start(by, null);
+  }
+
+  /**
+   * Starts the drain with a message of its own, if it has not started yet: {@code /shutdown} with a
+   * reason.
+   *
+   * @param by what starts it
+   * @param reason shown in place of {@code warp.disconnect.restarting} to the players kicked and
+   *     the logins refused, or {@code null} for {@code warp.disconnect.restarting}; ignored if the
+   *     drain had started
+   * @return completed with the final status once the proxy is empty or the time-out expired, before
+   *     {@link DrainHost#shutdown}; the same future for every call
+   */
+  public CompletableFuture<DrainStatus> start(DrainTrigger by, @Nullable Component reason) {
     if (!started.compareAndSet(false, true)) {
       return done;
     }
+    message = reason;
     trigger = by;
     startedAt = scheduler.now();
     startNanos = scheduler.nanoTime();
@@ -203,6 +221,17 @@ public final class DrainController<P extends DrainCandidate> {
         });
   }
 
+  /**
+   * Returns what the players the drain disconnects are told: the reason it started with, or the
+   * message {@code warp.disconnect.restarting}, in each player's language.
+   *
+   * @return the message
+   */
+  public Component message() {
+    Component reason = message;
+    return reason != null ? reason : config.message();
+  }
+
   /** Counts a login refused because the proxy drains. */
   public void loginRefused() {
     refused.incrementAndGet();
@@ -221,7 +250,7 @@ public final class DrainController<P extends DrainCandidate> {
       return new Transfer(target.host(), target.port());
     }
     return config.cannotTransfer() == DrainConfig.CannotTransfer.KICK
-        ? new Kick(config.message())
+        ? new Kick(message())
         : new Keep();
   }
 
@@ -231,11 +260,13 @@ public final class DrainController<P extends DrainCandidate> {
 
   /** Phase 0: readiness already says drain; give load balancers time to notice. */
   private void announce() {
+    int connected = host.playerCount();
     logger.info(
-        "Drain started by {}: {} players connected. Readiness and the agent check say drain;"
-            + " transfers start in {}",
+        "Drain started by {}: {} "
+            + Plural.of(connected, "player", "players")
+            + " connected. Readiness and the agent check say drain; transfers start in {}",
         describe(trigger),
-        host.playerCount(),
+        connected,
         DrainConfig.format(config.propagationDelay()));
     host.phaseChanged(status());
     submitLater(this::beginTransfers, config.propagationDelay());
@@ -251,13 +282,16 @@ public final class DrainController<P extends DrainCandidate> {
     DrainConfig.Target target = config.transferTo();
     if (target != null) {
       logger.info(
-          "Drain phase 1: transferring {} players to {}, one every {}",
+          "Drain phase 1: transferring {} "
+              + Plural.of(players.size(), "player", "players")
+              + " to {}, one every {}",
           players.size(),
           target,
           DrainConfig.format(config.transferInterval()));
     } else {
       logger.info(
-          "Drain phase 1: no drain.transfer-to, the {} players are {}",
+          "Drain phase 1: no drain.transfer-to, "
+              + Plural.of(players.size(), "the {} player is {}", "the {} players are {}"),
           players.size(),
           config.cannotTransfer() == DrainConfig.CannotTransfer.KICK
               ? "kicked, one every " + DrainConfig.format(config.transferInterval())
@@ -278,14 +312,16 @@ public final class DrainController<P extends DrainCandidate> {
   private void endTransfers() {
     phase = DrainPhase.WAITING;
     lastProgressNanos = scheduler.nanoTime();
+    int left = host.playerCount();
     logger.info(
-        "Drain phase 2: {} transferred, {} kept, {} kicked; waiting up to {} for the {} players"
+        "Drain phase 2: {} transferred, {} kept, {} kicked; waiting up to {} for the {} "
+            + Plural.of(left, "player", "players")
             + " left",
         transferred.get(),
         kept,
         kicked.get(),
         DrainConfig.format(config.timeout()),
-        host.playerCount());
+        left);
     host.phaseChanged(status());
     timeoutTask = submitLater(this::timedOut, config.timeout());
     checkEmpty();
@@ -305,7 +341,9 @@ public final class DrainController<P extends DrainCandidate> {
     if (now - lastProgressNanos >= PROGRESS_INTERVAL.toNanos()) {
       lastProgressNanos = now;
       logger.info(
-          "Drain: {} players left after {} ({} transferred, {} kept, {} kicked)",
+          "Drain: {} "
+              + Plural.of(left, "player", "players")
+              + " left after {} ({} transferred, {} kept, {} kicked)",
           left,
           formatElapsed(now - startNanos),
           transferred.get(),
@@ -352,8 +390,9 @@ public final class DrainController<P extends DrainCandidate> {
           status.refused());
     } else {
       logger.warn(
-          "Drain timed out after {}: the {} players left are disconnected ({} transferred, {} kept,"
-              + " {} kicked, {} logins refused)",
+          "Drain timed out after {}: "
+              + Plural.of(status.players(), "the {} player left is", "the {} players left are")
+              + " disconnected ({} transferred, {} kept, {} kicked, {} logins refused)",
           elapsed,
           status.players(),
           status.transferred(),
@@ -581,7 +620,7 @@ public final class DrainController<P extends DrainCandidate> {
 
   private void cannotTransfer(P player) {
     if (config.cannotTransfer() == DrainConfig.CannotTransfer.KICK) {
-      kick(player, config.message());
+      kick(player, message());
     } else {
       keep(player);
     }
@@ -640,6 +679,7 @@ public final class DrainController<P extends DrainCandidate> {
       case SIGNAL -> "SIGTERM";
       case HTTP -> "POST /drain";
       case PLUGIN -> "a plugin";
+      case COMMAND -> "/shutdown";
     };
   }
 

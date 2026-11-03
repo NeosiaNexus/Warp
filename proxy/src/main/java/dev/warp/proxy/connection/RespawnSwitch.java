@@ -24,6 +24,7 @@ import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.PlayPacket;
 import dev.warp.protocol.packet.play.Respawn;
 import dev.warp.protocol.packet.play.SpawnInfo;
+import dev.warp.proxy.i18n.Message;
 
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -85,7 +86,7 @@ final class RespawnSwitch implements ServerSwitch {
     if (spawned) {
       logger.info(
           "Backend failed for {}, switching to fallback '{}'", player.username(), fallback.name());
-      player.sendSystemMessage("Connecting to " + fallback.name() + "...");
+      player.sendMessage(Message.CONNECTING.of(fallback.name()));
     } else {
       logger.info(
           "Could not connect {} to '{}', trying fallback '{}'",
@@ -203,7 +204,7 @@ final class RespawnSwitch implements ServerSwitch {
     BackendConnection joining = pending;
     if (joining == null) {
       player.setSwitching(false);
-      player.disconnectWithReason("Server switch timed out.");
+      player.disconnect(Message.SWITCH_TIMED_OUT.of());
       return;
     }
     pending = null;

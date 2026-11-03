@@ -114,7 +114,7 @@ class AntiBotConfigTest {
             ConfigurationException.class,
             () -> load("anti-bot { verified { prefix { ipv4 = 4 } } }"));
 
-    assertTrue(String.valueOf(refused.getMessage()).startsWith("anti-bot:"), refused.getMessage());
+    assertTrue(String.valueOf(refused.getMessage()).contains("anti-bot:"), refused.getMessage());
   }
 
   private WarpConfig load(String section) throws IOException, ConfigurationException {

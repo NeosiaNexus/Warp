@@ -5,6 +5,8 @@ adventure = "5.2.0"
 brigadier = "1.3.10"
 log4j = "2.26.1"
 slf4j = "2.0.17"
+# Interactive console: JLine with its FFM terminal provider only (no JNA, no JNI library).
+jline = "4.4.8"
 # The lowest Guava any configuration resolves (warp.java-conventions), for the libraries and build
 # tools that bring an older one (Error Prone, Checkstyle, Velocity's natives), and the Guava the via
 # plugin bundles for ViaVersion.
@@ -15,6 +17,8 @@ caffeine = "3.3.0"
 disruptor = "4.0.0"
 gson = "2.14.0"
 configurate = "4.2.0"
+# The HOCON parser Configurate uses, read directly for the line of each configuration key.
+typesafe-config = "1.4.1"
 jspecify = "1.0.0"
 
 # Via plugin: ViaVersion, ViaBackwards, ViaRewind (and the Guava they expect their platform to
@@ -72,6 +76,7 @@ adventure-text-minimessage = { group = "net.kyori", name = "adventure-text-minim
 adventure-text-serializer-gson = { group = "net.kyori", name = "adventure-text-serializer-gson" }
 adventure-text-serializer-plain = { group = "net.kyori", name = "adventure-text-serializer-plain" }
 adventure-text-serializer-legacy = { group = "net.kyori", name = "adventure-text-serializer-legacy" }
+adventure-text-serializer-ansi = { group = "net.kyori", name = "adventure-text-serializer-ansi" }
 
 # Logging
 log4j-api = { group = "org.apache.logging.log4j", name = "log4j-api", version.ref = "log4j" }
@@ -82,6 +87,11 @@ log4j-jul = { group = "org.apache.logging.log4j", name = "log4j-jul", version.re
 log4j-layout-template-json = { group = "org.apache.logging.log4j", name = "log4j-layout-template-json", version.ref = "log4j" }
 slf4j-api = { group = "org.slf4j", name = "slf4j-api", version.ref = "slf4j" }
 
+# Console
+jline-terminal = { group = "org.jline", name = "jline-terminal", version.ref = "jline" }
+jline-terminal-ffm = { group = "org.jline", name = "jline-terminal-ffm", version.ref = "jline" }
+jline-reader = { group = "org.jline", name = "jline-reader", version.ref = "jline" }
+
 # Async logging
 disruptor = { group = "com.lmax", name = "disruptor", version.ref = "disruptor" }
 
@@ -89,6 +99,7 @@ disruptor = { group = "com.lmax", name = "disruptor", version.ref = "disruptor" 
 caffeine = { group = "com.github.ben-manes.caffeine", name = "caffeine", version.ref = "caffeine" }
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 configurate-hocon = { group = "org.spongepowered", name = "configurate-hocon", version.ref = "configurate" }
+typesafe-config = { group = "com.typesafe", name = "config", version.ref = "typesafe-config" }
 
 # Via plugin
 viaversion-common = { group = "com.viaversion", name = "viaversion-common", version.ref = "viaversion" }
@@ -133,6 +144,7 @@ velocity-native = { group = "com.velocitypowered", name = "velocity-native", ver
 netty = ["netty-buffer", "netty-codec", "netty-handler", "netty-transport"]
 adventure = ["adventure-api", "adventure-text-minimessage", "adventure-text-serializer-gson"]
 log4j = ["log4j-api", "log4j-core", "log4j-slf4j2-impl", "log4j-iostreams", "log4j-jul", "log4j-layout-template-json"]
+jline = ["jline-terminal", "jline-terminal-ffm", "jline-reader"]
 testing = ["junit-jupiter", "mockito-core", "mockito-junit-jupiter"]
 
 [plugins]

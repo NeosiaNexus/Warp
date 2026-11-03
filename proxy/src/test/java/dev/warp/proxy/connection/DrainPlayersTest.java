@@ -157,6 +157,7 @@ class DrainPlayersTest {
     MinecraftConnection connection = new MinecraftConnection(warpSide);
     warpSide.pipeline().addLast(ServerChannelInitializer.CONNECTION_HANDLER, connection);
     ServerLoginContext context = mock(ServerLoginContext.class);
+    when(context.messages()).thenReturn(dev.warp.proxy.i18n.PlayerMessages.bundled());
     when(context.logging()).thenReturn(LoggingConfig.DEFAULTS);
     when(context.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
     when(context.antiBot()).thenReturn(TestLoginContexts.calmAntiBot());

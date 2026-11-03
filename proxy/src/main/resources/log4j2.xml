@@ -3,7 +3,12 @@
 <Configuration status="WARN" shutdownHook="disable">
     <Properties>
         <Property name="log.dir">logs</Property>
-        <Property name="log.pattern">%d{yyyy-MM-dd HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n</Property>
+        <!--
+          The log file: always plain text. Escape sequences and control characters (but tab and line
+          feed) are removed from messages, so that neither a coloured message nor a forged one (a
+          name with a carriage return, say) reaches the file as such.
+        -->
+        <Property name="log.pattern">%d{yyyy-MM-dd HH:mm:ss.SSS} [%t] %-5level %logger{36} - %replace{%msg}{\x1B(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(\x07|\x1B\\)|[@-Z\\-_])|[\x00-\x08\x0B-\x1F\x7F-\x9F]}{}%n</Property>
     </Properties>
 
     <Appenders>
@@ -20,9 +25,12 @@
                 </Console>
             </SystemPropertyArbiter>
             <DefaultArbiter>
-                <Console name="Console" target="SYSTEM_OUT">
-                    <PatternLayout pattern="${log.pattern}"/>
-                </Console>
+                <!--
+                  Warp's console: colours where the output shows them, the interactive prompt and
+                  status line on a real terminal, plain text elsewhere (see ConsoleMode). It writes
+                  from a thread of its own: a slow console never holds up the logging thread.
+                -->
+                <WarpConsole name="Console"/>
             </DefaultArbiter>
         </Select>
 

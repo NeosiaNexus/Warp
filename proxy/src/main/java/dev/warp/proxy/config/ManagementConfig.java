@@ -63,10 +63,11 @@ public record ManagementConfig(
       CommentedConfigurationNode root, Path directory, UnaryOperator<@Nullable String> env)
       throws ConfigurationException {
     CommentedConfigurationNode node = root.node("management");
-    boolean enabled = node.node("enabled").getBoolean(false);
+    boolean enabled = WarpConfig.booleanValue(node.node("enabled"), false);
     InetSocketAddress bind =
-        WarpConfig.parseAddress(node.node("bind").getString(DEFAULT_BIND), "management.bind");
-    String agent = node.node("agent-check").getString("");
+        WarpConfig.parseAddress(
+            WarpConfig.stringValue(node.node("bind"), DEFAULT_BIND), "management.bind");
+    String agent = WarpConfig.stringValue(node.node("agent-check"), "");
     InetSocketAddress agentCheck =
         agent.isBlank() ? null : WarpConfig.parseAddress(agent, "management.agent-check");
     if (agentCheck != null && agentCheck.getPort() == bind.getPort() && bind.getPort() != 0) {
@@ -75,8 +76,9 @@ public record ManagementConfig(
               + bind.getPort());
     }
     String token =
-        readToken(env.apply(ENV_TOKEN), directory, node.node("token-file").getString(""));
-    boolean readyRequiresServer = node.node("ready-requires-server").getBoolean(true);
+        readToken(
+            env.apply(ENV_TOKEN), directory, WarpConfig.stringValue(node.node("token-file"), ""));
+    boolean readyRequiresServer = WarpConfig.booleanValue(node.node("ready-requires-server"), true);
     return new ManagementConfig(enabled, bind, agentCheck, token, readyRequiresServer);
   }
 

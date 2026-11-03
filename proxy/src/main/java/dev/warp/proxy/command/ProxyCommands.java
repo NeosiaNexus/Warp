@@ -16,23 +16,23 @@
  */
 package dev.warp.proxy.command;
 
+import dev.warp.api.Warp;
 import dev.warp.api.command.CommandSource;
+import dev.warp.api.permission.Tristate;
 import dev.warp.api.player.ConnectionResult;
 import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerRegistry;
 import dev.warp.proxy.antibot.AntiBotService;
+import dev.warp.proxy.i18n.Message;
 
 import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
 import java.util.Optional;
-import java.util.function.Function;
 
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
-import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.TextComponent;
 import net.kyori.adventure.text.event.ClickEvent;
@@ -41,15 +41,46 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The commands the proxy itself offers: {@code /server}. A plugin removes them with {@link
- * dev.warp.api.command.CommandManager#unregister(String)} when players must not pick their server.
+ * The commands the proxy itself offers, each behind a permission of {@code warp.command.<name>}:
+ *
+ * <table>
+ *   <caption>Commands and permissions</caption>
+ *   <tr><th>Command</th><th>Permission</th><th>Default</th></tr>
+ *   <tr><td>{@code /server [server]}</td><td>{@value #SERVER_PERMISSION}</td>
+ *       <td>everyone, unless a permission provider denies it</td></tr>
+ *   <tr><td>{@code /warp}, {@code /warp plugins}</td><td>{@value WarpCommand#PERMISSION}</td>
+ *       <td>console only</td></tr>
+ *   <tr><td>{@code /warp antibot ...}</td><td>{@value AntiBotCommand#PERMISSION}</td>
+ *       <td>console only</td></tr>
+ *   <tr><td>{@code /glist [server|all] [page]}</td><td>{@value GlistCommand#PERMISSION}</td>
+ *       <td>console only</td></tr>
+ *   <tr><td>{@code /send <target> <server>}</td><td>{@value SendCommand#PERMISSION}</td>
+ *       <td>console only</td></tr>
+ *   <tr><td>{@code /find <player>}</td><td>{@value FindCommand#PERMISSION} (and {@value
+ *       FindCommand#ADDRESS_PERMISSION} for the address)</td><td>console only</td></tr>
+ *   <tr><td>{@code /alert <message>}</td><td>{@value AlertCommand#PERMISSION}</td>
+ *       <td>console only</td></tr>
+ *   <tr><td>{@code /shutdown [reason]}</td><td>{@value ShutdownCommand#PERMISSION}</td>
+ *       <td>console only</td></tr>
+ * </table>
+ *
+ * <p>"Console only" means granted to the console, which has every permission, and to the players a
+ * permission provider grants it. A player without a command's permission does not see it, and what
+ * it types goes to its backend, so that a backend command of the same name still works for it. A
+ * plugin replaces a command with {@link dev.warp.api.command.CommandManager#unregister(String)}
+ * followed by its own registration.
  */
 public final class ProxyCommands {
+
+  /**
+   * The permission of {@code /server}: granted unless a permission provider answers {@code false}.
+   */
+  static final String SERVER_PERMISSION = "warp.command.server";
 
   private ProxyCommands() {}
 
   /**
-   * Registers the proxy's commands.
+   * Registers {@code /server}, which needs nothing but the servers.
    *
    * @param commands the proxy's commands
    * @param servers the backend servers
@@ -59,56 +90,68 @@ public final class ProxyCommands {
   }
 
   /**
-   * Registers {@code /warp antibot}, for staff with {@code warp.command.antibot}.
+   * Registers the administration commands: {@code /warp}, {@code /glist}, {@code /send}, {@code
+   * /find}, {@code /alert} and {@code /shutdown}.
    *
    * @param commands the proxy's commands
-   * @param antiBot the anti-bot
-   * @param players finds a connected player by name
+   * @param proxy the proxy
+   * @param control what the proxy's API does not tell
+   * @param antiBot the anti-bot, for {@code /warp antibot}, or {@code null} without one
    */
-  public static void registerAntiBot(
+  public static void registerAdmin(
       WarpCommandManager commands,
-      AntiBotService antiBot,
-      Function<String, Optional<Player>> players) {
-    var _ = commands.register(WarpCommandManager.PROXY, AntiBotCommand.warp(antiBot, players));
+      Warp proxy,
+      ProxyControl control,
+      @Nullable AntiBotService antiBot) {
+    String owner = WarpCommandManager.PROXY;
+    var _ =
+        commands.register(
+            owner,
+            WarpCommand.build(
+                proxy,
+                control,
+                antiBot == null ? null : AntiBotCommand.node(antiBot, proxy::player)));
+    var _ = commands.register(owner, GlistCommand.build(proxy));
+    var _ = commands.register(owner, SendCommand.build(proxy));
+    var _ = commands.register(owner, FindCommand.build(proxy));
+    var _ = commands.register(owner, AlertCommand.build(proxy));
+    var _ = commands.register(owner, ShutdownCommand.build(proxy, control));
   }
 
-  /** {@code /server}: lists the servers, or moves the player to one. */
+  /**
+   * {@code /server}: lists the servers, or moves the player to one. The console gets the list, and
+   * is pointed to {@code /send} to move someone.
+   */
   static LiteralArgumentBuilder<CommandSource> server(ServerRegistry servers) {
     return LiteralArgumentBuilder.<CommandSource>literal("server")
-        .requires(source -> source instanceof Player)
+        .requires(source -> source.permissionValue(SERVER_PERMISSION) != Tristate.FALSE)
         .executes(
             context -> {
-              Player player = (Player) context.getSource();
-              String current = player.currentServer().map(c -> c.server().name()).orElse(null);
+              CommandSource source = context.getSource();
+              String current =
+                  source instanceof Player player
+                      ? player.currentServer().map(c -> c.server().name()).orElse(null)
+                      : null;
               List<String> names =
                   servers.servers().stream()
                       .map(RegisteredServer::name)
                       .sorted(Comparator.naturalOrder())
                       .toList();
-              player.sendMessage(serverList(names, current));
+              source.sendMessage(serverList(names, current));
               return Command.SINGLE_SUCCESS;
             })
         .then(
-            RequiredArgumentBuilder.<CommandSource, String>argument(
-                    "server", StringArgumentType.word())
-                .suggests(
-                    (context, builder) -> {
-                      String typed = builder.getRemaining().toLowerCase(Locale.ROOT);
-                      for (RegisteredServer server : servers.servers()) {
-                        if (server.name().startsWith(typed)) {
-                          builder.suggest(server.name());
-                        }
-                      }
-                      return builder.buildFuture();
-                    })
+            CommandSupport.serverArgument("server", servers)
                 .executes(
                     context -> {
-                      Player player = (Player) context.getSource();
                       String name = StringArgumentType.getString(context, "server");
                       Optional<RegisteredServer> target = servers.server(name);
                       if (target.isEmpty()) {
-                        player.sendMessage(
-                            Component.text("Unknown server: " + name, NamedTextColor.RED));
+                        context.getSource().sendMessage(Message.UNKNOWN_SERVER.of(name));
+                        return 0;
+                      }
+                      if (!(context.getSource() instanceof Player player)) {
+                        context.getSource().sendMessage(Message.SERVER_NOT_A_PLAYER.of());
                         return 0;
                       }
                       var _ =
@@ -119,17 +162,12 @@ public final class ProxyCommands {
                                     switch (result) {
                                       case ConnectionResult.AlreadyConnected(var server) ->
                                           player.sendMessage(
-                                              Component.text(
-                                                  "Already connected to " + server.name() + "."));
+                                              Message.ALREADY_ON_SERVER.of(server.name()));
                                       case ConnectionResult.InProgress _ ->
-                                          player.sendMessage(
-                                              Component.text("Already switching servers."));
+                                          player.sendMessage(Message.ALREADY_SWITCHING.of());
                                       case ConnectionResult.Denied(var server) ->
                                           player.sendMessage(
-                                              Component.text(
-                                                  "You cannot join "
-                                                      + server.name()
-                                                      + " right now."));
+                                              Message.CONNECT_DENIED.of(server.name()));
                                       default -> {
                                         // Connected, or failed: the player was told on the way.
                                       }
@@ -141,14 +179,14 @@ public final class ProxyCommands {
 
   /**
    * The answer to {@code /server}: "Servers: [lobby], survival", the current server in brackets,
-   * each other one a link that moves the player there.
+   * each other one a link that moves the player there; rendered in the player's language.
    *
    * @param names the servers' names, in order
    * @param current the server the player is on, or {@code null}
    * @return the message
    */
   public static Component serverList(List<String> names, @Nullable String current) {
-    TextComponent.Builder list = Component.text().content("Servers: ").color(NamedTextColor.GRAY);
+    TextComponent.Builder list = Component.text().color(NamedTextColor.GRAY);
     boolean first = true;
     for (String name : names) {
       if (!first) {
@@ -160,8 +198,8 @@ public final class ProxyCommands {
               ? Component.text("[" + name + "]", NamedTextColor.GREEN)
               : Component.text(name, NamedTextColor.AQUA)
                   .clickEvent(ClickEvent.runCommand("/server " + name))
-                  .hoverEvent(HoverEvent.showText(Component.text("Connect to " + name))));
+                  .hoverEvent(HoverEvent.showText(Message.SERVER_LIST_HOVER.of(name))));
     }
-    return list.build();
+    return Message.SERVER_LIST.of(list.build());
   }
 }

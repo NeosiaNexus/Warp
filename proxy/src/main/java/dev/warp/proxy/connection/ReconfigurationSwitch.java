@@ -21,6 +21,7 @@ import dev.warp.api.server.ServerInfo;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.packet.login.LoginAcknowledged;
 import dev.warp.protocol.packet.play.StartConfiguration;
+import dev.warp.proxy.i18n.Message;
 
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -151,7 +152,7 @@ final class ReconfigurationSwitch implements ServerSwitch {
     } else {
       logger.info(
           "Backend failed for {}, switching to fallback '{}'", player.username(), fallback.name());
-      player.sendSystemMessage("Connecting to " + fallback.name() + "...");
+      player.sendMessage(Message.CONNECTING.of(fallback.name()));
       // Ends the failed switch, if any, but keeps the servers that already failed excluded.
       player.setSwitching(false);
       player.switchServer(fallback);
@@ -300,7 +301,7 @@ final class ReconfigurationSwitch implements ServerSwitch {
     }
     phase = Phase.IDLE;
     player.setSwitching(false);
-    player.disconnectWithReason("Server switch timed out.");
+    player.disconnect(Message.SWITCH_TIMED_OUT.of());
   }
 
   @Override
