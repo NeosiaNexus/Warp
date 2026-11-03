@@ -58,8 +58,6 @@ import dev.warp.protocol.packet.play.TabCompleteResponse;
 import dev.warp.protocol.packet.play.TabListHeaderFooter;
 import dev.warp.protocol.packet.play.Transfer;
 import dev.warp.proxy.logging.LogCode;
-import dev.warp.proxy.messaging.BungeeCordChannel;
-import dev.warp.proxy.messaging.ChannelRegistry;
 
 import java.nio.charset.StandardCharsets;
 
@@ -120,26 +118,21 @@ final class BackendPlaySessionHandler implements SessionHandler {
     // paused it (writabilityChanged), and no longer resumes it once the client is gone.
     player.playOn(backendConnection);
     player.clientConnection().setAutoRead(backendConnection.channel().isWritable());
-    registerBungeeCordChannel();
+    // From 1.20.2 the channel was registered during the configuration phase, before the server
+    // fired PlayerJoinEvent (BackendConfigSessionHandler).
+    if (player.protocolVersion().isOlderThan(ProtocolVersion.MINECRAFT_1_20_2)) {
+      registerBungeeCordChannel();
+    }
   }
 
   /**
-   * Registers the BungeeCord channel with the backend on the client's behalf, as BungeeCord and
-   * Velocity do: Bukkit's {@code Player#sendPluginMessage} only sends on a channel the client
-   * registered, which a vanilla client never does for this one. Sent when the proxy answers the
-   * channel for this server, or a plugin took it over.
+   * Registers the BungeeCord channel with the backend on the client's behalf (see {@link
+   * ConnectedPlayer#bungeeCordChannelToRegister}), before 1.20.2: the server enters PLAY as soon as
+   * it accepts the login, so this is the first moment it can take the registration.
    */
   private void registerBungeeCordChannel() {
-    BackendConnection backend = player.backendConnection();
-    if (backend == null || backend.connection() != backendConnection) {
-      return;
-    }
-    ChannelRegistry channels = player.loginContext().channels();
-    String channel = BungeeCordChannel.nameFor(player.protocolVersion());
-    boolean answered =
-        channels.bungeeCord().enabled()
-            && channels.bungeeCord().speaksWith(backend.server().name());
-    if (answered || channels.lookup(channel) != null) {
+    String channel = player.bungeeCordChannelToRegister(backendConnection);
+    if (channel != null) {
       String register =
           player.protocolVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_13)
               ? REGISTER

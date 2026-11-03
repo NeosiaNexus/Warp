@@ -54,6 +54,7 @@ import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.packet.config.AcknowledgeFinishConfiguration;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
+import dev.warp.protocol.packet.config.ConfigPluginMessage;
 import dev.warp.protocol.packet.config.FinishConfiguration;
 import dev.warp.protocol.packet.cookie.CookieRequest;
 import dev.warp.protocol.packet.cookie.CookieResponse;
@@ -265,8 +266,9 @@ public final class StateRegistry {
    * Request (to route the client's answer back to the server that asked). Intercepted serverbound:
    * AcknowledgeFinishConfiguration, KeepAlive, and from 1.20.5 Cookie Response. All other CONFIG
    * packets (RegistryData, KnownPacks, PluginMessage, etc.) pass through as opaque ByteBufs via
-   * {@code handleBlind()}, including a server's Store Cookie and Transfer, which the proxy only
-   * writes itself (encode-only).
+   * {@code handleBlind()}, including a server's Store Cookie and Transfer, and the plugin messages
+   * the proxy sends a server itself (registering the BungeeCord channel), which the proxy only
+   * writes (encode-only).
    */
   private static void registerConfiguration() {
     directionMap(ProtocolState.CONFIGURATION)
@@ -286,6 +288,12 @@ public final class StateRegistry {
                     map(0x03, MINECRAFT_1_20_2),
                     map(0x04, MINECRAFT_1_20_5))
                 .register(CookieResponse.class, CookieResponse.CODEC, map(0x01, MINECRAFT_1_20_5))
+                // The proxy's own messages to a server; the client's stay blind.
+                .registerEncodeOnly(
+                    ConfigPluginMessage.class,
+                    ConfigPluginMessage.CODEC,
+                    map(0x01, MINECRAFT_1_20_2),
+                    map(0x02, MINECRAFT_1_20_5))
                 .register(
                     ResourcePackResponse.class,
                     ResourcePackResponse.CODEC,
