@@ -352,6 +352,11 @@ public final class WarpPlayer implements Player {
   }
 
   @Override
+  public void refreshCommands() {
+    player.refreshCommands();
+  }
+
+  @Override
   public void disconnect(Component reason) {
     player.disconnectByPlugin(reason);
   }

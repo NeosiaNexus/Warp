@@ -19,6 +19,7 @@ package dev.warp.proxy.permission;
 import dev.warp.api.event.Subscription;
 import dev.warp.api.permission.PermissionProvider;
 import dev.warp.api.permission.Permissions;
+import dev.warp.api.player.Player;
 
 import java.util.function.Consumer;
 
@@ -48,5 +49,15 @@ public final class PluginPermissions implements Permissions {
     Subscription subscription = registry.register(owner, priority, provider);
     tracker.accept(subscription);
     return subscription;
+  }
+
+  @Override
+  public void changed(Player player) {
+    registry.changed(player);
+  }
+
+  @Override
+  public void allChanged() {
+    registry.allChanged();
   }
 }

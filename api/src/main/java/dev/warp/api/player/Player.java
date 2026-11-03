@@ -181,6 +181,27 @@ public interface Player
   boolean sendPluginMessage(ChannelIdentifier channel, byte[] data);
 
   /**
+   * Sends the player its command list again, so that its tab completion matches what it may run
+   * now: its server's last list, with the proxy's commands it may use at this moment merged in and
+   * {@link dev.warp.api.command.PlayerAvailableCommandsEvent} fired again. Otherwise the list is
+   * only sent when the player joins a server, so a permission granted or taken keeps showing the
+   * old commands until it switches servers.
+   *
+   * <p>A permission plugin does not need to call it: {@link
+   * dev.warp.api.permission.Permissions#changed(Player)} refreshes the player itself. Call it when
+   * something else that decides which commands a player sees changed, such as a {@code requires}
+   * predicate reading a plugin's own state.
+   *
+   * <p>Safe from any thread, and cheap to call often: the refresh runs a moment later, off the
+   * network thread, and calls made meanwhile are merged into it. It does nothing for a client older
+   * than 1.13, which has no command list (it asks for completions as the player types); while the
+   * player is between two servers or in the configuration phase, since the next server sends a list
+   * of its own; and when the proxy could not read the server's list, which then shows no proxy
+   * commands either.
+   */
+  void refreshCommands();
+
+  /**
    * Disconnects the player with a reason shown on its screen.
    *
    * @param reason the reason

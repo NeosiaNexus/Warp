@@ -2982,6 +2982,42 @@ public final class ConnectedPlayer {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Command list
+  // ---------------------------------------------------------------------------
+
+  /**
+   * How long a refresh of the command list waits for more changes: a permission plugin applying an
+   * edit changes many nodes, a plugin being enabled registers many commands.
+   */
+  static final Duration COMMAND_REFRESH_DELAY = Duration.ofMillis(100);
+
+  /**
+   * A server's last command list, kept to merge the proxy's commands into it again when they or the
+   * player's permissions change. Kept as the packet's raw bytes (some 20 KiB for a vanilla
+   * operator), not as a decoded tree (hundreds of KiB): it is decoded again only for a refresh.
+   * Compared by identity: each packet the server sends is a list of its own, even if it is the
+   * same.
+   */
+  private static final class ServerCommands {
+    private final MinecraftConnection backend;
+    private final DeclareCommands packet;
+
+    private ServerCommands(MinecraftConnection backend, DeclareCommands packet) {
+      this.backend = backend;
+      this.packet = packet;
+    }
+  }
+
+  /**
+   * The current server's last command list, or {@code null} before it sent one, or when the proxy
+   * could not read it.
+   */
+  private volatile @Nullable ServerCommands serverCommands;
+
+  /** Whether a refresh of the command list is scheduled and has not started yet. */
+  private final AtomicBoolean commandRefreshScheduled = new AtomicBoolean();
+
   /**
    * Sends the client its server's command list with the proxy's commands merged in, as {@link
    * PlayerAvailableCommandsEvent} leaves it. A list the proxy cannot read goes as it came. Runs on
@@ -2999,11 +3035,14 @@ public final class ConnectedPlayer {
       decoding = packet.tree(protocolVersion);
     } catch (RuntimeException e) {
       // A tree the client would refuse too: let it judge, as it would without a proxy.
+      serverCommands = null;
       clientConnection.writeAndFlush(packet);
       return;
     }
     switch (decoding) {
       case CommandTreeDecoding.Opaque opaque -> {
+        // Nothing to refresh: the proxy's commands are not in it.
+        serverCommands = null;
         if (!opaqueCommandsLogged) {
           opaqueCommandsLogged = true;
           logger.info("Proxy commands not shown to {}: {}", username, opaque.message());
@@ -3011,32 +3050,110 @@ public final class ConnectedPlayer {
         clientConnection.writeAndFlush(packet);
       }
       case CommandTreeDecoding.Decoded(CommandTree tree) -> {
-        CommandTree merged =
-            tree.merge(
-                loginContext.commands().treeFor(api, protocolVersion), NameConflict.PROXY_WINS);
-        WarpEventBus events = loginContext.events();
-        if (!events.hasHandlers(PlayerAvailableCommandsEventImpl.class)) {
-          clientConnection.writeAndFlush(DeclareCommands.of(merged, protocolVersion));
-          return;
-        }
-        var event = new PlayerAvailableCommandsEventImpl(api, merged.topLevelNames());
-        var _ =
-            events
-                .fire(event, uuid)
-                .whenComplete(
-                    (done, _) ->
-                        onEventLoop(
-                            () -> {
-                              if (!clientConnection.channel().isActive()) {
-                                return;
-                              }
-                              CommandTree shown =
-                                  merged.withoutTopLevel(node -> !done.keeps(topLevelName(node)));
-                              clientConnection.writeAndFlush(
-                                  DeclareCommands.of(shown, protocolVersion));
-                            }));
+        ServerCommands origin = new ServerCommands(backend, packet);
+        serverCommands = origin;
+        sendMerged(tree, origin);
       }
     }
+  }
+
+  /**
+   * Sends the player its command list again: the current server's last list, with the proxy's
+   * commands it may use now. Debounced by {@link #COMMAND_REFRESH_DELAY}; the permission checks run
+   * on the command executor, the write on the client event loop. Safe from any thread.
+   *
+   * <p>Nothing happens for a client older than 1.13 (no command list), before the server sent a
+   * list, while the client is between two servers or in the configuration phase (the next server
+   * sends its own), or when the server's list is opaque to the proxy (it shows no proxy commands).
+   */
+  public void refreshCommands() {
+    if (protocolVersion.isOlderThan(ProtocolVersion.MINECRAFT_1_13)
+        || !clientConnection.channel().isActive()
+        || !commandRefreshScheduled.compareAndSet(false, true)) {
+      return;
+    }
+    var _ =
+        clientConnection
+            .channel()
+            .eventLoop()
+            .schedule(
+                this::startCommandRefresh, COMMAND_REFRESH_DELAY.toMillis(), TimeUnit.MILLISECONDS);
+  }
+
+  /** Starts a scheduled refresh: on the client event loop, once the delay is over. */
+  private void startCommandRefresh() {
+    // Cleared first: a change from here on may come after the checks read the permissions.
+    commandRefreshScheduled.set(false);
+    ServerCommands origin = serverCommands;
+    if (origin == null || !canDeclareCommands(origin)) {
+      return;
+    }
+    try {
+      loginContext.commands().executor().execute(() -> rebuildCommands(origin));
+    } catch (RejectedExecutionException e) {
+      // The proxy is shutting down.
+      logger.trace("Command list of {} not refreshed: shutting down", username);
+    }
+  }
+
+  /** Merges the proxy's commands into the server's last list again. Off the event loop. */
+  private void rebuildCommands(ServerCommands origin) {
+    try {
+      if (origin.packet.tree(protocolVersion)
+          instanceof CommandTreeDecoding.Decoded(CommandTree tree)) {
+        sendMerged(tree, origin);
+      }
+    } catch (RuntimeException e) {
+      // A plugin's requirement that throws, typically: the client keeps the list it has.
+      logger.warn("Could not refresh the command list of {}", username, e);
+    }
+  }
+
+  /**
+   * Merges the proxy's commands the player may use into a server's tree, fires {@link
+   * PlayerAvailableCommandsEvent} if anyone listens, and sends the result, unless a newer list or
+   * another state replaced {@code origin} meanwhile.
+   */
+  private void sendMerged(CommandTree tree, ServerCommands origin) {
+    CommandTree merged =
+        tree.merge(loginContext.commands().treeFor(api, protocolVersion), NameConflict.PROXY_WINS);
+    WarpEventBus events = loginContext.events();
+    if (!events.hasHandlers(PlayerAvailableCommandsEventImpl.class)) {
+      declareCommands(DeclareCommands.of(merged, protocolVersion), origin);
+      return;
+    }
+    var event = new PlayerAvailableCommandsEventImpl(api, merged.topLevelNames());
+    var _ =
+        events
+            .fire(event, uuid)
+            .whenComplete(
+                (done, _) -> {
+                  CommandTree shown =
+                      merged.withoutTopLevel(node -> !done.keeps(topLevelName(node)));
+                  declareCommands(DeclareCommands.of(shown, protocolVersion), origin);
+                });
+  }
+
+  /** Writes a command list on the client event loop, if {@code origin} is still current. */
+  private void declareCommands(DeclareCommands packet, ServerCommands origin) {
+    onEventLoop(
+        () -> {
+          if (canDeclareCommands(origin)) {
+            clientConnection.writeAndFlush(packet);
+          }
+        });
+  }
+
+  /**
+   * Whether a list merged into {@code origin} may go to the client: it is the current server's last
+   * list, and the client plays on that server, outside a state change.
+   */
+  private boolean canDeclareCommands(ServerCommands origin) {
+    return serverCommands == origin
+        && isPlayingOn(origin.backend)
+        && clientConnection.channel().isActive()
+        && clientConnection.encoder().state() == ProtocolState.PLAY
+        && !clientConnection.isStateChangePending();
   }
 
   private static String topLevelName(dev.warp.protocol.command.CommandNode node) {
