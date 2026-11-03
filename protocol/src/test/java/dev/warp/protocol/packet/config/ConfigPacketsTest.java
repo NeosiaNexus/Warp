@@ -30,7 +30,6 @@ import dev.warp.protocol.codec.VarInt;
 import java.nio.charset.StandardCharsets;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.UUID;
 import java.util.stream.Stream;
 
 import io.netty.buffer.ByteBuf;
@@ -389,58 +388,6 @@ class ConfigPacketsTest {
         RegistryData decoded = RegistryData.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_21_4);
         assertEquals("minecraft:dimension_type", decoded.registryId());
         assertArrayEquals(rawEntries, decoded.rawEntries());
-      } finally {
-        buf.release();
-      }
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // ResourcePackPush
-  // ---------------------------------------------------------------------------
-
-  @Nested
-  @DisplayName("ResourcePackPush")
-  class ResourcePackPushCodec {
-
-    @Test
-    @DisplayName("should roundtrip with prompt message")
-    void roundtripWithPrompt() {
-      UUID uuid = UUID.fromString("12345678-1234-1234-1234-123456789abc");
-      byte[] prompt = {0x0A, 0x0B};
-      ResourcePackPush original =
-          new ResourcePackPush(uuid, "https://example.com/pack.zip", "abc123def456", true, prompt);
-      ByteBuf buf = Unpooled.buffer();
-      try {
-        ResourcePackPush.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_21_4);
-        ResourcePackPush decoded =
-            ResourcePackPush.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_21_4);
-        assertEquals(uuid, decoded.uuid());
-        assertEquals("https://example.com/pack.zip", decoded.url());
-        assertEquals("abc123def456", decoded.hash());
-        assertTrue(decoded.forced());
-        assertArrayEquals(prompt, decoded.promptMessage());
-      } finally {
-        buf.release();
-      }
-    }
-
-    @Test
-    @DisplayName("should roundtrip without prompt message")
-    void roundtripWithoutPrompt() {
-      UUID uuid = UUID.fromString("abcdef01-2345-6789-abcd-ef0123456789");
-      ResourcePackPush original =
-          new ResourcePackPush(uuid, "https://example.com/pack.zip", "deadbeef", false, null);
-      ByteBuf buf = Unpooled.buffer();
-      try {
-        ResourcePackPush.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_21_4);
-        ResourcePackPush decoded =
-            ResourcePackPush.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_21_4);
-        assertEquals(uuid, decoded.uuid());
-        assertEquals("https://example.com/pack.zip", decoded.url());
-        assertEquals("deadbeef", decoded.hash());
-        assertEquals(false, decoded.forced());
-        assertNull(decoded.promptMessage());
       } finally {
         buf.release();
       }

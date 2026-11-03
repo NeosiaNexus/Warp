@@ -20,6 +20,7 @@ import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
+import dev.warp.protocol.packet.cookie.CookieRequest;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.login.EncryptionRequest;
 import dev.warp.protocol.packet.login.EncryptionResponse;
@@ -45,7 +46,8 @@ import org.slf4j.LoggerFactory;
  *
  * <p>The proxy connects to the backend, sends Handshake + LoginStart, and handles the backend's
  * login sequence: optional SetCompression, optional LoginPluginRequest (Velocity forwarding),
- * LoginSuccess, and LoginAcknowledged.
+ * optional Cookie Requests (1.20.5+, relayed to the client, whose answers come back), LoginSuccess,
+ * and LoginAcknowledged.
  *
  * <p>This handler has no explicit state machine with crossed futures — it simply reacts to packets
  * as they arrive. The protocol guarantees ordering (SetCompression before LoginSuccess,
@@ -89,6 +91,19 @@ final class BackendLoginSessionHandler implements SessionHandler {
     String host = serverAddress.getHostString();
     int port = serverAddress.getPort();
 
+    if (forwardingSecret.length > 0 && backendConnection.isPacketLevel()) {
+      // Plugin handlers (a translator) speak the player's version between this handler and the
+      // backend: the forwarding query is answered below them, in the backend's own protocol.
+      backendConnection
+          .channel()
+          .pipeline()
+          .addAfter(
+              ServerChannelInitializer.PACKET_DECOMPRESSOR,
+              ForwardingResponder.NAME,
+              new ForwardingResponder(
+                  () -> PlayerForwarding.buildVelocityForwardingData(player, forwardingSecret)));
+    }
+
     // Temporarily switch to HANDSHAKE to encode the Handshake packet, then back to LOGIN.
     backendConnection.setState(ProtocolState.HANDSHAKE);
     backendConnection.writeAndFlush(new Handshake(version.protocol(), host, port, 2));
@@ -103,6 +118,12 @@ final class BackendLoginSessionHandler implements SessionHandler {
 
   @Override
   public void handle(Packet packet) {
+    if (packet instanceof CookieRequest request) {
+      // The backend asks during its login, while the client, past its own, waits in
+      // configuration: the client is asked in its state, and its answer comes back here.
+      player.cookies().relay(backendConnection, request);
+      return;
+    }
     if (!(packet instanceof LoginPacket loginPacket)) {
       logger.warn(
           "Unexpected packet in backend LOGIN state: {}", packet.getClass().getSimpleName());
@@ -172,7 +193,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
     int playerThreshold = context.compressionThreshold(player.protocolVersion());
     if (context.compressionPassthrough()
         && playerThreshold >= 0
-        && backendConnection.decoder().decompressor() == null
+        && !backendConnection.isCompressed()
         && COMPRESSION_ADVICE_GIVEN.add(serverAddress)) {
       logger.warn(
           "Backend {} has compression disabled, so Warp must compress its traffic for every player."
@@ -199,6 +220,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
     adviseIfBackendUncompressed();
     // The configuration phase from 1.20.2, straight to PLAY before: the server switch strategy
     // knows which, and installs the next handler.
+    player.backendAccepted(backendConnection);
     player.serverSwitch().loggedIn(backendConnection);
   }
 
@@ -208,6 +230,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
         serverAddress,
         player.username(),
         packet.reason());
+    player.recordKick(backendConnection, packet.decodedReason());
     player.scheduleBackendFailure(backendConnection);
   }
 }

@@ -37,6 +37,10 @@ import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.config.ConfigPacket;
 import dev.warp.protocol.packet.config.FinishConfiguration;
+import dev.warp.protocol.packet.cookie.CookiePacket;
+import dev.warp.protocol.packet.cookie.CookieRequest;
+import dev.warp.protocol.packet.cookie.CookieResponse;
+import dev.warp.protocol.packet.cookie.StoreCookie;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.handshake.HandshakePacket;
 import dev.warp.protocol.packet.login.EncryptionRequest;
@@ -54,7 +58,11 @@ import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatAcknowledgement;
 import dev.warp.protocol.packet.play.ChatCommand;
+import dev.warp.protocol.packet.play.ClearDialog;
 import dev.warp.protocol.packet.play.ClearTitles;
+import dev.warp.protocol.packet.play.DeclareCommands;
+import dev.warp.protocol.packet.play.DeleteChat;
+import dev.warp.protocol.packet.play.EntitySoundEffect;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
@@ -66,9 +74,17 @@ import dev.warp.protocol.packet.play.PlayPluginMessage;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
+import dev.warp.protocol.packet.play.ResourcePackPop;
+import dev.warp.protocol.packet.play.ResourcePackPush;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.Respawn;
+import dev.warp.protocol.packet.play.SetActionBarText;
+import dev.warp.protocol.packet.play.SetSubtitleText;
+import dev.warp.protocol.packet.play.SetTitleText;
+import dev.warp.protocol.packet.play.SetTitleTimes;
+import dev.warp.protocol.packet.play.SoundEffect;
 import dev.warp.protocol.packet.play.StartConfiguration;
+import dev.warp.protocol.packet.play.StopSound;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
@@ -110,7 +126,8 @@ class StateRegistryTest {
               StatusPacket.class,
               LoginPacket.class,
               ConfigPacket.class,
-              PlayPacket.class)
+              PlayPacket.class,
+              CookiePacket.class)
           .flatMap(family -> Arrays.stream(family.getPermittedSubclasses()))
           .<Class<? extends Packet>>map(type -> type.asSubclass(Packet.class))
           .toList();
@@ -157,6 +174,8 @@ class StateRegistryTest {
                 ProtocolVersion.MINECRAFT_1_21_2),
             new PacketName(LOGIN, CLIENTBOUND, SetCompression.class, "minecraft:login_compression"),
             new PacketName(LOGIN, CLIENTBOUND, LoginPluginRequest.class, "minecraft:custom_query"),
+            new PacketName(LOGIN, SERVERBOUND, CookieResponse.class, "minecraft:cookie_response"),
+            new PacketName(LOGIN, CLIENTBOUND, CookieRequest.class, "minecraft:cookie_request"),
             new PacketName(
                 CONFIGURATION,
                 SERVERBOUND,
@@ -176,7 +195,23 @@ class StateRegistryTest {
                 FinishConfiguration.class,
                 "minecraft:finish_configuration"),
             new PacketName(CONFIGURATION, CLIENTBOUND, KeepAlive.class, "minecraft:keep_alive"),
+            new PacketName(
+                CONFIGURATION, SERVERBOUND, CookieResponse.class, "minecraft:cookie_response"),
+            new PacketName(
+                CONFIGURATION, CLIENTBOUND, CookieRequest.class, "minecraft:cookie_request"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, StoreCookie.class, "minecraft:store_cookie"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, Transfer.class, "minecraft:transfer"),
+            new PacketName(
+                CONFIGURATION, SERVERBOUND, ResourcePackResponse.class, "minecraft:resource_pack"),
+            new PacketName(
+                CONFIGURATION, CLIENTBOUND, ResourcePackPush.class, "minecraft:resource_pack_push"),
+            new PacketName(
+                CONFIGURATION, CLIENTBOUND, ResourcePackPop.class, "minecraft:resource_pack_pop"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, ClearDialog.class, "minecraft:clear_dialog"),
             new PacketName(PLAY, SERVERBOUND, KeepAlive.class, "minecraft:keep_alive"),
+            new PacketName(PLAY, SERVERBOUND, CookieResponse.class, "minecraft:cookie_response"),
+            new PacketName(PLAY, CLIENTBOUND, CookieRequest.class, "minecraft:cookie_request"),
+            new PacketName(PLAY, CLIENTBOUND, StoreCookie.class, "minecraft:store_cookie"),
             new PacketName(PLAY, SERVERBOUND, PlayPluginMessage.class, "minecraft:custom_payload"),
             new PacketName(
                 PLAY, SERVERBOUND, TabCompleteRequest.class, "minecraft:command_suggestion"),
@@ -200,7 +235,25 @@ class StateRegistryTest {
                 PLAY, CLIENTBOUND, StartConfiguration.class, "minecraft:start_configuration"),
             new PacketName(PLAY, CLIENTBOUND, Transfer.class, "minecraft:transfer"),
             new PacketName(
-                PLAY, CLIENTBOUND, TabCompleteResponse.class, "minecraft:command_suggestions"));
+                PLAY, CLIENTBOUND, TabCompleteResponse.class, "minecraft:command_suggestions"),
+            new PacketName(PLAY, CLIENTBOUND, DeclareCommands.class, "minecraft:commands"),
+            new PacketName(PLAY, CLIENTBOUND, TabListHeaderFooter.class, "minecraft:tab_list"),
+            new PacketName(PLAY, CLIENTBOUND, ClearTitles.class, "minecraft:clear_titles"),
+            new PacketName(PLAY, CLIENTBOUND, SetTitleText.class, "minecraft:set_title_text"),
+            new PacketName(PLAY, CLIENTBOUND, SetSubtitleText.class, "minecraft:set_subtitle_text"),
+            new PacketName(
+                PLAY, CLIENTBOUND, SetTitleTimes.class, "minecraft:set_titles_animation"),
+            new PacketName(
+                PLAY, CLIENTBOUND, SetActionBarText.class, "minecraft:set_action_bar_text"),
+            new PacketName(PLAY, CLIENTBOUND, BossBar.class, "minecraft:boss_event"),
+            new PacketName(PLAY, CLIENTBOUND, SoundEffect.class, "minecraft:sound"),
+            new PacketName(PLAY, CLIENTBOUND, EntitySoundEffect.class, "minecraft:sound_entity"),
+            new PacketName(PLAY, CLIENTBOUND, StopSound.class, "minecraft:stop_sound"),
+            new PacketName(
+                PLAY, CLIENTBOUND, ResourcePackPush.class, "minecraft:resource_pack_push"),
+            new PacketName(PLAY, CLIENTBOUND, ResourcePackPop.class, "minecraft:resource_pack_pop"),
+            new PacketName(PLAY, CLIENTBOUND, DeleteChat.class, "minecraft:delete_chat"),
+            new PacketName(PLAY, CLIENTBOUND, ClearDialog.class, "minecraft:clear_dialog"));
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("auditedProtocols")
@@ -336,6 +389,8 @@ class StateRegistryTest {
             new PacketName(LOGIN, CLIENTBOUND, LoginSuccess.class, "success"),
             new PacketName(LOGIN, CLIENTBOUND, SetCompression.class, "compress"),
             new PacketName(LOGIN, CLIENTBOUND, LoginPluginRequest.class, "login_plugin_request"),
+            new PacketName(LOGIN, SERVERBOUND, CookieResponse.class, "cookie_response"),
+            new PacketName(LOGIN, CLIENTBOUND, CookieRequest.class, "cookie_request"),
             new PacketName(CONFIGURATION, SERVERBOUND, ClientInformation.class, "settings"),
             new PacketName(
                 CONFIGURATION,
@@ -347,7 +402,27 @@ class StateRegistryTest {
             new PacketName(
                 CONFIGURATION, CLIENTBOUND, FinishConfiguration.class, "finish_configuration"),
             new PacketName(CONFIGURATION, CLIENTBOUND, KeepAlive.class, "keep_alive"),
+            new PacketName(CONFIGURATION, SERVERBOUND, CookieResponse.class, "cookie_response"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, CookieRequest.class, "cookie_request"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, StoreCookie.class, "store_cookie"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, Transfer.class, "transfer"),
+            new PacketName(
+                CONFIGURATION, SERVERBOUND, ResourcePackResponse.class, "resource_pack_receive"),
+            new PacketName(
+                CONFIGURATION, CLIENTBOUND, ResourcePackPush.class, "resource_pack_send"),
+            new PacketName(
+                CONFIGURATION,
+                CLIENTBOUND,
+                ResourcePackPush.class,
+                "add_resource_pack",
+                ProtocolVersion.MINECRAFT_1_20_3),
+            new PacketName(
+                CONFIGURATION, CLIENTBOUND, ResourcePackPop.class, "remove_resource_pack"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, ClearDialog.class, "clear_dialog"),
             new PacketName(PLAY, SERVERBOUND, KeepAlive.class, "keep_alive"),
+            new PacketName(PLAY, SERVERBOUND, CookieResponse.class, "cookie_response"),
+            new PacketName(PLAY, CLIENTBOUND, CookieRequest.class, "cookie_request"),
+            new PacketName(PLAY, CLIENTBOUND, StoreCookie.class, "store_cookie"),
             new PacketName(PLAY, SERVERBOUND, PlayPluginMessage.class, "custom_payload"),
             new PacketName(PLAY, SERVERBOUND, TabCompleteRequest.class, "tab_complete"),
             new PacketName(PLAY, SERVERBOUND, LegacyChatMessage.class, "chat"),
@@ -373,6 +448,7 @@ class StateRegistryTest {
             new PacketName(PLAY, CLIENTBOUND, StartConfiguration.class, "start_configuration"),
             new PacketName(PLAY, CLIENTBOUND, Transfer.class, "transfer"),
             new PacketName(PLAY, CLIENTBOUND, TabCompleteResponse.class, "tab_complete"),
+            new PacketName(PLAY, CLIENTBOUND, DeclareCommands.class, "declare_commands"),
             new PacketName(PLAY, CLIENTBOUND, BossBar.class, "boss_bar"),
             new PacketName(PLAY, CLIENTBOUND, LegacyPlayerInfo.class, "player_info"),
             new PacketName(PLAY, CLIENTBOUND, PlayerInfo.class, "player_info"),
@@ -385,7 +461,56 @@ class StateRegistryTest {
                 CLIENTBOUND,
                 ClearTitles.class,
                 "clear_titles",
-                ProtocolVersion.MINECRAFT_1_17));
+                ProtocolVersion.MINECRAFT_1_17),
+            // Up to 1.16.5 the actions of the single Title packet.
+            new PacketName(PLAY, CLIENTBOUND, SetTitleText.class, "title"),
+            new PacketName(
+                PLAY,
+                CLIENTBOUND,
+                SetTitleText.class,
+                "set_title_text",
+                ProtocolVersion.MINECRAFT_1_17),
+            new PacketName(PLAY, CLIENTBOUND, SetSubtitleText.class, "title"),
+            new PacketName(
+                PLAY,
+                CLIENTBOUND,
+                SetSubtitleText.class,
+                "set_title_subtitle",
+                ProtocolVersion.MINECRAFT_1_17),
+            new PacketName(PLAY, CLIENTBOUND, SetTitleTimes.class, "title"),
+            new PacketName(
+                PLAY,
+                CLIENTBOUND,
+                SetTitleTimes.class,
+                "set_title_time",
+                ProtocolVersion.MINECRAFT_1_17),
+            new PacketName(PLAY, CLIENTBOUND, SetActionBarText.class, "title"),
+            new PacketName(
+                PLAY,
+                CLIENTBOUND,
+                SetActionBarText.class,
+                "action_bar",
+                ProtocolVersion.MINECRAFT_1_17),
+            // Named until 1.19.2, the registry-or-inline sound effect from 1.19.3.
+            new PacketName(PLAY, CLIENTBOUND, SoundEffect.class, "named_sound_effect"),
+            new PacketName(
+                PLAY,
+                CLIENTBOUND,
+                SoundEffect.class,
+                "sound_effect",
+                ProtocolVersion.MINECRAFT_1_19_3),
+            new PacketName(PLAY, CLIENTBOUND, EntitySoundEffect.class, "entity_sound_effect"),
+            new PacketName(PLAY, CLIENTBOUND, StopSound.class, "stop_sound"),
+            new PacketName(PLAY, CLIENTBOUND, ResourcePackPush.class, "resource_pack_send"),
+            new PacketName(
+                PLAY,
+                CLIENTBOUND,
+                ResourcePackPush.class,
+                "add_resource_pack",
+                ProtocolVersion.MINECRAFT_1_20_3),
+            new PacketName(PLAY, CLIENTBOUND, ResourcePackPop.class, "remove_resource_pack"),
+            new PacketName(PLAY, CLIENTBOUND, DeleteChat.class, "hide_message"),
+            new PacketName(PLAY, CLIENTBOUND, ClearDialog.class, "clear_dialog"));
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("unreportedProtocols")
@@ -498,6 +623,46 @@ class StateRegistryTest {
       assertThrows(
           IllegalArgumentException.class,
           () -> StateRegistry.get(PLAY, CLIENTBOUND).encoding(version, TabCompleteResponse.class));
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Transfer
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("transfer")
+  class TransferIds {
+
+    static Stream<ProtocolVersion> versionsFrom1205() {
+      return ProtocolVersion.values().stream()
+          .filter(v -> v.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versionsFrom1205")
+    @DisplayName("should write a transfer in configuration and play, and forward a server's own")
+    void encodeOnlyInBothStates(ProtocolVersion version) {
+      for (ProtocolState state : List.of(CONFIGURATION, PLAY)) {
+        PacketRegistry clientbound = StateRegistry.get(state, CLIENTBOUND);
+
+        PacketRegistry.Encoding encoding = clientbound.encoding(version, Transfer.class);
+
+        assertSame(Transfer.CODEC, encoding.codec());
+        assertNull(clientbound.lookup(version, encoding.packetId()));
+      }
+    }
+
+    @Test
+    @DisplayName("should not register a transfer before 1.20.5")
+    void absentBefore1205() {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_20_4;
+
+      for (ProtocolState state : List.of(CONFIGURATION, PLAY)) {
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> StateRegistry.get(state, CLIENTBOUND).encoding(version, Transfer.class));
+      }
     }
   }
 

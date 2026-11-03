@@ -36,6 +36,11 @@ import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.PacketDirection;
+import dev.warp.proxy.config.LoggingConfig;
+import dev.warp.proxy.config.TimeoutsConfig;
+import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.permission.PermissionRegistry;
+import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 
 import java.net.InetSocketAddress;
@@ -105,6 +110,17 @@ class SessionHandlerLifecycleTest {
 
     GameProfile profile = new GameProfile(UUID.randomUUID(), "TestPlayer", List.of());
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
+    when(loginContext.logging()).thenReturn(LoggingConfig.DEFAULTS);
+    when(loginContext.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
+    when(loginContext.antiBot()).thenReturn(TestLoginContexts.calmAntiBot());
+    when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
+    when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
+    when(loginContext.channels()).thenReturn(new ChannelRegistry());
+    when(loginContext.permissions()).thenReturn(new PermissionRegistry());
+    when(loginContext.commands())
+        .thenReturn(
+            TestLoginContexts.commands(
+                new ServerRegistry(java.util.Map.of(), null, java.util.List.of())));
     // Provide a real ServerRegistry with empty fallback so handleBackendFailure disconnects.
     ServerRegistry registry =
         new ServerRegistry(
@@ -116,7 +132,9 @@ class SessionHandlerLifecycleTest {
             ProtocolVersion.MINECRAFT_1_21_4,
             profile,
             new InetSocketAddress("127.0.0.1", 25565),
-            loginContext);
+            loginContext,
+            new ClientCookies(
+                clientConn, ProtocolVersion.MINECRAFT_1_21_4, clientChannel.eventLoop()));
 
     BackendConnection backend = createTestBackendConnection(backendConn);
     player.setBackendConnection(backend);

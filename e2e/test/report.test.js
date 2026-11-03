@@ -55,6 +55,15 @@ describe('report', () => {
     assert.match(markdown, /✅ \*\*1\*\* passed/);
   });
 
+  it('names a translation run after its backends and its bots', () => {
+    const translated = { ...result('1.21.4', 769, [{ name: 'login', status: 'pass', detail: 'spawned' }]), client: { version: '1.8.8', protocol: 47 } };
+
+    const { status, markdown } = report(translated);
+
+    assert.equal(status, 0, markdown);
+    assert.match(markdown, /\| \*\*1\.21\.4 ← 1\.8\.8 bots\*\* \| 769 \|/);
+  });
+
   it('passes when only known-broken scenarios fail, and says why they do', () => {
     const { status, markdown } = report(
       result('1.20.1', 763, [

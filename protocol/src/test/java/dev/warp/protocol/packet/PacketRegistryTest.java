@@ -17,10 +17,12 @@
 package dev.warp.protocol.packet;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
@@ -30,6 +32,7 @@ import dev.warp.protocol.packet.login.LoginStart;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.ClearTitles;
+import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
@@ -124,6 +127,52 @@ class PacketRegistryTest {
           () ->
               VersionMapping.map(
                   0x00, ProtocolVersion.MINECRAFT_1_12, ProtocolVersion.MINECRAFT_1_9));
+    }
+
+    @Test
+    @DisplayName("should let encode-only packets share an id, but no packet that is read")
+    void sharedEncodeOnlyIds() {
+      PacketRegistry shared =
+          PacketRegistry.builder()
+              .registerEncodeOnly(
+                  StatusRequest.class,
+                  StatusRequest.CODEC,
+                  VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_7_2))
+              .registerEncodeOnly(
+                  PingRequest.class,
+                  PingRequest.CODEC,
+                  VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_7_2))
+              .build();
+
+      assertEquals(0x00, shared.packetId(ProtocolVersion.MINECRAFT_1_8, StatusRequest.class));
+      assertEquals(0x00, shared.packetId(ProtocolVersion.MINECRAFT_1_8, PingRequest.class));
+      assertNull(shared.lookup(ProtocolVersion.MINECRAFT_1_8, 0x00));
+      assertThrows(
+          IllegalStateException.class,
+          () ->
+              PacketRegistry.builder()
+                  .registerEncodeOnly(
+                      StatusRequest.class,
+                      StatusRequest.CODEC,
+                      VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_7_2))
+                  .register(
+                      PingRequest.class,
+                      PingRequest.CODEC,
+                      VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_7_2))
+                  .build());
+      assertThrows(
+          IllegalStateException.class,
+          () ->
+              PacketRegistry.builder()
+                  .register(
+                      PingRequest.class,
+                      PingRequest.CODEC,
+                      VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_7_2))
+                  .registerEncodeOnly(
+                      StatusRequest.class,
+                      StatusRequest.CODEC,
+                      VersionMapping.map(0x00, ProtocolVersion.MINECRAFT_1_7_2))
+                  .build());
     }
 
     @Test
@@ -278,6 +327,33 @@ class PacketRegistryTest {
       PacketRegistry registry = PacketRegistry.builder().build();
       assertNull(registry.lookup(ProtocolVersion.MINECRAFT_1_21_4, -1));
     }
+
+    @Test
+    @DisplayName("should tell, without throwing, whether a packet type can be written at a version")
+    void canEncode() {
+      PacketRegistry registry =
+          PacketRegistry.builder()
+              .register(
+                  KeepAlive.class,
+                  KeepAlive.CODEC,
+                  VersionMapping.map(0x1F, ProtocolVersion.MINECRAFT_1_9))
+              .registerWatched(
+                  PlayerInfoUpdate.class,
+                  PlayerInfoUpdate.WATCH,
+                  VersionMapping.map(0x3A, ProtocolVersion.MINECRAFT_1_19_4))
+              .build();
+
+      assertTrue(registry.canEncode(ProtocolVersion.MINECRAFT_1_9, KeepAlive.class));
+      assertFalse(registry.canEncode(ProtocolVersion.MINECRAFT_1_8, KeepAlive.class));
+      assertFalse(registry.canEncode(ProtocolVersion.MINECRAFT_1_9, StatusRequest.class));
+      assertFalse(
+          registry.canEncode(ProtocolVersion.MINECRAFT_1_20_1, PlayerInfoUpdate.class),
+          "watched without a codec");
+      assertFalse(
+          PacketRegistry.builder()
+              .build()
+              .canEncode(ProtocolVersion.MINECRAFT_1_21_4, KeepAlive.class));
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -421,18 +497,17 @@ class PacketRegistryTest {
           clientbound.lookup(
               ProtocolVersion.MINECRAFT_1_20_1,
               clientbound.packetId(ProtocolVersion.MINECRAFT_1_20_1, PlayerInfoRemove.class)));
-      for (var type :
-          List.of(
-              BossBar.class,
-              PlayerInfoUpdate.class,
-              PlayerInfoRemove.class,
-              TabListHeaderFooter.class,
-              ClearTitles.class,
-              Respawn.class)) {
+      for (var type : List.of(PlayerInfoUpdate.class, PlayerInfoRemove.class, Respawn.class)) {
         assertThrows(
             IllegalArgumentException.class,
             () -> clientbound.packetId(ProtocolVersion.MINECRAFT_1_20_2, type),
             type.getSimpleName());
+      }
+      // The header, footer, titles and boss bars are the proxy's own too: written in every
+      // version, and from 1.20.2 never read.
+      for (var type : List.of(TabListHeaderFooter.class, ClearTitles.class, BossBar.class)) {
+        int id = clientbound.packetId(ProtocolVersion.MINECRAFT_1_20_2, type);
+        assertNull(clientbound.lookup(ProtocolVersion.MINECRAFT_1_20_2, id), type.getSimpleName());
       }
       assertThrows(
           IllegalArgumentException.class,

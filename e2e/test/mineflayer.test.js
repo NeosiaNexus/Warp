@@ -4,9 +4,10 @@
 // to its last byte.
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { createServer } from 'node:net';
 import { describe, it } from 'node:test';
 
-import { TabList, answerPacksByUuid, correctProtocolData, endTicks, listedUuids } from '../src/clients/mineflayer.js';
+import { BossBars, TabList, answerPacksByUuid, connect, correctProtocolData, endTicks, listedUuids, plainText } from '../src/clients/mineflayer.js';
 
 const require = createRequire(import.meta.url);
 const { createDeserializer, createSerializer } = require('minecraft-protocol');
@@ -150,6 +151,48 @@ describe('mineflayer corrections', () => {
   });
 });
 
+describe('bots refused at login', () => {
+  /** A server that answers the handshake with a Login Disconnect and closes, as Warp refuses a transfer. */
+  async function refusingServer(reason) {
+    const json = string(JSON.stringify(reason));
+    const packet = Buffer.concat([varInt(0x00), json]);
+    const server = createServer((socket) => {
+      socket.on('error', () => {});
+      socket.once('data', () => socket.end(Buffer.concat([varInt(packet.length), packet])));
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    return server;
+  }
+
+  /**
+   * Calls `action` with mineflayer's zero-delay timers held back by `ms`: mineflayer injects its
+   * plugins, its 'kicked' event among them, on one, so that the server's answer comes first.
+   */
+  function withLatePlugins(ms, action) {
+    const { setTimeout: original } = globalThis;
+    globalThis.setTimeout = (callback, delay, ...args) => original(callback, delay ? delay : ms, ...args);
+    try {
+      return action();
+    } finally {
+      globalThis.setTimeout = original;
+    }
+  }
+
+  it('are told why, though the refusal comes before mineflayer injected its plugins', { timeout: 10_000 }, async () => {
+    const reason = { translate: 'multiplayer.disconnect.transfers_disabled' };
+    const server = await refusingServer(reason);
+    try {
+      const { port } = server.address();
+
+      const joining = withLatePlugins(300, () => connect({ host: '127.0.0.1', port, version: '1.21.4', username: 'e2e_refused' }));
+
+      await assert.rejects(joining, { message: `e2e_refused: kicked before spawn: ${JSON.stringify(reason)}` });
+    } finally {
+      server.close();
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Tab list model
 // ---------------------------------------------------------------------------
@@ -173,6 +216,44 @@ async function tabListAfter(version, packets) {
   }
   return tabList.names();
 }
+
+describe('boss bar model', () => {
+  const BAR = '5c39a8cb-1a3a-4c86-9a47-0f0aaf0e3a01';
+
+  it('keeps bars across a Join Game before 1.20.2, and follows their names', () => {
+    const bars = new BossBars(763);
+    bars.apply('boss_bar', { entityUUID: BAR, action: 0, title: '{"text":"Boss"}' });
+    bars.apply('login', {});
+    bars.apply('boss_bar', { entityUUID: BAR, action: 3, title: '{"text":"Renamed"}' });
+
+    assert.deepEqual(bars.names(), ['Renamed']);
+    assert.deepEqual(bars.errors, []);
+  });
+
+  it('clears every bar in the configuration phase from 1.20.2, as the vanilla client does', () => {
+    const bars = new BossBars(769);
+    bars.apply('boss_bar', { entityUUID: BAR, action: 0, title: { type: 'string', value: 'Boss' } });
+
+    bars.apply('start_configuration', {});
+
+    assert.deepEqual(bars.names(), []);
+  });
+
+  it('reports an update for a bar the client does not have, which fails a vanilla client', () => {
+    const bars = new BossBars(769);
+
+    bars.apply('boss_bar', { entityUUID: BAR, action: 2, health: 0.5 });
+
+    assert.equal(bars.errors.length, 1);
+  });
+
+  it('reads the text of JSON and NBT components', () => {
+    assert.equal(plainText('{"text":"a","extra":[{"text":"b"}]}'), 'ab');
+    assert.equal(plainText('"plain"'), 'plain');
+    assert.equal(plainText({ type: 'string', value: 'nbt' }), 'nbt');
+    assert.equal(plainText({ type: 'compound', value: { text: { type: 'string', value: 'c' } } }), 'c');
+  });
+});
 
 describe('tab list model', () => {
   it('keys 1.7 entries by name, and keeps them across a Join Game', async () => {

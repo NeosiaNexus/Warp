@@ -38,6 +38,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.command.CommandTree;
 import dev.warp.protocol.compress.FrameDecompressor;
 import dev.warp.protocol.compress.JavaCompressor;
 import dev.warp.protocol.fuzz.FuzzSeeds;
@@ -56,6 +57,8 @@ import dev.warp.protocol.packet.config.AcknowledgeFinishConfiguration;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.config.FinishConfiguration;
+import dev.warp.protocol.packet.cookie.CookieRequest;
+import dev.warp.protocol.packet.cookie.CookieResponse;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.login.EncryptionRequest;
 import dev.warp.protocol.packet.login.EncryptionResponse;
@@ -70,15 +73,20 @@ import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatCommand;
+import dev.warp.protocol.packet.play.DeclareCommands;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.LegacyPlayerInfo;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
+import dev.warp.protocol.packet.play.PlayPluginMessage;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
+import dev.warp.protocol.packet.play.ResourcePackPop;
+import dev.warp.protocol.packet.play.ResourcePackPush;
+import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.SwitchPacketFixtures;
 import dev.warp.protocol.packet.status.PingRequest;
@@ -108,6 +116,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.DecoderException;
+import net.kyori.adventure.text.Component;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -633,9 +642,35 @@ class MinecraftDecoderFuzzTest {
               v ->
                   new PlayClientSettings(
                       "en_us", (byte) 10, 0, true, (byte) 0, (byte) 0x7f, 1, false, true, 0)),
+          sample(CookieRequest.CODEC, v -> new CookieRequest("primemc:session")),
+          sample(CookieResponse.CODEC, v -> new CookieResponse("primemc:session", new byte[] {1})),
           sample(BundleDelimiter.CODEC, v -> new BundleDelimiter()),
           sample(PlayDisconnect.CODEC, v -> new PlayDisconnect(REASON)),
           sample(StartConfiguration.CODEC, v -> new StartConfiguration()),
+          sample(
+              ResourcePackPush.CODEC,
+              v ->
+                  ResourcePackPush.of(
+                      ALICE,
+                      "https://warp.dev/pack.zip",
+                      "0123456789abcdef0123456789abcdef01234567",
+                      true,
+                      Component.text("Please"),
+                      v)),
+          sample(ResourcePackPop.CODEC, v -> new ResourcePackPop(ALICE)),
+          sample(
+              ResourcePackResponse.CODEC,
+              v -> new ResourcePackResponse(ALICE, "0123456789abcdef0123456789abcdef01234567", 3)),
+          Map.entry(
+              PlayPluginMessage.WATCH,
+              v ->
+                  encode(
+                      PlayPluginMessage.CODEC,
+                      new PlayPluginMessage("minecraft:brand", new byte[] {1}),
+                      v)),
+          Map.entry(
+              DeclareCommands.CODEC,
+              v -> encode(DeclareCommands.CODEC, DeclareCommands.of(CommandTree.empty(), v), v)),
           fixture(BossBar.WATCH, "boss_bar_add"),
           fixture(LegacyPlayerInfo.WATCH, "legacy_player_info_add"),
           fixture(PlayerInfo.WATCH, "player_info_add"),

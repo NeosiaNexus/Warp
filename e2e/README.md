@@ -14,6 +14,7 @@ e2e/run.sh --mc 1.21.4 --passthrough off --scenarios login,switching
 e2e/run.sh --mc 26.3 --strict                            # known-broken flags ignored: fails for real
 e2e/run.sh --mc 1.21.1 --direct                          # control run without Warp
 e2e/run.sh --mc 1.21.4 --soak 30 --bots 20               # half an hour under load (see Soak)
+e2e/run.sh --mc 1.21.4 --client 1.20.1 --variants offline # 1.20.1 bots, translated (see Translation)
 e2e/run.sh --list                                        # the whole matrix
 e2e/run.sh --help
 ```
@@ -21,7 +22,7 @@ e2e/run.sh --help
 Requirements: Node.js 22+ and a JDK that runs Gradle. Everything else (Paper or vanilla servers,
 the JDK each server needs, ViaProxy) is downloaded on first use, checked against a pinned checksum
 and cached in `~/.cache/warp-e2e` (override with `WARP_E2E_CACHE`). Without `--jar`, Warp's shadow
-jar is built with Gradle. The harness uses 8 local ports from 26100 (`--port-base` to move them),
+jar is built with Gradle. The harness uses 11 local ports from 26100 (`--port-base` to move them),
 and serves the resource packs on one the system picks.
 
 The bots are [mineflayer](https://github.com/PrismarineJS/mineflayer) bots from 1.8.8, the oldest
@@ -40,11 +41,11 @@ which the harness never uses (bots log in offline) but the dependency review rej
 For each version: boot two backends (`lobby` in creative mode, `survival` in adventure mode, so
 bots can tell them apart on any version, each offering a resource pack of its own that the harness
 serves), then for each variant boot Warp twice (a normal instance, and one whose default server is
-a closed port) and run the scenarios:
+a closed port and which lets a single player in) and run the scenarios:
 
 | Scenario | Checks |
 |---|---|
-| `status` | Server list ping through Warp, advertising the protocol the bot speaks (else a client lists Warp as incompatible) |
+| `status` | Server list ping through Warp, advertising the protocol the bot speaks (else a client lists Warp as incompatible), with the message of the day the harness configures (`status.motd`, a gradient that clients before 1.16 get as named colors: checked by its text) and Warp's default player limit, 500 |
 | `login` | Join, receive chunks, land on the lobby; `/server` answers |
 | `forwarding` | Online forwarding variants only: lobby, then survival after a switch, list the player under the UUID Warp authenticated (the mock Mojang gives `e2e_forwarded` one of its own), not the one an offline-mode server derives from the name |
 | `keepalive` | One bot stays connected through the whole run (at least 65 s, past Warp's first keep-alive time-out check) |
@@ -52,17 +53,32 @@ a closed port) and run the scenarios:
 | `chat` | Chat lines before and after each `/server` that Warp answers itself (list, unknown server, current server): the bot must not be kicked. From 1.20, online, the bot signs its chat, so the lobby checks every acknowledgement (see below) |
 | `player-chat` | Two players on the lobby, each listing the other: a chat line from one comes back to it and reaches the other, and so does a `/tell`, a command Warp does not own and only the backend can deliver |
 | `resource-pack` | Lobby's resource pack offer (URL, SHA-1, and its id from 1.20.3) reaches the player, then survival's after a switch; each pack downloads with the SHA-1 offered |
+| `audience` | A plugin of Warp's own (`e2e/plugin`) answers `/audience`: it shows a boss bar animated ten times a second for the whole run, plays a sound at a position and one following the player, and sends a pack of its own. The bot gets each as its version has them (no boss bar before 1.9, the sound following the player by its registry id from 1.14, checked against the id in Mojang's reports, by its name from 1.19.3, none before 1.14), the plugin hears the pack's statuses, and after a switch the bar is still on screen. The bot keeps boss bars as the vanilla client does (cleared in the configuration phase from 1.20.2): an update for a bar it does not have fails the run. From 1.20.3, the plugin's pack is not sent again and the lobby's own is removed after the switch |
 | `switching` | Six `/server` switches back and forth (configuration phase from 1.20.2, Join Game and Respawn before) |
 | `tab-list` | After a switch, the tab list lists none of the previous server's players: a witness stays on the lobby while another bot moves to survival. Each bot keeps the tab list as the vanilla client does (by name on 1.7, by UUID after, across a Join Game before 1.20.2), not as mineflayer does |
 | `profile-key` | 1.19 to 1.19.2 only: a bot with a chat signing key, as every client of a Microsoft account, joins (online, it signs the verify token instead of encrypting it), chats and switches. Online, Warp refuses a key Mojang did not sign, an expired one and, from 1.19.1, a key issued to another player; offline, it ignores the key and lets the first two in |
-| `crowd` | Ten bots at once, then half of them switch server at the same moment (50 ms apart on a server with the `concurrentLogins` quirk) while the others stay on the lobby; those that switched must list none of those left behind |
+| `crowd` | Ten bots at once, which the server list must count, listing a sample of them; then half of them switch server at the same moment (50 ms apart on a server with the `concurrentLogins` quirk) while the others stay on the lobby; those that switched must list none of those left behind |
 | `fallback-unreachable` | Default server down: the player lands on the next one |
 | `fallback-rejected` | Lobby refuses the login (whitelist): the player lands on survival |
+| `switch-refused` | Survival refuses a `/server survival` (whitelist): the player stays on the lobby, told why, never disconnected |
+| `bungeecord` | Paper backends only: the lobby's probe plugin (`plugins/bungee-probe`, built with `javac --release 8` against the Bukkit stubs in `plugins/bukkit-stubs`, so one jar loads from 1.8.8 on) speaks BungeeCord's plugin messaging channel as Paper plugins do, `Player#sendPluginMessage` on `BungeeCord`, which Paper only sends once Warp registered the channel for the client. Its GetServers, PlayerCount and GetServer get Warp's replies; its Connect moves the bot to survival, where GetServer answers survival |
+| `transfer` | From 1.20.5, bots speaking the version natively: the lobby sends the player away with its own Transfer packet (`/transfer` to Warp's address), which reaches it through Warp exactly as sent; the player comes back with a transfer handshake (intent 3), which Warp lets in onto the lobby (`accepts-transfers` on). warp-alt, where it is off, refuses one with vanilla's `multiplayer.disconnect.transfers_disabled` |
+| `drain` | A Warp of its own, warp-drain, with its management server and HAProxy agent check, drains towards warp. From 1.20.5, by SIGTERM (`drain.on-sigterm`, as under Kubernetes): `/readyz` answers 503 and the agent `drain` at once, the player gets a Transfer packet to warp and comes back there by transfer, and warp-drain, empty, exits with 0. Before 1.20.5, by `POST /drain?wait=true` (a wrong token gets 401): the player, whose client cannot be transferred, is kept, never kicked; once it leaves, the request answers `drained` and warp-drain exits with 0 |
+| `player-limit` | warp-alt lets one player in (`player-limit = 1`, no `status.max-players`): once a bot is in, the server list shows 1/1 and the next bot is refused at login with "The server is full." |
+| `flood` | Hostile raw connections against Warp before login (`src/flood.js`): 300 that send nothing, 300 null pings (a status handshake, then nothing), 100 handshakes trickled a byte a second, 200 announcing a 2 MiB first frame and streaming 1 MiB of it, and, online, 50 forged logins (a valid encryption response for a random secret, which the mock session server denies: names starting with `forged`). Meanwhile a bot must join the lobby. Fails if a hostile connection is still open after the 5 s deadlines, if Netty's direct memory grows by more than 32 MiB (Warp runs with native memory tracking), or if Warp writes more than 10 log lines meanwhile: refusals are counted, never logged one by one |
 
 A scenario a run cannot hold is skipped and says why: `forwarding` without forwarding or offline
 (Warp then forwards the UUID a backend derives itself, so nothing tells them apart), `switching`
 and the fallbacks in a `--direct` run, `resource-pack` before 1.8 (offers were a plugin message,
-without the SHA-1). The features are in `features()` in `src/scenarios.js`.
+without the SHA-1), `audience` on 1.7 and on versions bridged through ViaProxy, and without the
+plugin (`--jar` without `--plugin`), `transfer` before 1.20.5 and through ViaProxy (Warp would see
+the bridge's handshake, not the bot's), `drain` through ViaProxy (no bridge leads to warp-drain),
+`bungeecord` on vanilla servers (no plugin to speak the channel) and in a `--direct` run. The
+features are in `features()` in `src/scenarios.js`.
+
+The audience probe plugin is the Gradle project `:e2e-plugin` (`e2e/plugin`). Without `--jar`, the
+harness builds it with Warp and copies it into each Warp's `plugins` directory; the pack it sends
+is a third one the harness serves, given to Warp as system properties.
 
 A run fails if a scenario fails, and also if:
 
@@ -88,6 +104,16 @@ A backend that hangs while booting (alive, without its ready line after 240 s) h
 dumped into its log (`SIGQUIT`) and is booted once more: Paper 1.16 sometimes freezes for good on
 CI runners before Warp or any player is involved (#97). Each retry is logged, annotated on GitHub,
 and listed in `result.json` (`bootRetries`) and both reports. Scenarios are never retried.
+
+Backends from 1.12 listen with Netty's native epoll transport (`use-native-transport`), as Linux
+servers do by default; older ones with NIO. As a player logs in, the server turns the connection's
+auto-read off from its main thread and back on from its event loop. On NIO, Netty 4.1 (1.12 on)
+clears the read interest later, on the event loop, without checking that auto-read is still off: when
+the event loop turned it back on in between, the server never reads that player again. It answers
+none of its chat and kicks it 30 s later for not answering its keep-alives (#132, with or without
+Warp in between). Netty's epoll transport checks first; Netty 4.0 (up to 1.11) gets NIO right and
+epoll wrong. A backend that cannot load the native transport falls back to NIO, which the run
+annotates on GitHub.
 
 Logs and `result.json` go to `e2e/build/<version>/`.
 
@@ -127,6 +153,31 @@ support is turned on (`paper.yml` up to 1.18.2, `config/paper-global.yml` from 1
 generated for each boot and given to Warp in `WARP_FORWARDING_SECRET`. The identity travels in a
 login plugin message, which 1.13 introduced; Paper reads it from 1.13.1, vanilla servers never do.
 Those versions, and a `--direct` run, skip the variant and say why in the report.
+
+## Translation
+
+`--client VERSION` boots the backends of `--mc` and bots of another version of the matrix, and
+installs the via plugin (`via/`, ViaVersion, ViaBackwards and ViaRewind on Warp, built with Gradle,
+or the jar `--via-jar` names) in every Warp instance: the scenarios then run on connections Warp
+translates, from 1.7.10 and 1.8.8 bots (ViaRewind) to bots newer than the backends. The scenarios only use what
+both versions support (the older one's features). `--via-plugin` installs the plugin with bots of
+the backends' own version, the control run of translation: their connections must keep blind
+forwarding and compression passthrough.
+
+`--survival VERSION` boots the survival backend on another version than the lobby: switches then
+go between backends of two versions, one translated and the other not when the bots speak one of
+them (`--mc 1.21.4 --survival 1.21.8 --client 1.21.8`).
+
+The plugin logs `Translating players of <version> for <server>` once per version and server. A run
+fails if bots of another version were never translated, or if bots of the backends' own version
+were. A bridged client version (`via` in `versions.json`) still goes through ViaProxy, which then
+speaks the client version to Warp.
+
+CI runs the `translations` of each tier of `versions.json` as jobs of their own (`1.8.8 bots on
+1.21.4 · ViaRewind`), with the plugin jar the build uploads: on pull requests a newer player
+(ViaVersion) and a 1.8 player (ViaRewind); in the full tier also an older one on PrimeMC's 1.21.8
+(ViaBackwards), a 1.12.2 player with modern forwarding, a 1.7.10 player and switches between a
+translated backend and an untranslated one.
 
 ## Soak
 
@@ -312,3 +363,15 @@ can be edited by hand), and on the latest release every week, which flags a new 
 Before 1.21, `npm run packet-ids` writes `protocol/src/test/resources/dev/warp/protocol/packet/packet-ids.txt`
 from the pinned minecraft-data: the id of every packet at each protocol `ProtocolVersion` registers.
 Run it again after bumping minecraft-data; the test reports a table that misses a protocol.
+
+## Sound event ids
+
+From 1.14 to 1.19.2 a sound following an entity is its id in the client's sound event registry,
+which those clients build themselves. `npm run sound-events` runs the data generator of one server
+jar per protocol in that range, as `packet-reports` does (Java 17 for 1.17, which lists Java 16:
+Adoptium has no Java 16 runtime), reads the `minecraft:sound_event` registry of
+`reports/registries.json`, and writes the table Warp loads
+(`protocol/src/main/resources/dev/warp/protocol/packet/play/sound-events.txt`, the first list whole
+and each next one as its edits from the previous) and the samples `SoundEventIdsTest` and the
+`audience` scenario check it against (`sound-event-samples.txt` in the matching test resources: the
+count, a SHA-256 of every name in id order and a few ids per protocol). Neither is edited by hand.

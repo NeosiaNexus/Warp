@@ -19,6 +19,8 @@ package dev.warp.protocol.packet.play;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -301,6 +303,71 @@ class PlayPacketsTest {
       }
     }
 
+    @Test
+    @DisplayName("should report nothing, and read nothing, while no channel is watched")
+    void watchIdle() {
+      ByteBuf buf = Unpooled.buffer();
+      try {
+        PlayPluginMessage.CODEC.encode(
+            new PlayPluginMessage("pmc:transfer", new byte[] {1}),
+            buf,
+            ProtocolVersion.MINECRAFT_1_21_4);
+        int before = buf.readerIndex();
+
+        assertNull(PlayPluginMessage.WATCH.watch(buf, ProtocolVersion.MINECRAFT_1_21_4));
+        assertEquals(before, buf.readerIndex());
+      } finally {
+        buf.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should report a message on a watched channel, payload included, and no other")
+    void watchOwned() {
+      PlayPluginMessage.WATCHED_CHANNELS.add("pmc:transfer");
+      ByteBuf owned = Unpooled.buffer();
+      ByteBuf other = Unpooled.buffer();
+      try {
+        PlayPluginMessage.CODEC.encode(
+            new PlayPluginMessage("pmc:transfer", ascii("lobby")),
+            owned,
+            ProtocolVersion.MINECRAFT_1_21_4);
+        PlayPluginMessage.CODEC.encode(
+            new PlayPluginMessage("minecraft:brand", ascii("warp")),
+            other,
+            ProtocolVersion.MINECRAFT_1_21_4);
+
+        PlayPluginMessage reported =
+            PlayPluginMessage.WATCH.watch(owned, ProtocolVersion.MINECRAFT_1_21_4);
+
+        assertNotNull(reported);
+        assertEquals("pmc:transfer", reported.channel());
+        assertArrayEquals(ascii("lobby"), reported.data());
+        assertNull(PlayPluginMessage.WATCH.watch(other, ProtocolVersion.MINECRAFT_1_21_4));
+      } finally {
+        PlayPluginMessage.WATCHED_CHANNELS.remove("pmc:transfer");
+        owned.release();
+        other.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should read the 1.7 length of a watched payload")
+    void watchLegacy() {
+      PlayPluginMessage.WATCHED_CHANNELS.add("MC|Brand");
+      ByteBuf buf = Unpooled.wrappedBuffer(HexFormat.of().parseHex(BRAND_1_7));
+      try {
+        PlayPluginMessage reported =
+            PlayPluginMessage.WATCH.watch(buf, ProtocolVersion.MINECRAFT_1_7_6);
+
+        assertNotNull(reported);
+        assertArrayEquals(ascii("warp"), reported.data());
+      } finally {
+        PlayPluginMessage.WATCHED_CHANNELS.remove("MC|Brand");
+        buf.release();
+      }
+    }
+
     /** "MC|Brand" then "warp", as node-minecraft-protocol 1.68.0 writes the body for 1.7.10. */
     private static final String BRAND_1_7 = "084d437c4272616e64" + "0004" + "77617270";
 
@@ -503,6 +570,7 @@ class PlayPacketsTest {
 
     static Stream<ProtocolVersion> jsonVersions() {
       return ProtocolVersion.values().stream()
+          .filter(version -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_9))
           .filter(version -> version.isOlderThan(ProtocolVersion.MINECRAFT_1_20_3));
     }
 

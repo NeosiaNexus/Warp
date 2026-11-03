@@ -1,0 +1,9 @@
+name: BungeeProbe
+main: dev.warp.e2e.BungeeProbe
+version: '1.0'
+description: Speaks the BungeeCord channel for Warp's end-to-end tests.
+api-version: '1.13'
+commands:
+  bungeeprobe:
+    description: Sends a BungeeCord sub-channel through a player.
+    usage: /bungeeprobe <player> <SubChannel> [args...]

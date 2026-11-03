@@ -16,6 +16,7 @@
  */
 package dev.warp.protocol.packet;
 
+import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_11;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_12;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_12_1;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_13;
@@ -54,6 +55,9 @@ import dev.warp.protocol.packet.config.AcknowledgeFinishConfiguration;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.config.FinishConfiguration;
+import dev.warp.protocol.packet.cookie.CookieRequest;
+import dev.warp.protocol.packet.cookie.CookieResponse;
+import dev.warp.protocol.packet.cookie.StoreCookie;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.login.EncryptionRequest;
 import dev.warp.protocol.packet.login.EncryptionResponse;
@@ -69,7 +73,11 @@ import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatAcknowledgement;
 import dev.warp.protocol.packet.play.ChatCommand;
+import dev.warp.protocol.packet.play.ClearDialog;
 import dev.warp.protocol.packet.play.ClearTitles;
+import dev.warp.protocol.packet.play.DeclareCommands;
+import dev.warp.protocol.packet.play.DeleteChat;
+import dev.warp.protocol.packet.play.EntitySoundEffect;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
@@ -80,9 +88,17 @@ import dev.warp.protocol.packet.play.PlayPluginMessage;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
+import dev.warp.protocol.packet.play.ResourcePackPop;
+import dev.warp.protocol.packet.play.ResourcePackPush;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.Respawn;
+import dev.warp.protocol.packet.play.SetActionBarText;
+import dev.warp.protocol.packet.play.SetSubtitleText;
+import dev.warp.protocol.packet.play.SetTitleText;
+import dev.warp.protocol.packet.play.SetTitleTimes;
+import dev.warp.protocol.packet.play.SoundEffect;
 import dev.warp.protocol.packet.play.StartConfiguration;
+import dev.warp.protocol.packet.play.StopSound;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
@@ -200,6 +216,10 @@ public final class StateRegistry {
 
   // ---------------------------------------------------------------------------
   // Login — stable IDs, version-gated packets
+  //
+  // From 1.20.5 a server may ask the client for a cookie during login: decoded both ways, so the
+  // proxy can ask during its own login with the client, and relay what a backend asks during the
+  // backend's login to a client already past its own.
   // ---------------------------------------------------------------------------
 
   private static void registerLogin() {
@@ -214,6 +234,7 @@ public final class StateRegistry {
                     LoginPluginResponse.class, LoginPluginResponse.CODEC, map(0x02, MINECRAFT_1_13))
                 .register(
                     LoginAcknowledged.class, LoginAcknowledged.CODEC, map(0x03, MINECRAFT_1_20_2))
+                .register(CookieResponse.class, CookieResponse.CODEC, map(0x04, MINECRAFT_1_20_5))
                 .build());
 
     directionMap(ProtocolState.LOGIN)
@@ -227,6 +248,7 @@ public final class StateRegistry {
                 .register(SetCompression.class, SetCompression.CODEC, map(0x03, MINECRAFT_1_8))
                 .register(
                     LoginPluginRequest.class, LoginPluginRequest.CODEC, map(0x04, MINECRAFT_1_13))
+                .register(CookieRequest.class, CookieRequest.CODEC, map(0x05, MINECRAFT_1_20_5))
                 .build());
   }
 
@@ -239,9 +261,12 @@ public final class StateRegistry {
    * blind-forwarded as raw bytes — faster, more resilient to protocol changes, and impossible to
    * corrupt through decode/re-encode cycles.
    *
-   * <p>Intercepted clientbound: Disconnect, FinishConfiguration, KeepAlive. Intercepted
-   * serverbound: AcknowledgeFinishConfiguration, KeepAlive. All other CONFIG packets (RegistryData,
-   * KnownPacks, PluginMessage, etc.) pass through as opaque ByteBufs via {@code handleBlind()}.
+   * <p>Intercepted clientbound: Disconnect, FinishConfiguration, KeepAlive, and from 1.20.5 Cookie
+   * Request (to route the client's answer back to the server that asked). Intercepted serverbound:
+   * AcknowledgeFinishConfiguration, KeepAlive, and from 1.20.5 Cookie Response. All other CONFIG
+   * packets (RegistryData, KnownPacks, PluginMessage, etc.) pass through as opaque ByteBufs via
+   * {@code handleBlind()}, including a server's Store Cookie and Transfer, which the proxy only
+   * writes itself (encode-only).
    */
   private static void registerConfiguration() {
     directionMap(ProtocolState.CONFIGURATION)
@@ -260,6 +285,12 @@ public final class StateRegistry {
                     KeepAlive.CODEC,
                     map(0x03, MINECRAFT_1_20_2),
                     map(0x04, MINECRAFT_1_20_5))
+                .register(CookieResponse.class, CookieResponse.CODEC, map(0x01, MINECRAFT_1_20_5))
+                .register(
+                    ResourcePackResponse.class,
+                    ResourcePackResponse.CODEC,
+                    map(0x05, MINECRAFT_1_20_2),
+                    map(0x06, MINECRAFT_1_20_5))
                 .build());
 
     directionMap(ProtocolState.CONFIGURATION)
@@ -281,6 +312,34 @@ public final class StateRegistry {
                     KeepAlive.CODEC,
                     map(0x03, MINECRAFT_1_20_2),
                     map(0x04, MINECRAFT_1_20_5))
+                .register(CookieRequest.class, CookieRequest.CODEC, map(0x00, MINECRAFT_1_20_5))
+                .registerEncodeOnly(
+                    StoreCookie.class,
+                    StoreCookie.CODEC,
+                    map(0x0A, MINECRAFT_1_20_5),
+                    map(0x0B, MINECRAFT_26_3))
+                .registerEncodeOnly(
+                    Transfer.class,
+                    Transfer.CODEC,
+                    map(0x0B, MINECRAFT_1_20_5),
+                    map(0x0C, MINECRAFT_26_3))
+                // A server's resource packs, to know which packs the client holds; the proxy's own.
+                .register(
+                    ResourcePackPush.class,
+                    ResourcePackPush.CODEC,
+                    map(0x06, MINECRAFT_1_20_2),
+                    map(0x07, MINECRAFT_1_20_3),
+                    map(0x09, MINECRAFT_1_20_5))
+                .register(
+                    ResourcePackPop.class,
+                    ResourcePackPop.CODEC,
+                    map(0x06, MINECRAFT_1_20_3),
+                    map(0x08, MINECRAFT_1_20_5))
+                .registerEncodeOnly(
+                    ClearDialog.class,
+                    ClearDialog.CODEC,
+                    map(0x11, MINECRAFT_1_21_6),
+                    map(0x12, MINECRAFT_26_3))
                 .build());
   }
 
@@ -294,8 +353,12 @@ public final class StateRegistry {
   //
   // Before 1.20.2 a server switch keeps the client's tab list, boss bars and titles: the proxy
   // also watches the packets that fill them (it reads their UUIDs in place and forwards their
-  // frames untouched), and sends the ones that clear them, up to 1.20.1 only. From 1.20.2 the
-  // configuration phase resets the client and those packets stay opaque.
+  // frames untouched), and sends the ones that clear them. From 1.20.2 the configuration phase
+  // resets the client and those packets stay opaque. Titles, the action bar and the tab list header
+  // and footer are registered in every version they exist in, for the proxy's own messages.
+  //
+  // From 1.20.5 cookie requests and responses are decoded, to route each answer to whoever asked
+  // (the proxy or a backend); a server's Store Cookie and Transfer stay opaque.
   // ---------------------------------------------------------------------------
 
   private static void registerPlay() {
@@ -410,7 +473,8 @@ public final class StateRegistry {
                     map(0x0C, MINECRAFT_1_21_2),
                     map(0x0D, MINECRAFT_1_21_6),
                     map(0x0E, MINECRAFT_26_1))
-                .registerEncodeOnly(
+                // Answers to resource packs: the proxy keeps those for its own packs.
+                .register(
                     ResourcePackResponse.class,
                     ResourcePackResponse.CODEC,
                     map(0x19, MINECRAFT_1_8),
@@ -430,6 +494,13 @@ public final class StateRegistry {
                     map(0x30, MINECRAFT_1_21_6),
                     map(0x31, MINECRAFT_26_1),
                     map(0x32, MINECRAFT_26_3))
+                .register(
+                    CookieResponse.class,
+                    CookieResponse.CODEC,
+                    map(0x11, MINECRAFT_1_20_5),
+                    map(0x13, MINECRAFT_1_21_2),
+                    map(0x14, MINECRAFT_1_21_6),
+                    map(0x15, MINECRAFT_26_1))
                 .build());
 
     directionMap(ProtocolState.PLAY)
@@ -478,9 +549,10 @@ public final class StateRegistry {
                     map(0x2B, MINECRAFT_1_21_9),
                     map(0x2C, MINECRAFT_26_1),
                     map(0x2D, MINECRAFT_26_3))
-                .registerEncodeOnly(
+                .registerWatched(
                     PlayPluginMessage.class,
                     PlayPluginMessage.CODEC,
+                    PlayPluginMessage.WATCH,
                     map(0x3F, MINECRAFT_1_7_2),
                     map(0x18, MINECRAFT_1_9),
                     map(0x19, MINECRAFT_1_13),
@@ -544,6 +616,13 @@ public final class StateRegistry {
                     map(0x0D, MINECRAFT_1_17),
                     map(0x0A, MINECRAFT_1_19),
                     map(0x0B, MINECRAFT_1_19_4, MINECRAFT_1_20_1))
+                // From 1.20.2 the configuration phase of a switch clears every bar: the proxy only
+                // writes its own.
+                .registerEncodeOnly(
+                    BossBar.class,
+                    BossBar.CODEC,
+                    map(0x0A, MINECRAFT_1_20_2),
+                    map(0x09, MINECRAFT_1_21_5))
                 .registerWatched(
                     LegacyPlayerInfo.class,
                     LegacyPlayerInfo.CODEC,
@@ -592,7 +671,17 @@ public final class StateRegistry {
                     map(0x60, MINECRAFT_1_19),
                     map(0x63, MINECRAFT_1_19_1),
                     map(0x61, MINECRAFT_1_19_3),
-                    map(0x65, MINECRAFT_1_19_4, MINECRAFT_1_20_1))
+                    map(0x65, MINECRAFT_1_19_4),
+                    map(0x68, MINECRAFT_1_20_2),
+                    map(0x6A, MINECRAFT_1_20_3),
+                    map(0x6D, MINECRAFT_1_20_5),
+                    map(0x74, MINECRAFT_1_21_2),
+                    map(0x73, MINECRAFT_1_21_5),
+                    map(0x78, MINECRAFT_1_21_9),
+                    map(0x7A, MINECRAFT_26_1),
+                    map(0x7D, MINECRAFT_26_3))
+                // Titles. Up to 1.16.5 the four records below and the action bar are the actions
+                // of one Title packet, sharing its id (LegacyTitle); 1.17 gave each its own packet.
                 .registerEncodeOnly(
                     ClearTitles.class,
                     ClearTitles.CODEC,
@@ -606,7 +695,103 @@ public final class StateRegistry {
                     map(0x10, MINECRAFT_1_17),
                     map(0x0D, MINECRAFT_1_19),
                     map(0x0C, MINECRAFT_1_19_3),
-                    map(0x0E, MINECRAFT_1_19_4, MINECRAFT_1_20_1))
+                    map(0x0E, MINECRAFT_1_19_4),
+                    map(0x0F, MINECRAFT_1_20_2),
+                    map(0x0E, MINECRAFT_1_21_5))
+                .registerEncodeOnly(
+                    SetTitleText.class,
+                    SetTitleText.CODEC,
+                    map(0x45, MINECRAFT_1_8),
+                    map(0x47, MINECRAFT_1_12),
+                    map(0x48, MINECRAFT_1_12_1),
+                    map(0x4B, MINECRAFT_1_13),
+                    map(0x4F, MINECRAFT_1_14),
+                    map(0x50, MINECRAFT_1_15),
+                    map(0x4F, MINECRAFT_1_16),
+                    map(0x59, MINECRAFT_1_17),
+                    map(0x5A, MINECRAFT_1_18),
+                    map(0x5D, MINECRAFT_1_19_1),
+                    map(0x5B, MINECRAFT_1_19_3),
+                    map(0x5F, MINECRAFT_1_19_4),
+                    map(0x61, MINECRAFT_1_20_2),
+                    map(0x63, MINECRAFT_1_20_3),
+                    map(0x65, MINECRAFT_1_20_5),
+                    map(0x6C, MINECRAFT_1_21_2),
+                    map(0x6B, MINECRAFT_1_21_5),
+                    map(0x70, MINECRAFT_1_21_9),
+                    map(0x72, MINECRAFT_26_1),
+                    map(0x74, MINECRAFT_26_3))
+                .registerEncodeOnly(
+                    SetSubtitleText.class,
+                    SetSubtitleText.CODEC,
+                    map(0x45, MINECRAFT_1_8),
+                    map(0x47, MINECRAFT_1_12),
+                    map(0x48, MINECRAFT_1_12_1),
+                    map(0x4B, MINECRAFT_1_13),
+                    map(0x4F, MINECRAFT_1_14),
+                    map(0x50, MINECRAFT_1_15),
+                    map(0x4F, MINECRAFT_1_16),
+                    map(0x57, MINECRAFT_1_17),
+                    map(0x58, MINECRAFT_1_18),
+                    map(0x5B, MINECRAFT_1_19_1),
+                    map(0x59, MINECRAFT_1_19_3),
+                    map(0x5D, MINECRAFT_1_19_4),
+                    map(0x5F, MINECRAFT_1_20_2),
+                    map(0x61, MINECRAFT_1_20_3),
+                    map(0x63, MINECRAFT_1_20_5),
+                    map(0x6A, MINECRAFT_1_21_2),
+                    map(0x69, MINECRAFT_1_21_5),
+                    map(0x6E, MINECRAFT_1_21_9),
+                    map(0x70, MINECRAFT_26_1),
+                    map(0x72, MINECRAFT_26_3))
+                .registerEncodeOnly(
+                    SetTitleTimes.class,
+                    SetTitleTimes.CODEC,
+                    map(0x45, MINECRAFT_1_8),
+                    map(0x47, MINECRAFT_1_12),
+                    map(0x48, MINECRAFT_1_12_1),
+                    map(0x4B, MINECRAFT_1_13),
+                    map(0x4F, MINECRAFT_1_14),
+                    map(0x50, MINECRAFT_1_15),
+                    map(0x4F, MINECRAFT_1_16),
+                    map(0x5A, MINECRAFT_1_17),
+                    map(0x5B, MINECRAFT_1_18),
+                    map(0x5E, MINECRAFT_1_19_1),
+                    map(0x5C, MINECRAFT_1_19_3),
+                    map(0x60, MINECRAFT_1_19_4),
+                    map(0x62, MINECRAFT_1_20_2),
+                    map(0x64, MINECRAFT_1_20_3),
+                    map(0x66, MINECRAFT_1_20_5),
+                    map(0x6D, MINECRAFT_1_21_2),
+                    map(0x6C, MINECRAFT_1_21_5),
+                    map(0x71, MINECRAFT_1_21_9),
+                    map(0x73, MINECRAFT_26_1),
+                    map(0x75, MINECRAFT_26_3))
+                // The Title packet's action bar from 1.11; before, a chat message at the game info
+                // position (SystemChatMessage).
+                .registerEncodeOnly(
+                    SetActionBarText.class,
+                    SetActionBarText.CODEC,
+                    map(0x45, MINECRAFT_1_11),
+                    map(0x47, MINECRAFT_1_12),
+                    map(0x48, MINECRAFT_1_12_1),
+                    map(0x4B, MINECRAFT_1_13),
+                    map(0x4F, MINECRAFT_1_14),
+                    map(0x50, MINECRAFT_1_15),
+                    map(0x4F, MINECRAFT_1_16),
+                    map(0x41, MINECRAFT_1_17),
+                    map(0x40, MINECRAFT_1_19),
+                    map(0x43, MINECRAFT_1_19_1),
+                    map(0x42, MINECRAFT_1_19_3),
+                    map(0x46, MINECRAFT_1_19_4),
+                    map(0x48, MINECRAFT_1_20_2),
+                    map(0x4A, MINECRAFT_1_20_3),
+                    map(0x4C, MINECRAFT_1_20_5),
+                    map(0x51, MINECRAFT_1_21_2),
+                    map(0x50, MINECRAFT_1_21_5),
+                    map(0x55, MINECRAFT_1_21_9),
+                    map(0x57, MINECRAFT_26_1),
+                    map(0x59, MINECRAFT_26_3))
                 .registerEncodeOnly(
                     SystemChatMessage.class,
                     SystemChatMessage.CODEC,
@@ -648,6 +833,20 @@ public final class StateRegistry {
                     map(0x7F, MINECRAFT_1_21_9),
                     map(0x81, MINECRAFT_26_1),
                     map(0x84, MINECRAFT_26_3))
+                .register(
+                    CookieRequest.class,
+                    CookieRequest.CODEC,
+                    map(0x16, MINECRAFT_1_20_5),
+                    map(0x15, MINECRAFT_1_21_5))
+                .registerEncodeOnly(
+                    StoreCookie.class,
+                    StoreCookie.CODEC,
+                    map(0x6B, MINECRAFT_1_20_5),
+                    map(0x72, MINECRAFT_1_21_2),
+                    map(0x71, MINECRAFT_1_21_5),
+                    map(0x76, MINECRAFT_1_21_9),
+                    map(0x78, MINECRAFT_26_1),
+                    map(0x7A, MINECRAFT_26_3))
                 .registerEncodeOnly(
                     TabCompleteResponse.class,
                     TabCompleteResponse.CODEC,
@@ -661,6 +860,139 @@ public final class StateRegistry {
                     map(0x0F, MINECRAFT_1_19_4),
                     map(0x10, MINECRAFT_1_20_2),
                     map(0x0F, MINECRAFT_1_21_5))
+                // Sounds, named by their key so that no registry id is needed: the Named Sound
+                // Effect packet up to 1.19.2, Sound Effect with an inlined sound from 1.19.3.
+                .registerEncodeOnly(
+                    SoundEffect.class,
+                    SoundEffect.CODEC,
+                    map(0x29, MINECRAFT_1_7_2),
+                    map(0x19, MINECRAFT_1_9),
+                    map(0x1A, MINECRAFT_1_13),
+                    map(0x19, MINECRAFT_1_14),
+                    map(0x1A, MINECRAFT_1_15),
+                    map(0x19, MINECRAFT_1_16),
+                    map(0x18, MINECRAFT_1_16_2),
+                    map(0x19, MINECRAFT_1_17),
+                    map(0x16, MINECRAFT_1_19),
+                    map(0x17, MINECRAFT_1_19_1),
+                    map(0x5E, MINECRAFT_1_19_3),
+                    map(0x62, MINECRAFT_1_19_4),
+                    map(0x64, MINECRAFT_1_20_2),
+                    map(0x66, MINECRAFT_1_20_3),
+                    map(0x68, MINECRAFT_1_20_5),
+                    map(0x6F, MINECRAFT_1_21_2),
+                    map(0x6E, MINECRAFT_1_21_5),
+                    map(0x73, MINECRAFT_1_21_9),
+                    map(0x75, MINECRAFT_26_1),
+                    map(0x77, MINECRAFT_26_3))
+                .registerEncodeOnly(
+                    EntitySoundEffect.class,
+                    EntitySoundEffect.CODEC,
+                    map(0x50, MINECRAFT_1_14),
+                    map(0x51, MINECRAFT_1_15),
+                    map(0x50, MINECRAFT_1_16),
+                    map(0x5B, MINECRAFT_1_17),
+                    map(0x5C, MINECRAFT_1_18),
+                    map(0x5F, MINECRAFT_1_19_1),
+                    map(0x5D, MINECRAFT_1_19_3),
+                    map(0x61, MINECRAFT_1_19_4),
+                    map(0x63, MINECRAFT_1_20_2),
+                    map(0x65, MINECRAFT_1_20_3),
+                    map(0x67, MINECRAFT_1_20_5),
+                    map(0x6E, MINECRAFT_1_21_2),
+                    map(0x6D, MINECRAFT_1_21_5),
+                    map(0x72, MINECRAFT_1_21_9),
+                    map(0x74, MINECRAFT_26_1),
+                    map(0x76, MINECRAFT_26_3))
+                .registerEncodeOnly(
+                    StopSound.class,
+                    StopSound.CODEC,
+                    map(0x4C, MINECRAFT_1_13),
+                    map(0x52, MINECRAFT_1_14),
+                    map(0x53, MINECRAFT_1_15),
+                    map(0x52, MINECRAFT_1_16),
+                    map(0x5D, MINECRAFT_1_17),
+                    map(0x5E, MINECRAFT_1_18),
+                    map(0x61, MINECRAFT_1_19_1),
+                    map(0x5F, MINECRAFT_1_19_3),
+                    map(0x63, MINECRAFT_1_19_4),
+                    map(0x66, MINECRAFT_1_20_2),
+                    map(0x68, MINECRAFT_1_20_3),
+                    map(0x6A, MINECRAFT_1_20_5),
+                    map(0x71, MINECRAFT_1_21_2),
+                    map(0x70, MINECRAFT_1_21_5),
+                    map(0x75, MINECRAFT_1_21_9),
+                    map(0x77, MINECRAFT_26_1),
+                    map(0x79, MINECRAFT_26_3))
+                // Resource packs: decoded, as they come once per login at most, to know which
+                // packs the client holds and keep the proxy's own; written for the proxy's packs.
+                .register(
+                    ResourcePackPush.class,
+                    ResourcePackPush.CODEC,
+                    map(0x48, MINECRAFT_1_8),
+                    map(0x32, MINECRAFT_1_9),
+                    map(0x33, MINECRAFT_1_12),
+                    map(0x34, MINECRAFT_1_12_1),
+                    map(0x37, MINECRAFT_1_13),
+                    map(0x39, MINECRAFT_1_14),
+                    map(0x3A, MINECRAFT_1_15),
+                    map(0x39, MINECRAFT_1_16),
+                    map(0x38, MINECRAFT_1_16_2),
+                    map(0x3C, MINECRAFT_1_17),
+                    map(0x3A, MINECRAFT_1_19),
+                    map(0x3D, MINECRAFT_1_19_1),
+                    map(0x3C, MINECRAFT_1_19_3),
+                    map(0x40, MINECRAFT_1_19_4),
+                    map(0x42, MINECRAFT_1_20_2),
+                    map(0x44, MINECRAFT_1_20_3),
+                    map(0x46, MINECRAFT_1_20_5),
+                    map(0x4B, MINECRAFT_1_21_2),
+                    map(0x4A, MINECRAFT_1_21_5),
+                    map(0x4F, MINECRAFT_1_21_9),
+                    map(0x51, MINECRAFT_26_1),
+                    map(0x52, MINECRAFT_26_3))
+                .register(
+                    ResourcePackPop.class,
+                    ResourcePackPop.CODEC,
+                    map(0x43, MINECRAFT_1_20_3),
+                    map(0x45, MINECRAFT_1_20_5),
+                    map(0x4A, MINECRAFT_1_21_2),
+                    map(0x49, MINECRAFT_1_21_5),
+                    map(0x4E, MINECRAFT_1_21_9),
+                    map(0x50, MINECRAFT_26_1),
+                    map(0x51, MINECRAFT_26_3))
+                .registerEncodeOnly(
+                    DeleteChat.class,
+                    DeleteChat.CODEC,
+                    map(0x18, MINECRAFT_1_19_1),
+                    map(0x16, MINECRAFT_1_19_3),
+                    map(0x19, MINECRAFT_1_19_4),
+                    map(0x1A, MINECRAFT_1_20_2),
+                    map(0x1C, MINECRAFT_1_20_5),
+                    map(0x1B, MINECRAFT_1_21_5),
+                    map(0x1F, MINECRAFT_1_21_9))
+                .registerEncodeOnly(
+                    ClearDialog.class,
+                    ClearDialog.CODEC,
+                    map(0x84, MINECRAFT_1_21_6),
+                    map(0x89, MINECRAFT_1_21_9),
+                    map(0x8B, MINECRAFT_26_1),
+                    map(0x8E, MINECRAFT_26_3))
+                // The command tree: its payload is copied and decoded lazily, for the proxy to add
+                // its own commands (see dev.warp.protocol.command).
+                .register(
+                    DeclareCommands.class,
+                    DeclareCommands.CODEC,
+                    map(0x11, MINECRAFT_1_13),
+                    map(0x12, MINECRAFT_1_15),
+                    map(0x11, MINECRAFT_1_16),
+                    map(0x10, MINECRAFT_1_16_2),
+                    map(0x12, MINECRAFT_1_17),
+                    map(0x0F, MINECRAFT_1_19),
+                    map(0x0E, MINECRAFT_1_19_3),
+                    map(0x10, MINECRAFT_1_19_4),
+                    map(0x11, MINECRAFT_1_20_2),
+                    map(0x10, MINECRAFT_1_21_5))
                 .build());
   }
 }

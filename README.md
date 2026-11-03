@@ -57,7 +57,21 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 - **Fallback**: when the server a player joins or switches to is unreachable or refuses the
   login, or kicks them during play, Warp tries the servers of `fallback-order` in turn before
   disconnecting the player.
+- **BungeeCord plugin messaging channel** (`BungeeCord`, `bungeecord:main`): all 18 sub-channels
+  Paper and Spigot plugins use to move players and query the network, answered byte for byte as
+  BungeeCord and Velocity answer them. Connect goes through Warp's own switch and events; each
+  server may only use the sub-channels `bungeecord-channel.allow` gives it; a Forward to an empty
+  server waits briefly for a player instead of being lost; clients can never speak the channel.
 - **Server list ping** answered by Warp itself (a fixed response for now).
+- **PROXY protocol** v1 and v2 behind HAProxy, AWS NLB, Cloudflare Spectrum, TCPShield or a
+  Kubernetes load balancer: the player's real address replaces the load balancer's everywhere,
+  forwarding to the backends included. Only the load balancers listed in `trusted-proxies` may
+  send the header; any other peer is refused, so nobody can spoof an address by sending one.
+- **Connection and login limits**, on by default: per client address (IPv4, or IPv6 /64), new
+  connections, server list pings and logins are token buckets, with separate budgets so that
+  refreshing the server list never locks a player out; logins in progress per address and
+  online-mode authentications in flight are capped, and slow logins time out. Refusals are counted
+  and logged once a minute, never line by line.
 
 **Performance**
 
@@ -191,12 +205,113 @@ compression {
   threshold = 256
   passthrough = true
 }
+
+player-limit = -1                  # enforced at login; -1 (the default) for no limit
+
+status {
+  motd = ["<#38bdf8>A Warp Proxy", "<gray>Two lines at most"] # MiniMessage
+  favicon = "server-icon.png"                                # a 64x64 PNG
+  # max-players = 500                                        # only shown; defaults to player-limit
+}
+
+timeouts {
+  connect = 5s                     # opening a connection to a backend
+  read = 25s                       # a logged-in client that sends nothing is closed
+  backend-read = 30s               # a backend that sends nothing is closed, in every state
+  ping = 5s                        # RegisteredServer.ping() without a time-out of its own
+}
+tcp-fast-open = false              # Linux (epoll) only
+
+logging {
+  format = text                    # or json; the WARP_LOG_FORMAT variable takes precedence
+  connections = true               # logins, departures, server switches
+  pings = false                    # each server list ping
+  commands = false                 # each command a player sends
+}
 ```
+
+The server list's `max-players` is only shown, as Velocity's `show-max-players`. The limit players
+actually meet is `player-limit`, off by default: a player beyond it is refused with "The server is
+full.", unless a plugin lets it in from `LoginEvent`. With a limit and no `max-players`, the server
+list shows the limit.
+
+`timeouts.read` watches clients, `timeouts.backend-read` watches backends. A backend may stay silent
+longer than a client: while it logs a player in or prepares its world, Warp keeps the waiting client
+connected with its own keep-alives, so `backend-read` can safely exceed the client's own 30 s. A
+backend that times out sends its player down the fallback order.
+
+Durations take a unit everywhere (`200ms`, `30s`, `5m`, `1h`, `30d`); a bare number other than `0`
+is refused rather than guessed.
+
+Any value can come from the environment with HOCON's optional substitution, which replaces the value
+only when the variable is set:
+
+```hocon
+bind = "0.0.0.0:25577"
+bind = ${?WARP_BIND}
+drain { transfer-to = ${?WARP_PUBLIC_ADDRESS} }   # alone: the default when unset
+```
+
+Secrets never go in `warp.conf`: the forwarding secret comes from `forwarding.secret-file` or
+`WARP_FORWARDING_SECRET`, the management token from `management.token-file` or
+`WARP_MANAGEMENT_TOKEN`.
+
+With `logging.format = json` (or `WARP_LOG_FORMAT=json`), standard output carries one JSON object
+per line, from the very first line: `timestamp` (UTC), `level`, `logger`, `thread`, `message`,
+`exception` (the stack trace) and `context` (such as `player` and `session` on the lines about a
+player), the last two only when present. Plugin loggers go through the same pipeline. The log files
+under `logs/` stay in text. A plugin that forwards records elsewhere (Sentry, Loki) registers a
+`LogSink` through `PluginContext.logSinks()`: it receives structured records on its own thread,
+from a bounded queue that drops (and counts) records rather than slow down logging, and is removed
+with its plugin.
+
+`logging.connections` and `logging.pings` never turn a flood into a flood of log lines: while the
+anti-bot reports an attack, neither is logged one by one. One line at the start of the attack says
+so, and its summaries count the lines held back. Out of an attack, both apply as configured.
 
 On each backend, set `online-mode=false` in `server.properties` and keep
 `network-compression-threshold` equal to Warp's threshold (256). For Velocity forwarding, enable
 Velocity support with the content of `forwarding.secret` as its secret, as described in
 [Paper's guide](https://docs.papermc.io/velocity/player-information-forwarding).
+
+Behind a load balancer that sends the PROXY protocol, enable it and list the load balancers'
+addresses; Warp refuses to start with `enabled = true` and no trusted proxy:
+
+```hocon
+proxy-protocol {
+  enabled = true
+  trusted-proxies = ["10.0.0.0/8"]  # CIDR ranges or addresses, IPv4 or IPv6
+}
+```
+
+Every connection must then come from a trusted proxy and start with a header (v1 or v2): a peer
+outside the list is reset before Warp reads anything from it, and a trusted connection without a
+valid header within 5 seconds is closed. Both are logged at most once a minute, with the count of
+the others. Health checks can send a v2 `LOCAL` header (HAProxy's `check-send-proxy`); a plain TCP
+check that opens and closes the connection is not logged either. A probe that connects from an
+address outside the list, such as a kubelet `tcpSocket` probe from the node, is refused like any
+other untrusted peer.
+
+The `limits` section works out of the box; every key is documented in `warp.conf`. Each rate is
+a burst, then one more per interval (an interval of 0 lifts it):
+
+```hocon
+limits {
+  exempt = ["127.0.0.0/8", "::1/128"]              # never limited
+  connections  { burst = 10, interval = 200ms }     # new TCP connections per address
+  status-pings { burst = 10, interval = 1s }        # server list pings, apart from logins
+  logins {
+    burst = 2, interval = 3s                       # the rate of Velocity's login-ratelimit = 3000
+    max-concurrent-per-address = 2
+    max-concurrent-authentications = 256           # online mode, whole proxy
+    timeout = 30s
+  }
+}
+```
+
+Behind the PROXY protocol, limits count the players' real addresses, not the load balancer's.
+Loopback is exempt so that local tunnels and sidecars, behind which every player shares one
+address, are not throttled as a single client; set `exempt = []` to limit loopback too.
 
 For an alternative authentication server, or a test harness standing in for Mojang, two system
 properties replace Mojang's services: `-Dmojang.sessionserver=<hasJoined URL>` (the property

@@ -64,6 +64,13 @@ import org.jspecify.annotations.Nullable;
  * inflated and sent uncompressed when below this connection's threshold (never re-deflated),
  * compressed when an uncompressed frame reaches it.
  *
+ * <h3>Packet input</h3>
+ *
+ * <p>A connection whose packets a plugin handler reads forwards bare packets instead of frames (see
+ * {@link MinecraftDecoder#usePacketInput()}): they always take the re-encode path. A connection
+ * with a plugin handler on its outbound packets has verbatim forwarding disabled, since a verbatim
+ * frame would go past that handler.
+ *
  * <p>All methods must be called from this connection's event loop. A player's two connections share
  * one event loop, so the source connection's decompressor can be used here directly.
  */
@@ -120,6 +127,10 @@ public final class FrameForwarder {
    * @param source the decoder of the connection the frame came from
    */
   public void forward(ByteBuf frame, MinecraftDecoder source) {
+    if (!source.emitsFrames()) {
+      forwardPacket(frame);
+      return;
+    }
     forward(frame, source.decompressor(), source.takeInflatedPacket(frame));
   }
 
@@ -177,6 +188,21 @@ public final class FrameForwarder {
       packet = source.inflate(channel.alloc(), frame, dataLength);
     } finally {
       frame.release();
+    }
+    writePacket(packet);
+  }
+
+  /**
+   * Forwards a bare packet, {@code [Packet ID][Payload]}, received on a connection in packet input
+   * (see {@link MinecraftDecoder#usePacketInput()}): it is framed, and compressed at or above the
+   * threshold, by this connection's outbound pipeline. Does not flush.
+   *
+   * @param packet the packet bytes from the reader index; ownership is transferred
+   */
+  public void forwardPacket(ByteBuf packet) {
+    if (!channel.isActive()) {
+      packet.release();
+      return;
     }
     writePacket(packet);
   }

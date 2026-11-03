@@ -1,7 +1,9 @@
 name: E2E
 
-# Reusable: runs a tier of e2e/versions.json, one job per Minecraft version. The caller provides
-# the Warp jar as the `warp-jar` artifact of the same run.
+# Reusable: runs a tier of e2e/versions.json, one job per Minecraft version, plus the tier's
+# translation runs (bots of another version than the backends, through the via plugin). The caller
+# provides the Warp jar as the `warp-jar` artifact of the same run, and the via plugin as the
+# `warp-via-jar` artifact.
 on:
   workflow_call:
     inputs:
@@ -73,11 +75,15 @@ jobs:
     permissions:
       contents: read # check out the harness
     steps:
+      # The harness, and the sound event ids Mojang's reports give, which the audience scenario
+      # expects (sound-event-samples.txt, written with the table by e2e/tools/sound-events.js).
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: e2e
+          sparse-checkout: |
+            e2e
+            protocol/src/test/resources/dev/warp/protocol/packet/play
 
       - name: Set up Java
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -116,11 +122,32 @@ jobs:
           name: warp-jar
           path: ${{ runner.temp }}/warp
 
+      - name: Download the via plugin
+        if: ${{ matrix.client }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: warp-via-jar
+          path: ${{ runner.temp }}/via
+
+      # A translation run: bots of CLIENT on the backends of RUNS (and SURVIVAL), Warp translating
+      # with the via plugin.
       - name: Run ${{ matrix.label }}
         env:
           RUNS: ${{ matrix.runs }}
+          CLIENT: ${{ matrix.client }}
+          SURVIVAL: ${{ matrix.survival }}
           WARP_DIR: ${{ runner.temp }}/warp
-        run: e2e/run.sh --runs "$RUNS" --jar "$(find "$WARP_DIR" -name 'warp-*.jar' | head -1)"
+          VIA_DIR: ${{ runner.temp }}/via
+        run: |
+          args=(--runs "$RUNS" --jar "$(find "$WARP_DIR" -name 'warp-*.jar' | head -1)")
+          args+=(--plugin "$(find "$WARP_DIR" -name 'e2e-audience-probe.jar' | head -1)")
+          if [[ -n "$CLIENT" ]]; then
+            args+=(--client "$CLIENT" --via-jar "$(find "$VIA_DIR" -name 'warp-via-*.jar' | head -1)")
+          fi
+          if [[ -n "$SURVIVAL" ]]; then
+            args+=(--survival "$SURVIVAL")
+          fi
+          e2e/run.sh "${args[@]}"
 
       - name: Save ${{ matrix.server }}
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.server-cache.outputs.cache-hit != 'true' }}

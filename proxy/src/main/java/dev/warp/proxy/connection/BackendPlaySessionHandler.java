@@ -16,14 +16,20 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
+import dev.warp.protocol.packet.cookie.CookieRequest;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatAcknowledgement;
 import dev.warp.protocol.packet.play.ChatCommand;
+import dev.warp.protocol.packet.play.ClearDialog;
 import dev.warp.protocol.packet.play.ClearTitles;
+import dev.warp.protocol.packet.play.DeclareCommands;
+import dev.warp.protocol.packet.play.DeleteChat;
+import dev.warp.protocol.packet.play.EntitySoundEffect;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
@@ -35,14 +41,26 @@ import dev.warp.protocol.packet.play.PlayPluginMessage;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
+import dev.warp.protocol.packet.play.ResourcePackPop;
+import dev.warp.protocol.packet.play.ResourcePackPush;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.Respawn;
+import dev.warp.protocol.packet.play.SetActionBarText;
+import dev.warp.protocol.packet.play.SetSubtitleText;
+import dev.warp.protocol.packet.play.SetTitleText;
+import dev.warp.protocol.packet.play.SetTitleTimes;
+import dev.warp.protocol.packet.play.SoundEffect;
 import dev.warp.protocol.packet.play.StartConfiguration;
+import dev.warp.protocol.packet.play.StopSound;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
 import dev.warp.protocol.packet.play.TabListHeaderFooter;
 import dev.warp.protocol.packet.play.Transfer;
+import dev.warp.proxy.messaging.BungeeCordChannel;
+import dev.warp.proxy.messaging.ChannelRegistry;
+
+import java.nio.charset.StandardCharsets;
 
 import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
@@ -73,8 +91,17 @@ final class BackendPlaySessionHandler implements SessionHandler {
 
   private static final Logger logger = LoggerFactory.getLogger(BackendPlaySessionHandler.class);
 
+  /** The channel a client registers its channels on, from 1.13. */
+  private static final String REGISTER = "minecraft:register";
+
+  /** The channel a client registers its channels on, before 1.13. */
+  private static final String LEGACY_REGISTER = "REGISTER";
+
   private final ConnectedPlayer player;
   private final MinecraftConnection backendConnection;
+
+  /** Whether the next frame is that of a watched plugin message a plugin took. */
+  private boolean swallowNextFrame;
 
   BackendPlaySessionHandler(ConnectedPlayer player, MinecraftConnection backendConnection) {
     this.player = player;
@@ -92,6 +119,33 @@ final class BackendPlaySessionHandler implements SessionHandler {
     // paused it (writabilityChanged), and no longer resumes it once the client is gone.
     player.playOn(backendConnection);
     player.clientConnection().setAutoRead(backendConnection.channel().isWritable());
+    registerBungeeCordChannel();
+  }
+
+  /**
+   * Registers the BungeeCord channel with the backend on the client's behalf, as BungeeCord and
+   * Velocity do: Bukkit's {@code Player#sendPluginMessage} only sends on a channel the client
+   * registered, which a vanilla client never does for this one. Sent when the proxy answers the
+   * channel for this server, or a plugin took it over.
+   */
+  private void registerBungeeCordChannel() {
+    BackendConnection backend = player.backendConnection();
+    if (backend == null || backend.connection() != backendConnection) {
+      return;
+    }
+    ChannelRegistry channels = player.loginContext().channels();
+    String channel = BungeeCordChannel.nameFor(player.protocolVersion());
+    boolean answered =
+        channels.bungeeCord().enabled()
+            && channels.bungeeCord().speaksWith(backend.server().name());
+    if (answered || channels.lookup(channel) != null) {
+      String register =
+          player.protocolVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_13)
+              ? REGISTER
+              : LEGACY_REGISTER;
+      backendConnection.writeAndFlush(
+          new PlayPluginMessage(register, channel.getBytes(StandardCharsets.UTF_8)));
+    }
   }
 
   @Override
@@ -110,6 +164,14 @@ final class BackendPlaySessionHandler implements SessionHandler {
 
   @Override
   public void handle(Packet packet) {
+    if (packet instanceof CookieRequest request) {
+      // Relayed in turn with the frames around it, by the backend the client plays on only; the
+      // client's answer comes back to this backend.
+      if (player.isPlayingOn(backendConnection)) {
+        player.cookies().relay(backendConnection, request);
+      }
+      return;
+    }
     if (!(packet instanceof PlayPacket playPacket)) {
       logger.warn(
           "Unexpected packet in backend PLAY handler: {}", packet.getClass().getSimpleName());
@@ -120,13 +182,15 @@ final class BackendPlaySessionHandler implements SessionHandler {
       case KeepAlive keepAlive -> handleKeepAlive(keepAlive);
       case JoinGame joinGame -> handleJoinGame(joinGame);
       case Respawn respawn -> forwardToClient(respawn);
-      case PlayDisconnect _ -> handleDisconnect();
+      case PlayDisconnect disconnect -> handleDisconnect(disconnect);
       case SystemChatMessage chatMessage -> forwardToClient(chatMessage);
       case StartConfiguration _ -> handleStartConfiguration();
       case Transfer transfer -> forwardToClient(transfer);
       case BundleDelimiter delimiter -> handleBundleDelimiter(delimiter);
       case PlayPluginMessage pluginMessage -> handlePluginMessage(pluginMessage);
       case TabCompleteResponse response -> forwardToClient(response);
+      // Registered encode-only: forwarded untouched by handleBlind, never decoded yet.
+      case DeclareCommands commands -> player.sendCommands(commands, backendConnection);
       // Watched before 1.20.2 only, to clear them from the client on a server switch. Their frame
       // follows, forwarded untouched by handleBlind.
       case LegacyPlayerInfo info -> track(info);
@@ -134,8 +198,29 @@ final class BackendPlaySessionHandler implements SessionHandler {
       case PlayerInfoUpdate update -> track(update);
       case PlayerInfoRemove remove -> track(remove);
       case BossBar bossBar -> track(bossBar);
+      // Encode-only: never decoded, forwarded as frames.
       case TabListHeaderFooter headerFooter -> forwardToClient(headerFooter);
       case ClearTitles clearTitles -> forwardToClient(clearTitles);
+      case SetTitleText title -> forwardToClient(title);
+      case SetSubtitleText subtitle -> forwardToClient(subtitle);
+      case SetTitleTimes times -> forwardToClient(times);
+      case SetActionBarText actionBar -> forwardToClient(actionBar);
+      case SoundEffect sound -> forwardToClient(sound);
+      case EntitySoundEffect sound -> forwardToClient(sound);
+      case StopSound stop -> forwardToClient(stop);
+      case DeleteChat deletion -> forwardToClient(deletion);
+      case ClearDialog clear -> forwardToClient(clear);
+      // Decoded, to know which packs the client holds and keep the proxy's.
+      case ResourcePackPush push -> {
+        if (player.isPlayingOn(backendConnection)) {
+          player.resourcePacks().serverSent(push, backendConnection);
+        }
+      }
+      case ResourcePackPop pop -> {
+        if (player.isPlayingOn(backendConnection)) {
+          player.resourcePacks().serverRemoved(pop);
+        }
+      }
       // Serverbound packets should never arrive from a backend: a protocol violation, ignored.
       case ChatCommand _,
           ChatAcknowledgement _,
@@ -153,6 +238,12 @@ final class BackendPlaySessionHandler implements SessionHandler {
 
   @Override
   public void handleBlind(ByteBuf buf) {
+    if (swallowNextFrame) {
+      // The frame of a plugin message a plugin took.
+      swallowNextFrame = false;
+      buf.release();
+      return;
+    }
     // A backend the client no longer plays on (left in a server switch) may still send PLAY
     // packets: drop them, the client is elsewhere or not in PLAY at all.
     if (!player.isPlayingOn(backendConnection)) {
@@ -201,10 +292,14 @@ final class BackendPlaySessionHandler implements SessionHandler {
     // offline behind the proxy: the client must see the proxy's mode instead, as before 26.2.
     forwardToClient(
         joinGame.withOnlineMode(player.loginContext().onlineMode(), player.protocolVersion()));
+    if (player.isPlayingOn(backendConnection)) {
+      player.joinedGame(); // the proxy's messages kept during the configuration phase follow it
+    }
   }
 
-  private void handleDisconnect() {
+  private void handleDisconnect(PlayDisconnect disconnect) {
     logger.info("Backend kicked player {} during play", player.username());
+    player.recordKick(backendConnection, disconnect.decodedReason(player.protocolVersion()));
     player.scheduleBackendFailure(backendConnection);
   }
 
@@ -212,7 +307,7 @@ final class BackendPlaySessionHandler implements SessionHandler {
     // Backend requests reconfiguration (e.g. registry reload).
     // Forward to client — the AcknowledgeConfiguration from the client will be
     // forwarded back to the backend via ClientPlaySessionHandler.
-    player.clientConnection().writeAndFlush(new StartConfiguration());
+    player.startConfiguration();
   }
 
   private void handleBundleDelimiter(BundleDelimiter delimiter) {
@@ -222,9 +317,14 @@ final class BackendPlaySessionHandler implements SessionHandler {
     }
   }
 
+  /**
+   * Takes a watched plugin message, reported only on channels plugins own; its frame follows. A
+   * message a plugin takes has its frame dropped; any other frame is forwarded untouched.
+   */
   private void handlePluginMessage(PlayPluginMessage pluginMessage) {
-    // TODO: Intercept minecraft:brand and rewrite. For now, forward all.
-    forwardToClient(pluginMessage);
+    if (player.interceptPluginMessage(pluginMessage, backendConnection)) {
+      swallowNextFrame = true;
+    }
   }
 
   /**

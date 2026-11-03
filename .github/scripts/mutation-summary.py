@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """Renders PIT mutation reports as Markdown: a score table, then the mutants left alive per class.
 
-Usage: mutation-summary.py [REPORT.xml ...]   (default: */build/reports/pitest/mutations.xml)
+Usage: mutation-summary.py [--since REVISION] [REPORT.xml ...]
+       (default: */build/reports/pitest/mutations.xml)
 Prints the Markdown to stdout, which CI appends to $GITHUB_STEP_SUMMARY. Each module's score is
 compared with its threshold in config/pitest/thresholds.properties, and workflow annotations go to
 stderr: an error for a score below its threshold (the pitest task fails the build too), a notice
-for a score that has outgrown it.
+for a score that has outgrown it. With --since, the reports are of a scoped analysis, which mutated
+only the main classes changed since that revision: their score says nothing of the module's, so no
+notice suggests raising a threshold.
 """
 
+import argparse
 import collections
 import glob
 import math
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 
@@ -88,9 +93,18 @@ def load(path):
     return mutations
 
 
-def main(paths):
+def main(paths, since):
     paths = paths or sorted(glob.glob("*/build/reports/pitest/mutations.xml"))
     print("### Mutation testing\n")
+    if since:
+        # A commit id shortened as GitHub does; a branch or tag name as given.
+        shown = since[:7] if re.fullmatch(r"[0-9a-f]{40}", since) else since
+        if not paths:
+            # PIT writes no report without a mutant: no main class changed, or none with code.
+            print(f"_Nothing to mutate: no main class with code changed since `{shown}`._")
+            return
+        print(f"Only the main classes changed since `{shown}` are mutated, and their mutants are held"
+              " to the module's threshold. Every class is analysed nightly on `main`.\n")
     if not paths:
         print("_No PIT report found._")
         return
@@ -108,7 +122,8 @@ def main(paths):
           " | Mutants | Killed | Survived | No coverage |")
     print("|---|---|---|---|---|---|---|---|")
     for module, mutations, total, killed, uncovered in modules:
-        score, scored = pit_score(killed, total), f"{module} scores {percent(killed, total)}"
+        scope = f"The changed classes of {module} score" if since else f"{module} scores"
+        score, scored = pit_score(killed, total), f"{scope} {percent(killed, total)}"
         threshold, line = floors.get(module, (None, None))
         if threshold is None:
             verdict = "none"
@@ -119,7 +134,7 @@ def main(paths):
         else:
             verdict = f"✅ {threshold}%"
             reached = math.floor(100 * killed / total) if total else 100
-            if reached > threshold:
+            if reached > threshold and not since:
                 annotate("notice", line, "Mutation score above threshold",
                          f"{scored}: raise its threshold to {reached}.")
         survived = total - killed - uncovered
@@ -153,4 +168,9 @@ def main(paths):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--since", default="",
+                        help="the revision a scoped analysis mutated the changed classes since")
+    parser.add_argument("reports", nargs="*", help="PIT mutations.xml reports")
+    arguments = parser.parse_args()
+    main(arguments.reports, arguments.since)

@@ -17,10 +17,22 @@
 package dev.warp.proxy.connection;
 
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
+import dev.warp.proxy.command.WarpCommandManager;
+import dev.warp.proxy.config.DuplicateLoginPolicy;
 import dev.warp.proxy.config.ForwardingMode;
+import dev.warp.proxy.config.LoggingConfig;
+import dev.warp.proxy.config.TimeoutsConfig;
+import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.limit.ClientLimits;
+import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.permission.PermissionRegistry;
+import dev.warp.proxy.pipeline.PipelineRegistry;
+import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
+import dev.warp.proxy.status.ServerList;
 
 import java.security.KeyPair;
 
@@ -44,9 +56,27 @@ import io.netty.channel.Channel;
  *     online mode
  * @param playSession the play session of the proxy, whose ID 26.2+ clients receive on login
  * @param serverRegistry the registry of backend servers
+ * @param playerRegistry the registry of connected players
+ * @param serverList the proxy's server list entry, whose settings also hold the player limit
+ * @param duplicateLoginPolicy what happens when a player logs in while a session with its UUID is
+ *     still connected
+ * @param events the event bus plugins subscribe to
+ * @param channels the plugin message channels plugins own
+ * @param commands the proxy's commands
+ * @param permissions the permission providers plugins registered
  * @param forwardingMode the player info forwarding mode
  * @param forwardingSecret the shared HMAC secret for Velocity modern forwarding
  * @param channelClass the socket channel class matching the detected transport
+ * @param acceptsTransfers whether players a Transfer packet sends here (handshake intent 3,
+ *     1.20.5+) may log in; refused with vanilla's reason otherwise
+ * @param limits the limits on what one client address may do, applied to every connection
+ * @param timeouts how long backend connections may take to open, and logged-in connections may stay
+ *     silent
+ * @param logging which routine events get a log line each
+ * @param tcpFastOpen whether connections to backends request TCP Fast Open: only when configured
+ *     and the transport supports it
+ * @param antiBot the anti-bot: attack detection, trusted identities, lockdown, plugin checks
+ * @param pipelines the pipeline initializers plugins registered
  */
 @SuppressWarnings("ArrayRecordComponent") // forwardingSecret is treated as immutable
 public record ServerLoginContext(
@@ -59,9 +89,23 @@ public record ServerLoginContext(
     ProfileKeys profileKeys,
     PlaySession playSession,
     ServerRegistry serverRegistry,
+    PlayerRegistry playerRegistry,
+    ServerList serverList,
+    DuplicateLoginPolicy duplicateLoginPolicy,
+    WarpEventBus events,
+    ChannelRegistry channels,
+    WarpCommandManager commands,
+    PermissionRegistry permissions,
     ForwardingMode forwardingMode,
     byte[] forwardingSecret,
-    Class<? extends Channel> channelClass) {
+    Class<? extends Channel> channelClass,
+    boolean acceptsTransfers,
+    ClientLimits limits,
+    TimeoutsConfig timeouts,
+    LoggingConfig logging,
+    boolean tcpFastOpen,
+    AntiBotService antiBot,
+    PipelineRegistry pipelines) {
 
   /** Validates configuration invariants. */
   public ServerLoginContext {

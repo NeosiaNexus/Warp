@@ -37,10 +37,17 @@ import dev.warp.protocol.netty.FrameEncoder;
 import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.packet.PacketDirection;
-import dev.warp.protocol.packet.TextComponent;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.PlayPacket;
+import dev.warp.protocol.text.ComponentCodec;
+import dev.warp.proxy.command.ProxyCommands;
+import dev.warp.proxy.config.LoggingConfig;
+import dev.warp.proxy.config.TimeoutsConfig;
+import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.permission.PermissionRegistry;
+import dev.warp.proxy.player.PlayerRegistry;
+import dev.warp.proxy.server.BackendServer;
 import dev.warp.proxy.server.ServerRegistry;
 
 import java.io.ByteArrayOutputStream;
@@ -50,6 +57,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
@@ -59,6 +67,8 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.timeout.ReadTimeoutHandler;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -130,7 +140,7 @@ class ClientPlaySessionHandlerTest {
 
       session.handler().handle(command(version, "server"));
 
-      byte[] content = TextComponent.plainText("Servers: [lobby]", version);
+      byte[] content = serverList(session, version);
       assertArrayEquals(concat(new byte[] {(byte) packetId}, content, trailer), session.toPlayer());
       assertNull(session.nextToPlayer(), "a single answer");
       assertNull(session.toBackend(), "the proxy's own command never reaches the backend");
@@ -144,7 +154,9 @@ class ClientPlaySessionHandlerTest {
 
       session.handler().handle(command(version, "server nowhere"));
 
-      byte[] content = TextComponent.plainText("Unknown server: nowhere", version);
+      byte[] content =
+          ComponentCodec.encode(
+              Component.text("Unknown server: nowhere", NamedTextColor.RED), version);
       assertArrayEquals(concat(new byte[] {(byte) packetId}, content, trailer), session.toPlayer());
       assertNull(session.toBackend());
     }
@@ -158,7 +170,10 @@ class ClientPlaySessionHandlerTest {
 
       ByteBuf body = Unpooled.wrappedBuffer(session.toPlayer());
       assertEquals(0x0F, VarInt.read(body));
-      assertEquals("{\"text\":\"Servers: [lobby]\"}", McString.read(body));
+      assertEquals(
+          "{\"color\":\"gray\",\"extra\":[{\"color\":\"green\",\"text\":\"[lobby]\"}],"
+              + "\"text\":\"Servers: \"}",
+          McString.read(body));
       assertEquals(1, body.readByte()); // system message
       assertFalse(body.isReadable(), "unread bytes");
     }
@@ -175,7 +190,9 @@ class ClientPlaySessionHandlerTest {
 
       session.handler().handle(command(version, "server survival"));
 
-      byte[] content = TextComponent.plainText("Could not connect to survival.", version);
+      byte[] content =
+          ComponentCodec.encode(
+              Component.text("Could not connect to survival.", NamedTextColor.RED), version);
       byte[] answer = session.toPlayer();
       assertArrayEquals(content, Arrays.copyOfRange(answer, 1, 1 + content.length));
       assertNull(session.nextToPlayer(), "no StartConfiguration");
@@ -184,14 +201,16 @@ class ClientPlaySessionHandlerTest {
     }
 
     @Test
-    @DisplayName("should switch a 1.20.2+ player through the configuration phase")
+    @DisplayName("should log a 1.20.2+ player in to the new server while it stays where it is")
     void switchesFrom1202() {
       Session session =
           join(ProtocolVersion.MINECRAFT_1_21_4, Map.of("lobby", LOBBY, "survival", SURVIVAL));
+      session.player().setConnector(target -> new CompletableFuture<>());
 
       session.handler().handle(new ChatCommand("server survival", new byte[0], 0));
 
-      assertArrayEquals(new byte[] {0x70}, session.toPlayer()); // StartConfiguration
+      // No Start Configuration until survival accepts the player.
+      assertNull(session.client().readOutbound());
       assertTrue(session.player().isSwitching());
     }
   }
@@ -224,7 +243,7 @@ class ClientPlaySessionHandlerTest {
 
       assertArrayEquals(new byte[] {0x03, 3}, session.toBackendOrFail()); // Chat Acknowledgement
       assertNull(session.toBackend(), "the command itself stays with the proxy");
-      byte[] content = TextComponent.plainText("Servers: [lobby]", version);
+      byte[] content = serverList(session, version);
       byte[] answer = session.toPlayer();
       assertArrayEquals(content, Arrays.copyOfRange(answer, 1, 1 + content.length));
     }
@@ -411,6 +430,17 @@ class ClientPlaySessionHandlerTest {
     }
   }
 
+  /** The answer to {@code /server} on the lobby, encoded for {@code version}. */
+  private static byte[] serverList(Session session, ProtocolVersion version) {
+    return ComponentCodec.encode(
+        ProxyCommands.serverList(
+            session.player().loginContext().serverRegistry().allServers().stream()
+                .map(BackendServer::name)
+                .toList(),
+            "lobby"),
+        version);
+  }
+
   /** How a client of {@code version} sends a command: as a chat line before 1.19. */
   private static PlayPacket command(ProtocolVersion version, String command) {
     return version.isOlderThan(ProtocolVersion.MINECRAFT_1_19)
@@ -423,16 +453,33 @@ class ClientPlaySessionHandlerTest {
     EmbeddedChannel backend = channel(PacketDirection.CLIENTBOUND, version);
 
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
-    when(loginContext.serverRegistry()).thenReturn(new ServerRegistry(servers, "lobby", List.of()));
+
+    when(loginContext.logging()).thenReturn(LoggingConfig.DEFAULTS);
+
+    when(loginContext.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
+    when(loginContext.antiBot()).thenReturn(TestLoginContexts.calmAntiBot());
+    when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
+    when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
+    when(loginContext.channels()).thenReturn(new ChannelRegistry());
+    when(loginContext.permissions()).thenReturn(new PermissionRegistry());
+
+    ServerRegistry registry = new ServerRegistry(servers, "lobby", List.of());
+    when(loginContext.serverRegistry()).thenReturn(registry);
+    when(loginContext.commands()).thenReturn(TestLoginContexts.commands(registry));
     ConnectedPlayer player =
         new ConnectedPlayer(
             connection(client),
             version,
             new GameProfile(UUID.randomUUID(), "Steve", List.of()),
             InetSocketAddress.createUnresolved("player", 50000),
-            loginContext);
-    player.setBackendConnection(backendConnection(connection(backend)));
+            loginContext,
+            new ClientCookies(connection(client), version, client.eventLoop()));
+    BackendConnection lobby = backendConnection(connection(backend));
+    player.setBackendConnection(lobby);
+    // The player plays on the lobby: the lobby counts it, and /server marks it.
+    player.playOn(lobby.connection());
     player.setCurrentServerName("lobby");
+    player.joinedGame(); // in its world on the lobby: the proxy's messages reach it at once
     return new Session(player, new ClientPlaySessionHandler(player), client, backend);
   }
 

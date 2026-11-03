@@ -1,7 +1,7 @@
 // Minecraft backend servers (Paper, or vanilla where Paper never shipped a build): download,
 // configure, start, drive through the console, stop.
 import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { download } from './download.js';
 import { ManagedProcess } from './proc.js';
@@ -27,6 +27,20 @@ const PAPER_VELOCITY_SINCE = 401;
 
 /** First protocol whose Paper builds read `config/paper-global.yml` rather than `paper.yml`: 1.19. */
 const PAPER_GLOBAL_CONFIG_SINCE = 759;
+
+/**
+ * First protocol whose servers run on Netty's native epoll transport (`use-native-transport`, which
+ * Linux servers use by default) rather than NIO: 1.12. A server that sends a packet of another
+ * protocol than the connection's turns its auto-read off from the main thread, and back on from the
+ * event loop once the connection switched: that happens to every player, as the server sends its
+ * first play packets. Netty 4.1 (1.12 on) defers to the event loop the NIO half of turning it off,
+ * and that deferred clear drops the read interest whatever the flag says by then: when the event loop
+ * turned auto-read back on before it ran, the clear comes last, and the next "on" changes nothing.
+ * The server never reads that player again, its chat included (#132). The epoll transport checks the
+ * flag before clearing. Netty 4.0 (up to 1.11) is the other way round: NIO defers nothing, while epoll
+ * clears from the main thread, unchecked.
+ */
+const NATIVE_TRANSPORT_SINCE = 335;
 
 /**
  * First protocol whose servers read the resource pack's SHA-1 from `resource-pack-sha1`: 1.9. They
@@ -161,6 +175,7 @@ export class Backend {
    *   threshold and forwarding)
    * @param {string|null} options.mojangHost mock Mojang (see mojang.js) the server takes its
    *   services keys from, or null to keep Mojang's
+   * @param {string[]} [options.plugins] plugin jars a Paper server loads (see probe-plugin.js)
    */
   constructor(options) {
     Object.assign(this, options);
@@ -194,6 +209,7 @@ export class Backend {
       // it. Its -Dcom.mojang.eula.agree=true would skip the notice too, but that path also skips
       // the server's setup and crashes it (Spigot's DedicatedServer#init).
       writeFileSync(join(this.dir, '.eula-lock'), '');
+      for (const plugin of this.plugins ?? []) cpSync(plugin, join(this.dir, 'plugins', basename(plugin)));
     }
     if (this.forwarding) {
       const { file, yaml } = paperForwardingConfig(this.protocol, this.forwarding);
@@ -275,15 +291,34 @@ export class Backend {
     return this.process.stop({ graceMs: 5_000 });
   }
 
-  /** Runs a console command and waits until the server acknowledges it with a matching line. */
+  /**
+   * Runs a console command and waits until the server acknowledges it with a matching line.
+   * @returns {Promise<string|null>} the acknowledging line, or null without `acknowledgement`
+   */
   async command(line, acknowledgement, timeoutMs = 10_000) {
     const from = this.process.mark();
     this.process.send(line);
-    if (acknowledgement) await this.process.waitFor(acknowledgement, timeoutMs, from);
+    if (acknowledgement) return this.process.waitFor(acknowledgement, timeoutMs, from);
+    return null;
   }
 
   stop() {
     return this.process ? this.process.stop({ command: 'stop', graceMs: 45_000 }) : Promise.resolve(null);
+  }
+
+  /**
+   * The transport the server listens with, from its log: `epoll`, `nio`, or null before it said. A
+   * server asked for epoll falls back to NIO, saying so, when Netty cannot load its native library.
+   */
+  transport() {
+    const line = this.process?.lines.findLast((l) => /Using (epoll|default) channel type/.test(l));
+    if (!line) return null;
+    return line.includes('epoll') ? 'epoll' : 'nio';
+  }
+
+  /** Whether the server is meant to run on the native epoll transport (see NATIVE_TRANSPORT_SINCE). */
+  get wantsNativeTransport() {
+    return this.protocol >= NATIVE_TRANSPORT_SINCE;
   }
 
   /** Lines from this backend's log (from line `from` on) that indicate a broken client connection. */
@@ -333,8 +368,7 @@ function serverProperties(b) {
     'max-tick-time': -1,
     'rate-limit': 0,
     'sync-chunk-writes': false,
-    // Netty's epoll transport in 1.8–1.11 breaks on Java 9+; NIO everywhere keeps it uniform.
-    'use-native-transport': false,
+    'use-native-transport': b.protocol >= NATIVE_TRANSPORT_SINCE,
     'enable-status': true,
     'enable-query': false,
     'enable-rcon': false,

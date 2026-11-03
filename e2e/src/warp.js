@@ -1,7 +1,7 @@
 // A Warp instance under test: its own directory, generated warp.conf, private copy of the jar.
 import { randomUUID } from 'node:crypto';
 import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { ManagedProcess, run } from './proc.js';
 
@@ -41,10 +41,20 @@ export class Warp {
    * @param {number} options.threshold `compression.threshold`
    * @param {Record<string, number>} options.servers name → port of each backend
    * @param {string[]} options.fallbackOrder first entry is the default server
+   * @param {boolean} [options.acceptsTransfers] `accepts-transfers`: lets in the players a Transfer
+   *   packet sends to it (1.20.5+)
    * @param {{mode: string, secret: string}|null} options.forwarding player info forwarding, with the
    *   secret the backends share, or null for none
+   * @param {{http: number, agent: number, token: string}} [options.management] the management server
+   *   (probes, HAProxy agent check, drain endpoint) on these ports, with this token; off if absent
+   * @param {Record<string, string|number|boolean>} [options.drain] keys of the `drain` section
    * @param {string} options.logDir
    * @param {string[]} [options.jvmArgs] JVM options after the defaults (the last -Xmx wins)
+   * @param {string[]} [options.plugins] plugin jars copied into Warp's plugins directory
+   * @param {Record<string, string>} [options.properties] system properties (for the plugins)
+   * @param {{motd: string, maxPlayers?: number, playerLimit?: number}} [options.status] the
+   *   `status` block (the message of the day in MiniMessage, the maximum shown) and `player-limit`,
+   *   the limit enforced at login (none if left out; the server list then shows it as the maximum)
    */
   constructor(options) {
     Object.assign(this, options);
@@ -55,6 +65,10 @@ export class Warp {
     rmSync(this.dir, { recursive: true, force: true });
     mkdirSync(this.dir, { recursive: true });
     copyFileSync(this.jar, join(this.dir, 'warp.jar'));
+    if (this.plugins?.length) {
+      mkdirSync(join(this.dir, 'plugins'), { recursive: true });
+      for (const plugin of this.plugins) copyFileSync(plugin, join(this.dir, 'plugins', basename(plugin)));
+    }
     writeFileSync(join(this.dir, 'warp.conf'), this.config());
     if (this.profileKeySigner) writeFileSync(join(this.dir, SIGNER_FILE), this.profileKeySigner);
   }
@@ -71,6 +85,7 @@ ${servers}
 }
 default-server = "${this.fallbackOrder[0]}"
 fallback-order = [${this.fallbackOrder.map((s) => `"${s}"`).join(', ')}]
+accepts-transfers = ${this.acceptsTransfers ?? false}
 forwarding {
   mode = "${this.forwarding?.mode ?? 'none'}"
 }
@@ -79,7 +94,16 @@ compression {
   level = -1
   passthrough = ${this.passthrough}
 }
-`;
+${this.management ? managementSection(this.management) : ''}${this.drain ? drainSection(this.drain) : ''}${this.statusBlock()}`;
+  }
+
+  /** The `status` block and `player-limit`, or nothing for Warp's defaults. */
+  statusBlock() {
+    if (!this.status) return '';
+    const lines = [`  motd = ${JSON.stringify(this.status.motd)}`];
+    if (this.status.maxPlayers !== undefined) lines.push(`  max-players = ${this.status.maxPlayers}`);
+    const limit = this.status.playerLimit !== undefined ? `player-limit = ${this.status.playerLimit}\n` : '';
+    return `${limit}status {\n${lines.join('\n')}\n}\n`;
   }
 
   start() {
@@ -90,6 +114,7 @@ compression {
       // Every ByteBuf is tracked: a buffer the proxy forgets to release is reported as an ERROR.
       '-Dio.netty.leakDetection.level=paranoid',
       ...(this.jvmArgs ?? []),
+      ...Object.entries(this.properties ?? {}).map(([key, value]) => `-D${key}=${value}`),
       ...(this.online ? [`-Dmojang.sessionserver=${this.sessionServer}`] : []),
       ...(this.profileKeySigner ? [`-Dwarp.profilekeys.signer=${SIGNER_FILE}`] : []),
       '-jar',
@@ -98,8 +123,11 @@ compression {
     this.process = new ManagedProcess(this.name, this.java, args, {
       cwd: this.dir,
       // The secret goes in the variable that overrides `forwarding.secret-file`, so that one set in
-      // the caller's environment cannot replace it.
-      env: this.forwarding ? { WARP_FORWARDING_SECRET: this.forwarding.secret } : undefined,
+      // the caller's environment cannot replace it. The management token likewise.
+      env: {
+        ...(this.forwarding ? { WARP_FORWARDING_SECRET: this.forwarding.secret } : {}),
+        ...(this.management ? { WARP_MANAGEMENT_TOKEN: this.management.token } : {}),
+      },
       logFile: join(this.logDir, `${this.name}.log`),
       failures: WARP_FAILURES,
     }).start();
@@ -126,6 +154,19 @@ compression {
     }
   }
 
+  /** Resolves with the exit of an instance that stops by itself; rejects after `timeoutMs`. */
+  async exitedWithin(timeoutMs) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${this.name} still runs after ${timeoutMs / 1000} s`)), timeoutMs);
+    });
+    try {
+      return await Promise.race([this.process.exited, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /** Stops the instance. A shutdown that hangs is a bug: the thread dump goes to the log. */
   async stop() {
     if (!this.process) return null;
@@ -146,4 +187,23 @@ compression {
 
 function jcmd(java) {
   return join(dirname(java), 'jcmd');
+}
+
+/** The `management` section: both ports on the loopback; the token goes in the environment. */
+function managementSection({ http, agent }) {
+  return `management {
+  enabled = true
+  bind = "127.0.0.1:${http}"
+  agent-check = "127.0.0.1:${agent}"
+}
+`;
+}
+
+/** The `drain` section, a key per entry: strings quoted, numbers and booleans as they are. */
+function drainSection(keys) {
+  const lines = Object.entries(keys).map(([key, value]) => `  ${key} = ${typeof value === 'string' ? JSON.stringify(value) : value}`);
+  return `drain {
+${lines.join('\n')}
+}
+`;
 }

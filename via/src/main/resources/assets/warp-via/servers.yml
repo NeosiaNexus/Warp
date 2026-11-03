@@ -1,0 +1,25 @@
+# Which Minecraft version each backend server runs.
+#
+# A player whose version differs from its server's is translated on its way to that server, by
+# ViaVersion (newer players) and ViaBackwards (older players). A player whose version matches is
+# not touched at all: Warp forwards its packets as they are, still compressed, at no cost.
+#
+# For each server, by its name in warp.conf, one of:
+#   a version, such as "1.21.4" (or its protocol number, 769): the server always runs it;
+#   auto: Warp asks the server (a status ping announcing no version, so that a server running
+#         ViaVersion itself answers with its own version rather than the player's);
+#   off: never translate for this server (it translates itself, or must not be translated).
+# A version given here always wins over what the server answers.
+servers: {}
+
+# For the servers not listed above.
+default: auto
+
+# Seconds between two checks of the "auto" servers, to notice a server that changed version;
+# 0 checks each only once, when the first player connects to it.
+detection-interval: 60
+
+# Milliseconds the first player to connect to an "auto" server whose version is not known yet
+# waits for its answer. Warp never guesses: without an answer, it connects the player without
+# translation, and the server decides.
+detection-timeout: 3000

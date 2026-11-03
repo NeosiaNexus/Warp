@@ -16,11 +16,13 @@
  */
 package dev.warp.protocol.packet.play;
 
+import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.packet.PacketCodec;
-import dev.warp.protocol.packet.TextComponent;
+import dev.warp.protocol.text.ComponentCodec;
 
 import io.netty.buffer.ByteBuf;
+import net.kyori.adventure.text.Component;
 
 /**
  * Server disconnects the player during gameplay ({@code S→C}).
@@ -29,7 +31,7 @@ import io.netty.buffer.ByteBuf;
  * JSON string to NBT. The proxy keeps the encoded bytes and never parses them.
  *
  * @param rawReason the encoded reason, exactly as on the wire: a VarInt-prefixed JSON string before
- *     1.20.3, an NBT tag from 1.20.3 (see {@link TextComponent})
+ *     1.20.3, an NBT tag from 1.20.3 (see {@link ComponentCodec})
  */
 public record PlayDisconnect(byte[] rawReason) implements PlayPacket {
 
@@ -50,13 +52,37 @@ public record PlayDisconnect(byte[] rawReason) implements PlayPacket {
       };
 
   /**
+   * Returns the reason as a component: what a backend that kicks a player wrote, read without
+   * failing (see {@link ComponentCodec#decode(byte[], ProtocolVersion, ProtocolState)}).
+   *
+   * @param version the protocol version of the connection the packet came from
+   * @return the reason, {@link Component#empty()} when the backend gave none
+   */
+  public Component decodedReason(ProtocolVersion version) {
+    return ComponentCodec.decode(rawReason, version, ProtocolState.PLAY);
+  }
+
+  /**
+   * Creates a play disconnect whose reason is {@code reason}, encoded for {@code version}.
+   *
+   * @param reason the reason shown to the player
+   * @param version the client's protocol version, which selects JSON or NBT
+   * @return the packet
+   * @throws IllegalArgumentException if the reason is too large for the client
+   */
+  public static PlayDisconnect of(Component reason, ProtocolVersion version) {
+    return new PlayDisconnect(ComponentCodec.encode(reason, version));
+  }
+
+  /**
    * Creates a play disconnect whose reason is plain text, encoded for {@code version}.
    *
    * @param reason the text shown to the player
    * @param version the client's protocol version, which selects JSON or NBT
    * @return the packet
+   * @throws IllegalArgumentException if the reason is too large for the client
    */
   public static PlayDisconnect ofPlainText(String reason, ProtocolVersion version) {
-    return new PlayDisconnect(TextComponent.plainText(reason, version));
+    return of(Component.text(reason), version);
   }
 }

@@ -22,9 +22,20 @@ dependencies {
     // Gson for protocol serialization
     implementation(libs.gson)
 
+    // NBT values carried by components (item hover data components, custom click payloads), parsed
+    // from the SNBT Adventure holds them in
+    implementation(libs.adventure.nbt)
+
+    // Reads the JSON components backends send (disconnect reasons)
+    implementation(libs.adventure.text.serializer.gson)
+
     // Competitor baseline for benchmarks only: Velocity's libdeflate and OpenSSL natives, measured
     // against the exact Netty version Warp ships.
     jmh(libs.velocity.native) {
         exclude(group = "io.netty")
     }
+    // Warp's own native codec, which the proxy (not this module) plugs into PacketCompressor: the
+    // benchmarks measure it against the two above, and the fuzz tests check it against the JDK.
+    jmh(project(":jni"))
+    testImplementation(project(":jni"))
 }

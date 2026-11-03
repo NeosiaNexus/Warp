@@ -4,6 +4,7 @@ plugins {
     id("warp.checkstyle-conventions")
     id("warp.jacoco-conventions")
     id("warp.publish-conventions")
+    id("warp.api-release-conventions")
 }
 
 description = "Warp API — public plugin API for the Warp Minecraft proxy"
@@ -13,21 +14,21 @@ dependencies {
     api(platform(libs.adventure.bom))
     api(libs.adventure.api)
     api(libs.adventure.text.minimessage)
+    api(libs.adventure.text.serializer.plain)
+    api(libs.adventure.text.serializer.legacy)
 
-    // SLF4J — plugins log through this facade
+    // Brigadier: commands, as the vanilla client knows them
+    api(libs.brigadier)
+
+    // SLF4J: plugins log through this facade
     api(libs.slf4j.api)
 
-    // Guice — DI available to plugins
-    api(libs.guice)
+    // JSpecify: the API's nullness annotations reach plugin compilers (Kotlin reads them)
+    api(libs.jspecify)
 
-    // Config
-    api(libs.configurate.hocon)
-
-    // Guava comes from Guice, whose latest release (7.0.0) depends on 31.0.1-jre. Declared on `api`,
-    // the constraint is published with the API: plugin builds resolve the Guava the proxy ships.
-    constraints {
-        api(libs.guava) {
-            because("fixed by 33.7.2: CVE-2020-8908, CVE-2023-2976, CVE-2026-102554")
-        }
-    }
+    // Netty: the types of the network pipeline API (dev.warp.api.network). On the compile class
+    // path of plugins only: at run time, plugins that declare the NETWORK_PIPELINE capability see
+    // the proxy's Netty, and the others see none.
+    compileOnlyApi(platform(libs.netty.bom))
+    compileOnlyApi(libs.netty.transport)
 }

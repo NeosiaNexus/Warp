@@ -27,21 +27,62 @@ import java.util.UUID;
 import io.netty.buffer.ByteBuf;
 
 /**
- * Client responds with the result of a resource pack request ({@code C->S}).
+ * Client reports what became of a resource pack ({@code C->S}, from 1.8, in the play state and,
+ * from 1.20.2, the configuration state, where it has the same layout).
  *
  * <p>Version history:
  *
  * <ul>
  *   <li><b>1.8-1.9.4</b>: String hash (of the pack it answers) + VarInt result
- *   <li><b>1.10-1.20.2</b>: VarInt result only
+ *   <li><b>1.10-1.20.2</b>: VarInt result only: the answer is for the last pack sent
  *   <li><b>1.20.3+</b>: UUID + VarInt result
  * </ul>
  *
+ * <p>Results: {@link #SUCCESSFULLY_LOADED}, {@link #DECLINED}, {@link #FAILED_DOWNLOAD} and {@link
+ * #ACCEPTED} in every version; {@link #DOWNLOADED}, {@link #INVALID_URL}, {@link #FAILED_RELOAD}
+ * and {@link #DISCARDED} from 1.20.3. The proxy decodes the answers, which come once per pack, to
+ * keep those for its own packs and pass the others to the server that sent them.
+ *
  * @param uuid the resource pack UUID (zero UUID before 1.20.3)
  * @param hash the resource pack hash (empty from 1.10)
- * @param result the result code (0=accepted, 1=declined, 2=failed, 3=downloaded, etc.)
+ * @param result the result code
  */
 public record ResourcePackResponse(UUID uuid, String hash, int result) implements PlayPacket {
+
+  /** The pack is applied. Final. */
+  public static final int SUCCESSFULLY_LOADED = 0;
+
+  /** The player declined the pack. Final. */
+  public static final int DECLINED = 1;
+
+  /** The download failed. Final. */
+  public static final int FAILED_DOWNLOAD = 2;
+
+  /** The player accepted the pack; the download starts. */
+  public static final int ACCEPTED = 3;
+
+  /** The pack is downloaded (1.20.3+). */
+  public static final int DOWNLOADED = 4;
+
+  /** The URL is not valid (1.20.3+). Final. */
+  public static final int INVALID_URL = 5;
+
+  /** The pack could not be applied (1.20.3+). Final. */
+  public static final int FAILED_RELOAD = 6;
+
+  /** The pack was dropped before it was applied, replaced or removed (1.20.3+). Final. */
+  public static final int DISCARDED = 7;
+
+  /**
+   * Returns whether a result ends what the client does with the pack: every result but {@link
+   * #ACCEPTED} and {@link #DOWNLOADED}.
+   *
+   * @param result the result code
+   * @return {@code true} if no other result follows it for that pack
+   */
+  public static boolean isFinal(int result) {
+    return result != ACCEPTED && result != DOWNLOADED;
+  }
 
   /** Codec for reading and writing resource pack response packets. */
   public static final PacketCodec<ResourcePackResponse> CODEC =

@@ -31,10 +31,11 @@ import org.openjdk.jmh.annotations.Warmup;
  * <p>As in Netty's own microbench module, every benchmark extends this class and JMH reads these
  * annotations from it, so that no benchmark runs in a JVM set up differently from the others. Where
  * it changes the code under test, each fork runs like {@code bin/warp.sh} runs the proxy: Netty
- * keeps {@code sun.misc.Unsafe} (Netty stops using it on Java 25 unless memory access is allowed)
- * and leak detection is off. Benchmark threads are Netty {@code FastThreadLocalThread}s, like event
- * loops ({@link EventLoopLikeExecutor}). The heap is fixed and pre-touched, which keeps resizing
- * and page faults out of the measurement.
+ * keeps {@code sun.misc.Unsafe} (Netty stops using it on Java 25 unless memory access is allowed),
+ * native access is enabled (as the proxy jar's manifest does, for libdeflate) and leak detection is
+ * off. Benchmark threads are Netty {@code FastThreadLocalThread}s, like event loops ({@link
+ * EventLoopLikeExecutor}). The heap is fixed and pre-touched, which keeps resizing and page faults
+ * out of the measurement.
  */
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
@@ -47,6 +48,7 @@ import org.openjdk.jmh.annotations.Warmup;
       "-Xmx2g",
       "-XX:+AlwaysPreTouch",
       "--sun-misc-unsafe-memory-access=allow",
+      "--enable-native-access=ALL-UNNAMED",
       "-Dio.netty.leakDetection.level=disabled",
       EventLoopLikeExecutor.JMH_EXECUTOR,
       EventLoopLikeExecutor.JMH_EXECUTOR_CLASS

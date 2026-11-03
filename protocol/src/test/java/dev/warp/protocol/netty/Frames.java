@@ -114,7 +114,7 @@ final class Frames {
    * @return {@code [id][payload]}
    */
   static byte[] packet(int id, byte[] payload) {
-    byte[] packet = new byte[payload.length + 1];
+    byte[] packet = new byte[Math.addExact(payload.length, 1)];
     packet[0] = (byte) id;
     System.arraycopy(payload, 0, packet, 1, payload.length);
     return packet;

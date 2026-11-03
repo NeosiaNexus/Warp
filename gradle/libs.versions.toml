@@ -1,10 +1,13 @@
 [versions]
 # Core
 netty = "4.2.18.Final"
-adventure = "4.26.1"
+adventure = "5.2.0"
+brigadier = "1.3.10"
 log4j = "2.26.1"
 slf4j = "2.0.17"
-guice = "7.0.0"
+# The lowest Guava any configuration resolves (warp.java-conventions), for the libraries and build
+# tools that bring an older one (Error Prone, Checkstyle, Velocity's natives), and the Guava the via
+# plugin bundles for ViaVersion.
 guava = "33.7.2-jre"
 
 # Utilities
@@ -13,6 +16,13 @@ disruptor = "4.0.0"
 gson = "2.14.0"
 configurate = "4.2.0"
 jspecify = "1.0.0"
+
+# Via plugin: ViaVersion, ViaBackwards, ViaRewind (and the Guava they expect their platform to
+# provide: the `guava` version above).
+# ViaRewind 4.2.0 is the release built for ViaVersion 5.12 (compiled against 5.12.0).
+viaversion = "5.12.2"
+viabackwards = "5.12.2"
+viarewind = "4.2.0"
 
 # Native
 netty-tcnative = "2.0.84.Final"
@@ -46,6 +56,8 @@ shadow = "9.6.1"
 netty-bom = { group = "io.netty", name = "netty-bom", version.ref = "netty" }
 netty-buffer = { group = "io.netty", name = "netty-buffer" }
 netty-codec = { group = "io.netty", name = "netty-codec" }
+netty-codec-http = { group = "io.netty", name = "netty-codec-http" }
+netty-codec-haproxy = { group = "io.netty", name = "netty-codec-haproxy" }
 netty-handler = { group = "io.netty", name = "netty-handler" }
 netty-transport = { group = "io.netty", name = "netty-transport" }
 netty-transport-native-epoll = { group = "io.netty", name = "netty-transport-native-epoll" }
@@ -53,10 +65,13 @@ netty-transport-native-kqueue = { group = "io.netty", name = "netty-transport-na
 
 # Adventure (Minecraft text components)
 adventure-bom = { group = "net.kyori", name = "adventure-bom", version.ref = "adventure" }
+brigadier = { group = "com.mojang", name = "brigadier", version.ref = "brigadier" }
 adventure-api = { group = "net.kyori", name = "adventure-api" }
+adventure-nbt = { group = "net.kyori", name = "adventure-nbt" }
 adventure-text-minimessage = { group = "net.kyori", name = "adventure-text-minimessage" }
 adventure-text-serializer-gson = { group = "net.kyori", name = "adventure-text-serializer-gson" }
 adventure-text-serializer-plain = { group = "net.kyori", name = "adventure-text-serializer-plain" }
+adventure-text-serializer-legacy = { group = "net.kyori", name = "adventure-text-serializer-legacy" }
 
 # Logging
 log4j-api = { group = "org.apache.logging.log4j", name = "log4j-api", version.ref = "log4j" }
@@ -70,15 +85,16 @@ slf4j-api = { group = "org.slf4j", name = "slf4j-api", version.ref = "slf4j" }
 # Async logging
 disruptor = { group = "com.lmax", name = "disruptor", version.ref = "disruptor" }
 
-# DI
-guice = { group = "com.google.inject", name = "guice", version.ref = "guice" }
-# Not a direct dependency: the minimum version of the Guava that Guice brings (api/build.gradle.kts).
-guava = { group = "com.google.guava", name = "guava", version.ref = "guava" }
-
 # Utilities
 caffeine = { group = "com.github.ben-manes.caffeine", name = "caffeine", version.ref = "caffeine" }
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 configurate-hocon = { group = "org.spongepowered", name = "configurate-hocon", version.ref = "configurate" }
+
+# Via plugin
+viaversion-common = { group = "com.viaversion", name = "viaversion-common", version.ref = "viaversion" }
+viabackwards-common = { group = "com.viaversion", name = "viabackwards-common", version.ref = "viabackwards" }
+viarewind-common = { group = "com.viaversion", name = "viarewind-common", version.ref = "viarewind" }
+guava = { group = "com.google.guava", name = "guava", version.ref = "guava" }
 
 # Annotations
 jspecify = { group = "org.jspecify", name = "jspecify", version.ref = "jspecify" }

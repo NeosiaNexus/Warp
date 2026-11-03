@@ -17,6 +17,7 @@
 package dev.warp.protocol.fuzz;
 
 import dev.warp.protocol.compress.ZlibStreams;
+import dev.warp.protocol.netty.FrameLimits;
 
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
@@ -132,12 +133,37 @@ public final class Wire {
    * @return its frames, up to the first incomplete or malformed one
    */
   public static Framing frames(byte[] stream) {
+    return frames(stream, null);
+  }
+
+  /**
+   * Splits a stream into frames as {@link #frames(byte[])} does, stopping, as malformed, at the
+   * first frame {@code limits} refuse: from its length alone when it is longer than any packet of
+   * the state, else from its length and its first byte, the packet identifier.
+   *
+   * @param stream the bytes received on a connection
+   * @param limits the limits of the client's state, or {@code null} for none
+   * @return its frames, up to the first incomplete, malformed or refused one
+   */
+  public static Framing frames(byte[] stream, @Nullable FrameLimits limits) {
     List<byte[]> frames = new ArrayList<>();
     int offset = 0;
     while (offset < stream.length) {
       VarNum length = varNum(stream, offset, MAX_FRAME_LENGTH_BYTES);
       if (length == null) {
         return new Framing(frames, stream.length - offset >= MAX_FRAME_LENGTH_BYTES);
+      }
+      if (limits != null && length.value() > 0) {
+        if (length.value() > limits.largest()) {
+          return new Framing(frames, true);
+        }
+        int idOffset = offset + length.length();
+        if (idOffset >= stream.length) {
+          break;
+        }
+        if (!limits.allows(stream[idOffset] & 0xFF, (int) length.value())) {
+          return new Framing(frames, true);
+        }
       }
       int end = offset + length.length() + (int) length.value();
       if (end > stream.length) {

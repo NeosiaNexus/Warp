@@ -2,11 +2,16 @@
 // sign of trouble. Backends are told apart by game mode, which every version announces when a
 // player joins: lobby = creative, survival = adventure.
 import { randomBytes, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { connect as tcpConnect } from 'node:net';
+import { dirname, join } from 'node:path';
 
+import { flood } from './flood.js';
 import { FORWARDED_PLAYER, mojangUuid, offlineUuid } from './mojang.js';
 import { sha1 } from './packs.js';
 import { sleep } from './proc.js';
 import { FIRST_PROTOCOL, LAST_PROTOCOL, createProfileKeys, createSigner } from './profile-keys.js';
+import { Warp } from './warp.js';
 
 export const LOBBY_MODE = 'creative';
 export const SURVIVAL_MODE = 'adventure';
@@ -17,15 +22,36 @@ const BRANDS = { paper: /Paper/, vanilla: /vanilla/ };
 /** First protocol (1.20) whose servers can be made to trust the mock Mojang's key (see mojang.js). */
 export const SIGNED_CHAT = 763;
 
+/** The first protocol with transfers: 1.20.5. */
+export const TRANSFER_PROTOCOL = 766;
+
+/** Vanilla's reason for refusing a transfer, which Warp gives when `accepts-transfers` is off. */
+const TRANSFERS_DISABLED = 'multiplayer.disconnect.transfers_disabled';
+
+/**
+ * The message of the day both Warp instances show (`status.motd`, MiniMessage), and its text: a
+ * gradient, so that clients before 1.16 get it downsampled to named colors.
+ */
+export const STATUS_MOTD = '<gradient:#38bdf8:#a78bfa>warp-e2e</gradient> <gray>status';
+export const STATUS_MOTD_TEXT = 'warp-e2e status';
+
+/** The maximum the main Warp shows: its default, with no player limit set. */
+export const WARP_MAX_PLAYERS = 500;
+
+/** The player limit of warp-alt, which `player-limit` fills. */
+export const ALT_MAX_PLAYERS = 1;
+
 /**
  * What a run offers the scenarios that require it: `true`, or why the run lacks it, which the
  * skipped scenario reports. `proxy` and `forwarding` depend on the run, the others on the protocol.
  * @param {number} protocol
- * @param {{direct?: boolean, forwarding?: string, online?: boolean}} run `direct`: a control run,
- *   without Warp; `forwarding` and `online`: the variant's forwarding mode and online mode
+ * @param {{direct?: boolean, forwarding?: string, online?: boolean, plugin?: boolean, bridged?: boolean, paper?: boolean}} run
+ *   `direct`: a control run, without Warp; `forwarding` and `online`: the variant's forwarding mode
+ *   and online mode; `plugin`: Warp runs the probe plugin; `bridged`: bots go through ViaProxy;
+ *   `paper`: the backends are Paper servers
  * @returns {Record<string, true|string>}
  */
-export function features(protocol, { direct = false, forwarding = 'none', online = false } = {}) {
+export function features(protocol, { direct = false, forwarding = 'none', online = false, plugin = false, bridged = false, paper = false } = {}) {
   const proxy = direct ? 'no proxy in a control run' : true;
   return {
     proxy,
@@ -40,12 +66,32 @@ export function features(protocol, { direct = false, forwarding = 'none', online
     ),
     // Offers carry the pack's SHA-1 in a packet of their own from 1.8 (a plugin message before).
     resourcePack: protocol >= 47 || 'no Resource Pack Send packet before 1.8',
+    // A plugin of Warp's own shows a boss bar, plays sounds and sends a pack: the bot checks each as
+    // its own version receives it, which a bridge would translate.
+    audience: all(
+      proxy,
+      plugin || 'no audience probe plugin (--jar without --plugin)',
+      protocol >= 47 || 'the 1.7 bot does not follow boss bars, sounds or plugin message packs',
+      !bridged || 'ViaProxy translates what the bot receives',
+    ),
     // 1.19 to 1.19.2 clients send their chat signing key in Login Start.
     profileKeys: (protocol >= FIRST_PROTOCOL && protocol <= LAST_PROTOCOL) || 'only 1.19 to 1.19.2 clients send a profile key in Login Start',
     // Bots can sign their chat: from 1.20 a server fetches the keys that verify chat sessions from
     // the services host, which the harness mocks. Before, it only trusts Mojang's own key, bundled in
     // authlib, so no bot can open a chat session there.
     signedChat: protocol >= SIGNED_CHAT || "before 1.20 a server trusts only Mojang's own key to verify chat",
+    // Transfers arrived in 1.20.5. The bot declares the transfer intent in its own handshake, which
+    // a bridge would replace with the one it opens to Warp.
+    transfers: all(
+      proxy,
+      protocol >= TRANSFER_PROTOCOL || 'no Transfer packet before 1.20.5',
+      !bridged || 'through ViaProxy, Warp sees the bridge’s handshake, not the bot’s',
+    ),
+    // The drain runs on a Warp of its own, which no ViaProxy bridge leads to.
+    drain: all(proxy, !bridged || 'through ViaProxy, the bridges only lead to warp and warp-alt'),
+    // A backend plugin speaks the BungeeCord channel, which Warp answers: Paper loads it, vanilla
+    // servers load no plugin.
+    bungeeChannel: all(proxy, paper || 'vanilla servers load no plugin to speak the channel'),
   };
 }
 
@@ -81,10 +127,39 @@ async function proxyReportsServer(ctx, bot, expected) {
   const reply = await bot.command('server', /^Servers:/);
   const current = /\[(\w+)\]/.exec(reply)?.[1];
   if (current !== expected) throw new Error(`/server says ${current}, expected ${expected}`);
+  checkServerList(bot.componentOf(reply), expected);
 }
 
-async function joinWarp(ctx, username, target = ctx.warp, profileKeys = null) {
-  return ctx.client.connect({ host: '127.0.0.1', port: target.port, username, profileKeys });
+/**
+ * Checks the styles of Warp's answer to /server, a component it encodes for the bot's version (JSON,
+ * or NBT from 1.20.3): the current server in green, every other one a link that runs /server <name>,
+ * with the click event of the version (`clickEvent` and its `value`, `click_event` and its
+ * `command` from 1.21.5).
+ */
+export function checkServerList(component, current) {
+  const nodes = [];
+  const walk = (node) => {
+    if (node === null || typeof node !== 'object') return;
+    nodes.push(node);
+    for (const child of [].concat(node.extra ?? [])) walk(child);
+  };
+  walk(component);
+  const text = (node) => node.text ?? node[''];
+  const here = nodes.find((n) => text(n) === `[${current}]`);
+  if (here?.color !== 'green') throw new Error(`/server: [${current}] is not green in ${JSON.stringify(component)}`);
+  const others = nodes.slice(1).filter((n) => /^[\w-]+$/.test(text(n) ?? ''));
+  if (others.length === 0) throw new Error(`/server: no other server in ${JSON.stringify(component)}`);
+  for (const link of others) {
+    const click = link.clickEvent ?? link.click_event;
+    const command = click?.value ?? click?.command;
+    if (click?.action !== 'run_command' || command !== `/server ${text(link)}`) {
+      throw new Error(`/server: ${text(link)} does not link to /server ${text(link)} in ${JSON.stringify(component)}`);
+    }
+  }
+}
+
+async function joinWarp(ctx, username, target = ctx.warp, profileKeys = null, transfer = false) {
+  return ctx.client.connect({ host: '127.0.0.1', port: target.port, username, profileKeys, transfer });
 }
 
 /** Moves the bot to survival with Warp's /server, and waits until it plays there. */
@@ -99,23 +174,43 @@ const token = () => randomBytes(4).toString('hex');
 // Scenarios
 // ---------------------------------------------------------------------------
 
+/** The text of a chat component as a status answer carries it: a string, an object or an array. */
+export function plainText(component) {
+  if (typeof component === 'string') return component;
+  if (Array.isArray(component)) return component.map(plainText).join('');
+  if (component === null || typeof component !== 'object') return '';
+  return `${component.text ?? ''}${(component.extra ?? []).map(plainText).join('')}`;
+}
+
 /**
  * Checks a server list ping answer: Warp's name (any name in a --direct run), and the protocol the
- * bot speaks, without which a vanilla client lists the server as incompatible.
+ * bot speaks, without which a vanilla client lists the server as incompatible. With `motd` and
+ * `maxPlayers`, also the configured message of the day (its text, whatever the colors became for
+ * the client's version) and player limit, and a player count.
  */
-export function checkStatus(response, { direct, protocol }) {
+export function checkStatus(response, { direct, protocol, motd = null, maxPlayers = null }) {
   const name = response?.version?.name ?? '';
   const advertised = response?.version?.protocol;
   if (!direct && !name.startsWith('Warp')) throw new Error(`unexpected status response: ${JSON.stringify(response)}`);
   if (advertised !== protocol) {
     throw new Error(`advertised protocol ${advertised} to a client of protocol ${protocol}, which lists the server as incompatible`);
   }
-  return `answered as "${name}" (protocol ${advertised}) in ${response.latency} ms`;
+  const players = response?.players;
+  if (!direct && motd !== null) {
+    const text = plainText(response?.description);
+    if (!text.includes(motd)) throw new Error(`description "${text}" instead of the configured "${motd}": ${JSON.stringify(response?.description)}`);
+  }
+  if (!direct && maxPlayers !== null) {
+    if (players?.max !== maxPlayers) throw new Error(`players ${JSON.stringify(players)} instead of a maximum of ${maxPlayers}`);
+    if (!Number.isInteger(players?.online)) throw new Error(`no player count: ${JSON.stringify(players)}`);
+  }
+  const counts = players ? `, ${players.online}/${players.max} players` : '';
+  return `answered as "${name}" (protocol ${advertised})${counts} in ${response.latency} ms`;
 }
 
 async function status(ctx) {
   const response = await ctx.client.ping({ host: '127.0.0.1', port: ctx.warp.port });
-  return checkStatus(response, { direct: ctx.direct, protocol: ctx.client.protocol });
+  return checkStatus(response, { direct: ctx.direct, protocol: ctx.client.protocol, motd: STATUS_MOTD_TEXT, maxPlayers: WARP_MAX_PLAYERS });
 }
 
 async function login(ctx) {
@@ -348,6 +443,113 @@ async function expectPack(bot, index, pack, server) {
   if (downloaded !== offer.hash) throw new Error(`${offer.url}: HTTP ${response.status}, SHA-1 ${downloaded} instead of ${offer.hash}`);
 }
 
+/** First protocols where the client: has boss bars (1.9), plays a sound following an entity by its registry id (1.14), by its name (1.19.3), configures (1.20.2), holds several packs by UUID (1.20.3). */
+const BOSS_BARS = 107;
+const ENTITY_SOUNDS = 477;
+const NAMED_ENTITY_SOUNDS = 761;
+const CONFIGURATION = 764;
+const MULTIPLE_PACKS = 765;
+
+/** What the audience probe plugin shows: its bar, and the sound both its plays name. */
+const PROBE_BAR = 'Warp e2e';
+const PROBE_SOUND = /entity\.experience_orb\.pickup$/;
+
+/**
+ * The id of the probe's sound in a client's registry, 1.14 to 1.19.2: read from Mojang's data
+ * generator reports through the samples tools/sound-events.js writes for Warp's tests, never from
+ * the table Warp loads.
+ */
+function probeSoundId(protocol) {
+  const samples = readFileSync(new URL('../../protocol/src/test/resources/dev/warp/protocol/packet/play/sound-event-samples.txt', import.meta.url), 'utf8');
+  const line = samples.split('\n').find((l) => l.startsWith(`${protocol} id entity.experience_orb.pickup `));
+  if (!line) throw new Error(`no sound event sample for protocol ${protocol}`);
+  return Number(line.split(' ')[3]);
+}
+
+/**
+ * A plugin of Warp's own (e2e/plugin) shows the player a boss bar, plays it a sound at a position
+ * and one that follows it, and sends the proxy's resource pack: the bot receives each as its version
+ * has it (no boss bar before 1.9, the sound following the player by its registry id from 1.14, by its
+ * name from 1.19.3, not at all before 1.14), and the plugin
+ * hears the pack's statuses. After a switch the bar is still on the bot's screen, whose model clears
+ * it in the configuration phase from 1.20.2 as the vanilla client does, the plugin's pack is not sent
+ * again, and from 1.20.3 the lobby's own pack is removed, the next server not sending it. The bar is
+ * animated ten times a second for the whole run: an update the bot gets for a bar it does not have
+ * fails the run, as it disconnects a vanilla client.
+ */
+async function audience(ctx) {
+  // What the bot receives is in its own version: the backends' in most runs, another one when Warp
+  // translates (--client), the plugin's packets going straight to the bot.
+  const protocol = (ctx.clientEntry ?? ctx.entry).protocol;
+  const bot = await joinWarp(ctx, 'e2e_audience');
+  const removed = [];
+  bot.bot._client.on('remove_resource_pack', (data) => removed.push(String(data.uuid ?? 'all')));
+  try {
+    // The lobby's own offer first: before 1.20.2 it comes in play, where the bot answers it itself;
+    // a client holds one pack then, and Warp sends the next once the previous one is answered.
+    await bot.waitForEntry('resourcePacks', 0, "the lobby's resource pack", 10_000);
+    if (protocol < CONFIGURATION) bot.bot.acceptResourcePack();
+
+    await bot.command('audience', /^audience shown$/);
+    const details = [];
+    if (protocol >= BOSS_BARS) {
+      await bot.waitFor(() => bot.bossBars.names().includes(PROBE_BAR), 'the boss bar shown', 10_000);
+      details.push('boss bar shown');
+    }
+    await bot.waitFor(() => bot.sounds.some((s) => s.packet !== 'entity_sound_effect' && PROBE_SOUND.test(String(s.sound))), 'the sound played at a position', 10_000);
+    details.push('positioned sound played');
+    if (protocol >= NAMED_ENTITY_SOUNDS) {
+      await bot.waitFor(() => bot.sounds.some((s) => s.packet === 'entity_sound_effect' && PROBE_SOUND.test(String(s.sound))), 'the sound following the player', 10_000);
+      details.push('sound following the player played');
+    } else if (protocol >= ENTITY_SOUNDS) {
+      const id = probeSoundId(protocol);
+      await bot.waitFor(() => bot.sounds.some((s) => s.packet === 'entity_sound_effect' && s.sound === id), `the sound following the player (registry id ${id})`, 10_000);
+      details.push(`sound following the player played by registry id ${id}`);
+    } else if (bot.sounds.some((s) => s.packet === 'entity_sound_effect')) {
+      throw new Error('a sound following the player reached a client before 1.14');
+    }
+    const offer = await bot.waitFor(() => bot.resourcePacks.some((p) => p.url === ctx.packs.proxy.url), "the plugin's resource pack", 10_000)
+      .then(() => bot.resourcePacks.find((p) => p.url === ctx.packs.proxy.url));
+    if (offer.hash !== ctx.packs.proxy.sha1 || (offer.id !== undefined && offer.id !== ctx.packs.proxy.id)) {
+      throw new Error(`the plugin's pack came as ${offer.url} (SHA-1 ${offer.hash}, id ${offer.id}), expected SHA-1 ${ctx.packs.proxy.sha1}, id ${ctx.packs.proxy.id}`);
+    }
+    const from = bot.messages.length;
+    bot.bot.acceptResourcePack();
+    await bot.waitForMessage(/^audience pack ACCEPTED$/, 'the ACCEPTED status at the plugin', 10_000, from);
+    await bot.waitForMessage(/^audience pack SUCCESSFULLY_LOADED$/, 'the SUCCESSFULLY_LOADED status at the plugin', 10_000, from);
+    details.push('pack statuses heard by the plugin');
+    if (protocol < BOSS_BARS && bot.bossBars.added > 0) throw new Error('a boss bar reached a client before 1.9, which has no boss bar packet');
+
+    if (has(ctx, 'switching')) {
+      const offers = bot.resourcePacks.length;
+      await switchToSurvival(bot);
+      await bot.waitFor(() => bot.resourcePacks.slice(offers).some((p) => p.url === ctx.packs.survival.url), "survival's resource pack", 10_000);
+      if (protocol < CONFIGURATION) bot.bot.acceptResourcePack();
+      if (protocol >= BOSS_BARS) {
+        await bot.waitFor(() => bot.bossBars.names().includes(PROBE_BAR), 'the boss bar after the switch', 10_000);
+        await sleep(1_500); // updates keep coming, never for a bar the bot does not have
+        details.push(`boss bar on screen after a switch${protocol >= CONFIGURATION ? ' (shown again after the configuration phase)' : ''}`);
+      }
+      // Once: kept by the client from 1.20.3, replaced by survival's own before (1.20.2 unloads it
+      // in the configuration phase, and gets it again only from a server that sends none).
+      const sent = bot.resourcePacks.filter((p) => p.url === ctx.packs.proxy.url).length;
+      if (sent !== 1) throw new Error(`the plugin's pack was sent ${sent} times, expected once`);
+      if (protocol >= MULTIPLE_PACKS) {
+        // The lobby's pack belongs to the lobby: removed once survival had its time to send it.
+        await bot.waitFor(() => removed.includes(ctx.packs.lobby.id), "the lobby's pack removed after the switch", 20_000);
+        if (removed.includes(ctx.packs.proxy.id) || removed.includes('all')) throw new Error(`packs removed: ${removed.join(', ')}; the plugin's must stay`);
+        details.push("plugin's pack kept, the lobby's removed");
+      } else {
+        details.push("plugin's pack not sent again");
+      }
+    }
+    bot.healthy();
+    return details.join(', ');
+  } finally {
+    bot.quit();
+  }
+}
+
 async function switching(ctx, rounds = 6) {
   const bot = await joinWarp(ctx, 'e2e_switch');
   try {
@@ -434,6 +636,7 @@ async function crowd(ctx) {
     await sleep(15_000);
     for (const bot of bots) bot.healthy();
     let detail = `${count} bots for 15 s`;
+    if (!ctx.direct) detail += `, ${await checkCrowdCount(ctx, count)}`;
     if (has(ctx, 'switching')) {
       // Half of them switch server at the same moment, unless the server cannot log them in at once.
       const switchers = bots.slice(0, Math.ceil(count / 2));
@@ -455,6 +658,57 @@ async function crowd(ctx) {
     return `${detail}; ${packets} packets / ${chunks} chunks parsed`;
   } finally {
     for (const bot of bots) bot.quit();
+  }
+}
+
+/**
+ * Checks that the server list counts the crowd (and the players of other scenarios still online)
+ * and lists a sample of them, as Warp's default sample size allows.
+ */
+async function checkCrowdCount(ctx, count) {
+  const response = await ctx.client.ping({ host: '127.0.0.1', port: ctx.warp.port });
+  const players = response?.players;
+  if (!Number.isInteger(players?.online) || players.online < count) {
+    throw new Error(`the server list counts ${JSON.stringify(players)} with ${count} bots online`);
+  }
+  const sample = players.sample ?? [];
+  if (sample.length === 0 || sample.length > 12) throw new Error(`a sample of ${sample.length} players with ${players.online} online`);
+  return `the server list counts ${players.online} online and lists ${sample.length}`;
+}
+
+/** Waits until a Warp instance counts no player, so that a scenario starts with it empty. */
+async function waitForEmpty(ctx, port, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const response = await ctx.client.ping({ host: '127.0.0.1', port });
+    if (response?.players?.online === 0) return;
+    if (Date.now() > deadline) throw new Error(`still ${JSON.stringify(response?.players)} after ${timeoutMs / 1000} s`);
+    await sleep(250);
+  }
+}
+
+async function playerLimit(ctx) {
+  // warp-alt lets one player in (player-limit = 1, shown as the maximum); the next one is refused.
+  await waitForEmpty(ctx, ctx.warpAlt.port);
+  const first = await joinWarp(ctx, 'e2e_limit_in', ctx.warpAlt);
+  try {
+    const status = await ctx.client.ping({ host: '127.0.0.1', port: ctx.warpAlt.port });
+    if (status?.players?.online !== 1 || status?.players?.max !== ALT_MAX_PLAYERS) {
+      throw new Error(`warp-alt answers ${JSON.stringify(status?.players)} with one player in, for a limit of ${ALT_MAX_PLAYERS}`);
+    }
+    const refused = await joinWarp(ctx, 'e2e_limit_out', ctx.warpAlt).then(
+      (bot) => {
+        bot.quit();
+        return null;
+      },
+      (e) => e,
+    );
+    if (refused === null) throw new Error(`a second player got in past player-limit = ${ALT_MAX_PLAYERS}`);
+    if (!/The server is full\./.test(refused.message)) throw new Error(`the second player was refused for another reason: ${refused.message}`);
+    first.healthy();
+    return `one player in (the server list shows 1/${ALT_MAX_PLAYERS}), the next refused: "The server is full."`;
+  } finally {
+    first.quit();
   }
 }
 
@@ -489,6 +743,263 @@ async function fallbackRejected(ctx) {
   } finally {
     await ctx.lobby.command('whitelist off', /white-?list/i);
   }
+}
+
+/**
+ * A /server to a server that refuses the player (an empty whitelist, like a full server) leaves it
+ * where it was: it keeps playing on the lobby and is told why. Warp logs the player in to the new
+ * server before it leaves the current one, as Velocity does.
+ */
+async function switchRefused(ctx) {
+  await ctx.survival.command('whitelist on', /white-?list/i);
+  try {
+    const bot = await joinWarp(ctx, 'e2e_switch_no');
+    try {
+      await bot.waitForChunks(20, 30_000, 0);
+      await bot.command('server survival', /Could not connect to survival/);
+      await sleep(1_000);
+      await bot.waitForGameMode(LOBBY_MODE, 5_000);
+      await proxyReportsServer(ctx, bot, 'lobby');
+      bot.healthy();
+      return 'survival refused the switch: player stayed on lobby';
+    } finally {
+      bot.quit();
+    }
+  } finally {
+    await ctx.survival.command('whitelist off', /white-?list/i);
+  }
+}
+
+/**
+ * The BungeeCord plugin messaging channel, as thousands of Paper plugins speak it: the lobby's probe
+ * plugin (plugins/bungee-probe) sends requests through the bot's connection with
+ * `Player#sendPluginMessage` on `BungeeCord` (Bukkit's `bungeecord:main` from 1.13), which Paper
+ * only sends once the channel is registered: Warp registers it on the client's behalf. The plugin
+ * checks the queries' replies (GetServers, PlayerCount, GetServer), then a Connect moves the bot
+ * to survival, where the same plugin learns it is now on survival.
+ */
+async function bungeeCord(ctx) {
+  const name = 'e2e_bungee';
+  const bot = await joinWarp(ctx, name);
+  try {
+    await bot.waitForChunks(20, 30_000, 0);
+    await bot.waitForGameMode(LOBBY_MODE, 5_000);
+    const [servers] = await probe(ctx.lobby, name, 'GetServers');
+    if (servers !== 'lobby, survival') throw new Error(`GetServers answered '${servers}', not 'lobby, survival'`);
+    const [counted, count] = await probe(ctx.lobby, name, 'PlayerCount', 'lobby');
+    if (counted !== 'lobby' || !(Number(count) >= 1)) throw new Error(`PlayerCount lobby answered ${counted} ${count}`);
+    const [onLobby] = await probe(ctx.lobby, name, 'GetServer');
+    if (onLobby !== 'lobby') throw new Error(`GetServer answered '${onLobby}' on the lobby`);
+
+    await ctx.lobby.command(`bungeeprobe ${name} Connect survival`, /\[BungeeProbe\] sent Connect/);
+    await bot.waitForGameMode(SURVIVAL_MODE, 20_000);
+    await proxyReportsServer(ctx, bot, 'survival');
+    const [onSurvival] = await probe(ctx.survival, name, 'GetServer');
+    if (onSurvival !== 'survival') throw new Error(`GetServer answered '${onSurvival}' on survival`);
+    bot.healthy();
+    return `GetServers, PlayerCount (${count}) and GetServer answered; Connect moved the player to survival`;
+  } finally {
+    bot.quit();
+  }
+}
+
+/**
+ * Has a backend's probe plugin send a BungeeCord sub-channel through a player, and returns the
+ * fields of the reply it logs.
+ */
+async function probe(backend, player, subchannel, ...args) {
+  const request = [subchannel, ...args].join(' ');
+  const reply = new RegExp(`\\[BungeeProbe\\] (reply ${subchannel} .*|no player .*)$`);
+  const line = await backend.command(`bungeeprobe ${player} ${request}`, reply, 10_000);
+  const match = new RegExp(`reply ${subchannel} (.*) on \\S+$`).exec(line ?? '');
+  if (!match) throw new Error(`${backend.name}: ${line}`);
+  return match[1].split('|');
+}
+
+/**
+ * Transfers, as a proxy drained for a restart sends its players to the next one: the lobby sends a
+ * player away with its own Transfer packet, which must reach the client through Warp exactly as
+ * sent; the client comes back with a transfer handshake, which Warp lets in (`accepts-transfers` is
+ * on for warp) onto the lobby. warp-alt, where it is off, refuses such a player with vanilla's
+ * translated reason.
+ */
+async function transfer(ctx) {
+  await expectTransferRefused(ctx, 'e2e_tr_refused');
+
+  const bot = await joinWarp(ctx, 'e2e_transfer');
+  let sent;
+  try {
+    const received = new Promise((resolve) => bot.bot._client.once('transfer', resolve));
+    await ctx.lobby.command(`transfer 127.0.0.1 ${ctx.warp.port} e2e_transfer`, /Transferring/i);
+    sent = await Promise.race([received, sleep(10_000).then(() => null)]);
+    if (sent === null) throw new Error('the lobby transferred the player, but no Transfer packet reached it');
+    if (sent.host !== '127.0.0.1' || sent.port !== ctx.warp.port) {
+      throw new Error(`Transfer packet altered: ${JSON.stringify(sent)}, sent to 127.0.0.1:${ctx.warp.port}`);
+    }
+  } finally {
+    await bot.quit();
+  }
+
+  const back = await joinWarp(ctx, 'e2e_transfer', ctx.warp, null, true);
+  try {
+    await back.waitForGameMode(LOBBY_MODE, 10_000);
+    await proxyReportsServer(ctx, back, 'lobby');
+    back.healthy();
+    return `lobby's Transfer to ${sent.host}:${sent.port} reached the player as sent; it came back by transfer onto the lobby; warp-alt refused one with ${TRANSFERS_DISABLED}`;
+  } finally {
+    back.quit();
+  }
+}
+
+/** Joins warp-alt, whose `accepts-transfers` is off, by transfer, and expects vanilla's refusal. */
+async function expectTransferRefused(ctx, username) {
+  let bot;
+  try {
+    bot = await joinWarp(ctx, username, ctx.warpAlt, null, true);
+  } catch (e) {
+    if (String(e.message).includes(`"translate":"${TRANSFERS_DISABLED}"`)) return;
+    throw new Error(`expected warp-alt to refuse a transfer with ${TRANSFERS_DISABLED}, got: ${e.message}`);
+  }
+  bot.quit();
+  throw new Error('warp-alt let a transferred player in with accepts-transfers off');
+}
+
+/** The bearer token of warp-drain's management server. */
+const DRAIN_TOKEN = 'e2e-drain-token';
+
+/**
+ * A drain, as a rolling update asks for one: a Warp of its own, warp-drain, with its management
+ * server and HAProxy agent check, draining towards warp (which accepts transfers). From 1.20.5,
+ * SIGTERM drains it, as Kubernetes would with `drain.on-sigterm`: readiness and the agent check
+ * say so at once, then the player gets a Transfer packet to warp, comes back there by transfer,
+ * and warp-drain, empty, exits with 0. Before, a client cannot be transferred: `POST /drain?wait`
+ * keeps the player until it leaves, then answers, and warp-drain exits with 0.
+ */
+async function drain(ctx) {
+  const base = ctx.warp.instance;
+  const name = `warp-drain-${ctx.variant.name}`;
+  const instance = new Warp({
+    ...base,
+    name,
+    dir: join(dirname(base.dir), name),
+    port: ctx.ports.drain,
+    acceptsTransfers: false,
+    jvmArgs: [],
+    management: { http: ctx.ports.drainHttp, agent: ctx.ports.drainAgent, token: DRAIN_TOKEN },
+    drain: {
+      'transfer-to': `127.0.0.1:${ctx.warp.port}`,
+      'on-sigterm': true,
+      'propagation-delay': '2s',
+      'transfer-interval': '100ms',
+      timeout: '1m',
+    },
+  });
+  instance.prepare();
+  await instance.start();
+  let detail;
+  try {
+    detail = has(ctx, 'transfers') ? await drainBySigterm(ctx, instance) : await drainByHttp(ctx, instance);
+  } finally {
+    await instance.stop();
+  }
+  const failures = instance.failures();
+  if (failures.length) throw new Error(`${name}: ${failures[0]}`);
+  return detail;
+}
+
+async function drainBySigterm(ctx, instance) {
+  const bot = await joinWarp(ctx, 'e2e_drained', { port: instance.port });
+  let sent;
+  try {
+    await bot.waitForGameMode(LOBBY_MODE, 20_000);
+    await expectReadiness(instance, 200, 'up ready');
+    const received = new Promise((resolve) => bot.bot._client.once('transfer', resolve));
+    instance.process.signal('SIGTERM');
+    await instance.process.waitFor(/Drain started by SIGTERM/, 5_000);
+    // Within the propagation delay: load balancers are told before anyone moves.
+    await expectReadiness(instance, 503, 'drain');
+    sent = await Promise.race([received, sleep(15_000).then(() => null)]);
+    if (sent === null) throw new Error('warp-drain drained, but no Transfer packet reached the player');
+    if (sent.host !== '127.0.0.1' || sent.port !== ctx.warp.port) {
+      throw new Error(`Transfer to ${sent.host}:${sent.port}, expected warp at 127.0.0.1:${ctx.warp.port}`);
+    }
+  } finally {
+    // As a vanilla client does on a Transfer packet.
+    await bot.quit();
+  }
+  const back = await joinWarp(ctx, 'e2e_drained', ctx.warp, null, true);
+  try {
+    await back.waitForGameMode(LOBBY_MODE, 20_000);
+    back.healthy();
+  } finally {
+    back.quit();
+  }
+  await expectExit(instance, /Drain complete after .*: 1 transferred, 0 kept/);
+  return 'SIGTERM: readiness 503 and agent "drain" at once; the player was transferred to warp and came back by transfer; warp-drain exited with 0';
+}
+
+async function drainByHttp(ctx, instance) {
+  const url = `http://127.0.0.1:${instance.management.http}/drain`;
+  const bot = await joinWarp(ctx, 'e2e_kept', { port: instance.port });
+  let answer;
+  try {
+    await bot.waitForGameMode(LOBBY_MODE, 20_000);
+    await expectReadiness(instance, 200, 'up ready');
+    const refused = await fetch(url, { method: 'POST', headers: { Authorization: 'Bearer wrong' } });
+    if (refused.status !== 401) throw new Error(`POST /drain with a wrong token answered ${refused.status}, expected 401`);
+    answer = fetch(`${url}?wait=true`, { method: 'POST', headers: { Authorization: `Bearer ${DRAIN_TOKEN}` } });
+    await instance.process.waitFor(/Drain started by POST \/drain/, 5_000);
+    await expectReadiness(instance, 503, 'drain');
+    // Past the propagation delay and the transfer phase: the player is kept, never kicked.
+    await sleep(4_000);
+    const status = await (await fetch(url)).json();
+    if (status.phase !== 'waiting' || status.kept !== 1 || status.players !== 1) {
+      throw new Error(`expected the player kept in phase 2, got ${JSON.stringify(status)}`);
+    }
+    bot.healthy();
+  } finally {
+    await bot.quit();
+  }
+  const response = await answer;
+  const body = await response.json();
+  if (response.status !== 200 || body.outcome !== 'drained') {
+    throw new Error(`POST /drain?wait answered ${response.status} ${JSON.stringify(body)}, expected 200 drained`);
+  }
+  await expectExit(instance, /Drain complete after .*: 0 transferred, 1 kept/);
+  return 'POST /drain?wait: the player, whose client cannot be transferred, was kept until it left; then the drain answered "drained" and warp-drain exited with 0';
+}
+
+/** Checks warp-drain's readiness probe and HAProxy agent check. */
+async function expectReadiness(instance, status, agent) {
+  const response = await fetch(`http://127.0.0.1:${instance.management.http}/readyz`);
+  const body = await response.json();
+  if (response.status !== status) throw new Error(`/readyz answered ${response.status} ${JSON.stringify(body)}, expected ${status}`);
+  const reply = await agentCheck(instance.management.agent);
+  if (reply !== agent) throw new Error(`the agent check answered "${reply}", expected "${agent}"`);
+}
+
+/** Reads the HAProxy agent check's one line, as HAProxy does. */
+function agentCheck(port) {
+  return new Promise((resolve, reject) => {
+    const socket = tcpConnect(port, '127.0.0.1');
+    let data = '';
+    socket.setEncoding('ascii');
+    socket.setTimeout(5_000, () => {
+      socket.destroy();
+      reject(new Error('the agent check did not answer'));
+    });
+    socket.on('data', (chunk) => { data += chunk; });
+    socket.on('end', () => resolve(data.trim()));
+    socket.on('error', reject);
+  });
+}
+
+/** Waits for warp-drain to stop by itself with 0, having logged `summary`. */
+async function expectExit(instance, summary) {
+  const exit = await instance.exitedWithin(30_000);
+  if (exit.code !== 0) throw new Error(`warp-drain exited with ${exit.code ?? exit.signal}, expected 0 once empty`);
+  if (!instance.process.lines.some((line) => summary.test(line))) throw new Error(`warp-drain never logged ${summary}`);
+  if (!instance.process.lines.some((line) => /Exiting with code 0/.test(line))) throw new Error('warp-drain never logged its exit code');
 }
 
 const DAY_MS = 86_400_000;
@@ -610,10 +1121,17 @@ export const SCENARIOS = [
   { name: 'chat', run: chat, requires: 'proxy' },
   { name: 'player-chat', run: playerChat },
   { name: 'resource-pack', run: resourcePack, requires: 'resourcePack' },
+  { name: 'audience', run: audience, requires: 'audience' },
   { name: 'switching', run: switching, requires: 'switching' },
   { name: 'tab-list', run: tabList, requires: 'switching' },
   { name: 'profile-key', run: profileKey, requires: 'profileKeys' },
   { name: 'crowd', run: crowd },
   { name: 'fallback-unreachable', run: fallbackUnreachable, requires: 'proxy' },
   { name: 'fallback-rejected', run: fallbackRejected, requires: 'proxy' },
+  { name: 'switch-refused', run: switchRefused, requires: 'switching' },
+  { name: 'bungeecord', run: bungeeCord, requires: 'bungeeChannel' },
+  { name: 'transfer', run: transfer, requires: 'transfers' },
+  { name: 'drain', run: drain, requires: 'drain' },
+  { name: 'player-limit', run: playerLimit, requires: 'proxy' },
+  { name: 'flood', run: (ctx) => flood(ctx, joinWarp, LOBBY_MODE), requires: 'proxy' },
 ];

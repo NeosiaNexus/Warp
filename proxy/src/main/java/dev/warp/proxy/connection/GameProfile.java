@@ -38,4 +38,36 @@ public record GameProfile(UUID uuid, String name, List<LoginSuccess.Property> pr
   public GameProfile {
     properties = List.copyOf(properties);
   }
+
+  /**
+   * Returns this profile as the API shows it.
+   *
+   * @return the API profile
+   */
+  public dev.warp.api.player.GameProfile toApi() {
+    return new dev.warp.api.player.GameProfile(
+        uuid,
+        name,
+        properties.stream()
+            .map(
+                p ->
+                    new dev.warp.api.player.GameProfile.Property(
+                        p.name(), p.value(), p.signature()))
+            .toList());
+  }
+
+  /**
+   * Returns the proxy's profile for an API profile, such as one a plugin set.
+   *
+   * @param profile the API profile
+   * @return the proxy's profile
+   */
+  public static GameProfile fromApi(dev.warp.api.player.GameProfile profile) {
+    return new GameProfile(
+        profile.id(),
+        profile.name(),
+        profile.properties().stream()
+            .map(p -> new LoginSuccess.Property(p.name(), p.value(), p.signature()))
+            .toList());
+  }
 }

@@ -54,9 +54,10 @@ jobs:
         run: ./gradlew spotlessCheck
 
       # Compiles with ErrorProne + NullAway, runs unit and integration tests, Checkstyle and
-      # JaCoCo, and assembles the shadow jar.
+      # JaCoCo, and assembles the shadow jar. Builds libdeflate for the runner and requires it: the
+      # tests of native compression may not skip, and the jar the E2E tests run has it.
       - name: Build & test
-        run: ./gradlew build
+        run: ./gradlew build -Pwarp.natives.required=true
 
       - name: Report tests
         if: ${{ !cancelled() }}
@@ -75,11 +76,23 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 .github/scripts/coverage-summary.py >> "$GITHUB_STEP_SUMMARY"
 
+      # With the audience probe plugin `build` also assembles: the E2E matrix loads it (--plugin),
+      # or skips the audience scenario.
       - name: Upload Warp jar
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: warp-jar
-          path: proxy/build/libs/warp-*.jar
+          path: |
+            proxy/build/libs/warp-*.jar
+            e2e/plugin/build/libs/e2e-audience-probe.jar
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'push' && 30 || 7 }}
+
+      - name: Upload the via plugin
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: warp-via-jar
+          path: via/build/libs/warp-via-*.jar
           if-no-files-found: error
           retention-days: ${{ github.event_name == 'push' && 30 || 7 }}
 
@@ -194,9 +207,10 @@ jobs:
       # Fuzzing takes 9 minutes on a two-core runner (three rounds and the build), ten more report.
       timeout-minutes: 30
 
-  # PIT mutation testing of each module whose score the pull request may change, each on its own
-  # runner, alongside the build and the end-to-end tests. Pushes to main analyse every module, in
-  # mutation.yml.
+  # PIT mutation testing of the main classes the pull request changes, held to their module's
+  # threshold, alongside the build and the end-to-end tests: one runner per module with such a
+  # class, for as long as the change needs, not the module. A module with none skips it, as the
+  # Detect changes job notes. Every class of every module is analysed nightly, in mutation.yml.
   mutation:
     name: Mutation testing
     needs: changes
@@ -206,6 +220,11 @@ jobs:
     uses: $/.github/workflows/_mutation.yml
     with:
       modules: ${{ needs.changes.outputs.mutation }}
+      since: ${{ github.event.pull_request.base.sha }}
+      # A few changed classes take minutes, but a pull request that changes most classes mutates
+      # nearly all of them: the integration branch's 140 classes of proxy took 45 minutes. So a pull
+      # request gets the nightly full run's limit (mutation.yml); a small one finishes long before.
+      timeout-minutes: 90
 
   # The only check to mark as required: it fails if any job above failed or was cancelled, and
   # passes when they succeeded or were skipped on purpose.

@@ -19,6 +19,7 @@ package dev.warp.protocol.packet.play;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.packet.PacketCodec;
+import dev.warp.protocol.packet.PacketWatch;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.DecoderException;
@@ -50,6 +51,33 @@ public record PlayPluginMessage(String channel, byte[] data) implements PlayPack
 
   /** Top bit of the first two bytes of a 1.7 length: a third byte follows (Forge). */
   private static final int EXTENDED = 0x8000;
+
+  /**
+   * Channels whose clientbound messages the proxy wants to see: those plugins own, and those the
+   * proxy speaks itself (the BungeeCord channel). The proxy keeps the set; the watch only reads it.
+   */
+  public static final WatchedChannels WATCHED_CHANNELS = new WatchedChannels();
+
+  /**
+   * Watch of clientbound plugin messages: matches the channel in place, and reports the message
+   * (its payload copied) only when the channel is watched. Every other message is forwarded
+   * untouched, compressed or not, without a single allocation: its channel is compared byte for
+   * byte, never decoded.
+   */
+  public static final PacketWatch<PlayPluginMessage> WATCH =
+      (buf, version) -> {
+        String channel = WATCHED_CHANNELS.read(buf);
+        if (channel == null) {
+          return null;
+        }
+        int length =
+            version.isAtLeast(ProtocolVersion.MINECRAFT_1_8)
+                ? buf.readableBytes()
+                : readLegacyLength(buf);
+        byte[] data = new byte[length];
+        buf.readBytes(data);
+        return new PlayPluginMessage(channel, data);
+      };
 
   /** Codec for reading and writing play plugin message packets. */
   public static final PacketCodec<PlayPluginMessage> CODEC =

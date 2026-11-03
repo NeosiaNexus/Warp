@@ -16,120 +16,307 @@
  */
 package dev.warp.proxy.server;
 
+import dev.warp.api.event.server.ServerRegisteredEvent;
+import dev.warp.api.event.server.ServerUnregisteredEvent;
+import dev.warp.api.server.RegisteredServer;
+import dev.warp.api.server.RegistrationResult;
 import dev.warp.api.server.ServerInfo;
+import dev.warp.api.server.ServerPingException;
+import dev.warp.proxy.event.WarpEventBus;
 
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 import org.jspecify.annotations.Nullable;
 
 /**
- * Immutable registry of backend servers known to the proxy.
+ * The backend servers known to the proxy, which can change while it runs.
  *
- * <p>Server names are case-insensitive (stored and looked up in lowercase). The registry is built
- * once at startup from the configuration and shared across all connections.
+ * <p>The configuration seeds the registry with its static servers; plugins and service discovery
+ * register and unregister servers at runtime (a Kubernetes or Agones network starts game servers on
+ * demand). Registering is an upsert: a server already registered with the same address is kept
+ * ({@link RegistrationResult.Unchanged}), so two discovery paths racing on the same server (a
+ * pub/sub event and a periodic poll) cannot fail each other; a name registered at another address
+ * is replaced ({@link RegistrationResult.Replaced}), new connections going to the new address while
+ * the players of the old one stay on their connections.
+ *
+ * <p>Lookups are lock-free. Changes take a lock, held only to update the map and queue their event
+ * on the registry's own lane of the event bus, so that events are delivered in the order of the
+ * changes; registrations are rare and never made on a packet path.
+ *
+ * <p>Server names are case-insensitive (stored and looked up in lowercase). The default server and
+ * the fallback order are kept as names and resolved on each use, so they follow servers that come
+ * and go.
  */
-public final class ServerRegistry {
+public final class ServerRegistry implements dev.warp.api.server.ServerRegistry {
 
-  private final Map<String, ServerInfo> servers;
-  private final ServerInfo defaultServer;
-  private final List<ServerInfo> fallbackOrder;
+  /** How long a ping waits for its answer, unless the caller gives its own time-out. */
+  public static final Duration DEFAULT_PING_TIMEOUT = Duration.ofSeconds(5);
+
+  private final Map<String, BackendServer> servers = new ConcurrentHashMap<>();
+
+  /** Serializes changes, so that their events are queued in the order they happened. */
+  private final ReentrantLock changes = new ReentrantLock();
+
+  private volatile ServerPinger pinger =
+      (server, timeout) ->
+          CompletableFuture.failedFuture(
+              new ServerPingException(
+                  server,
+                  ServerPingException.Reason.UNREACHABLE,
+                  "the proxy is not started: it cannot ping " + server.name(),
+                  null));
+  private volatile Duration pingTimeout = DEFAULT_PING_TIMEOUT;
+  private volatile @Nullable WarpEventBus events;
+  private final @Nullable String defaultServerName;
+  private final List<String> fallbackOrder;
 
   /**
-   * Creates a registry from a map of server name to address, a default server name, and a fallback
-   * order list.
+   * Creates a registry holding the given static servers.
    *
-   * @param servers map of server name to address (at least one entry required)
-   * @param defaultServerName the name of the default server (must exist in the map)
-   * @param fallbackServerNames ordered list of fallback server names (must all exist in the map)
-   * @throws IllegalArgumentException if the map is empty or the default server is not found
+   * @param servers the static servers, by name (may be empty: servers are then registered at
+   *     runtime)
+   * @param defaultServerName the server players join first, or {@code null} for none
+   * @param fallbackServerNames the servers tried in order when a player loses its server
+   * @throws IllegalArgumentException if the default server is not one of {@code servers}
    */
   public ServerRegistry(
       Map<String, InetSocketAddress> servers,
-      String defaultServerName,
+      @Nullable String defaultServerName,
       List<String> fallbackServerNames) {
-    if (servers.isEmpty()) {
-      throw new IllegalArgumentException("At least one server must be configured");
-    }
-
-    Map<String, ServerInfo> registry = new LinkedHashMap<>();
     for (var entry : servers.entrySet()) {
-      String key = entry.getKey().toLowerCase(Locale.ROOT);
-      registry.put(key, new ServerInfo(key, entry.getValue()));
+      register(new ServerInfo(normalize(entry.getKey()), entry.getValue()));
     }
-    this.servers = Map.copyOf(registry);
 
-    String defaultKey = defaultServerName.toLowerCase(Locale.ROOT);
-    @Nullable ServerInfo resolved = this.servers.get(defaultKey);
-    if (resolved == null) {
+    this.defaultServerName = defaultServerName == null ? null : normalize(defaultServerName);
+    if (this.defaultServerName != null && !this.servers.containsKey(this.defaultServerName)) {
       throw new IllegalArgumentException(
           "Default server '"
               + defaultServerName
               + "' not found in server list: "
               + servers.keySet());
     }
-    this.defaultServer = resolved;
 
-    List<ServerInfo> fallback = new ArrayList<>(fallbackServerNames.size());
+    List<String> fallback = new ArrayList<>(fallbackServerNames.size());
     for (String name : fallbackServerNames) {
-      ServerInfo info = this.servers.get(name.toLowerCase(Locale.ROOT));
-      if (info != null) {
-        fallback.add(info);
-      }
+      fallback.add(normalize(name));
     }
     this.fallbackOrder = List.copyOf(fallback);
   }
 
+  // ---------------------------------------------------------------------------
+  // Registration
+  // ---------------------------------------------------------------------------
+
   /**
-   * Returns the server with the given name, or {@code null} if not found.
+   * Registers a server, keeps the one already registered under its name at the same address, or
+   * replaces the one registered under its name at another address.
    *
-   * @param name the server name (case-insensitive)
-   * @return the server info, or {@code null}
+   * @param info the server; its name is stored in lowercase
+   * @return what happened, and the server now registered under the name
    */
-  public @Nullable ServerInfo getServer(String name) {
-    return servers.get(name.toLowerCase(Locale.ROOT));
+  @Override
+  public RegistrationResult register(ServerInfo info) {
+    ServerInfo normalized =
+        info.name().equals(normalize(info.name()))
+            ? info
+            : new ServerInfo(normalize(info.name()), info.address());
+    changes.lock();
+    try {
+      BackendServer existing = servers.get(normalized.name());
+      if (existing != null && existing.address().equals(normalized.address())) {
+        return new RegistrationResult.Unchanged(existing);
+      }
+      BackendServer server = new BackendServer(normalized, this);
+      servers.put(normalized.name(), server);
+      notify(new ServerRegisteredEvent(server, existing));
+      return existing == null
+          ? new RegistrationResult.Added(server)
+          : new RegistrationResult.Replaced(server, existing);
+    } finally {
+      changes.unlock();
+    }
+  }
+
+  @Override
+  public Optional<RegisteredServer> unregister(String name) {
+    changes.lock();
+    try {
+      BackendServer removed = servers.remove(normalize(name));
+      if (removed != null) {
+        notify(new ServerUnregisteredEvent(removed));
+      }
+      return Optional.ofNullable(removed);
+    } finally {
+      changes.unlock();
+    }
+  }
+
+  @Override
+  public boolean unregister(RegisteredServer server) {
+    if (!(server instanceof BackendServer backend)) {
+      return false;
+    }
+    changes.lock();
+    try {
+      boolean removed = servers.remove(backend.name(), backend);
+      if (removed) {
+        notify(new ServerUnregisteredEvent(backend));
+      }
+      return removed;
+    } finally {
+      changes.unlock();
+    }
+  }
+
+  /** Queues an event on the registry's lane, if plugins can hear it yet. Under {@link #changes}. */
+  private void notify(Object event) {
+    WarpEventBus bus = events;
+    if (bus != null && bus.hasHandlers(event.getClass())) {
+      var _ = bus.fire(event, this);
+    }
   }
 
   /**
-   * Returns the default server that players connect to on join.
+   * Sets the event bus the registry's changes are announced on, once plugins can listen. The
+   * servers registered before (those of the configuration) fire nothing.
    *
-   * @return the default server
+   * @param events the event bus
    */
-  public ServerInfo defaultServer() {
-    return defaultServer;
+  public void setEventBus(WarpEventBus events) {
+    this.events = events;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lookup
+  // ---------------------------------------------------------------------------
+
+  @Override
+  public Optional<RegisteredServer> server(String name) {
+    return Optional.ofNullable(getServer(name));
+  }
+
+  @Override
+  public Collection<RegisteredServer> servers() {
+    return List.copyOf(allServers());
   }
 
   /**
-   * Returns all registered servers.
+   * Returns the server registered under a name.
    *
-   * @return unmodifiable collection of all servers
+   * @param name the name, in any case
+   * @return the server, or {@code null} if none is registered under that name
    */
-  public Collection<ServerInfo> allServers() {
-    return servers.values();
+  public @Nullable BackendServer getServer(String name) {
+    return servers.get(normalize(name));
   }
 
   /**
-   * Returns the first fallback server not in the excluded set.
+   * Returns the registered server for a server info, only if it is still registered with that exact
+   * name and address.
    *
-   * <p>Iterates the configured {@code fallback-order} and returns the first server whose name is
-   * not in {@code excludedServers}. Returns {@code null} if all fallback servers have been
-   * excluded.
-   *
-   * @param excludedServers server names to skip (lowercase)
-   * @return the next fallback server, or {@code null} if none available
+   * @param info the server info a connection was opened with
+   * @return the registered server, or {@code null} if it was unregistered or replaced
    */
-  public @Nullable ServerInfo nextFallback(Set<String> excludedServers) {
-    for (ServerInfo server : fallbackOrder) {
-      if (!excludedServers.contains(server.name())) {
+  public @Nullable BackendServer registered(ServerInfo info) {
+    BackendServer server = servers.get(normalize(info.name()));
+    return server != null && server.address().equals(info.address()) ? server : null;
+  }
+
+  /**
+   * Returns a snapshot of every registered server.
+   *
+   * @return the servers, unmodifiable, sorted by name
+   */
+  public List<BackendServer> allServers() {
+    List<BackendServer> snapshot = new ArrayList<>(servers.values());
+    snapshot.sort((a, b) -> a.name().compareTo(b.name()));
+    return List.copyOf(snapshot);
+  }
+
+  /**
+   * Returns the server a player joining the proxy connects to: the default server if it is
+   * registered, else the first registered server of the fallback order.
+   *
+   * @return the server, or {@code null} if none of them is registered
+   */
+  public @Nullable BackendServer initialServer() {
+    if (defaultServerName != null) {
+      BackendServer server = servers.get(defaultServerName);
+      if (server != null) {
+        return server;
+      }
+    }
+    return nextFallback(Set.of());
+  }
+
+  /**
+   * Returns the first registered server of the fallback order that is not excluded.
+   *
+   * @param excludedServers names of the servers to skip (lowercase)
+   * @return the server, or {@code null} if every fallback is excluded or unregistered
+   */
+  public @Nullable BackendServer nextFallback(Set<String> excludedServers) {
+    for (String name : fallbackOrder) {
+      if (excludedServers.contains(name)) {
+        continue;
+      }
+      BackendServer server = servers.get(name);
+      if (server != null) {
         return server;
       }
     }
     return null;
+  }
+
+  /**
+   * Returns how servers are pinged.
+   *
+   * @return the pinger
+   */
+  ServerPinger pinger() {
+    return pinger;
+  }
+
+  /**
+   * Returns how long a ping waits when its caller gives no time-out.
+   *
+   * @return the default ping time-out
+   */
+  Duration pingTimeout() {
+    return pingTimeout;
+  }
+
+  /**
+   * Sets how servers are pinged, once the proxy can open connections.
+   *
+   * @param pinger the pinger
+   */
+  public void setPinger(ServerPinger pinger) {
+    this.pinger = pinger;
+  }
+
+  /**
+   * Sets how long {@link RegisteredServer#ping()} waits for an answer.
+   *
+   * @param timeout the default time-out, positive
+   * @throws IllegalArgumentException if {@code timeout} is zero or negative
+   */
+  public void setPingTimeout(Duration timeout) {
+    this.pingTimeout = BackendServer.checkTimeout(timeout);
+  }
+
+  private static String normalize(String name) {
+    return name.toLowerCase(Locale.ROOT);
   }
 }

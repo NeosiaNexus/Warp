@@ -163,6 +163,78 @@ export class TabList {
 }
 
 // ---------------------------------------------------------------------------
+// Boss bars and sounds
+// ---------------------------------------------------------------------------
+
+/**
+ * The boss bars on the client's screen, as the vanilla client keeps them: added and removed by UUID,
+ * kept across the Join Game of a switch before 1.20.2 and cleared when the client enters the
+ * configuration phase from 1.20.2 (`Gui#onDisconnected`). An update to a bar the client does not
+ * have is an error: the vanilla client fails it with a NullPointerException (Velocity #1529).
+ */
+export class BossBars {
+  /** @param {number} protocol the protocol the client speaks */
+  constructor(protocol) {
+    this.protocol = protocol;
+    this.bars = new Map(); // UUID → name as plain text
+    this.errors = [];
+    this.added = 0;
+  }
+
+  /** Applies a packet the client received: its minecraft-protocol name and parsed fields. */
+  apply(name, data) {
+    if (name === 'start_configuration') {
+      this.bars.clear();
+      return;
+    }
+    if (name !== 'boss_bar') return;
+    const uuid = data.entityUUID;
+    if (data.action === 0) {
+      this.bars.set(uuid, plainText(data.title));
+      this.added++;
+    } else if (data.action === 1) {
+      this.bars.delete(uuid);
+    } else if (!this.bars.has(uuid)) {
+      this.errors.push(`boss bar update (action ${data.action}) for ${uuid}, a bar the client does not have`);
+    } else if (data.action === 3) {
+      this.bars.set(uuid, plainText(data.title));
+    }
+  }
+
+  /** The names of the bars on screen. */
+  names() {
+    return [...this.bars.values()];
+  }
+}
+
+/** The text of a component, JSON text or NBT (1.20.3+), without its styles. */
+export function plainText(component) {
+  if (component === undefined || component === null) return '';
+  if (typeof component === 'string') {
+    try {
+      return plainText(JSON.parse(component));
+    } catch {
+      return component;
+    }
+  }
+  if (component.type !== undefined && component.value !== undefined) {
+    // NBT as minecraft-protocol reads it: a tag type and its value.
+    if (component.type === 'string') return component.value;
+    if (component.type === 'compound') return plainText(Object.fromEntries(Object.entries(component.value).map(([k, v]) => [k, v.type === 'list' ? v.value.value : v.value])));
+  }
+  const own = typeof component.text === 'string' ? component.text : '';
+  const extra = Array.isArray(component.extra) ? component.extra.map(plainText).join('') : '';
+  return own + extra;
+}
+
+/** The packets that play a sound, and the sound each names (a registry id when it is not named). */
+const SOUND_PACKETS = {
+  named_sound_effect: (data) => data.soundName,
+  sound_effect: (data) => data.sound?.data?.soundName ?? data.soundId ?? data.sound?.soundId,
+  entity_sound_effect: (data) => data.sound?.data?.soundName ?? data.soundEvent?.resource ?? data.soundId,
+};
+
+// ---------------------------------------------------------------------------
 // Bots
 // ---------------------------------------------------------------------------
 
@@ -195,8 +267,11 @@ export function library(version) {
  * account, without the session server call. On 1.19 to 1.19.2 it sends the key and its certificate
  * in Login Start, announcing their `uuid`, and signs the verify token with the key instead of
  * encrypting it. From 1.19.3 it opens a chat session with them and signs its chat.
+ *
+ * With `transfer`, the bot connects as a client that a server sent there with a Transfer packet
+ * (1.20.5+): its handshake declares the transfer intent (3) instead of the login one (2).
  */
-export function connect({ host, port, version, username, profileKeys = null, spawnTimeoutMs = 45_000 }) {
+export function connect({ host, port, version, username, profileKeys = null, transfer = false, spawnTimeoutMs = 45_000 }) {
   correctProtocolData(version);
   const createBot = legacy.isLegacy(version) ? legacy.createBot : mineflayer.createBot;
   return new Promise((resolve, reject) => {
@@ -212,10 +287,12 @@ export function connect({ host, port, version, username, profileKeys = null, spa
     });
     endTicks(bot._client, version);
     answerPacksByUuid(bot._client);
+    if (transfer) declareTransfer(bot._client);
     const handle = new Bot(bot, username, announcedProtocol(version), profileKeys !== null);
     const fail = (why) => {
       clearTimeout(timer);
-      bot.quit();
+      // The protocol client's own end: mineflayer's bot.quit() only exists once its plugins are in.
+      if (!bot._client.ended) bot._client.end('disconnect.quitting');
       reject(new Error(`${username}: ${why}`));
     };
     const timer = setTimeout(() => fail(`no spawn within ${spawnTimeoutMs / 1000}s`), spawnTimeoutMs);
@@ -223,10 +300,36 @@ export function connect({ host, port, version, username, profileKeys = null, spa
       clearTimeout(timer);
       resolve(handle);
     });
-    bot.once('kicked', (reason) => fail(`kicked before spawn: ${text(reason)}`));
+    watchKicks(bot._client, (reason) => fail(`kicked before spawn: ${text(reason)}`));
     bot.once('end', (reason) => fail(`connection ended before spawn: ${reason}`));
     bot.once('error', (e) => fail(`error before spawn: ${e?.stack ?? e}`));
   });
+}
+
+/** Handshake intent of a client a Transfer packet sent to the server it connects to (1.20.5+). */
+export const TRANSFER_INTENT = 3;
+
+/**
+ * Makes the client's handshake declare the transfer intent, as the vanilla client's does when it
+ * follows a Transfer packet. minecraft-protocol always writes the login intent; its handshake is
+ * written once connected, so the write is rewritten before then.
+ */
+export function declareTransfer(client) {
+  const write = client.write.bind(client);
+  client.write = (name, params) => write(name, name === 'set_protocol' ? { ...params, nextState: TRANSFER_INTENT } : params);
+}
+
+/**
+ * Calls `onKick` with the reason of the disconnect packet the server sends, in any state (login,
+ * configuration or play). Read from the protocol client, which reads every packet from the start,
+ * as the vanilla client does: mineflayer only turns these packets into its 'kicked' event once it
+ * has injected its plugins, a timer after createBot, and a server that refuses the player as soon
+ * as it reads the handshake can answer before that (a refused transfer). The bot then saw nothing
+ * but the connection close.
+ */
+function watchKicks(client, onKick) {
+  client.once('disconnect', (packet) => onKick(packet.reason)); // login and configuration states
+  client.once('kick_disconnect', (packet) => onKick(packet.reason)); // play state
 }
 
 /**
@@ -272,6 +375,8 @@ class Bot {
     this.keyed = keyed;
     this.stats = { packets: 0, chunks: 0, signedChat: 0, lastPacket: Date.now(), errors: [], kicked: null, ended: null };
     this.messages = [];
+    // The component of each chat line, as the bot's chat library parsed it (JSON, or NBT turned into JSON).
+    this.components = [];
     /**
      * What the servers it played on said, in order: brands (with the protocol state and game mode
      * the bot was in when each arrived), resource pack offers, the UUIDs it was listed under.
@@ -280,6 +385,9 @@ class Bot {
     this.resourcePacks = [];
     this.listedAs = [];
     this.tabList = new TabList(protocol);
+    this.bossBars = new BossBars(protocol);
+    /** The sounds played to the bot: the packet and the sound it names. */
+    this.sounds = [];
     this.quitting = false;
     this.chatSession = false;
     this.closed = new Promise((resolve) => bot.once('end', resolve));
@@ -291,7 +399,9 @@ class Bot {
       else if (meta.name === 'player_chat' && data.signature) this.stats.signedChat++;
       else if (RESOURCE_PACK_PACKETS.has(meta.name)) this.resourcePacks.push({ url: data.url, hash: data.hash, id: data.uuid });
       else if (meta.name === 'player_info') this.listedAs.push(...listedUuids(data, username));
+      else if (SOUND_PACKETS[meta.name]) this.sounds.push({ packet: meta.name, sound: SOUND_PACKETS[meta.name](data) });
       this.tabList.apply(meta.name, data);
+      this.bossBars.apply(meta.name, data);
     });
     // From 1.19.3 a server announces a player's chat session to everyone, the player included,
     // once it has taken it (Player Info Update, initialize chat).
@@ -306,7 +416,10 @@ class Bot {
     bot.on('error', (e) => this.stats.errors.push(String(e?.stack ?? e)));
     bot.on('kicked', (reason) => { this.stats.kicked = text(reason); });
     bot.on('end', (reason) => { if (!this.quitting) this.stats.ended = String(reason ?? 'unknown'); });
-    bot.on('message', (message) => this.messages.push(message.toString()));
+    bot.on('message', (message) => {
+      this.messages.push(message.toString());
+      this.components.push(message.json);
+    });
   }
 
   /** The UUID the proxy gave the player in its Login Success. */
@@ -386,6 +499,12 @@ class Bot {
     this.bot.chat(message);
   }
 
+  /** The component of the last chat line that reads `text`, or undefined. */
+  componentOf(text) {
+    const index = this.messages.lastIndexOf(text);
+    return index < 0 ? undefined : this.components[index];
+  }
+
   /**
    * Waits until the server has taken the bot's chat session. A server applies it on its main
    * thread but reads chat as it arrives: a line said before is not signed for it, and the server's
@@ -406,6 +525,7 @@ class Bot {
   healthy() {
     const { errors, kicked, ended } = this.stats;
     if (errors.length) throw new Error(`${this.username}: ${errors.slice(0, 3).join(' | ')}`);
+    if (this.bossBars.errors.length) throw new Error(`${this.username}: ${this.bossBars.errors.slice(0, 3).join(' | ')}`);
     if (kicked) throw new Error(`${this.username} kicked: ${kicked}`);
     if (ended) throw new Error(`${this.username} disconnected: ${ended}`);
   }

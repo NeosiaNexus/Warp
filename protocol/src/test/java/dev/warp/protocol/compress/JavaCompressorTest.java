@@ -200,6 +200,52 @@ class JavaCompressorTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Bound
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("deflate bound")
+  class Bound {
+
+    @Test
+    @DisplayName("should be zlib's deflateBound for its default window and memory settings")
+    void zlibFormula() {
+      try (JavaCompressor compressor = new JavaCompressor(Deflater.DEFAULT_COMPRESSION)) {
+        assertEquals(13, compressor.deflateBound(0));
+        assertEquals(4096 + 1 + 13, compressor.deflateBound(4096));
+        assertEquals(16384 + 4 + 1 + 13, compressor.deflateBound(16384));
+        assertEquals((1 << 25) + 8192 + 2048 + 1 + 13, compressor.deflateBound(1 << 25));
+      }
+    }
+
+    @Test
+    @DisplayName("should hold for incompressible data at every level")
+    void holdsForRandomData() throws DataFormatException {
+      Random random = new Random(42);
+      for (int level = 0; level <= 9; level++) {
+        for (int size : new int[] {1, 255, 4096, 70_000}) {
+          // given
+          byte[] noise = new byte[size];
+          random.nextBytes(noise);
+          ByteBuf compressed = Unpooled.buffer();
+
+          // when
+          try (JavaCompressor compressor = new JavaCompressor(level)) {
+            compressor.deflate(Unpooled.wrappedBuffer(noise), compressed);
+
+            // then
+            assertTrue(
+                compressed.readableBytes() <= compressor.deflateBound(size),
+                "level " + level + ", " + size + " bytes");
+          } finally {
+            compressed.release();
+          }
+        }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 

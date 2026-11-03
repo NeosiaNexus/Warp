@@ -16,10 +16,24 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
+import dev.warp.proxy.command.ProxyCommands;
+import dev.warp.proxy.command.WarpCommandManager;
+import dev.warp.proxy.config.DuplicateLoginPolicy;
 import dev.warp.proxy.config.ForwardingMode;
+import dev.warp.proxy.config.LoggingConfig;
+import dev.warp.proxy.config.TimeoutsConfig;
+import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.limit.ClientLimits;
+import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.permission.PermissionRegistry;
+import dev.warp.proxy.pipeline.PipelineRegistry;
+import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
+import dev.warp.proxy.status.ServerList;
+import dev.warp.proxy.status.StatusSettings;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -34,6 +48,9 @@ import io.netty.channel.socket.nio.NioSocketChannel;
 
 /** {@link ServerLoginContext}s for tests that drive a client pipeline built by Warp. */
 final class TestLoginContexts {
+
+  /** An event bus nobody subscribes to, shared by the tests. */
+  static final WarpEventBus EVENTS = new WarpEventBus();
 
   /**
    * One key pair for every test, as generating RSA keys is slow. The tests do not depend on its
@@ -78,6 +95,71 @@ final class TestLoginContexts {
   }
 
   /**
+   * An offline-mode context that settles duplicate logins with {@code policy}.
+   *
+   * @param policy the duplicate login policy
+   * @return the context
+   */
+  static ServerLoginContext offline(DuplicateLoginPolicy policy) {
+    return context(false, -1, new MojangSessionService(), ProfileKeys.mojang(), policy);
+  }
+
+  /**
+   * An offline-mode context whose events go to {@code events}.
+   *
+   * @param events the event bus
+   * @return the context
+   */
+  static ServerLoginContext offline(WarpEventBus events) {
+    return context(
+        false,
+        -1,
+        new MojangSessionService(),
+        ProfileKeys.mojang(),
+        DuplicateLoginPolicy.AUTO,
+        events,
+        false);
+  }
+
+  /**
+   * An offline-mode context whose events go to {@code events}, with the server list entry and
+   * player limit of {@code status}.
+   *
+   * @param events the event bus
+   * @param status the status settings
+   * @return the context
+   */
+  static ServerLoginContext offline(WarpEventBus events, StatusSettings status) {
+    return context(
+        false,
+        -1,
+        new MojangSessionService(),
+        ProfileKeys.mojang(),
+        DuplicateLoginPolicy.AUTO,
+        events,
+        false,
+        status);
+  }
+
+  /**
+   * Returns {@link #offline()}, letting in the players a Transfer packet sends to the proxy if
+   * {@code acceptsTransfers}.
+   *
+   * @param acceptsTransfers the {@code accepts-transfers} setting
+   * @return the context
+   */
+  static ServerLoginContext offlineAcceptingTransfers(boolean acceptsTransfers) {
+    return context(
+        false,
+        -1,
+        new MojangSessionService(),
+        ProfileKeys.mojang(),
+        DuplicateLoginPolicy.AUTO,
+        EVENTS,
+        acceptsTransfers);
+  }
+
+  /**
    * Returns {@link #offline()} in online mode: players authenticate with {@code sessionService}.
    *
    * @param sessionService the session service, usually a mock
@@ -93,11 +175,116 @@ final class TestLoginContexts {
       int compressionThreshold,
       MojangSessionService sessionService,
       ProfileKeys profileKeys) {
-    ServerRegistry registry =
+    return context(
+        onlineMode, compressionThreshold, sessionService, profileKeys, DuplicateLoginPolicy.AUTO);
+  }
+
+  private static ServerLoginContext context(
+      boolean onlineMode,
+      int compressionThreshold,
+      MojangSessionService sessionService,
+      ProfileKeys profileKeys,
+      DuplicateLoginPolicy policy) {
+    return context(
+        onlineMode, compressionThreshold, sessionService, profileKeys, policy, EVENTS, false);
+  }
+
+  private static ServerLoginContext context(
+      boolean onlineMode,
+      int compressionThreshold,
+      MojangSessionService sessionService,
+      ProfileKeys profileKeys,
+      DuplicateLoginPolicy policy,
+      WarpEventBus events,
+      boolean acceptsTransfers) {
+    return context(
+        onlineMode,
+        compressionThreshold,
+        sessionService,
+        profileKeys,
+        policy,
+        events,
+        acceptsTransfers,
+        StatusSettings.defaults());
+  }
+
+  private static ServerLoginContext context(
+      boolean onlineMode,
+      int compressionThreshold,
+      MojangSessionService sessionService,
+      ProfileKeys profileKeys,
+      DuplicateLoginPolicy policy,
+      WarpEventBus events,
+      boolean acceptsTransfers,
+      StatusSettings status) {
+    return context(
+        onlineMode,
+        compressionThreshold,
+        sessionService,
+        profileKeys,
+        policy,
+        events,
+        acceptsTransfers,
+        status,
+        ClientLimits.unlimited(),
         new ServerRegistry(
             Map.of("lobby", new InetSocketAddress(InetAddress.getLoopbackAddress(), 1)),
             "lobby",
-            List.of("lobby"));
+            List.of("lobby")),
+        ForwardingMode.NONE,
+        new byte[0],
+        NioSocketChannel.class);
+  }
+
+  @SuppressWarnings("ParameterNumber") // every knob of the context, for the factories above
+  private static ServerLoginContext context(
+      boolean onlineMode,
+      int compressionThreshold,
+      MojangSessionService sessionService,
+      ProfileKeys profileKeys,
+      DuplicateLoginPolicy policy,
+      WarpEventBus events,
+      boolean acceptsTransfers,
+      StatusSettings status,
+      ClientLimits limits,
+      ServerRegistry registry,
+      ForwardingMode forwardingMode,
+      byte[] forwardingSecret,
+      Class<? extends io.netty.channel.Channel> channelClass) {
+    return context(
+        onlineMode,
+        compressionThreshold,
+        sessionService,
+        profileKeys,
+        policy,
+        events,
+        acceptsTransfers,
+        status,
+        limits,
+        registry,
+        forwardingMode,
+        forwardingSecret,
+        channelClass,
+        AntiBotService.disabled(limits, events));
+  }
+
+  @SuppressWarnings("ParameterNumber") // every knob of the context, for the factories above
+  private static ServerLoginContext context(
+      boolean onlineMode,
+      int compressionThreshold,
+      MojangSessionService sessionService,
+      ProfileKeys profileKeys,
+      DuplicateLoginPolicy policy,
+      WarpEventBus events,
+      boolean acceptsTransfers,
+      StatusSettings status,
+      ClientLimits limits,
+      ServerRegistry registry,
+      ForwardingMode forwardingMode,
+      byte[] forwardingSecret,
+      Class<? extends io.netty.channel.Channel> channelClass,
+      AntiBotService antiBot) {
+    PlayerRegistry players = new PlayerRegistry();
     return new ServerLoginContext(
         KEY_PAIR,
         onlineMode,
@@ -108,6 +295,194 @@ final class TestLoginContexts {
         profileKeys,
         new PlaySession(),
         registry,
+        players,
+        new ServerList(status, players),
+        policy,
+        events,
+        new ChannelRegistry(),
+        commands(registry),
+        new PermissionRegistry(),
+        forwardingMode,
+        forwardingSecret,
+        channelClass,
+        acceptsTransfers,
+        limits,
+        TimeoutsConfig.DEFAULTS,
+        LoggingConfig.DEFAULTS,
+        false,
+        antiBot,
+        new PipelineRegistry());
+  }
+
+  /**
+   * Returns a mock context whose settings are the defaults, for tests that stub what else they
+   * need.
+   *
+   * @return the mock
+   */
+  static ServerLoginContext mocked() {
+    ServerLoginContext context = org.mockito.Mockito.mock(ServerLoginContext.class);
+    org.mockito.Mockito.when(context.logging()).thenReturn(LoggingConfig.DEFAULTS);
+    org.mockito.Mockito.when(context.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
+    org.mockito.Mockito.when(context.antiBot()).thenReturn(calmAntiBot());
+    return context;
+  }
+
+  /**
+   * Returns an anti-bot that never sees an attack, for mocked contexts: routine lines are logged as
+   * configured.
+   *
+   * @return the anti-bot
+   */
+  static AntiBotService calmAntiBot() {
+    return AntiBotService.disabled(ClientLimits.unlimited(), EVENTS);
+  }
+
+  /**
+   * Returns a context like {@code base}, with other timeouts and logging settings.
+   *
+   * @param base the context to copy
+   * @param timeouts the timeouts
+   * @param logging the logging settings
+   * @return the context
+   */
+  static ServerLoginContext with(
+      ServerLoginContext base, TimeoutsConfig timeouts, LoggingConfig logging) {
+    return with(base, base.serverRegistry(), timeouts, logging);
+  }
+
+  /**
+   * Returns a context like {@code base}, with other servers and timeouts.
+   *
+   * @param base the context to copy
+   * @param servers the servers players join and fall back to
+   * @param timeouts the timeouts
+   * @return the context
+   */
+  static ServerLoginContext with(
+      ServerLoginContext base, ServerRegistry servers, TimeoutsConfig timeouts) {
+    return with(base, servers, timeouts, base.logging());
+  }
+
+  private static ServerLoginContext with(
+      ServerLoginContext base,
+      ServerRegistry servers,
+      TimeoutsConfig timeouts,
+      LoggingConfig logging) {
+    return new ServerLoginContext(
+        base.rsaKeyPair(),
+        base.onlineMode(),
+        base.compressionThreshold(),
+        base.compressionLevel(),
+        base.compressionPassthrough(),
+        base.sessionService(),
+        base.profileKeys(),
+        base.playSession(),
+        servers,
+        base.playerRegistry(),
+        base.serverList(),
+        base.duplicateLoginPolicy(),
+        base.events(),
+        base.channels(),
+        base.commands(),
+        base.permissions(),
+        base.forwardingMode(),
+        base.forwardingSecret(),
+        base.channelClass(),
+        base.acceptsTransfers(),
+        base.limits(),
+        timeouts,
+        logging,
+        base.tcpFastOpen(),
+        base.antiBot(),
+        base.pipelines());
+  }
+
+  /**
+   * Returns an offline-mode context without compression whose only server, {@code lobby}, is at
+   * {@code server} and receives players through Velocity modern forwarding signed with {@code
+   * secret}. Its connections are real NIO sockets.
+   *
+   * @param server the address of the backend server
+   * @param secret the forwarding secret
+   * @return the context
+   */
+  static ServerLoginContext velocityForwarding(InetSocketAddress server, byte[] secret) {
+    return context(
+        false,
+        -1,
+        new MojangSessionService(),
+        ProfileKeys.mojang(),
+        DuplicateLoginPolicy.AUTO,
+        EVENTS,
+        false,
+        StatusSettings.defaults(),
+        ClientLimits.unlimited(),
+        new ServerRegistry(Map.of("lobby", server), "lobby", List.of("lobby")),
+        ForwardingMode.VELOCITY,
+        secret,
+        NioSocketChannel.class);
+  }
+
+  /**
+   * A context whose anti-bot is {@code antiBot}, built on {@code limits}.
+   *
+   * @param onlineMode whether players authenticate
+   * @param sessionService the session server
+   * @param limits the limits the anti-bot listens to
+   * @param antiBot the anti-bot
+   * @return the context
+   */
+  static ServerLoginContext withAntiBot(
+      boolean onlineMode,
+      MojangSessionService sessionService,
+      ClientLimits limits,
+      AntiBotService antiBot) {
+    return context(
+        onlineMode,
+        -1,
+        sessionService,
+        ProfileKeys.mojang(),
+        DuplicateLoginPolicy.AUTO,
+        EVENTS,
+        false,
+        StatusSettings.defaults(),
+        limits,
+        new ServerRegistry(
+            Map.of("lobby", new InetSocketAddress(InetAddress.getLoopbackAddress(), 1)),
+            "lobby",
+            List.of("lobby")),
+        ForwardingMode.NONE,
+        new byte[0],
+        NioSocketChannel.class,
+        antiBot);
+  }
+
+  /**
+   * Returns {@link #offline()}, or its online-mode form authenticating with {@code sessionService},
+   * whose connections count against {@code limits}.
+   *
+   * @param onlineMode whether players authenticate
+   * @param sessionService the session service, usually a mock
+   * @param limits the limits on client addresses
+   * @return the context
+   */
+  static ServerLoginContext limited(
+      boolean onlineMode, MojangSessionService sessionService, ClientLimits limits) {
+    return context(
+        onlineMode,
+        -1,
+        sessionService,
+        ProfileKeys.mojang(),
+        DuplicateLoginPolicy.AUTO,
+        EVENTS,
+        false,
+        StatusSettings.defaults(),
+        limits,
+        new ServerRegistry(
+            Map.of("lobby", new InetSocketAddress(InetAddress.getLoopbackAddress(), 1)),
+            "lobby",
+            List.of("lobby")),
         ForwardingMode.NONE,
         new byte[0],
         NioSocketChannel.class);
@@ -121,5 +496,18 @@ final class TestLoginContexts {
     } catch (GeneralSecurityException e) {
       throw new AssertionError("RSA is a mandatory JCA algorithm", e);
     }
+  }
+
+  /**
+   * The proxy's commands for a test, running on the calling thread, with {@code /server} over
+   * {@code servers}.
+   *
+   * @param servers the servers {@code /server} knows
+   * @return the command manager
+   */
+  static WarpCommandManager commands(ServerRegistry servers) {
+    WarpCommandManager commands = new WarpCommandManager(Runnable::run);
+    ProxyCommands.register(commands, servers);
+    return commands;
   }
 }

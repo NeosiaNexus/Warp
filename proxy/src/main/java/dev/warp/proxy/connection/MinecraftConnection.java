@@ -16,28 +16,44 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.network.PipelinePosition;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.compress.FrameDecompressor;
-import dev.warp.protocol.compress.JavaCompressor;
 import dev.warp.protocol.netty.CompressionEncoder;
+import dev.warp.protocol.netty.FrameDecoder;
 import dev.warp.protocol.netty.FrameForwarder;
+import dev.warp.protocol.netty.FrameLimits;
 import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
+import dev.warp.protocol.netty.PacketDecompressor;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
+import dev.warp.proxy.compression.Compression;
+import dev.warp.proxy.limit.Refusal;
+import dev.warp.proxy.pipeline.PipelineHost;
 
 import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NotYetConnectedException;
+import java.util.ArrayDeque;
+import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.TimeUnit;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelOutboundBuffer;
+import io.netty.channel.ChannelPipeline;
+import io.netty.channel.ChannelPromise;
+import io.netty.handler.timeout.IdleStateHandler;
 import io.netty.handler.timeout.ReadTimeoutException;
 import io.netty.util.ReferenceCountUtil;
 import org.jspecify.annotations.Nullable;
@@ -60,7 +76,10 @@ import org.slf4j.LoggerFactory;
  * <ul>
  *   <li><b>I/O</b> — write, flush, close, and verbatim forwarding of frames from the player's other
  *       connection ({@link #forward})
+ *   <li><b>Writes across a state change</b>: the proxy's own packets wait for the peer to
+ *       acknowledge a state change ({@link #writeTerminal}, {@link #writeWhenSettled})
  *   <li><b>Pipeline access</b> — state, version and compression transitions on decoder/encoder
+ *   <li><b>Handshake intent</b>: why the client connected ({@link #handshakeIntent})
  *   <li><b>Dispatch</b> — forward messages to the active {@link SessionHandler}
  * </ul>
  *
@@ -71,23 +90,84 @@ import org.slf4j.LoggerFactory;
  * <p>All methods must be called from the channel's event loop thread, which Netty guarantees for
  * pipeline handlers.
  */
-public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
+public final class MinecraftConnection extends ChannelInboundHandlerAdapter
+    implements PipelineHost {
 
   private static final Logger logger = LoggerFactory.getLogger(MinecraftConnection.class);
 
   /**
-   * Seconds without receiving anything after which a connection, to a player or to a backend, is
-   * closed. A live peer never stays that quiet: a client sends a movement packet every tick and
-   * answers keep-alives, a server sends keep-alives.
+   * Seconds without receiving anything after which a client connection that has not logged in yet
+   * is closed; {@code timeouts.read} replaces it once the player is logged in, and backend
+   * connections use {@code timeouts.backend-read}. A live peer never stays that quiet: a client
+   * sends a movement packet every tick and answers keep-alives, a server sends keep-alives.
    */
   static final int READ_TIMEOUT_SECONDS = 30;
+
+  /**
+   * How long a 1.7 client keeps its connection after a final packet (see {@link #writeAndClose}).
+   */
+  static final long LEGACY_CLOSE_DELAY_MS = 250;
 
   private final Channel channel;
   private final FrameForwarder forwarder;
 
+  /**
+   * The client's address as a PROXY protocol header gave it, or {@code null} to use the socket's
+   * peer. Set once, on the event loop, before any session handler reads it.
+   */
+  private @Nullable InetSocketAddress proxiedAddress;
+
   private @Nullable SessionHandler sessionHandler;
+
+  /** The host name the client connected to, from its handshake; {@code null} until known. */
+  private volatile @Nullable String virtualHost;
+
   private @Nullable MinecraftDecoder decoder;
   private @Nullable MinecraftEncoder encoder;
+
+  /** Why the client connected, once its handshake is read; always {@code null} for a backend. */
+  private @Nullable HandshakeIntent handshakeIntent;
+
+  /**
+   * Whether a packet that moves the peer to another state was written ({@link #writeTerminal}) and
+   * the peer has not confirmed the change yet ({@link #setState}).
+   */
+  private boolean stateChangePending;
+
+  /** Packets of the proxy's own held until the pending state change completes. */
+  private final Queue<Held> heldUntilStateChange = new ArrayDeque<>();
+
+  /**
+   * Watches a client connection until its client is logged in; {@code null} afterwards, and for a
+   * backend connection.
+   */
+  private @Nullable ConnectionGuard guard;
+
+  /** The frame decoder of a client connection, whose limits follow the state; looked up once. */
+  private @Nullable FrameDecoder frameDecoder;
+
+  /** Whether the proxy asked the client for a cookie during its login (1.20.5+). */
+  private boolean cookieResponsesExpected;
+
+  /**
+   * Whether the client is logged in: its frames are bounded by the protocol alone from then on,
+   * whatever state the proxy still reads it in (LOGIN until a 1.20.2+ client acknowledges).
+   */
+  private boolean frameLimitsLifted;
+
+  /**
+   * A packet {@link #writeWhenSettled} holds, with the promise its write completes.
+   *
+   * @param packet the packet
+   * @param promise completed once it is written, or failed if it never is; possibly void
+   */
+  private record Held(Packet packet, ChannelPromise promise) {}
+
+  /** Whether plugin handlers read this connection's packets: see {@link #usePacketLevel()}. */
+  private boolean packetLevel;
+
+  /** Whether this connection switched to compressed frames. */
+  private boolean compressed;
 
   // ---------------------------------------------------------------------------
   // Constructor
@@ -136,6 +216,18 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   @Override
   public void channelInactive(ChannelHandlerContext ctx) {
+    ConnectionGuard watching = guard;
+    if (watching != null) {
+      guard = null;
+      watching.end();
+    }
+    for (Held held = heldUntilStateChange.poll();
+        held != null;
+        held = heldUntilStateChange.poll()) {
+      if (!held.promise().isVoid()) {
+        held.promise().tryFailure(new ClosedChannelException());
+      }
+    }
     if (sessionHandler != null) {
       sessionHandler.disconnected();
     }
@@ -151,20 +243,33 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
 
   @Override
   public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+    ConnectionGuard watching = guard;
+    Refusal refusal = watching == null ? null : watching.failed(cause);
+    if (refusal != null) {
+      // A client that is not logged in can cause this at will: counted, never logged one by one.
+      logger.debug(
+          "Closed {} before login ({}): {}", remoteAddress(), refusal.label(), cause.toString());
+      if (ctx.channel().isActive()) {
+        ServerChannelInitializer.reset(ctx.channel());
+      }
+      return;
+    }
     if (cause instanceof ReadTimeoutException) {
       // A peer that went quiet: it is gone or stuck, and closing is all the proxy can do. Worth a
       // line, unlike a reset connection: how the connection stood says which side stopped.
       logger.info(
-          "Connection {} timed out {}",
-          channel.remoteAddress(),
-          describeTimeout(channel, decoder()));
+          "Connection {} timed out {}", remoteAddress(), describeTimeout(channel, decoder()));
     } else {
       String routine = describeRoutine(cause, ctx.channel().isActive());
       if (routine != null) {
-        logger.debug("{} ({}): {}", routine, channel.remoteAddress(), cause.toString());
+        logger.debug("{} ({}): {}", routine, remoteAddress(), cause.toString());
       } else {
-        // Everything else is logged in full.
-        logger.error("Exception in pipeline for {}", channel.remoteAddress(), cause);
+        // Everything else is logged in full, naming the plugin handlers it may come from.
+        logger.error(
+            "Exception in pipeline for {}{}",
+            remoteAddress(),
+            describePluginHandlers(ctx.pipeline().names()),
+            cause);
       }
     }
     if (ctx.channel().isActive()) {
@@ -173,12 +278,14 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
   }
 
   /**
-   * Describes a connection that received nothing for {@value #READ_TIMEOUT_SECONDS} s, as it
-   * stands: its protocol state, which side went quiet, whether the proxy was reading it, and how
-   * much it still had to send it. Reads paused means the proxy itself kept the peer's packets
-   * unread (back-pressure, or a player held during a server switch); bytes piling up mean the peer
-   * stopped reading too; neither means the peer went silent while taking what it was sent. The
-   * queued bytes are Netty's count: the packets plus a small overhead per message.
+   * Describes a connection that received nothing for as long as its read timeout waits (for a
+   * client {@value #READ_TIMEOUT_SECONDS} s before login, {@code timeouts.read} after; for a
+   * backend {@code timeouts.backend-read}), as it stands: its protocol state, which side went
+   * quiet, whether the proxy was reading it, and how much it still had to send it. Reads paused
+   * means the proxy itself kept the peer's packets unread (back-pressure, or a client that sent too
+   * much while waiting for its next server); bytes piling up mean the peer stopped reading too;
+   * neither means the peer went silent while taking what it was sent. The queued bytes are Netty's
+   * count: the packets plus a small overhead per message.
    *
    * @param channel the connection that timed out
    * @param decoder the connection's decoder, which knows its state and which side the peer is
@@ -193,12 +300,40 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
         + ": the "
         + (decoder.direction() == PacketDirection.SERVERBOUND ? "client" : "backend")
         + " sent nothing for "
-        + READ_TIMEOUT_SECONDS
-        + " s (reads "
+        + readTimeout(channel)
+        + " (reads "
         + (channel.config().isAutoRead() ? "on" : "paused")
         + ", "
         + queued
         + " bytes queued to send)";
+  }
+
+  /** The read timeout of a connection, such as {@code 30 s} or {@code 1500 ms}. */
+  private static String readTimeout(Channel channel) {
+    long millis =
+        channel.pipeline().get(ServerChannelInitializer.READ_TIMEOUT)
+                instanceof IdleStateHandler idle
+            ? idle.getReaderIdleTimeInMillis()
+            : READ_TIMEOUT_SECONDS * 1000L;
+    return millis % 1000 == 0 ? millis / 1000 + " s" : millis + " ms";
+  }
+
+  /**
+   * Names the plugin handlers of a pipeline, which are the first suspects of an exception in it.
+   * Plugin handlers are the only ones whose names hold a colon ({@code plugin-id:name}).
+   *
+   * @param names the pipeline's handler names
+   * @return e.g. {@code " (plugin handlers: viaversion:decoder, viaversion:encoder)"}, or an empty
+   *     string when there are none
+   */
+  static String describePluginHandlers(List<String> names) {
+    StringBuilder plugins = new StringBuilder();
+    for (String name : names) {
+      if (name.indexOf(':') > 0) {
+        plugins.append(plugins.isEmpty() ? " (plugin handlers: " : ", ").append(name);
+      }
+    }
+    return plugins.isEmpty() ? "" : plugins.append(')').toString();
   }
 
   /**
@@ -258,9 +393,21 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
    * flush finishes at the socket level, not just after the pipeline processing. This is the
    * idiomatic Netty pattern for "send-then-close".
    *
+   * <p>A 1.7 client handles packets on its main thread, after its network thread saw the connection
+   * close: closed too soon, it shows "End of stream" instead of the reason it has just received.
+   * Its connection closes {@value #LEGACY_CLOSE_DELAY_MS} ms after the packet, as Velocity's {@code
+   * closeWith} does, and is no longer read meanwhile.
+   *
    * @param packet the final packet to send before closing
    */
   public void writeAndClose(Packet packet) {
+    if (encoder().version().isOlderThan(ProtocolVersion.MINECRAFT_1_8)) {
+      setAutoRead(false);
+      var _ = channel.writeAndFlush(packet, channel.voidPromise());
+      var _ =
+          channel.eventLoop().schedule(this::close, LEGACY_CLOSE_DELAY_MS, TimeUnit.MILLISECONDS);
+      return;
+    }
     channel.writeAndFlush(packet).addListener(ChannelFutureListener.CLOSE);
   }
 
@@ -277,6 +424,91 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
    */
   public void forward(ByteBuf frame, MinecraftConnection source) {
     forwarder.forward(frame, source.decoder());
+  }
+
+  // ---------------------------------------------------------------------------
+  // Writes across a state change
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Writes and flushes a packet that moves the peer to another protocol state as soon as it reads
+   * it: Login Success (from 1.20.2), Finish Configuration, Start Configuration.
+   *
+   * <p>The peer reads whatever follows in the new state, while this connection's encoder keeps the
+   * current one until the peer acknowledges and {@link #setState} follows. Until then, packets
+   * written with {@link #writeWhenSettled} are held: encoded in the old state, the peer would read
+   * them as other packets of the new one (in configuration, a play Cookie Request id is a Bundle
+   * Delimiter).
+   *
+   * @param packet the packet that ends the current state for the peer
+   */
+  public void writeTerminal(Packet packet) {
+    writeAndFlush(packet);
+    stateChangePending = true;
+  }
+
+  /**
+   * Writes and flushes a packet the proxy sends of its own accord, such as a cookie request or a
+   * transfer, once the peer reads this connection's packets in the encoder's state: right away, or
+   * when {@link #setState} completes a pending state change, in the order they were written.
+   *
+   * <p>A held packet that does not exist in the state the peer moved to is dropped and logged.
+   *
+   * @param packet the packet to write
+   */
+  public void writeWhenSettled(Packet packet) {
+    writeWhenSettled(packet, channel.voidPromise());
+  }
+
+  /**
+   * Writes and flushes a packet as {@link #writeWhenSettled(Packet)} does, completing {@code
+   * promise} once it is written: right away, or when the pending state change completes. The
+   * promise fails if the packet is dropped, or if the connection closes first.
+   *
+   * @param packet the packet to write
+   * @param promise the promise of the write, from this connection's channel
+   */
+  public void writeWhenSettled(Packet packet, ChannelPromise promise) {
+    if (stateChangePending) {
+      heldUntilStateChange.add(new Held(packet, promise));
+    } else {
+      var _ = channel.writeAndFlush(packet, promise);
+    }
+  }
+
+  /**
+   * Returns whether a packet that moves the peer to another state was written and the peer has not
+   * confirmed the change yet: {@link #writeWhenSettled} holds packets meanwhile.
+   *
+   * @return {@code true} between {@link #writeTerminal} and the next {@link #setState}
+   */
+  public boolean isStateChangePending() {
+    return stateChangePending;
+  }
+
+  private void releaseHeldPackets() {
+    stateChangePending = false;
+    MinecraftEncoder enc = encoder();
+    for (Held held = heldUntilStateChange.poll();
+        held != null;
+        held = heldUntilStateChange.poll()) {
+      Packet packet = held.packet();
+      if (enc.canEncode(packet.getClass())) {
+        var _ = channel.writeAndFlush(packet, held.promise());
+      } else {
+        logger.warn(
+            "Dropped {} held for {}: it does not exist in {}",
+            packet.getClass().getSimpleName(),
+            channel.remoteAddress(),
+            enc.state());
+        if (!held.promise().isVoid()) {
+          held.promise()
+              .tryFailure(
+                  new IllegalStateException(
+                      packet.getClass().getSimpleName() + " does not exist in " + enc.state()));
+        }
+      }
+    }
   }
 
   /** Flushes the channel. Called from {@code readComplete()} for write batching. */
@@ -297,6 +529,92 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
   /** Closes the channel gracefully. */
   public void close() {
     var _ = channel.close();
+  }
+
+  /**
+   * Closes the channel with a TCP reset, for a client refused before login: no answer is owed, and
+   * the proxy keeps no socket in TIME_WAIT for it.
+   */
+  public void reset() {
+    ServerChannelInitializer.reset(channel);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Before login
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Hands the connection the guard that watches it until its client is logged in.
+   *
+   * @param watching the guard
+   */
+  void guard(ConnectionGuard watching) {
+    this.guard = watching;
+  }
+
+  /**
+   * Returns the guard watching this client connection.
+   *
+   * @return the guard, or {@code null} once the client is logged in, and for a backend
+   */
+  @Nullable ConnectionGuard guard() {
+    return guard;
+  }
+
+  /**
+   * Marks the client logged in: it no longer counts among the connections not logged in, and no
+   * deadline or limit of those applies to it any more, the frame limits included. Those must go now
+   * rather than when the state changes: a 1.20.2+ client stays in the LOGIN state until it
+   * acknowledges its Login Success, and does so in a compressed frame, whose first byte is the
+   * uncompressed length rather than the packet identifier.
+   */
+  void loggedIn() {
+    ConnectionGuard watching = guard;
+    if (watching != null) {
+      guard = null;
+      watching.end();
+    }
+    frameLimitsLifted = true;
+    FrameDecoder frames = frameDecoder();
+    if (frames != null) {
+      frames.limits(null);
+    }
+  }
+
+  /**
+   * Lets the client answer the cookie requests the proxy sends it during its login: Cookie
+   * Responses, which the frame limits of the login state otherwise refuse, are now read.
+   */
+  void expectCookieResponses() {
+    if (!cookieResponsesExpected) {
+      cookieResponsesExpected = true;
+      updateFrameLimits();
+    }
+  }
+
+  /**
+   * Sets the frame limits of the state a client is read in: those of the HANDSHAKE, STATUS and
+   * LOGIN states, none from CONFIGURATION on. A backend's frames are not limited.
+   */
+  private void updateFrameLimits() {
+    MinecraftDecoder dec = decoder();
+    if (frameLimitsLifted || dec.direction() != PacketDirection.SERVERBOUND) {
+      return;
+    }
+    FrameDecoder frames = frameDecoder();
+    if (frames != null) {
+      frames.limits(FrameLimits.serverbound(dec.state(), dec.version(), cookieResponsesExpected));
+    }
+  }
+
+  /** The frame decoder, or {@code null} in a test pipeline without framing. */
+  private @Nullable FrameDecoder frameDecoder() {
+    FrameDecoder frames = frameDecoder;
+    if (frames == null) {
+      frames = channel.pipeline().get(FrameDecoder.class);
+      frameDecoder = frames;
+    }
+    return frames;
   }
 
   // ---------------------------------------------------------------------------
@@ -330,13 +648,19 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
   // ---------------------------------------------------------------------------
 
   /**
-   * Updates the protocol state on both the decoder and encoder.
+   * Updates the protocol state on both the decoder and encoder, then writes the packets {@link
+   * #writeWhenSettled} held during the state change, if one was pending. On a client connection,
+   * the frames that follow are checked against the limits of the new state.
    *
    * @param state the new protocol state
    */
   public void setState(ProtocolState state) {
     decoder().setState(state);
     encoder().setState(state);
+    updateFrameLimits();
+    if (stateChangePending) {
+      releaseHeldPackets();
+    }
   }
 
   /**
@@ -365,23 +689,158 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
    */
   public void enableCompression(
       int threshold, int level, boolean peerIsServer, boolean passthrough) {
-    decoder()
-        .enableCompression(
-            new FrameDecompressor(
-                threshold,
-                !peerIsServer,
-                FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE,
-                new JavaCompressor(level)),
-            peerIsServer && passthrough);
-    // The compression encoder frames and compresses in one pass, replacing the frame encoder.
+    FrameDecompressor decompressor =
+        new FrameDecompressor(
+            threshold,
+            !peerIsServer,
+            FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE,
+            Compression.create(level));
+    if (packetLevel) {
+      // Every frame is inflated ahead of the plugin packet handlers, the decoder reads bare
+      // packets.
+      packetDecompressor().enableCompression(decompressor);
+    } else {
+      decoder().enableCompression(decompressor, peerIsServer && passthrough);
+    }
+    // The compression encoder frames and compresses in one pass, replacing the frame encoder in
+    // place: the plugin handlers on either side of it stay where they are.
     channel
         .pipeline()
         .replace(
             ServerChannelInitializer.FRAME_ENCODER,
             ServerChannelInitializer.COMPRESSION_ENCODER,
-            new CompressionEncoder(threshold, new JavaCompressor(level)));
+            new CompressionEncoder(threshold, Compression.create(level)));
+    compressed = true;
     forwarder.compressionEnabled(threshold);
-    forwarder.setVerbatimEnabled(passthrough);
+    forwarder.setVerbatimEnabled(passthrough && !packetLevel);
+  }
+
+  /**
+   * Returns whether this connection switched to compressed frames.
+   *
+   * @return {@code true} once {@link #enableCompression} was called
+   */
+  public boolean isCompressed() {
+    return compressed;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Packet level (plugin packet handlers)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Hands this connection's packets decompressed to the plugin handlers placed between the framing
+   * layer and the {@link MinecraftDecoder}, for good. Idempotent.
+   *
+   * <p>A {@link PacketDecompressor} goes right after the framing encoder, ahead of every plugin
+   * packet handler: it unframes every frame and, once compressed, inflates it. The decoder then
+   * reads, and forwards, bare packets. Frames forwarded to this connection are never written
+   * verbatim, which would take them past the plugin handlers: they are re-encoded through the whole
+   * outbound pipeline. Both cost what compression passthrough saves, on this connection only.
+   */
+  public void usePacketLevel() {
+    if (packetLevel) {
+      return;
+    }
+    packetLevel = true;
+    ChannelPipeline pipeline = channel.pipeline();
+    pipeline.addAfter(
+        framingEncoder(pipeline),
+        ServerChannelInitializer.PACKET_DECOMPRESSOR,
+        new PacketDecompressor(decoder().usePacketInput()));
+    forwarder.setVerbatimEnabled(false);
+  }
+
+  /**
+   * Returns whether plugin handlers read this connection's packets.
+   *
+   * @return {@code true} once {@link #usePacketLevel()} was called
+   */
+  @Override
+  public boolean isPacketLevel() {
+    return packetLevel;
+  }
+
+  /**
+   * {@inheritDoc}
+   *
+   * <p>Frame handlers go right before the framing encoder, packet handlers right before the {@link
+   * MinecraftDecoder}: each after the plugin handlers already at its position (see {@link
+   * ServerChannelInitializer} for the layout).
+   */
+  @Override
+  public void addPluginHandler(PipelinePosition position, String name, ChannelHandler handler) {
+    ChannelPipeline pipeline = channel.pipeline();
+    if (pipeline.get(name) != null) {
+      throw new IllegalArgumentException("The pipeline already has a handler named " + name);
+    }
+    switch (position) {
+      case FRAME -> pipeline.addBefore(framingEncoder(pipeline), name, handler);
+      case PACKET -> {
+        usePacketLevel();
+        pipeline.addBefore(ServerChannelInitializer.MINECRAFT_DECODER, name, handler);
+      }
+    }
+  }
+
+  @Override
+  public List<String> pluginHandlers(PipelinePosition position) {
+    ChannelPipeline pipeline = channel.pipeline();
+    List<String> names = pipeline.names();
+    String framing = framingEncoder(pipeline);
+    int from =
+        names.indexOf(
+            switch (position) {
+              case FRAME -> ServerChannelInitializer.FRAME_DECODER;
+              case PACKET -> packetLevel ? ServerChannelInitializer.PACKET_DECOMPRESSOR : framing;
+            });
+    int to =
+        names.indexOf(
+            switch (position) {
+              case FRAME -> framing;
+              case PACKET -> ServerChannelInitializer.MINECRAFT_DECODER;
+            });
+    if (from < 0 || to < from) {
+      return List.of();
+    }
+    return names.subList(from + 1, to).stream().filter(name -> name.indexOf(':') > 0).toList();
+  }
+
+  /** The name of the handler that frames outgoing packets: compression replaces the plain one. */
+  private static String framingEncoder(ChannelPipeline pipeline) {
+    return pipeline.get(ServerChannelInitializer.COMPRESSION_ENCODER) != null
+        ? ServerChannelInitializer.COMPRESSION_ENCODER
+        : ServerChannelInitializer.FRAME_ENCODER;
+  }
+
+  private PacketDecompressor packetDecompressor() {
+    PacketDecompressor handler = channel.pipeline().get(PacketDecompressor.class);
+    if (handler == null) {
+      throw new IllegalStateException("PacketDecompressor not found in pipeline");
+    }
+    return handler;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Handshake intent
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns why the client opened this connection, as its handshake declared.
+   *
+   * @return the intent, or {@code null} before the handshake and on a backend connection
+   */
+  public @Nullable HandshakeIntent handshakeIntent() {
+    return handshakeIntent;
+  }
+
+  /**
+   * Records why the client opened this connection. Called once, by the handshake.
+   *
+   * @param intent the intent its handshake declared
+   */
+  void setHandshakeIntent(HandshakeIntent intent) {
+    this.handshakeIntent = intent;
   }
 
   // ---------------------------------------------------------------------------
@@ -389,12 +848,67 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter {
   // ---------------------------------------------------------------------------
 
   /**
+   * Returns the host name the client typed to connect, cleaned of the suffixes some platforms
+   * append (Forge's {@code \0FML\0} markers, a trailing dot).
+   *
+   * @return the host name, or {@code null} before the handshake or if it was empty
+   */
+  public @Nullable String virtualHost() {
+    return virtualHost;
+  }
+
+  /**
+   * Records the host name of the client's handshake.
+   *
+   * @param serverAddress the address field of the handshake, as sent
+   */
+  public void setVirtualHost(String serverAddress) {
+    String host = serverAddress;
+    int nul = host.indexOf('\0');
+    if (nul >= 0) {
+      host = host.substring(0, nul);
+    }
+    while (host.endsWith(".")) {
+      host = host.substring(0, host.length() - 1);
+    }
+    this.virtualHost = host.isEmpty() ? null : host;
+  }
+
+  /**
    * Returns the underlying Netty channel.
+   *
+   * <p>Its {@link Channel#remoteAddress()} is the socket's peer, which is a load balancer when the
+   * PROXY protocol is on: use {@link #remoteAddress()} for the address of the client.
    *
    * @return the channel
    */
+  @Override
   public Channel channel() {
     return channel;
+  }
+
+  /**
+   * Returns the address of the peer this connection serves: the client's real address when a
+   * trusted load balancer sent it in a PROXY protocol header, the socket's peer otherwise (the
+   * client itself, or the backend server of a backend connection).
+   *
+   * <p>Everything that names, limits or forwards a client uses this address, never the channel's.
+   *
+   * @return the peer's address
+   */
+  public SocketAddress remoteAddress() {
+    InetSocketAddress proxied = proxiedAddress;
+    return proxied != null ? proxied : channel.remoteAddress();
+  }
+
+  /**
+   * Records the client's real address, read from the PROXY protocol header a trusted load balancer
+   * sent at the start of the connection.
+   *
+   * @param address the client's address and port
+   */
+  void setProxiedAddress(InetSocketAddress address) {
+    this.proxiedAddress = address;
   }
 
   /**

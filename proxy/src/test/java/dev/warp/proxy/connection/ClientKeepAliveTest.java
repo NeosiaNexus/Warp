@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
@@ -31,6 +32,13 @@ import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.play.KeepAlive;
+import dev.warp.protocol.packet.play.StartConfiguration;
+import dev.warp.proxy.config.LoggingConfig;
+import dev.warp.proxy.config.TimeoutsConfig;
+import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.permission.PermissionRegistry;
+import dev.warp.proxy.player.PlayerRegistry;
+import dev.warp.proxy.server.ServerRegistry;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -45,6 +53,7 @@ import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
@@ -169,6 +178,36 @@ class ClientKeepAliveTest {
   }
 
   // ---------------------------------------------------------------------------
+  // State change
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("During a state change")
+  class DuringStateChange {
+
+    @Test
+    @DisplayName("should hold a keep-alive due after Start Configuration until acknowledged")
+    void heldUntilAcknowledged() {
+      connectPlayer(ProtocolVersion.latest());
+      MinecraftConnection connection = warpSide.pipeline().get(MinecraftConnection.class);
+      connection.writeTerminal(new StartConfiguration());
+      ByteBuf startConfiguration = warpSide.readOutbound();
+      startConfiguration.release();
+
+      advanceOneTick();
+      boolean held = warpSide.outboundMessages().isEmpty();
+      connection.setState(ProtocolState.CONFIGURATION); // the client acknowledged
+
+      assertTrue(held, "the client reads configuration ids after Start Configuration");
+      ByteBuf wire = warpSide.readOutbound();
+      assertNotNull(wire, "the keep-alive must follow the acknowledgement");
+      clientSide.pipeline().get(MinecraftDecoder.class).setState(ProtocolState.CONFIGURATION);
+      assertTrue(clientSide.writeInbound(wire));
+      assertInstanceOf(KeepAlive.class, clientSide.readInbound());
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
@@ -178,13 +217,26 @@ class ClientKeepAliveTest {
     addCodecs(clientSide, PacketDirection.CLIENTBOUND, PacketDirection.SERVERBOUND, version);
     MinecraftConnection connection = new MinecraftConnection(warpSide);
     warpSide.pipeline().addLast(ServerChannelInitializer.CONNECTION_HANDLER, connection);
+    ServerLoginContext loginContext = mock(ServerLoginContext.class);
+    when(loginContext.logging()).thenReturn(LoggingConfig.DEFAULTS);
+    when(loginContext.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
+    when(loginContext.antiBot()).thenReturn(TestLoginContexts.calmAntiBot());
+    when(loginContext.playerRegistry()).thenReturn(new PlayerRegistry());
+    when(loginContext.events()).thenReturn(TestLoginContexts.EVENTS);
+    when(loginContext.channels()).thenReturn(new ChannelRegistry());
+    when(loginContext.permissions()).thenReturn(new PermissionRegistry());
+    when(loginContext.commands())
+        .thenReturn(
+            TestLoginContexts.commands(
+                new ServerRegistry(java.util.Map.of(), null, java.util.List.of())));
     ConnectedPlayer player =
         new ConnectedPlayer(
             connection,
             version,
             new GameProfile(UUID.randomUUID(), "KeepAliveTester", List.of()),
             new InetSocketAddress(InetAddress.getLoopbackAddress(), 25565),
-            mock(ServerLoginContext.class));
+            loginContext,
+            new ClientCookies(connection, version, warpSide.eventLoop()));
     // Entering PLAY starts the keep-alive task.
     connection.setSessionHandler(new ClientPlaySessionHandler(player));
   }

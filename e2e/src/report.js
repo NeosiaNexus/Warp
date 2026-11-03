@@ -19,6 +19,8 @@ function collect(dir) {
 }
 
 const results = collect(dir).sort((a, b) => a.protocol - b.protocol);
+/** A run's name: its version, and for a translation run the bots' version (and survival's). */
+const runName = (r) => (r.client ? `${r.version} ← ${r.client.version} bots${r.survival ? `, survival ${r.survival.version}` : ''}` : r.version);
 const count = (status) => results.filter((r) => r.status === status).length;
 const STATUS = { pass: '✅ Passed', fail: '❌ Failed', xfail: '⚠️ Known broken', xpass: '🎉 Passes, remove from known broken', skip: '⏭️ Skipped' };
 const SCENARIO = { pass: '✅', fail: '❌', skip: '⏭️', xfail: '⚠️', xpass: '🎉' };
@@ -48,12 +50,12 @@ if (!results.length) {
       const status = variantStatus(r, v);
       const result = status === 'skip' ? `${STATUS.skip}: ${escape(v.reason)}` : STATUS[status];
       const first = i === 0;
-      lines.push(`| ${first ? `**${r.version}**` : ''} | ${first ? r.protocol : ''} | ${first ? r.server : ''} | ${v.name} | ${cells.join(' | ')} | ${result} |`);
+      lines.push(`| ${first ? `**${runName(r)}**` : ''} | ${first ? r.protocol : ''} | ${first ? r.server : ''} | ${v.name} | ${cells.join(' | ')} | ${result} |`);
     });
   }
 
   // Backends booted again, and server quirks worked around: every one, so none goes unnoticed.
-  const notes = results.flatMap((r) => versionNotes(r).map((note) => `- **${r.version}**: ${escape(note)}`));
+  const notes = results.flatMap((r) => versionNotes(r).map((note) => `- **${runName(r)}**: ${escape(note)}`));
   if (notes.length) lines.push('', '### Boot retries and server quirks', '', ...notes);
 
   // Failures, then what is known broken: whole versions, or single scenarios of a version.
@@ -63,7 +65,7 @@ if (!results.length) {
     lines.push('', '### Failures and known issues', '');
     for (const r of notable) {
       const why = r.knownBroken ? ` (known broken: ${escape(r.knownBroken)})` : '';
-      lines.push(`<details><summary><b>${r.version}</b> (protocol ${r.protocol})${why}</summary>`, '');
+      lines.push(`<details><summary><b>${runName(r)}</b> (protocol ${r.protocol})${why}</summary>`, '');
       if (r.status === 'xpass') lines.push('🎉 Every variant passes: remove `knownBroken` from its entry in `e2e/versions.json`.', '');
       for (const v of r.variants.filter((x) => x.status === 'fail' || x.scenarios.some(known))) {
         lines.push(`**${v.name}** (${v.settings ?? 'setup'})`, '');

@@ -84,6 +84,23 @@ public final class CompressionEncoder extends MessageToByteEncoder<ByteBuf> {
   // Encode
   // ---------------------------------------------------------------------------
 
+  /**
+   * Allocates the frame at its final size (the compressor's worst case when the packet will be
+   * compressed), instead of Netty's default 256 bytes grown as the frame is written.
+   */
+  @Override
+  protected ByteBuf allocateBuffer(ChannelHandlerContext ctx, ByteBuf msg, boolean preferDirect) {
+    int uncompressedSize = msg.readableBytes();
+    int currentThreshold = this.threshold;
+    int capacity =
+        currentThreshold < 0 || uncompressedSize == 0 || uncompressedSize < currentThreshold
+            ? FRAME_HEADER_SIZE + 1 + uncompressedSize
+            : FRAME_HEADER_SIZE
+                + VarInt.size(uncompressedSize)
+                + compressor.deflateBound(uncompressedSize);
+    return preferDirect ? ctx.alloc().ioBuffer(capacity) : ctx.alloc().heapBuffer(capacity);
+  }
+
   @Override
   protected void encode(ChannelHandlerContext ctx, ByteBuf msg, ByteBuf out) throws Exception {
     int uncompressedSize = msg.readableBytes();

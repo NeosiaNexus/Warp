@@ -19,8 +19,12 @@ package dev.warp.proxy.connection;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -28,25 +32,45 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import dev.warp.api.event.EventBus;
+import dev.warp.api.event.player.DisconnectEvent;
+import dev.warp.api.event.player.GameProfileRequestEvent;
+import dev.warp.api.event.player.LoginEvent;
+import dev.warp.api.event.player.PostLoginEvent;
+import dev.warp.api.event.player.PreLoginEvent;
+import dev.warp.api.logging.LogRecord;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.codec.McUuid;
 import dev.warp.protocol.codec.VarInt;
+import dev.warp.protocol.netty.FrameDecoder;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketCodec;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.StateRegistry;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
+import dev.warp.protocol.packet.cookie.CookieRequest;
+import dev.warp.protocol.packet.cookie.CookieResponse;
+import dev.warp.protocol.packet.cookie.StoreCookie;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.login.EncryptionRequest;
 import dev.warp.protocol.packet.login.LoginAcknowledged;
 import dev.warp.protocol.packet.login.LoginDisconnect;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.play.PlayDisconnect;
+import dev.warp.protocol.text.ComponentCodec;
 import dev.warp.proxy.auth.AuthenticationException;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
+import dev.warp.proxy.config.DuplicateLoginPolicy;
+import dev.warp.proxy.config.LogFormat;
+import dev.warp.proxy.config.LoggingConfig;
+import dev.warp.proxy.config.TimeoutsConfig;
+import dev.warp.proxy.event.PluginEventBus;
+import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.logging.LogCapture;
+import dev.warp.proxy.status.StatusSettings;
 
 import java.math.BigInteger;
 import java.net.InetAddress;
@@ -63,12 +87,15 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.Signature;
 import java.security.spec.X509EncodedKeySpec;
+import java.time.Duration;
 import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -82,7 +109,10 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.handler.timeout.IdleStateHandler;
+import net.kyori.adventure.text.Component;
 import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -150,8 +180,14 @@ class LoginSessionHandlerTest {
 
         nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version);
         byte[] reason = nextPacket(channel, ProtocolState.PLAY, PlayDisconnect.class, version);
+        // Plain text is a bare string before 1.9, as vanilla writes it.
+        String text = "\"Could not connect to any available server.\"";
         assertArrayEquals(
-            jsonString("{\"text\":\"Could not connect to any available server.\"}"), reason);
+            jsonString(
+                version.isOlderThan(ProtocolVersion.MINECRAFT_1_9)
+                    ? text
+                    : "{\"text\":" + text + "}"),
+            reason);
         assertClosed(channel);
       } finally {
         channel.finishAndReleaseAll();
@@ -183,6 +219,28 @@ class LoginSessionHandlerTest {
         byte[] reason =
             nextPacket(channel, ProtocolState.CONFIGURATION, ConfigDisconnect.class, version);
         assertArrayEquals(nbtString("Could not connect to any available server."), reason);
+        assertClosed(channel);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versionsFrom1203")
+    @DisplayName(
+        "should refuse in the configuration state a client that received Login Success, still read"
+            + " in the login state (BungeeCord #3525)")
+    void configurationStateBeforeAcknowledgement(ProtocolVersion version) {
+      EmbeddedChannel channel = loginChannel(version);
+      try {
+        sendLoginStart(channel, "Steve", version);
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version);
+
+        sendLoginStart(channel, "Steve", version); // out of order: refused
+
+        byte[] reason =
+            nextPacket(channel, ProtocolState.CONFIGURATION, ConfigDisconnect.class, version);
+        assertArrayEquals(nbtString("Unexpected LoginStart"), reason);
         assertClosed(channel);
       } finally {
         channel.finishAndReleaseAll();
@@ -247,8 +305,42 @@ class LoginSessionHandlerTest {
         // Plain frames: a length then the packet id, no data length for a compressed frame.
         nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version);
         byte[] reason = nextPacket(channel, ProtocolState.PLAY, PlayDisconnect.class, version);
+        // Plain text is a bare string before 1.9, as vanilla writes it.
+        String text = "\"Could not connect to any available server.\"";
         assertArrayEquals(
-            jsonString("{\"text\":\"Could not connect to any available server.\"}"), reason);
+            jsonString(
+                version.isOlderThan(ProtocolVersion.MINECRAFT_1_9)
+                    ? text
+                    : "{\"text\":" + text + "}"),
+            reason);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    static Stream<ProtocolVersion> versionsWithConfiguration() {
+      return ProtocolVersion.values().stream()
+          .filter(version -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_2));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versionsWithConfiguration")
+    @DisplayName("should read the compressed Login Acknowledged a 1.20.2+ client answers with")
+    void compressedLoginAcknowledged(ProtocolVersion version) {
+      EmbeddedChannel channel = loginChannel(version, TestLoginContexts.offline(THRESHOLD));
+      try {
+        sendLoginStart(channel, "Steve", version);
+        nextFrame(channel); // Set Compression
+        nextFrame(channel); // Login Success, compressed from now on
+        MinecraftConnection connection = channel.pipeline().get(MinecraftConnection.class);
+        FrameDecoder frames = channel.pipeline().get(FrameDecoder.class);
+
+        // Read in the LOGIN state, but compressed: length 2, uncompressed (0), packet id 0x03.
+        channel.writeInbound(Unpooled.wrappedBuffer(new byte[] {0x02, 0x00, 0x03}));
+
+        // Acknowledged, not refused: the proxy moved the player on (to a server that is down here).
+        assertEquals(ProtocolState.CONFIGURATION, connection.decoder().state());
+        assertNull(frames.limits());
       } finally {
         channel.finishAndReleaseAll();
       }
@@ -799,13 +891,13 @@ class LoginSessionHandlerTest {
     @Test
     @DisplayName("should share one ID among the players online together, and draw a new one after")
     void sharedUntilEmpty() {
-      EmbeddedChannel first = loggedIn(ProtocolVersion.MINECRAFT_26_2);
-      EmbeddedChannel second = loggedIn(ProtocolVersion.MINECRAFT_26_3);
+      EmbeddedChannel first = loggedIn("Steve", ProtocolVersion.MINECRAFT_26_2);
+      EmbeddedChannel second = loggedIn("Alex", ProtocolVersion.MINECRAFT_26_3);
       first.finishAndReleaseAll();
-      EmbeddedChannel third = loggedIn(ProtocolVersion.MINECRAFT_26_2);
+      EmbeddedChannel third = loggedIn("Notch", ProtocolVersion.MINECRAFT_26_2);
       second.finishAndReleaseAll();
       third.finishAndReleaseAll();
-      EmbeddedChannel later = loggedIn(ProtocolVersion.MINECRAFT_26_3);
+      EmbeddedChannel later = loggedIn("Jeb", ProtocolVersion.MINECRAFT_26_3);
       later.finishAndReleaseAll();
 
       UUID sessionId = sessionIds.getFirst();
@@ -814,10 +906,10 @@ class LoginSessionHandlerTest {
       assertNotEquals(sessionId, sessionIds.get(3), "the first player once the proxy emptied");
     }
 
-    /** Logs {@code Steve} in, records the play session ID of its Login Success, and returns it. */
-    private EmbeddedChannel loggedIn(ProtocolVersion version) {
+    /** Logs a player in, records the play session ID of its Login Success, and returns it. */
+    private EmbeddedChannel loggedIn(String name, ProtocolVersion version) {
       EmbeddedChannel channel = loginChannel(version, context);
-      sendLoginStart(channel, "Steve", version);
+      sendLoginStart(channel, name, version);
       ByteBuf body =
           Unpooled.wrappedBuffer(
               nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version));
@@ -828,6 +920,578 @@ class LoginSessionHandlerTest {
       } finally {
         body.release();
       }
+    }
+  }
+
+  @Nested
+  @DisplayName("duplicate logins")
+  class DuplicateLogins {
+
+    private static final ProtocolVersion VERSION = ProtocolVersion.MINECRAFT_1_21_4;
+
+    @Test
+    @DisplayName("should refuse a second session of a name in offline mode and keep the first")
+    void offlineRefusesNewcomer() {
+      ServerLoginContext context = TestLoginContexts.offline();
+      EmbeddedChannel first = loginChannel(VERSION, context);
+      EmbeddedChannel second = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(first, "Steve", VERSION);
+        nextPacket(first, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+
+        sendLoginStart(second, "Steve", VERSION);
+
+        byte[] reason = nextPacket(second, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
+        assertArrayEquals(
+            jsonString("{\"text\":\"You are already connected to this proxy.\"}"), reason);
+        assertClosed(second);
+        assertTrue(first.isOpen());
+        assertEquals(1, context.playerRegistry().count());
+      } finally {
+        first.finishAndReleaseAll();
+        second.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should kick the existing session and let the newcomer in when the policy says so")
+    void kickExistingLetsNewcomerIn() {
+      ServerLoginContext context = TestLoginContexts.offline(DuplicateLoginPolicy.KICK_EXISTING);
+      EmbeddedChannel first = loginChannel(VERSION, context);
+      EmbeddedChannel second = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(first, "Steve", VERSION);
+        nextPacket(first, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+
+        sendLoginStart(second, "Steve", VERSION);
+        first.runPendingTasks();
+
+        nextPacket(second, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+        // The first client got its Login Success and is in the configuration state.
+        nextPacket(first, ProtocolState.CONFIGURATION, ConfigDisconnect.class, VERSION);
+        assertClosed(first);
+        assertTrue(second.isOpen());
+        assertEquals(1, context.playerRegistry().count());
+      } finally {
+        first.finishAndReleaseAll();
+        second.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should let a name log in again as soon as its previous session closed")
+    void sameNameAfterLeaving() {
+      ServerLoginContext context = TestLoginContexts.offline();
+      EmbeddedChannel first = loginChannel(VERSION, context);
+      sendLoginStart(first, "Steve", VERSION);
+      nextPacket(first, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+      first.finishAndReleaseAll();
+
+      EmbeddedChannel second = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(second, "Steve", VERSION);
+
+        nextPacket(second, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+        assertEquals(1, context.playerRegistry().count());
+      } finally {
+        second.finishAndReleaseAll();
+      }
+    }
+  }
+
+  @Nested
+  @DisplayName("login events")
+  class LoginEvents {
+
+    private static final ProtocolVersion VERSION = ProtocolVersion.MINECRAFT_1_21_4;
+
+    private final WarpEventBus bus = new WarpEventBus(Runnable::run);
+    private final EventBus events = new PluginEventBus(bus, "test", null, s -> {});
+    private final ServerLoginContext context = TestLoginContexts.offline(bus);
+
+    @AfterEach
+    void closeBus() {
+      bus.close();
+    }
+
+    @Test
+    @DisplayName("should refuse a login a pre-login handler denies, with its reason")
+    void preLoginDenied() {
+      List<PreLoginEvent> fired = new ArrayList<>();
+      events.subscribe(
+          PreLoginEvent.class,
+          event -> {
+            fired.add(event);
+            event.setResult(new PreLoginEvent.Denied(Component.text("Maintenance")));
+          });
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
+        assertArrayEquals(
+            jsonString(ComponentCodec.json(Component.text("Maintenance"), VERSION)), reason);
+        assertEquals("Steve", fired.getFirst().username());
+        assertEquals(0, context.playerRegistry().count());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should authenticate a player a pre-login handler forces into online mode")
+    void forceOnline() {
+      events.subscribe(
+          PreLoginEvent.class, event -> event.setResult(new PreLoginEvent.ForceOnlineMode()));
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        nextPacket(channel, ProtocolState.LOGIN, EncryptionRequest.class, VERSION);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should log the player in with the profile a handler set")
+    void replacedProfile() {
+      UUID replaced = UUID.randomUUID();
+      events.subscribe(
+          GameProfileRequestEvent.class,
+          event ->
+              event.setProfile(
+                  new dev.warp.api.player.GameProfile(
+                      replaced,
+                      "Alex",
+                      List.of(
+                          new dev.warp.api.player.GameProfile.Property(
+                              "textures", "skin", null)))));
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+        ConnectedPlayer player = context.playerRegistry().get(replaced);
+        assertNotNull(player);
+        assertEquals("Alex", player.username());
+        assertEquals("textures", player.apiProfile().properties().getFirst().name());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should refuse a login a login handler denies, starting no session")
+    void loginDenied() {
+      List<Object> sessionEvents = new ArrayList<>();
+      events.subscribe(PostLoginEvent.class, sessionEvents::add);
+      events.subscribe(DisconnectEvent.class, sessionEvents::add);
+      events.subscribe(
+          LoginEvent.class,
+          event -> event.setResult(new LoginEvent.Denied(Component.text("Banned"))));
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
+        assertArrayEquals(
+            jsonString(ComponentCodec.json(Component.text("Banned"), VERSION)), reason);
+        assertClosed(channel);
+        channel.runPendingTasks();
+        assertEquals(0, context.playerRegistry().count());
+        assertTrue(sessionEvents.isEmpty());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Cookies during login (1.20.5+)
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("cookies during login")
+  class LoginCookies {
+
+    private static final ProtocolVersion VERSION = ProtocolVersion.MINECRAFT_1_21_4;
+
+    static Stream<ProtocolVersion> versionsWithCookies() {
+      return ProtocolVersion.values().stream()
+          .filter(version -> version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versionsWithCookies")
+    @DisplayName(
+        "should ask for a cookie in the login state, before any server, and take the answer")
+    void requestDuringLogin(ProtocolVersion version) throws Exception {
+      EmbeddedChannel channel = loginChannel(version);
+      try {
+        CompletableFuture<Optional<byte[]>> cookie =
+            loginHandler(channel).cookies().request("primemc:session", Duration.ofSeconds(10));
+        byte[] asked = nextPacket(channel, ProtocolState.LOGIN, CookieRequest.class, version);
+        send(
+            channel,
+            ProtocolState.LOGIN,
+            new CookieResponse("primemc:session", new byte[] {7}),
+            version);
+
+        assertArrayEquals(jsonString("primemc:session"), asked);
+        assertArrayEquals(new byte[] {7}, cookie.get().orElseThrow());
+        sendLoginStart(channel, "Steve", version);
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should close, unread, a client that answers a cookie request before any was sent")
+    void refusesUnaskedAnswer() {
+      EmbeddedChannel channel = loginChannel(VERSION);
+      try {
+        send(channel, ProtocolState.LOGIN, new CookieResponse("primemc:session", null), VERSION);
+
+        // Refused from the frame's header, as the login state allows no answer yet.
+        assertNull(channel.readOutbound());
+        assertClosed(channel);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName(
+        "should refuse a client that answers a cookie request nobody sent, as vanilla does")
+    void refusesAnswerToAnotherKey() {
+      EmbeddedChannel channel = loginChannel(VERSION);
+      try {
+        var _ = loginHandler(channel).cookies().request("primemc:asked", Duration.ofSeconds(10));
+        nextPacket(channel, ProtocolState.LOGIN, CookieRequest.class, VERSION);
+        send(channel, ProtocolState.LOGIN, new CookieResponse("primemc:session", null), VERSION);
+
+        byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
+        assertArrayEquals(
+            jsonString("{\"translate\":\"multiplayer.disconnect.unexpected_query_response\"}"),
+            reason);
+        assertClosed(channel);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should hold what it sends after Login Success until the client acknowledges")
+    void heldUntilLoginAcknowledged() {
+      EmbeddedChannel channel = loginChannel(VERSION);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+        ClientCookies cookies = loginHandler(channel).cookies();
+
+        CompletableFuture<Optional<byte[]>> cookie =
+            cookies.request("primemc:session", Duration.ofSeconds(10));
+        cookies.store("primemc:session", new byte[] {1});
+        boolean held = channel.outboundMessages().isEmpty();
+        send(channel, ProtocolState.LOGIN, new LoginAcknowledged(), VERSION);
+        channel.runPendingTasks();
+
+        assertTrue(held, "the client reads configuration ids before it acknowledges");
+        nextPacket(channel, ProtocolState.CONFIGURATION, CookieRequest.class, VERSION);
+        nextPacket(channel, ProtocolState.CONFIGURATION, StoreCookie.class, VERSION);
+        // The only server is unreachable: the player is refused, and the request fails with it.
+        nextPacket(channel, ProtocolState.CONFIGURATION, ConfigDisconnect.class, VERSION);
+        assertClosed(channel);
+        assertTrue(cookie.isCompletedExceptionally());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should refuse a cookie request for a client older than 1.20.5")
+    void refusesOldClient() {
+      EmbeddedChannel channel = loginChannel(ProtocolVersion.MINECRAFT_1_20_4);
+      try {
+        ClientCookies cookies = loginHandler(channel).cookies();
+
+        assertThrows(
+            UnsupportedOperationException.class,
+            () -> cookies.request("primemc:session", Duration.ofSeconds(10)));
+        assertNull(channel.readOutbound());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    private LoginSessionHandler loginHandler(EmbeddedChannel channel) {
+      MinecraftConnection connection = channel.pipeline().get(MinecraftConnection.class);
+      assertNotNull(connection);
+      return assertInstanceOf(LoginSessionHandler.class, connection.sessionHandler());
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Player limit
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("player limit (player-limit)")
+  class PlayerLimit {
+
+    private static final ProtocolVersion VERSION = ProtocolVersion.MINECRAFT_1_21_4;
+
+    private final WarpEventBus bus = new WarpEventBus(Runnable::run);
+    private final EventBus events = new PluginEventBus(bus, "test", null, s -> {});
+
+    @AfterEach
+    void closeBus() {
+      bus.close();
+    }
+
+    @Test
+    @DisplayName("should refuse a player beyond the limit, telling it the server is full")
+    void full() {
+      ServerLoginContext context = TestLoginContexts.offline(bus, limit(1));
+      fill(context, 1);
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
+        assertArrayEquals(jsonString("{\"text\":\"The server is full.\"}"), reason);
+        assertClosed(channel);
+        assertEquals(1, context.playerRegistry().count());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should let players in up to the limit")
+    void belowLimit() {
+      ServerLoginContext context = TestLoginContexts.offline(bus, limit(2));
+      fill(context, 1);
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+        assertEquals(2, context.playerRegistry().count());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should propose a denial to login handlers, which can let a player in")
+    void handlerLetsIn() {
+      List<LoginEvent.Result> proposed = new ArrayList<>();
+      events.subscribe(
+          LoginEvent.class,
+          event -> {
+            proposed.add(event.result());
+            event.setResult(new LoginEvent.Allowed());
+          });
+      ServerLoginContext context = TestLoginContexts.offline(bus, limit(1));
+      fill(context, 1);
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+        assertEquals(
+            List.of(new LoginEvent.Denied(Component.text("The server is full."))), proposed);
+        assertEquals(2, context.playerRegistry().count());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should refuse a full proxy's player when the handlers keep the denial")
+    void handlerKeepsDenial() {
+      events.subscribe(LoginEvent.class, event -> {});
+      ServerLoginContext context = TestLoginContexts.offline(bus, limit(1));
+      fill(context, 1);
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
+        assertArrayEquals(
+            jsonString(ComponentCodec.json(Component.text("The server is full."), VERSION)),
+            reason);
+        assertEquals(1, context.playerRegistry().count());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should propose to let players in to handlers when the proxy has room")
+    void handlerSeesAllowed() {
+      List<LoginEvent.Result> proposed = new ArrayList<>();
+      events.subscribe(LoginEvent.class, event -> proposed.add(event.result()));
+      ServerLoginContext context = TestLoginContexts.offline(bus, limit(1));
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+        assertEquals(List.of(new LoginEvent.Allowed()), proposed);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should never fill with a limit of -1")
+    void noLimit() {
+      ServerLoginContext context = TestLoginContexts.offline(bus, limit(StatusSettings.NO_LIMIT));
+      fill(context, 3);
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should refuse everyone with a limit of 0, a maintenance mode plugins can open")
+    void zeroLimit() {
+      ServerLoginContext context = TestLoginContexts.offline(bus, limit(0));
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
+        assertArrayEquals(jsonString("{\"text\":\"The server is full.\"}"), reason);
+        assertEquals(0, context.playerRegistry().count());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    private StatusSettings limit(int playerLimit) {
+      StatusSettings defaults = StatusSettings.defaults();
+      return new StatusSettings(
+          defaults.motd(),
+          null,
+          defaults.maxPlayers(),
+          playerLimit,
+          defaults.showPlayerCount(),
+          defaults.sampleSize(),
+          defaults.versionName());
+    }
+
+    /** Registers {@code count} players that are already connected. */
+    private void fill(ServerLoginContext context, int count) {
+      for (int i = 0; i < count; i++) {
+        ConnectedPlayer player = mock(ConnectedPlayer.class);
+        when(player.uuid()).thenReturn(UUID.randomUUID());
+        when(player.username()).thenReturn("Player" + i);
+        context.playerRegistry().register(player, false);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Logged-in connection settings
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("logged-in connection (timeouts.read, logging.connections)")
+  class LoggedIn {
+
+    private static final ProtocolVersion VERSION = ProtocolVersion.MINECRAFT_1_21_4;
+
+    @Test
+    @DisplayName("should replace the pre-login read timeout with timeouts.read once logged in")
+    void readTimeout() {
+      ServerLoginContext context =
+          TestLoginContexts.with(
+              TestLoginContexts.offline(),
+              new TimeoutsConfig(
+                  Duration.ofSeconds(5),
+                  Duration.ofSeconds(7),
+                  Duration.ofSeconds(30),
+                  Duration.ofSeconds(5)),
+              LoggingConfig.DEFAULTS);
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        assertEquals(30_000, readTimeoutMillis(channel));
+
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+        assertEquals(7_000, readTimeoutMillis(channel));
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should log the login with the player and its session as the record's context")
+    void loggedWithContext() throws Exception {
+      try (LogCapture logs = new LogCapture()) {
+        EmbeddedChannel channel = loginChannel(VERSION, TestLoginContexts.offline());
+        try {
+          sendLoginStart(channel, "Logan", VERSION);
+          channel.runPendingTasks();
+
+          LogRecord login = logs.await(record -> record.message().startsWith("Player Logan "));
+          assertEquals("Logan", login.context().get(ConnectedPlayer.LOG_PLAYER));
+          assertTrue(login.context().containsKey(ConnectedPlayer.LOG_SESSION), login::toString);
+        } finally {
+          channel.finishAndReleaseAll();
+        }
+      }
+    }
+
+    @Test
+    @DisplayName("should not log the login when logging.connections is off")
+    void notLogged() throws Exception {
+      ServerLoginContext context =
+          TestLoginContexts.with(
+              TestLoginContexts.offline(),
+              TimeoutsConfig.DEFAULTS,
+              new LoggingConfig(LogFormat.TEXT, false, false, false));
+      try (LogCapture logs = new LogCapture()) {
+        EmbeddedChannel channel = loginChannel(VERSION, context);
+        try {
+          sendLoginStart(channel, "Quiet", VERSION);
+          channel.runPendingTasks();
+          nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
+
+          assertFalse(
+              logs.anyAfterSettling(record -> record.message().startsWith("Player Quiet ")));
+        } finally {
+          channel.finishAndReleaseAll();
+        }
+      }
+    }
+
+    private long readTimeoutMillis(EmbeddedChannel channel) {
+      return ((IdleStateHandler) channel.pipeline().get(ServerChannelInitializer.READ_TIMEOUT))
+          .getReaderIdleTimeInMillis();
     }
   }
 
@@ -965,6 +1629,9 @@ class LoginSessionHandlerTest {
 
   private void assertClosed(EmbeddedChannel channel) {
     channel.runPendingTasks();
+    // A 1.7 client keeps its connection a moment after the reason (MinecraftConnection).
+    channel.advanceTimeBy(MinecraftConnection.LEGACY_CLOSE_DELAY_MS, TimeUnit.MILLISECONDS);
+    channel.runScheduledPendingTasks();
     assertFalse(channel.isOpen(), "the connection must close after the reason");
   }
 
