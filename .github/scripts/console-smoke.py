@@ -34,7 +34,7 @@ STOPPED = re.compile(r"Stopped in [0-9.]+ s")
 COMMANDS = [
     ("glist", re.compile(r"0 players online")),
     ("log tail 3", re.compile(r"last 3 lines")),
-    ("warp startup", re.compile(r"Ready in [0-9.]+ s")),
+    ("warp startup", re.compile(r"Started in [0-9.]+ m?s:\s+- jvm ")),
 ]
 
 class Process:
@@ -131,18 +131,21 @@ class PosixPtyProcess(Process):
 
     def wait(self, timeout: float) -> int | None:
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        while self.status is None:
             pid, status = os.waitpid(self.pid, os.WNOHANG)
             if pid != 0:
                 self.status = os.waitstatus_to_exitcode(status)
-                return self.status
-            time.sleep(0.1)
-        return None
+            elif time.monotonic() >= deadline:
+                break
+            else:
+                time.sleep(0.1)
+        return self.status
 
     def kill(self) -> None:
         import signal
 
-        os.kill(self.pid, signal.SIGKILL)
+        if self.status is None:
+            os.kill(self.pid, signal.SIGKILL)
 
 
 class WindowsPtyProcess(Process):
@@ -173,9 +176,11 @@ class WindowsPtyProcess(Process):
 
     def wait(self, timeout: float) -> int | None:
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        while True:
             if not self.process.isalive():
                 return self.process.exitstatus
+            if time.monotonic() >= deadline:
+                break
             time.sleep(0.1)
         return None
 
