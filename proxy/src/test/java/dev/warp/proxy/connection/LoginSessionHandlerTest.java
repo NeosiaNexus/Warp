@@ -867,12 +867,15 @@ class LoginSessionHandlerTest {
     private static final ProfileKeys PROFILE_KEYS =
         new ProfileKeys(generateRsaKeyPair().getPublic(), InstantSource.system());
 
+    private static final UUID STEVE = UUID.fromString("f81d4fae-7dec-11d0-a765-00a0c91e6bf6");
+
     private final MojangSessionService sessionService = mock(MojangSessionService.class);
 
     /** Builds the padding: seeded, so that a failure replays with the same blocks. */
     private final SplittableRandom random = new SplittableRandom(0x5741_5250L);
 
-    private final byte[] secret = randomBytes(16);
+    /** The shared secret: random, as a client's, since it is also the AES key and IV. */
+    private final byte[] secret = randomSecret();
 
     /** Ways a client can get an encryption response wrong, padding valid or not. */
     enum Invalid {
@@ -899,10 +902,14 @@ class LoginSessionHandlerTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("versions")
     @DisplayName("should enable encryption and authenticate with the secret of a valid response")
-    void validResponse(ProtocolVersion version) throws AuthenticationException {
-      UUID steve = UUID.fromString("f81d4fae-7dec-11d0-a765-00a0c91e6bf6");
+    void validResponse(ProtocolVersion version) throws Exception {
+      AtomicReference<Thread> authThread = new AtomicReference<>();
       when(sessionService.hasJoined(eq("Steve"), anyString()))
-          .thenReturn(new GameProfile(steve, "Steve", List.of()));
+          .thenAnswer(
+              invocation -> {
+                authThread.set(Thread.currentThread());
+                return new GameProfile(STEVE, "Steve", List.of());
+              });
       EmbeddedChannel channel = onlineChannel(version);
       try {
         sendLoginStart(channel, "Steve", version);
@@ -912,11 +919,22 @@ class LoginSessionHandlerTest {
         sendResponse(
             channel, version, rsa(key, pkcs1(key, secret)), rsa(key, pkcs1(key, token(request))));
 
-        assertNull(channel.readOutbound(), "a valid response gets no reply before authentication");
         assertNotNull(channel.pipeline().get(ServerChannelInitializer.CIPHER_DECODER));
         assertNotNull(channel.pipeline().get(ServerChannelInitializer.CIPHER_ENCODER));
         verify(sessionService, timeout(10_000))
             .hasJoined("Steve", ServerHash.compute("", secret, request.publicKey()));
+        // Joining the thread orders what it handed to the event loop before the tasks run here.
+        Thread auth = authThread.get();
+        assertNotNull(auth, "the session server was asked");
+        auth.join(10_000);
+        channel.runPendingTasks();
+        ByteBuf clear = decrypted(channel);
+        try {
+          // The first thing the client reads is Login Success, encrypted with its secret.
+          frameBody(clear, ProtocolState.LOGIN, LoginSuccess.class, version);
+        } finally {
+          clear.release();
+        }
       } finally {
         channel.finishAndReleaseAll();
       }
@@ -989,6 +1007,22 @@ class LoginSessionHandlerTest {
           version);
     }
 
+    /** Everything the proxy sent since it enabled encryption, decrypted with the secret. */
+    private ByteBuf decrypted(EmbeddedChannel channel) throws GeneralSecurityException {
+      Cipher cipher = Cipher.getInstance("AES/CFB8/NoPadding");
+      cipher.init(
+          Cipher.DECRYPT_MODE, new SecretKeySpec(secret, "AES"), new IvParameterSpec(secret));
+      ByteBuf clear = Unpooled.buffer();
+      for (ByteBuf encrypted; (encrypted = channel.readOutbound()) != null; ) {
+        try {
+          clear.writeBytes(cipher.update(ByteBufUtil.getBytes(encrypted)));
+        } finally {
+          encrypted.release();
+        }
+      }
+      return clear;
+    }
+
     private byte[] token(EncryptionRequest request) {
       assertEquals(4, request.verifyToken().length, "verify token length");
       return request.verifyToken();
@@ -1019,10 +1053,10 @@ class LoginSessionHandlerTest {
       return block;
     }
 
-    private byte[] randomBytes(int length) {
-      byte[] bytes = new byte[length];
-      random.nextBytes(bytes);
-      return bytes;
+    private static byte[] randomSecret() {
+      byte[] secret = new byte[16];
+      ThreadLocalRandom.current().nextBytes(secret);
+      return secret;
     }
 
     private RSAPublicKey publicKey(EncryptionRequest request) {

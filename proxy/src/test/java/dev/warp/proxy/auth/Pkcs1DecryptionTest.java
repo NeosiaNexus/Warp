@@ -31,25 +31,27 @@ import java.util.SplittableRandom;
 import java.util.function.UnaryOperator;
 import java.util.stream.Stream;
 
-import javax.crypto.Cipher;
-
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Named;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("Pkcs1Decryption")
 class Pkcs1DecryptionTest {
 
-  /** The proxy's key size, as the protocol fixes it. */
-  private static final KeyPair KEY = generate(1024);
+  /**
+   * The proxy runs a 1024-bit key, which the protocol fixes; the padding checks do not depend on
+   * the size. The JDK's PKCS#1 v1.5 cipher, which clients encrypt with, logs in through this class
+   * in {@code LoginSessionHandlerTest}.
+   */
+  private static final KeyPair KEY = generate(2048);
 
   private static final RSAPublicKey PUBLIC = (RSAPublicKey) KEY.getPublic();
 
-  private static final int BLOCK_SIZE = 128;
+  private static final int BLOCK_SIZE = 256;
 
   /** Builds the padding: seeded, so that a failure replays with the same blocks. */
   private final SplittableRandom random = new SplittableRandom(0x504B_4353L);
@@ -62,34 +64,20 @@ class Pkcs1DecryptionTest {
 
     @ParameterizedTest(name = "{0} bytes")
     @ValueSource(ints = {4, 16})
-    @DisplayName("should decrypt what the JDK's PKCS#1 v1.5 cipher encrypts, as clients do")
-    void decryptsWhatTheJdkEncrypts(int length) throws GeneralSecurityException {
+    @DisplayName("should decrypt a value of the expected length, as a verify token or a secret")
+    void decryptsAValue(int length) {
       byte[] value = randomBytes(length);
-      Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
-      cipher.init(Cipher.ENCRYPT_MODE, KEY.getPublic());
 
-      byte[] decrypted = Pkcs1Decryption.decrypt(KEY.getPrivate(), cipher.doFinal(value), length);
+      byte[] decrypted = Pkcs1Decryption.decrypt(KEY.getPrivate(), encrypt(pkcs1(value)), length);
 
       assertArrayEquals(value, decrypted);
-    }
-
-    @Test
-    @DisplayName("should decrypt a value with a 2048-bit key too")
-    void decryptsWithALargerKey() throws GeneralSecurityException {
-      KeyPair larger = generate(2048);
-      Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
-      cipher.init(Cipher.ENCRYPT_MODE, larger.getPublic());
-
-      byte[] decrypted = Pkcs1Decryption.decrypt(larger.getPrivate(), cipher.doFinal(secret), 16);
-
-      assertArrayEquals(secret, decrypted);
     }
 
     @Test
     @DisplayName(
         "should decrypt a block built by hand, the ciphertext stripped of its leading zero")
     void decryptsAShortCiphertext() {
-      // A ciphertext below 2^1016 has a leading zero byte, which a client may leave out.
+      // A ciphertext below 2^2040 has a leading zero byte, which a client may leave out.
       byte[] ciphertext;
       do {
         ciphertext = unsigned(rsa(pkcs1(secret)));
@@ -115,20 +103,23 @@ class Pkcs1DecryptionTest {
   @DisplayName("an invalid ciphertext")
   class Invalid {
 
-    static Stream<Arguments> invalidBlocks() {
+    /**
+     * Damage done to a block carrying a 16-byte value, whose separator is 17 bytes from the end.
+     */
+    static Stream<Named<UnaryOperator<byte[]>>> invalidBlocks() {
       return Stream.of(
-          Arguments.of("first byte not zero", (UnaryOperator<byte[]>) b -> set(b, 0, 1)),
-          Arguments.of("block type 1", (UnaryOperator<byte[]>) b -> set(b, 1, 1)),
-          Arguments.of("block type 0", (UnaryOperator<byte[]>) b -> set(b, 1, 0)),
-          Arguments.of("zero in the padding", (UnaryOperator<byte[]>) b -> set(b, 9, 0)),
-          Arguments.of("zero padding byte last", (UnaryOperator<byte[]>) b -> set(b, 110, 0)),
-          Arguments.of("no separator", (UnaryOperator<byte[]>) b -> set(b, 111, 0x5A)));
+          Named.of("first byte not zero", b -> set(b, 0, 1)),
+          Named.of("block type 1", b -> set(b, 1, 1)),
+          Named.of("block type 0", b -> set(b, 1, 0)),
+          Named.of("zero in the padding", b -> set(b, 9, 0)),
+          Named.of("last padding byte zero", b -> set(b, BLOCK_SIZE - 18, 0)),
+          Named.of("no separator", b -> set(b, BLOCK_SIZE - 17, 0x5A)));
     }
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("invalidBlocks")
     @DisplayName("should refuse a block that is not PKCS#1 v1.5 encryption padding")
-    void refusesBadPadding(String what, UnaryOperator<byte[]> damage) {
+    void refusesBadPadding(UnaryOperator<byte[]> damage) {
       byte[] ciphertext = encrypt(damage.apply(pkcs1(secret)));
 
       assertNull(Pkcs1Decryption.decrypt(KEY.getPrivate(), ciphertext, 16));

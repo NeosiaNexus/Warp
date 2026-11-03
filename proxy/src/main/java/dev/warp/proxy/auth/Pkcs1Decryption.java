@@ -84,8 +84,11 @@ public final class Pkcs1Decryption {
       return false;
     }
     byte[] value = Arrays.copyOfRange(block, block.length - expected.length, block.length);
-    // Both checks always run: no branch on the padding before the value is compared.
-    return paddingError(block, expected.length) == 0 & MessageDigest.isEqual(expected, value);
+    // Both checks run before either result is looked at: no branch on the padding before the
+    // value is compared.
+    int paddingError = paddingError(block, expected.length);
+    boolean equal = MessageDigest.isEqual(expected, value);
+    return paddingError == 0 && equal;
   }
 
   /**
