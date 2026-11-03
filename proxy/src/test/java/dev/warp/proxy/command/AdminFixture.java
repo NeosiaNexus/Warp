@@ -274,17 +274,17 @@ final class AdminFixture {
 
     /** Everything it was told, one line per message. */
     List<String> told() {
-      return received.stream().map(PLAIN::serialize).toList();
+      return received.stream().map(AdminFixture::plain).toList();
     }
 
-    /** The last thing it was told. */
+    /** The last thing it was told, rendered in English as the console renders it by default. */
     String last() {
-      return PLAIN.serialize(received.getLast());
+      return plain(received.getLast());
     }
 
-    /** The last thing it was told, as a component. */
+    /** The last thing it was told, as a component rendered in English. */
     Component lastComponent() {
-      return received.getLast();
+      return PlayerMessages.english(received.getLast());
     }
   }
 

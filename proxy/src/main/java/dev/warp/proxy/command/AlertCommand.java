@@ -21,6 +21,7 @@ import dev.warp.api.command.CommandSource;
 import dev.warp.api.player.Player;
 import dev.warp.proxy.i18n.Message;
 import dev.warp.proxy.i18n.PlayerMessages;
+import dev.warp.proxy.logging.Plural;
 
 import java.util.List;
 
@@ -69,13 +70,14 @@ final class AlertCommand {
                         player.sendMessage(alert);
                       }
                       logger.info(
-                          "Alert from {} to {} players: {}",
+                          "Alert from {} to {} "
+                              + Plural.of(players.size(), "player", "players")
+                              + ": {}",
                           source instanceof Player player ? player.username() : "the console",
                           players.size(),
                           PlainTextComponentSerializer.plainText()
                               .serialize(PlayerMessages.english(alert)));
-                      CommandSupport.tell(
-                          source, Message.ALERT_SENT.with(Message.count(players.size())));
+                      source.sendMessage(Message.ALERT_SENT.with(Message.count(players.size())));
                       return Command.SINGLE_SUCCESS;
                     }));
   }

@@ -256,17 +256,16 @@ final class SendCommand {
       Warp proxy, CommandSource source, Selection selection, String destinationName) {
     Optional<RegisteredServer> found = proxy.servers().server(destinationName);
     if (found.isEmpty()) {
-      CommandSupport.tell(
-          source, Message.UNKNOWN_SERVER.with(Message.text("server", destinationName)));
+      source.sendMessage(Message.UNKNOWN_SERVER.with(Message.text("server", destinationName)));
       return 0;
     }
     RegisteredServer destination = found.get();
     if (!(selection instanceof Players(List<Player> players, Component from, boolean single))) {
-      CommandSupport.tell(source, ((Refusal) selection).message());
+      source.sendMessage(((Refusal) selection).message());
       return 0;
     }
     if (players.isEmpty()) {
-      CommandSupport.tell(source, Message.SEND_NOBODY.with(Message.component("target", from)));
+      source.sendMessage(Message.SEND_NOBODY.with(Message.component("target", from)));
       return 0;
     }
     List<Player> moving = new ArrayList<>();
@@ -275,8 +274,7 @@ final class SendCommand {
       (isOn(player, destination) ? there : moving).add(player);
     }
     if (moving.isEmpty()) {
-      CommandSupport.tell(
-          source,
+      source.sendMessage(
           Message.SEND_ALREADY_THERE.with(
               Message.count(there.size()), Message.text("server", destination.name())));
       return 0;
@@ -284,14 +282,12 @@ final class SendCommand {
     if (!single) {
       String unreachable = unreachable(destination);
       if (unreachable != null) {
-        CommandSupport.tell(
-            source,
+        source.sendMessage(
             Message.SEND_UNREACHABLE.with(
                 Message.text("server", destination.name()), Message.text("error", unreachable)));
         return 0;
       }
-      CommandSupport.tell(
-          source,
+      source.sendMessage(
           Message.SEND_STARTED.with(
               Message.number("count", moving.size()),
               Message.component("target", from),
@@ -301,7 +297,7 @@ final class SendCommand {
     for (Player player : there) {
       outcomes.add(new Outcome(player, Message.SEND_REASON_ALREADY.of()));
     }
-    CommandSupport.tell(source, summary(outcomes, from, destination, single));
+    source.sendMessage(summary(outcomes, from, destination, single));
     return Command.SINGLE_SUCCESS;
   }
 

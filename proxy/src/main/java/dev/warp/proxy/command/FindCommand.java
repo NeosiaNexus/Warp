@@ -69,12 +69,12 @@ final class FindCommand {
                       String name = StringArgumentType.getString(context, "player");
                       Optional<Player> player = proxy.player(name);
                       if (player.isEmpty()) {
-                        CommandSupport.tell(
-                            source, Message.UNKNOWN_PLAYER.with(Message.text("player", name)));
+                        source.sendMessage(
+                            Message.UNKNOWN_PLAYER.with(Message.text("player", name)));
                         return 0;
                       }
-                      CommandSupport.tell(
-                          source, describe(player.get(), source.hasPermission(ADDRESS_PERMISSION)));
+                      source.sendMessage(
+                          describe(player.get(), source.hasPermission(ADDRESS_PERMISSION)));
                       return Command.SINGLE_SUCCESS;
                     }));
   }

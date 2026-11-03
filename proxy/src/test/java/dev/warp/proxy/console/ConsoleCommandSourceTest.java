@@ -25,7 +25,9 @@ import dev.warp.api.Warp;
 import dev.warp.api.command.CommandSource;
 import dev.warp.proxy.WarpServer;
 import dev.warp.proxy.config.WarpConfig;
+import dev.warp.proxy.i18n.Message;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -63,6 +65,34 @@ class ConsoleCommandSourceTest {
   @Test
   @DisplayName("logs what it is sent as a component, for the console to colour")
   void logs() {
+    List<LogEvent> events =
+        captured(() -> new ConsoleCommandSource().sendMessage(Component.text("Hello")));
+
+    assertEquals(1, events.size());
+    ComponentMessage message =
+        assertInstanceOf(ComponentMessage.class, events.getFirst().getMessage());
+    assertEquals(Component.text("Hello"), message.component());
+    assertEquals("Hello", message.getFormattedMessage());
+  }
+
+  @Test
+  @DisplayName("renders the proxy's messages in the configured default language")
+  void defaultLanguage() throws Exception {
+    Files.writeString(
+        directory.resolve("warp.conf"), "messages {\n  default-locale = \"fr_FR\"\n}\n");
+    Warp warp = new WarpServer(WarpConfig.load(directory), directory);
+
+    List<LogEvent> events =
+        captured(() -> warp.console().sendMessage(Message.UNKNOWN_SERVER.of("nowhere")));
+
+    assertEquals(1, events.size());
+    assertEquals(
+        "Serveur inconnu : nowhere. Tapez /server pour voir la liste des serveurs.",
+        events.getFirst().getMessage().getFormattedMessage());
+  }
+
+  /** What the console's logger receives while {@code send} runs. */
+  private static List<LogEvent> captured(Runnable send) {
     String name = "dev.warp.proxy.console.Console";
     LoggerContext context = (LoggerContext) LogManager.getContext(false);
     Configuration configuration = context.getConfiguration();
@@ -86,17 +116,13 @@ class ConsoleCommandSourceTest {
     configuration.addLogger(name, logger);
     context.updateLoggers();
     try {
-      new ConsoleCommandSource().sendMessage(Component.text("Hello"));
+      send.run();
 
       long deadline = System.nanoTime() + 5_000_000_000L;
       while (events.isEmpty() && System.nanoTime() < deadline) {
         Thread.onSpinWait();
       }
-      assertEquals(1, events.size());
-      ComponentMessage message =
-          assertInstanceOf(ComponentMessage.class, events.getFirst().getMessage());
-      assertEquals(Component.text("Hello"), message.component());
-      assertEquals("Hello", message.getFormattedMessage());
+      return List.copyOf(events);
     } finally {
       configuration.removeLogger(name);
       context.updateLoggers();

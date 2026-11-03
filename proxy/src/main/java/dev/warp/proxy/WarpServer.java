@@ -61,6 +61,7 @@ import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.limit.Blocklist;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.logging.LogSinkRegistry;
+import dev.warp.proxy.logging.Plural;
 import dev.warp.proxy.logging.SinkAppender;
 import dev.warp.proxy.management.ManagementServer;
 import dev.warp.proxy.management.ProxyHealth;
@@ -223,7 +224,8 @@ public final class WarpServer implements Warp {
   private final WarpCommandManager commands = new WarpCommandManager();
 
   /** The console as a command source: every permission, its messages logged. */
-  private final ConsoleCommandSource consoleSource = new ConsoleCommandSource();
+  /** The console as a command source, rendering the proxy's messages in the default language. */
+  private final ConsoleCommandSource consoleSource;
 
   /** Pings the backend servers for the startup summary and the status line. */
   private final ServerChecks serverChecks = new ServerChecks();
@@ -336,6 +338,7 @@ public final class WarpServer implements Warp {
    */
   WarpServer(WarpConfig config, Path directory, IntConsumer exit, Duration shutdownQuietPeriod) {
     this.config = config;
+    this.consoleSource = new ConsoleCommandSource(config::messages);
     this.directory = directory;
     this.exit = exit;
     this.shutdownQuietPeriod = shutdownQuietPeriod;
@@ -515,8 +518,21 @@ public final class WarpServer implements Warp {
             consoleSource,
             directory.resolve(".console_history"),
             () -> {
-              stopCause = "stopped at the console";
-              var _ = Thread.ofPlatform().name("warp-stop").start(() -> exit.accept(0));
+              // Ctrl+C or Ctrl+D: the graceful path of /shutdown (players told, the drain, the
+              // same summary). The prompt is gone: a second Ctrl+C is a SIGINT, which stops at
+              // once. Without /shutdown (a plugin unregistered it), the proxy stops at once.
+              logger.info("Shutting down as /shutdown does: Ctrl+C again stops at once");
+              var _ =
+                  commands
+                      .execute(consoleSource, "shutdown")
+                      .thenAccept(
+                          ran -> {
+                            if (!ran) {
+                              stopCause = "stopped at the console";
+                              var _ =
+                                  Thread.ofPlatform().name("warp-stop").start(() -> exit.accept(0));
+                            }
+                          });
             });
     this.console = reader;
     reader.start();
@@ -666,7 +682,8 @@ public final class WarpServer implements Warp {
     if (players.isEmpty()) {
       return 0;
     }
-    logger.info("Disconnecting {} players", players.size());
+    logger.info(
+        "Disconnecting {} " + Plural.of(players.size(), "player", "players"), players.size());
     for (ConnectedPlayer player : players) {
       if (reason == null) {
         player.disconnectShutdown();

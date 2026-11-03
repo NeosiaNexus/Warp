@@ -35,6 +35,7 @@ import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.console.SourceTags;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.logging.LogSinkRegistry;
+import dev.warp.proxy.logging.Plural;
 import dev.warp.proxy.management.ReadinessHolds;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
@@ -153,7 +154,10 @@ public final class WarpPluginManager implements PluginManager {
 
     long enabled = containers.stream().filter(c -> c.state() == PluginState.ENABLED).count();
     if (!containers.isEmpty()) {
-      logger.info("{} of {} plugins enabled", enabled, containers.size());
+      logger.info(
+          "{} of {} " + Plural.of(containers.size(), "plugin", "plugins") + " enabled",
+          enabled,
+          containers.size());
     }
   }
 

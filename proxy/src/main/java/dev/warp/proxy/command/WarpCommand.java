@@ -38,6 +38,7 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.JoinConfiguration;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
+import net.kyori.adventure.text.minimessage.tag.resolver.Formatter;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -80,8 +81,7 @@ final class WarpCommand {
             .executes(
                 context -> {
                   CommandSource source = context.getSource();
-                  CommandSupport.tell(
-                      source,
+                  source.sendMessage(
                       source.hasPermission(PERMISSION)
                           ? overview(proxy, control, source, antiBot != null)
                           : subcommands(source, antiBot != null));
@@ -92,8 +92,7 @@ final class WarpCommand {
                     .requires(source -> source.hasPermission(PERMISSION))
                     .executes(
                         context -> {
-                          CommandSupport.tell(
-                              context.getSource(), plugins(proxy.plugins().plugins()));
+                          context.getSource().sendMessage(plugins(proxy.plugins().plugins()));
                           return Command.SINGLE_SUCCESS;
                         }));
     if (antiBot != null) {
@@ -162,7 +161,8 @@ final class WarpCommand {
               Message.component("elapsed", CommandSupport.duration(drain.elapsed())),
               Message.component("phase", ShutdownCommand.describe(drain.phase())),
               Message.component("trigger", ShutdownCommand.describe(drain.trigger())),
-              Message.number("players", drain.players())));
+              Message.number("players", drain.players()),
+              Formatter.choice("n", drain.players())));
     }
     lines.add(subcommands(source, antiBot));
     return Component.join(JoinConfiguration.newlines(), lines);

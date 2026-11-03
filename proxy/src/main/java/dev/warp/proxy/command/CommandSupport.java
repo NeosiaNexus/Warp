@@ -21,7 +21,6 @@ import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerRegistry;
 import dev.warp.proxy.i18n.Message;
-import dev.warp.proxy.i18n.PlayerMessages;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -281,21 +280,6 @@ final class CommandSupport {
               Message.number("minutes", minutes), Message.number("seconds", secs));
     }
     return Message.DURATION_SECONDS.with(Message.number("seconds", secs));
-  }
-
-  // ---------------------------------------------------------------------------
-  // Replies
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Tells a source a message: a player in its own language (the player renders it when it is
-   * written), anyone else, such as the console, in English.
-   *
-   * @param source who is told
-   * @param message the message
-   */
-  static void tell(CommandSource source, Component message) {
-    source.sendMessage(source instanceof Player ? message : PlayerMessages.english(message));
   }
 
   /**

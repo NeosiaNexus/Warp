@@ -72,7 +72,7 @@ final class GlistCommand {
         .requires(source -> source.hasPermission(PERMISSION))
         .executes(
             context -> {
-              CommandSupport.tell(context.getSource(), overview(proxy));
+              context.getSource().sendMessage(overview(proxy));
               return Command.SINGLE_SUCCESS;
             })
         .then(
@@ -150,12 +150,12 @@ final class GlistCommand {
     } else {
       Optional<RegisteredServer> server = proxy.servers().server(target);
       if (server.isEmpty()) {
-        CommandSupport.tell(source, Message.UNKNOWN_SERVER.with(Message.text("server", target)));
+        source.sendMessage(Message.UNKNOWN_SERVER.with(Message.text("server", target)));
         return 0;
       }
       servers = List.of(server.get());
     }
-    CommandSupport.tell(source, names(servers, all, page));
+    source.sendMessage(names(servers, all, page));
     return Command.SINGLE_SUCCESS;
   }
 

@@ -137,7 +137,7 @@ public final class ProxyCommands {
                       .map(RegisteredServer::name)
                       .sorted(Comparator.naturalOrder())
                       .toList();
-              CommandSupport.tell(source, serverList(names, current));
+              source.sendMessage(serverList(names, current));
               return Command.SINGLE_SUCCESS;
             })
         .then(
@@ -147,11 +147,11 @@ public final class ProxyCommands {
                       String name = StringArgumentType.getString(context, "server");
                       Optional<RegisteredServer> target = servers.server(name);
                       if (target.isEmpty()) {
-                        CommandSupport.tell(context.getSource(), Message.UNKNOWN_SERVER.of(name));
+                        context.getSource().sendMessage(Message.UNKNOWN_SERVER.of(name));
                         return 0;
                       }
                       if (!(context.getSource() instanceof Player player)) {
-                        CommandSupport.tell(context.getSource(), Message.SERVER_NOT_A_PLAYER.of());
+                        context.getSource().sendMessage(Message.SERVER_NOT_A_PLAYER.of());
                         return 0;
                       }
                       var _ =

@@ -34,6 +34,7 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
+import net.kyori.adventure.text.minimessage.tag.resolver.Formatter;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -86,7 +87,7 @@ final class ShutdownCommand {
   private static int shutdown(
       Warp proxy, ProxyControl control, CommandSource source, @Nullable String typed) {
     if (proxy.isDraining()) {
-      CommandSupport.tell(source, already(proxy.drainStatus()));
+      source.sendMessage(already(proxy.drainStatus()));
       return 0;
     }
     Component reason = typed == null ? null : reason(typed);
@@ -94,8 +95,7 @@ final class ShutdownCommand {
     try {
       var _ = control.shutdown(reason);
     } catch (IllegalStateException e) {
-      CommandSupport.tell(
-          source,
+      source.sendMessage(
           Message.SHUTDOWN_REFUSED.with(Message.text("error", String.valueOf(e.getMessage()))));
       return 0;
     }
@@ -111,7 +111,7 @@ final class ShutdownCommand {
     for (Player player : players) {
       player.sendMessage(announcement);
     }
-    CommandSupport.tell(source, started(control.drain(), players.size()));
+    source.sendMessage(started(control.drain(), players.size()));
     return Command.SINGLE_SUCCESS;
   }
 
@@ -170,7 +170,8 @@ final class ShutdownCommand {
         Message.component("elapsed", CommandSupport.duration(status.elapsed())),
         Message.component("phase", describe(status.phase())),
         Message.component("trigger", describe(status.trigger())),
-        Message.number("players", status.players()));
+        Message.number("players", status.players()),
+        Formatter.choice("n", status.players()));
   }
 
   /**

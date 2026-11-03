@@ -240,7 +240,8 @@ public enum Message {
   /** No plugins. */
   WARP_PLUGINS_NONE("warp.command.warp.plugins-none", Kind.CHAT),
   /** The drain, while one runs. */
-  WARP_DRAINING("warp.command.warp.draining", Kind.CHAT, "elapsed", "phase", "trigger", "players"),
+  WARP_DRAINING(
+      "warp.command.warp.draining", Kind.CHAT, "elapsed", "phase", "trigger", "players", "n"),
   /** Links to the subcommands. */
   WARP_SUBCOMMANDS("warp.command.warp.subcommands", Kind.CHAT, "commands"),
   /** The hover text of a subcommand's link. */
@@ -373,7 +374,7 @@ public enum Message {
   SHUTDOWN_FALLBACK_KEEP("warp.command.shutdown.fallback.keep", Kind.PART),
   /** A shutdown already runs. */
   SHUTDOWN_ALREADY(
-      "warp.command.shutdown.already", Kind.CHAT, "elapsed", "phase", "trigger", "players"),
+      "warp.command.shutdown.already", Kind.CHAT, "elapsed", "phase", "trigger", "players", "n"),
   /** The shutdown could not start. */
   SHUTDOWN_REFUSED("warp.command.shutdown.refused", Kind.CHAT, "error"),
 

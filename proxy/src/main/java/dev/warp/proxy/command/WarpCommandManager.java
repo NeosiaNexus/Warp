@@ -19,9 +19,7 @@ package dev.warp.proxy.command;
 import dev.warp.api.command.CommandSource;
 import dev.warp.api.command.SimpleCommand;
 import dev.warp.api.event.Subscription;
-import dev.warp.api.player.Player;
 import dev.warp.proxy.i18n.Message;
-import dev.warp.proxy.i18n.PlayerMessages;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -355,11 +353,8 @@ public final class WarpCommandManager implements AutoCloseable {
             source.sendMessage(Component.text(String.valueOf(e.getMessage()), NamedTextColor.RED));
           } catch (RuntimeException e) {
             logger.error("Command /{} failed", commandLine, e);
-            // A player's own language; anyone else, such as the console, gets English.
-            source.sendMessage(
-                source instanceof Player
-                    ? Message.COMMAND_FAILED.of()
-                    : PlayerMessages.english(Message.COMMAND_FAILED.of()));
+            // Rendered by the source: a player in its language, the console in the default one.
+            source.sendMessage(Message.COMMAND_FAILED.of());
           }
           return true;
         },
