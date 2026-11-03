@@ -24,6 +24,8 @@ import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerRegistry;
 import dev.warp.proxy.antibot.AntiBotService;
+import dev.warp.proxy.i18n.Message;
+import dev.warp.proxy.i18n.PlayerMessages;
 
 import java.util.Comparator;
 import java.util.List;
@@ -136,7 +138,7 @@ public final class ProxyCommands {
                       .map(RegisteredServer::name)
                       .sorted(Comparator.naturalOrder())
                       .toList();
-              source.sendMessage(serverList(names, current));
+              tell(source, serverList(names, current));
               return Command.SINGLE_SUCCESS;
             })
         .then(
@@ -146,11 +148,14 @@ public final class ProxyCommands {
                       String name = StringArgumentType.getString(context, "server");
                       Optional<RegisteredServer> target = servers.server(name);
                       if (target.isEmpty()) {
-                        context.getSource().sendMessage(unknownServer(name));
+                        tell(context.getSource(), Message.UNKNOWN_SERVER.of(name));
                         return 0;
                       }
                       if (!(context.getSource() instanceof Player player)) {
-                        context.getSource().sendMessage(Message.SERVER_NOT_A_PLAYER.render());
+                        context
+                            .getSource()
+                            .sendMessage(
+                                dev.warp.proxy.command.Message.SERVER_NOT_A_PLAYER.render());
                         return 0;
                       }
                       var _ =
@@ -161,14 +166,12 @@ public final class ProxyCommands {
                                     switch (result) {
                                       case ConnectionResult.AlreadyConnected(var server) ->
                                           player.sendMessage(
-                                              Message.SERVER_ALREADY_CONNECTED.render(
-                                                  Message.text("server", server.name())));
+                                              Message.ALREADY_ON_SERVER.of(server.name()));
                                       case ConnectionResult.InProgress _ ->
-                                          player.sendMessage(Message.SERVER_IN_PROGRESS.render());
+                                          player.sendMessage(Message.ALREADY_SWITCHING.of());
                                       case ConnectionResult.Denied(var server) ->
                                           player.sendMessage(
-                                              Message.SERVER_DENIED.render(
-                                                  Message.text("server", server.name())));
+                                              Message.CONNECT_DENIED.of(server.name()));
                                       default -> {
                                         // Connected, or failed: the player was told on the way.
                                       }
@@ -179,25 +182,26 @@ public final class ProxyCommands {
   }
 
   /**
-   * What a command says of a server name it does not know: "Unknown server: nowhere".
+   * Tells a source a message: a player in its own language, anyone else, such as the console, in
+   * English.
    *
-   * @param name the name typed
-   * @return the message
+   * @param source who is told
+   * @param message the message
    */
-  public static Component unknownServer(String name) {
-    return Message.UNKNOWN_SERVER.render(Message.text("server", name));
+  static void tell(CommandSource source, Component message) {
+    source.sendMessage(source instanceof Player ? message : PlayerMessages.english(message));
   }
 
   /**
    * The answer to {@code /server}: "Servers: [lobby], survival", the current server in brackets,
-   * each other one a link that moves the player there.
+   * each other one a link that moves the player there; rendered in the player's language.
    *
    * @param names the servers' names, in order
    * @param current the server the player is on, or {@code null}
    * @return the message
    */
   public static Component serverList(List<String> names, @Nullable String current) {
-    TextComponent.Builder list = Component.text().content("Servers: ").color(NamedTextColor.GRAY);
+    TextComponent.Builder list = Component.text().color(NamedTextColor.GRAY);
     boolean first = true;
     for (String name : names) {
       if (!first) {
@@ -209,8 +213,8 @@ public final class ProxyCommands {
               ? Component.text("[" + name + "]", NamedTextColor.GREEN)
               : Component.text(name, NamedTextColor.AQUA)
                   .clickEvent(ClickEvent.runCommand("/server " + name))
-                  .hoverEvent(HoverEvent.showText(Component.text("Connect to " + name))));
+                  .hoverEvent(HoverEvent.showText(Message.SERVER_LIST_HOVER.of(name))));
     }
-    return list.build();
+    return Message.SERVER_LIST.of(list.build());
   }
 }

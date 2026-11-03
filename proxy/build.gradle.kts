@@ -36,6 +36,16 @@ sourceSets.main {
     resources.srcDir(generateBuildInfo)
 }
 
+// The jar's entry point, compiled for Java 8: on a Java too old for Warp it says which Java to
+// install, where the JVM would fail with an UnsupportedClassVersionError (BungeeCord #751).
+val launcher: SourceSet = sourceSets.create("launcher")
+
+tasks.named<JavaCompile>(launcher.compileJavaTaskName) {
+    options.release = 8
+    // javac warns that release 8 is obsolete: it is the point.
+    options.compilerArgs.add("-Xlint:-options")
+}
+
 dependencies {
     implementation(project(":api"))
     implementation(project(":protocol"))
@@ -71,6 +81,11 @@ dependencies {
     implementation(libs.gson)
     implementation(libs.adventure.text.serializer.gson)
     implementation(libs.configurate.hocon)
+    // Read directly too, for the line of each key in configuration errors.
+    implementation(libs.typesafe.config)
+
+    "launcherCompileOnly"(libs.jspecify)
+    testImplementation(launcher.output)
 
     // Native crypto
     implementation(libs.netty.tcnative.boringssl)
@@ -89,9 +104,10 @@ tasks.shadowJar {
     exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA")
     exclude("**/module-info.class")
     exclude("META-INF/versions/*/module-info.class")
+    from(launcher.output)
     manifest {
         attributes(
-            "Main-Class" to application.mainClass.get(),
+            "Main-Class" to "dev.warp.proxy.launcher.WarpLauncher",
             "Multi-Release" to true,
             // Netty's epoll/kqueue transports load JNI libraries (JEP 472 restricted methods).
             "Enable-Native-Access" to "ALL-UNNAMED",

@@ -26,6 +26,7 @@ import dev.warp.proxy.config.ForwardingMode;
 import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
@@ -311,7 +312,8 @@ final class TestLoginContexts {
         LoggingConfig.DEFAULTS,
         false,
         antiBot,
-        new PipelineRegistry());
+        new PipelineRegistry(),
+        PlayerMessages.bundled());
   }
 
   /**
@@ -325,6 +327,7 @@ final class TestLoginContexts {
     org.mockito.Mockito.when(context.logging()).thenReturn(LoggingConfig.DEFAULTS);
     org.mockito.Mockito.when(context.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
     org.mockito.Mockito.when(context.antiBot()).thenReturn(calmAntiBot());
+    org.mockito.Mockito.when(context.messages()).thenReturn(PlayerMessages.bundled());
     return context;
   }
 
@@ -395,7 +398,8 @@ final class TestLoginContexts {
         logging,
         base.tcpFastOpen(),
         base.antiBot(),
-        base.pipelines());
+        base.pipelines(),
+        base.messages());
   }
 
   /**

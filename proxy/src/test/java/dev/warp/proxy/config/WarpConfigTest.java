@@ -265,7 +265,8 @@ class WarpConfigTest {
           assertThrows(ConfigurationException.class, () -> load("status { max-players = lots }"));
 
       assertTrue(
-          String.valueOf(error.getMessage()).contains("status.max-players must be a whole number"),
+          String.valueOf(error.getMessage())
+              .contains("status.max-players: expected a whole number, found 'lots'"),
           error.getMessage());
     }
 

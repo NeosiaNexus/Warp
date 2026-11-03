@@ -448,7 +448,8 @@ class RespawnSwitchTest {
       setup.runPendingTasks();
 
       // survival is tried (it cannot be reached from an embedded channel), then nothing is left.
-      assertDisconnectedWith(setup, "Could not connect to any available server.");
+      assertDisconnectedWith(
+          setup, "Could not connect to any server. Please try again in a moment.");
     }
 
     @Test
@@ -462,7 +463,8 @@ class RespawnSwitchTest {
       setup.runPendingTasks();
 
       assertNull(setup.player.backendConnection());
-      assertDisconnectedWith(setup, "Could not connect to any available server.");
+      assertDisconnectedWith(
+          setup, "Could not connect to any server. Please try again in a moment.");
     }
 
     @Test
@@ -496,7 +498,8 @@ class RespawnSwitchTest {
       setup.runPendingTasks();
 
       // creative is tried next (unreachable here), then nothing is left.
-      assertDisconnectedWith(setup, "Could not connect to any available server.");
+      assertDisconnectedWith(
+          setup, "Could not connect to any server. Please try again in a moment.");
     }
 
     private static void assertDisconnectedWith(SwitchHarness setup, String reason) {

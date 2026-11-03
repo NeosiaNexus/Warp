@@ -19,6 +19,7 @@ package dev.warp.proxy.event.player;
 import dev.warp.api.event.player.PlayerChooseInitialServerEvent;
 import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
+import dev.warp.proxy.i18n.Message;
 
 import java.util.Objects;
 import java.util.Optional;
@@ -30,8 +31,7 @@ import org.jspecify.annotations.Nullable;
 public final class PlayerChooseInitialServerEventImpl implements PlayerChooseInitialServerEvent {
 
   /** The reason a player is disconnected with when no server can take it. */
-  public static final Component NO_SERVER_AVAILABLE =
-      Component.text("No server is available right now. Try again later.");
+  public static final Component NO_SERVER_AVAILABLE = Message.NO_SERVER_AVAILABLE.of();
 
   private final Player player;
   private final @Nullable RegisteredServer proposed;

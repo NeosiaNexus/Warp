@@ -36,6 +36,7 @@ import dev.warp.api.server.ServerRegistry;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.config.DrainConfig;
+import dev.warp.proxy.i18n.PlayerMessages;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -208,9 +209,11 @@ final class AdminFixture {
     lenient().doReturn(CompletableFuture.completedFuture(result)).when(player).connect(any());
   }
 
-  /** What a player was told, in plain text. */
+  /** What a player was told, in plain text: rendered in English, as its client would be. */
   List<String> told(Player player) {
-    return receivedBy.getOrDefault(player, List.of()).stream().map(PLAIN::serialize).toList();
+    return receivedBy.getOrDefault(player, List.of()).stream()
+        .map(message -> PLAIN.serialize(PlayerMessages.english(message)))
+        .toList();
   }
 
   /** What a player was told, as components. */

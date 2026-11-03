@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import { BACKEND_PROTOCOL_ERRORS, backendGroups } from '../src/backend.js';
 import { connectClient } from '../src/clients/index.js';
 import { announcedProtocol } from '../src/clients/mineflayer.js';
-import { LOBBY_MODE, QUIRKS, SCENARIOS, SURVIVAL_MODE, checkServerList, checkStatus, checkStayed, checkTabLists, features, fromSurvival, plainText } from '../src/scenarios.js';
+import { LIMIT_PLAYERS, LOBBY_MODE, QUIRKS, SCENARIOS, SURVIVAL_MODE, checkFullReason, checkServerList, checkStatus, checkStayed, checkTabLists, features, fromSurvival, plainText } from '../src/scenarios.js';
 import { findEntry, jobsForTier, loadMatrix, resolveVariant, translationsForTier, translator } from '../src/versions.js';
 import { WARP_FAILURES } from '../src/warp.js';
 
@@ -382,5 +382,20 @@ describe('checkServerList', () => {
     const elsewhere = structuredClone(json);
     elsewhere.extra[2].clickEvent.value = '/server lobby';
     assert.throws(() => checkServerList(elsewhere, 'lobby'), /does not link/);
+  });
+});
+
+describe('player-limit', () => {
+  const [french, english] = LIMIT_PLAYERS;
+
+  it('expects the server full key of vanilla from 1.13, which the game translates itself', () => {
+    assert.equal(checkFullReason('{"translate":"multiplayer.disconnect.server_full"}', french, 393), 'multiplayer.disconnect.server_full');
+    assert.throws(() => checkFullReason('"Le serveur est complet."', french, 775), /vanilla's server full key/);
+  });
+
+  it('expects the text of Warp in the remembered language before 1.13', () => {
+    assert.equal(checkFullReason('"Le serveur est complet."', french, 47), 'Le serveur est complet.');
+    assert.equal(checkFullReason('{"text":"The server is full."}', english, 47), 'The server is full.');
+    assert.throws(() => checkFullReason('"The server is full."', french, 47), /Le serveur est complet/);
   });
 });
