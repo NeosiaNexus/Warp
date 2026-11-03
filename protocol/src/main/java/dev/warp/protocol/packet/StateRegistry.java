@@ -160,15 +160,8 @@ public final class StateRegistry {
    * @return the registry, or an empty registry if no packets are registered for this combination
    */
   public static PacketRegistry get(ProtocolState state, PacketDirection direction) {
-    Map<PacketDirection, PacketRegistry> byDirection = REGISTRIES.get(state);
-    if (byDirection == null) {
-      return EMPTY;
-    }
-    PacketRegistry registry = byDirection.get(direction);
-    if (registry == null) {
-      return EMPTY;
-    }
-    return registry;
+    // Every state has its map (see the static initializer); a direction may have no packets.
+    return REGISTRIES.getOrDefault(state, Map.of()).getOrDefault(direction, EMPTY);
   }
 
   /** Returns the direction map for a state, creating it if absent. Never null after init. */
