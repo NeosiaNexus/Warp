@@ -22,8 +22,10 @@ import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.config.WarpConfig;
 import dev.warp.proxy.console.ConsoleOutput;
 import dev.warp.proxy.console.Summaries;
+import dev.warp.proxy.remote.ConsoleCli;
 
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.function.UnaryOperator;
 
 import org.apache.logging.log4j.Level;
@@ -47,7 +49,8 @@ public final class WarpBootstrap {
   /**
    * Launches the Warp proxy.
    *
-   * @param args command-line arguments (currently unused)
+   * @param args command-line arguments: none to run the proxy, or {@code console ...} for the
+   *     remote console's client (see {@link ConsoleCli})
    */
   public static void main(String[] args) {
     // Before anything touches them: java.util.logging (JLine, some libraries) goes through Log4j,
@@ -55,6 +58,11 @@ public final class WarpBootstrap {
     // JDK's plain implementation, not its built-in JLine, which would compete with Warp's.
     setDefault("java.util.logging.manager", "org.apache.logging.log4j.jul.LogManager");
     setDefault("jdk.console", "java.base");
+    // java -jar warp.jar console ...: the remote console's client, which never starts a proxy.
+    if (args.length > 0 && args[0].equals("console")) {
+      System.exit(ConsoleCli.run(Arrays.copyOfRange(args, 1, args.length)));
+      return;
+    }
     Path directory = Path.of(".");
     // Before the first logger: Log4j reads the format once, when it starts, so that every line has
     // the same format, the configuration's own included. Hence no static logger in this class.
