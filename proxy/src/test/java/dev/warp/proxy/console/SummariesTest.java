@@ -71,8 +71,11 @@ class SummariesTest {
     void logo() {
       ConsoleBlock banner = Summaries.banner("1.0.0", "abc1234", "main");
 
-      assertTrue(banner.render(ColorDepth.NONE, Glyphs.UNICODE).contains("█ █ █   Warp 1.0.0"));
-      String ascii = banner.render(ColorDepth.NONE, Glyphs.ASCII);
+      assertTrue(
+          banner
+              .render(Palette.of(ColorDepth.NONE, Theme.DARK, false), Glyphs.UNICODE)
+              .contains("█ █ █   Warp 1.0.0"));
+      String ascii = banner.render(Palette.of(ColorDepth.NONE, Theme.DARK, false), Glyphs.ASCII);
       assertTrue(ascii.chars().allMatch(c -> c < 128), ascii);
     }
   }
@@ -101,10 +104,16 @@ class SummariesTest {
     @Test
     @DisplayName("colours what works and what does not")
     void colours() {
-      String rendered = Summaries.startup(FACTS).render(ColorDepth.ANSI_16, Glyphs.UNICODE);
+      String rendered =
+          Summaries.startup(FACTS)
+              .render(Palette.of(ColorDepth.ANSI_16, Theme.DARK, false), Glyphs.UNICODE);
 
-      assertTrue(rendered.contains(Style.GOOD.open(ColorDepth.ANSI_16) + "●"));
-      assertTrue(rendered.contains(Style.BAD.open(ColorDepth.ANSI_16) + "unreachable"));
+      assertTrue(
+          rendered.contains(
+              Palette.of(ColorDepth.ANSI_16, Theme.DARK, false).open(Style.GOOD) + "●"));
+      assertTrue(
+          rendered.contains(
+              Palette.of(ColorDepth.ANSI_16, Theme.DARK, false).open(Style.BAD) + "unreachable"));
     }
   }
 

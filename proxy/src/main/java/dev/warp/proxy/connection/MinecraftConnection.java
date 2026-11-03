@@ -32,6 +32,7 @@ import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.proxy.compression.Compression;
 import dev.warp.proxy.limit.Refusal;
+import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.pipeline.PipelineHost;
 
 import java.io.IOException;
@@ -266,6 +267,7 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
       } else {
         // Everything else is logged in full, naming the plugin handlers it may come from.
         logger.error(
+            LogCode.PIPELINE_EXCEPTION.marker(),
             "Exception in pipeline for {}{}",
             remoteAddress(),
             describePluginHandlers(ctx.pipeline().names()),
@@ -497,6 +499,7 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
         var _ = channel.writeAndFlush(packet, held.promise());
       } else {
         logger.warn(
+            LogCode.HELD_PACKET_DROPPED.marker(),
             "Dropped {} held for {}: it does not exist in {}",
             packet.getClass().getSimpleName(),
             channel.remoteAddress(),

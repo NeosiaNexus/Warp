@@ -246,6 +246,37 @@ public enum Message {
   WARP_SUBCOMMANDS("warp.command.warp.subcommands", Kind.CHAT, "commands"),
   /** The hover text of a subcommand's link. */
   WARP_SUBCOMMAND_HOVER("warp.command.warp.subcommand.hover", Kind.PART, "command"),
+  /** The startup's breakdown, heading. */
+  WARP_STARTUP("warp.command.warp.startup", Kind.CHAT, "total"),
+  /** One phase of the startup. */
+  WARP_STARTUP_PHASE("warp.command.warp.startup.phase", Kind.CHAT, "phase", "time", "share"),
+  /** The startup is not over. */
+  WARP_STARTUP_PENDING("warp.command.warp.startup.pending", Kind.CHAT),
+
+  // ---------------------------------------------------------------------------
+  // /log (console only)
+  // ---------------------------------------------------------------------------
+
+  /** A source's level changed until the proxy stops. */
+  LOG_LEVEL_SET("warp.command.log.level.set", Kind.CHAT, "source", "level", "loggers", "keep"),
+  /** A source's level put back. */
+  LOG_LEVEL_RESET("warp.command.log.level.reset", Kind.CHAT, "source"),
+  /** A source that /log level did not change. */
+  LOG_LEVEL_UNCHANGED("warp.command.log.level.unchanged", Kind.CHAT, "source"),
+  /** The levels /log level changed. */
+  LOG_LEVEL_LIST("warp.command.log.level.list", Kind.CHAT, "levels"),
+  /** No level changed. */
+  LOG_LEVEL_NONE("warp.command.log.level.none", Kind.CHAT),
+  /** Not a level. */
+  LOG_LEVEL_INVALID("warp.command.log.level.invalid", Kind.CHAT, "level"),
+  /** No such source. */
+  LOG_SOURCE_UNKNOWN("warp.command.log.source.unknown", Kind.CHAT, "source", "sources"),
+  /** The console shows one source. */
+  LOG_FILTER_ON("warp.command.log.filter.on", Kind.CHAT, "source"),
+  /** The console shows every source again. */
+  LOG_FILTER_OFF("warp.command.log.filter.off", Kind.CHAT),
+  /** The console writes JSON. */
+  LOG_UNAVAILABLE("warp.command.log.unavailable", Kind.CHAT),
 
   // ---------------------------------------------------------------------------
   // /warp plugins

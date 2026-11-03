@@ -61,6 +61,7 @@ import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.limit.LoginAdmission;
 import dev.warp.proxy.limit.LoginSlot;
 import dev.warp.proxy.limit.Refusal;
+import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.player.PlayerRegistry;
 
 import java.net.InetSocketAddress;
@@ -672,6 +673,7 @@ final class LoginSessionHandler implements SessionHandler {
       // AES/CFB8 is in every JDK: a broken runtime, nothing a client can bring about.
       String reference = InternalErrors.reference();
       logger.error(
+          LogCode.ENCRYPTION_FAILED.marker(),
           "Cannot enable encryption for {} (reference {})",
           connection.remoteAddress(),
           reference,
@@ -866,6 +868,7 @@ final class LoginSessionHandler implements SessionHandler {
                             long more = SESSION_SERVER_WARNINGS.tryAcquire();
                             if (more >= 0) {
                               logger.warn(
+                                  LogCode.SESSION_SERVER_FAILED.marker(),
                                   "The session server failed to authenticate {}: {}{}",
                                   playerName,
                                   e.getMessage(),
@@ -1250,6 +1253,7 @@ final class LoginSessionHandler implements SessionHandler {
   private void internalError(String detail) {
     String reference = InternalErrors.reference();
     logger.warn(
+        LogCode.LOGIN_REJECTED.marker(),
         "Disconnecting {} from {} (reference {}): {}",
         username != null ? username : "unknown",
         connection.remoteAddress(),

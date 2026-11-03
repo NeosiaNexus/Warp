@@ -17,6 +17,7 @@
 package dev.warp.proxy.connection;
 
 import dev.warp.proxy.limit.ClientLimits;
+import dev.warp.proxy.logging.LogCode;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -242,6 +243,7 @@ final class ProxyProtocolHandler extends ChannelInboundHandlerAdapter {
     long suppressed = warnings.tryAcquire();
     if (suppressed >= 0) {
       logger.warn(
+          LogCode.TRUSTED_PROXY_REFUSED.marker(),
           "Refused a connection from trusted proxy {}: {}{}",
           ctx.channel().remoteAddress(),
           problem,

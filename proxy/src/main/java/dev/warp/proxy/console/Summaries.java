@@ -180,9 +180,13 @@ public final class Summaries {
         .text(facts.antiBot().startsWith("off") ? Style.MUTED : null, facts.antiBot())
         .end();
     String management = facts.management();
-    row(block, "management")
-        .text(management == null ? Style.MUTED : null, management == null ? "off" : management)
-        .end();
+    if (management == null) {
+      row(block, "management").text(Style.MUTED, "off").end();
+    } else {
+      // A wildcard address listens everywhere, but a browser opens it as this machine.
+      String local = management.replace("0.0.0.0:", "127.0.0.1:").replace("[::]:", "[::1]:");
+      row(block, "management").link(null, management, "http://" + local + "/readyz").end();
+    }
     rule(block);
     return block.build();
   }

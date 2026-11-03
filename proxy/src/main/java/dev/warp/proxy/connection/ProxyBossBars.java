@@ -20,6 +20,7 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.PlayPacket;
 import dev.warp.protocol.text.ComponentCodec;
+import dev.warp.proxy.logging.LogCode;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -238,7 +239,10 @@ final class ProxyBossBars {
     try {
       return ComponentCodec.encode(player.render(bar.name()), version);
     } catch (IllegalArgumentException tooLarge) {
-      logger.warn("A boss bar name is too large for the client of {}", player.username());
+      logger.warn(
+          LogCode.BOSS_BAR_NAME_TOO_LARGE.marker(),
+          "A boss bar name is too large for the client of {}",
+          player.username());
       return ComponentCodec.encode(Component.empty(), version);
     }
   }

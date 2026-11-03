@@ -178,6 +178,57 @@ jobs:
           advanced-security: false
           annotations: true
 
+  # The console where operators run Warp: started from the jar of Build & test with its console on
+  # a pipe (systemd, Docker, panels) and on a pseudo-terminal (a ConPTY on Windows, through
+  # pywinpty), a few commands typed and their replies checked, the log file checked for escape
+  # sequences, then /shutdown and a clean exit (.github/scripts/console-smoke.py).
+  console:
+    name: Console (${{ matrix.os }}, ${{ matrix.mode }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15, ubuntu-24.04]
+        mode: [pipe, pty]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    permissions:
+      contents: read # check out the script
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: 25
+
+      - name: Download the Warp jar
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: warp-jar
+          path: ${{ runner.temp }}/warp
+
+      - name: Install pywinpty
+        if: ${{ runner.os == 'Windows' && matrix.mode == 'pty' }}
+        shell: bash
+        run: python -m pip install --disable-pip-version-check pywinpty==2.0.15
+
+      - name: Type commands at the console
+        shell: bash
+        env:
+          MODE: ${{ matrix.mode }}
+          JARS: ${{ runner.temp }}/warp
+        run: |
+          python=python3
+          if [ "$RUNNER_OS" = Windows ]; then python=python; fi
+          jar=$(find "$JARS" -name 'warp-*.jar' -not -name '*-sources.jar' -not -name '*-javadoc.jar' | head -n 1)
+          "$python" .github/scripts/console-smoke.py --jar "$jar" --mode "$MODE"
+
   # One passing version per protocol era and the newest version, plus every variant on the newest
   # the bots speak natively (e2e/versions.json, tier `pr`); every version (tier `full`) for a pull
   # request that changes Warp's modules or the harness. The full matrix also runs on main, nightly,
@@ -231,7 +282,7 @@ jobs:
   ci-ok:
     name: CI OK
     if: ${{ always() }}
-    needs: [changes, build, allocation-guard, lint-workflows, e2e, mutation]
+    needs: [changes, build, allocation-guard, lint-workflows, console, e2e, mutation]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}

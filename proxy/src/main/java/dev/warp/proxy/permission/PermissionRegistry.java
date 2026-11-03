@@ -20,6 +20,7 @@ import dev.warp.api.event.Subscription;
 import dev.warp.api.permission.PermissionProvider;
 import dev.warp.api.permission.Tristate;
 import dev.warp.api.player.Player;
+import dev.warp.proxy.logging.LogCode;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -148,6 +149,7 @@ public final class PermissionRegistry {
         answer = entry.provider().check(player, permission);
       } catch (RuntimeException e) {
         logger.error(
+            LogCode.PERMISSION_PROVIDER_FAILED.marker(),
             "Permission provider of {} failed checking {} for {}",
             entry.owner(),
             permission,

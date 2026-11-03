@@ -16,6 +16,8 @@
  */
 package dev.warp.proxy.drain;
 
+import dev.warp.proxy.logging.LogCode;
+
 import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.ScheduledFuture;
@@ -78,7 +80,7 @@ public final class ExecutorDrainScheduler implements DrainScheduler {
       try {
         task.run();
       } catch (RuntimeException | Error e) {
-        logger.error("A drain step failed", e);
+        logger.error(LogCode.DRAIN_STEP_FAILED.marker(), "A drain step failed", e);
       }
     };
   }

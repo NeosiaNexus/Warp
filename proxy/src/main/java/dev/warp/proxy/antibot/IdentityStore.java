@@ -25,6 +25,7 @@ import dev.warp.api.antibot.VerifiedStore;
 import dev.warp.api.event.Subscription;
 import dev.warp.api.event.antibot.IdentityVerifiedEvent;
 import dev.warp.proxy.config.AntiBotConfig;
+import dev.warp.proxy.logging.LogCode;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -173,7 +174,10 @@ public final class IdentityStore implements VerifiedIdentities, AutoCloseable {
                   disk.snapshot(table, cutoff());
                   disk.close();
                 } catch (IOException | RuntimeException e) {
-                  logger.warn("Anti-bot: could not save the trusted identities on shutdown", e);
+                  logger.warn(
+                      LogCode.ANTIBOT_SAVE_ON_SHUTDOWN_FAILED.marker(),
+                      "Anti-bot: could not save the trusted identities on shutdown",
+                      e);
                 }
               });
     } catch (RejectedExecutionException e) {
@@ -182,7 +186,9 @@ public final class IdentityStore implements VerifiedIdentities, AutoCloseable {
     thread.shutdown();
     try {
       if (!thread.awaitTermination(10, TimeUnit.SECONDS)) {
-        logger.warn("Anti-bot: the store did not finish saving within 10 s");
+        logger.warn(
+            LogCode.ANTIBOT_SAVE_SLOW.marker(),
+            "Anti-bot: the store did not finish saving within 10 s");
         thread.shutdownNow();
       }
     } catch (InterruptedException e) {
@@ -502,7 +508,8 @@ public final class IdentityStore implements VerifiedIdentities, AutoCloseable {
     } catch (IOException e) {
       diskFailed(e);
     } catch (RuntimeException e) {
-      logger.error("Anti-bot: the store's periodic work failed", e);
+      logger.error(
+          LogCode.ANTIBOT_STORE_FAILED.marker(), "Anti-bot: the store's periodic work failed", e);
     }
   }
 
@@ -510,6 +517,7 @@ public final class IdentityStore implements VerifiedIdentities, AutoCloseable {
     if (!diskFailing) {
       diskFailing = true;
       logger.warn(
+          LogCode.ANTIBOT_DISK_UNWRITABLE.marker(),
           "Anti-bot: cannot save the trusted identities to disk; they stay in memory until it"
               + " works again",
           e);

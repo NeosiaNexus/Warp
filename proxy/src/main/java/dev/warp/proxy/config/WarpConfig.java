@@ -19,6 +19,7 @@ package dev.warp.proxy.config;
 import dev.warp.api.server.Favicon;
 import dev.warp.proxy.console.ConsoleMarkers;
 import dev.warp.proxy.i18n.PlayerMessages;
+import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.messaging.BungeeCordSettings;
 import dev.warp.proxy.messaging.BungeeCordSubchannel;
 import dev.warp.proxy.network.CidrRange;
@@ -150,7 +151,7 @@ public final class WarpConfig {
 
   /** Settings that exist without being in the default file: their absence means something. */
   private static final Set<String> OPTIONAL_KEYS =
-      Set.of("status.max-players", "status.version-name");
+      Set.of("status.max-players", "status.version-name", "logging.levels.*");
 
   /** Settings of earlier layouts, with what replaced them. */
   private static final Map<String, String> MOVED_KEYS =
@@ -876,12 +877,17 @@ public final class WarpConfig {
     }
     if (LEGACY_CODE.matcher(source).find()) {
       logger.warn(
+          LogCode.MOTD_LEGACY_COLORS.marker(),
           "status.motd contains legacy color codes (such as &a), shown as typed: use MiniMessage"
               + " tags instead, such as <green>");
     }
     long lines = PlainTextComponentSerializer.plainText().serialize(motd).lines().count();
     if (lines > MOTD_LINES) {
-      logger.warn("status.motd has {} lines: clients only show the first {}", lines, MOTD_LINES);
+      logger.warn(
+          LogCode.MOTD_TOO_MANY_LINES.marker(),
+          "status.motd has {} lines: clients only show the first {}",
+          lines,
+          MOTD_LINES);
     }
     return motd;
   }
@@ -1039,6 +1045,7 @@ public final class WarpConfig {
     for (CidrRange range : trusted.ranges()) {
       if (range.prefixLength() == 0) {
         logger.warn(
+            LogCode.TRUSTED_PROXIES_EVERYONE.marker(),
             "proxy-protocol.trusted-proxies contains {}, which trusts every {} address: anyone"
                 + " who can reach Warp's port directly can spoof their address. List only your"
                 + " load balancers.",
@@ -1321,6 +1328,7 @@ public final class WarpConfig {
         logger.info("Generated a random forwarding secret in {}", file);
       } else {
         logger.warn(
+            LogCode.FORWARDING_SECRET_GENERATED.marker(),
             "{} did not exist: generated a new forwarding secret. Give it to every backend (Paper:"
                 + " proxies.velocity.secret in config/paper-global.yml), or players cannot join",
             file);
@@ -1557,6 +1565,20 @@ public final class WarpConfig {
           # Each command a player sends, with its arguments. Off by default: commands carry passwords
           # on offline-mode networks (/login, /register).
           commands = false
+
+          # Levels of log sources, kept across restarts: a source as the console names it (antibot,
+          # conn, drain, warp, plugin:<id>, netty...) or a logger name, then error, warn, info, debug
+          # or trace. Quote names with a colon or dots. /log level changes a level until the next
+          # restart, for instance levels { antibot = debug, "plugin:showcase" = trace }
+          levels {}
+        }
+
+        console {
+          # The console's colours: auto follows the terminal's background (light or dark, as the
+          # terminal answers or COLORFGBG says), dark, light, or colorblind (blue and orange where
+          # others use green and red, for the background found). WARP_THEME takes precedence. A log
+          # file is never coloured.
+          theme = auto
         }
 
         # Management HTTP server: Kubernetes probes, load balancer health checks and the drain.

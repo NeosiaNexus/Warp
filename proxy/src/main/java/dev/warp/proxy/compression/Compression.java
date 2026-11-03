@@ -21,6 +21,7 @@ import dev.warp.jni.NativeStatus;
 import dev.warp.jni.Natives;
 import dev.warp.protocol.compress.JavaCompressor;
 import dev.warp.protocol.compress.PacketCompressor;
+import dev.warp.proxy.logging.LogCode;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -85,12 +86,13 @@ public final class Compression {
     if (status.available()) {
       logger.debug("Compression: {}", status.detail());
       if (!status.advice().isEmpty()) {
-        logger.warn("{}.", status.advice());
+        logger.warn(LogCode.NATIVE_COMPRESSION_ADVICE.marker(), "{}.", status.advice());
       }
     } else if (status.advice().isEmpty()) {
       logger.debug("Compression: java.util.zip (native libdeflate {})", status.detail());
     } else {
       logger.warn(
+          LogCode.NATIVE_COMPRESSION_UNAVAILABLE.marker(),
           "Compression: java.util.zip, which is slower, because native libdeflate is"
               + " unavailable: {}. {}. To keep java.util.zip without this warning, start Warp"
               + " with -D{}=true.",

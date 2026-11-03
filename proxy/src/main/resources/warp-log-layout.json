@@ -29,6 +29,10 @@
       "stringified": true
     }
   },
+  "marker": {
+    "$resolver": "marker",
+    "field": "name"
+  },
   "context": {
     "$resolver": "mdc"
   }

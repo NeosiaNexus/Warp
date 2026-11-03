@@ -48,6 +48,45 @@ class WarpCommandTest {
   private final AdminFixture proxy = new AdminFixture();
 
   @Nested
+  @DisplayName("/warp startup")
+  class Startup {
+
+    @Test
+    @DisplayName("should list each phase with its share, each plugin under plugins")
+    void phases() {
+      // given
+      dev.warp.proxy.console.StartupTimings timings = new dev.warp.proxy.console.StartupTimings();
+      timings.record("config", 250_000_000L);
+      timings.record("plugins", 500_000_000L, java.util.Map.of("showcase", 450_000_000L));
+      timings.finish(1_000_000_000L);
+      proxy.control.startup(timings);
+      AdminFixture.Source console = AdminFixture.console();
+
+      // when
+      proxy.run(console, "warp startup");
+
+      // then
+      assertEquals(
+          "Started in 1.00 s:\n- config 250 ms (25%)\n- plugins 500 ms (50%)\n-   showcase 450 ms"
+              + " (45%)\n- other 250 ms (25%)",
+          console.last());
+    }
+
+    @Test
+    @DisplayName("should say when the startup is not over")
+    void pending() {
+      // given
+      AdminFixture.Source console = AdminFixture.console();
+
+      // when
+      proxy.run(console, "warp startup");
+
+      // then
+      assertEquals("The startup is not over yet.", console.last());
+    }
+  }
+
+  @Nested
   @DisplayName("overview")
   class Overview {
 
@@ -68,7 +107,7 @@ class WarpCommandTest {
       assertEquals("Compression libdeflate 1.24 (native)", lines.get(3));
       assertTrue(lines.get(4).startsWith("Heap "), lines.get(4));
       assertEquals("Plugins 2 (1 enabled, 1 failed)", lines.get(5));
-      assertEquals("More: /warp plugins, /warp antibot", lines.get(6));
+      assertEquals("More: /warp plugins, /warp startup, /warp antibot", lines.get(6));
     }
 
     @Test

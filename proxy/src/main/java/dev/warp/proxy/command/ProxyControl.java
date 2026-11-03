@@ -18,6 +18,7 @@ package dev.warp.proxy.command;
 
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.proxy.config.DrainConfig;
+import dev.warp.proxy.console.StartupTimings;
 
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
@@ -27,6 +28,15 @@ import org.jspecify.annotations.Nullable;
 
 /** What the administration commands need from the proxy beyond its public API. */
 public interface ProxyControl {
+
+  /**
+   * Returns where the startup's time went, for /warp startup.
+   *
+   * @return the timings, or {@code null} when nothing records them (tests)
+   */
+  default @Nullable StartupTimings startup() {
+    return null;
+  }
 
   /**
    * Returns how long the proxy has been running.

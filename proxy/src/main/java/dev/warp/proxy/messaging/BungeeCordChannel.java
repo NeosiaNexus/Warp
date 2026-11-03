@@ -22,6 +22,7 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.proxy.connection.ConnectedPlayer;
 import dev.warp.proxy.connection.LogThrottle;
 import dev.warp.proxy.connection.MinecraftConnection;
+import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.BackendServer;
 import dev.warp.proxy.server.ServerRegistry;
@@ -271,6 +272,7 @@ public final class BungeeCordChannel {
       long suppressed = deniedWarnings.tryAcquire();
       if (suppressed >= 0) {
         logger.warn(
+            LogCode.BUNGEE_SUBCHANNEL_DENIED.marker(),
             "Dropped {} from server '{}' on the BungeeCord channel: its bungeecord-channel.allow"
                 + " rule does not allow that sub-channel{}",
             subchannel.wireName(),
@@ -448,6 +450,7 @@ public final class BungeeCordChannel {
       long suppressed = unknownServerWarnings.tryAcquire();
       if (suppressed >= 0) {
         logger.warn(
+            LogCode.BUNGEE_CONNECT_UNKNOWN_SERVER.marker(),
             "Server '{}' asked on the BungeeCord channel to move {} to '{}', which is not"
                 + " registered{}",
             from.name(),
@@ -514,6 +517,7 @@ public final class BungeeCordChannel {
           long suppressed = unknownServerWarnings.tryAcquire();
           if (suppressed >= 0) {
             logger.warn(
+                LogCode.BUNGEE_FORWARD_UNKNOWN_SERVER.marker(),
                 "Server '{}' forwarded a message on the BungeeCord channel to '{}', which is not"
                     + " registered{}",
                 from.name(),
@@ -599,6 +603,7 @@ public final class BungeeCordChannel {
     long suppressed = droppedForwardWarnings.tryAcquire();
     if (suppressed >= 0) {
       logger.warn(
+          LogCode.BUNGEE_FORWARD_DROPPED.marker(),
           "Dropped {} BungeeCord Forward message(s) from '{}' to '{}': {}{}",
           count,
           from,
@@ -653,6 +658,7 @@ public final class BungeeCordChannel {
     long suppressed = tooLargeWarnings.tryAcquire();
     if (suppressed >= 0) {
       logger.warn(
+          LogCode.BUNGEE_MESSAGE_TOO_LARGE.marker(),
           "Dropped a {} message of server '{}' on the BungeeCord channel: {} bytes, more than the"
               + " {} a backend accepts from a client (it would disconnect the player carrying"
               + " it){}",
@@ -668,6 +674,7 @@ public final class BungeeCordChannel {
     long suppressed = malformedWarnings.tryAcquire();
     if (suppressed >= 0) {
       logger.warn(
+          LogCode.BUNGEE_MESSAGE_MALFORMED.marker(),
           "Ignored a malformed {} message of server '{}' on the BungeeCord channel: {}{}",
           subchannel,
           from.name(),

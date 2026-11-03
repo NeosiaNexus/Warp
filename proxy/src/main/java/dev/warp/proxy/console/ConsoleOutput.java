@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.function.Supplier;
 
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.LogEvent;
 import org.jline.reader.LineReader;
 import org.jline.reader.impl.LineReaderImpl;
@@ -64,6 +65,9 @@ public final class ConsoleOutput {
   /** How many lines one write takes at most. */
   private static final int BATCH = 512;
 
+  /** How many lines /log tail can replay. */
+  public static final int TAIL_CAPACITY = 1000;
+
   /** How often the status line is redrawn. */
   private static final long STATUS_INTERVAL_MILLIS = 1000;
 
@@ -94,6 +98,12 @@ public final class ConsoleOutput {
   private volatile @Nullable Supplier<String> statusText;
   private volatile @Nullable LineReader reader;
   private volatile boolean plain;
+  private volatile @Nullable String filter;
+
+  /** The last lines received, for /log tail: a ring, guarded by itself. */
+  private final ConsoleLine[] recent = new ConsoleLine[TAIL_CAPACITY];
+
+  private long recentCount;
   private volatile boolean running = true;
 
   // Writer thread only.
@@ -139,6 +149,10 @@ public final class ConsoleOutput {
     if (output == null) {
       ConsoleMode mode = ConsoleMode.detect();
       Terminal terminal = mode.interactive() ? openTerminal() : null;
+      if (terminal != null && mode.probeBackground()) {
+        // Before the first line: the banner already has the theme of the terminal.
+        mode = mode.withBackground(Boolean.TRUE.equals(BackgroundProbe.query(terminal)));
+      }
       if (terminal == null
           && mode.colors().colored()
           && !ConsoleMode.writesEscapes(System::getenv)) {
@@ -302,8 +316,98 @@ public final class ConsoleOutput {
       line = new ConsoleLine(event.getLevel(), Ansi.clean(String.valueOf(message)), null);
     }
     if (line != null) {
-      var _ = buffer.offer(line);
+      remember(line);
+      if (shows(line, filter)) {
+        var _ = buffer.offer(line);
+      }
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Focus (/log filter) and replay (/log tail)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Shows only the lines of one source at the console, and errors from any; the log file keeps
+   * every line.
+   *
+   * @param tag the source tag, such as {@code antibot}, or {@code null} to show every source
+   */
+  public void filter(@Nullable String tag) {
+    this.filter = tag;
+  }
+
+  /**
+   * Returns the source the console shows only, if any.
+   *
+   * @return the tag, or {@code null} when the console shows every source
+   */
+  public @Nullable String filter() {
+    return filter;
+  }
+
+  /**
+   * Prints the last lines the console received again, those the current filter shows, between two
+   * rules: what scrolled away, or what a filter hid while it was on.
+   *
+   * @param count how many lines, at most {@value #TAIL_CAPACITY}
+   * @return how many lines were printed
+   */
+  public int replay(int count) {
+    String focus = filter;
+    List<ConsoleLine> lines = new ArrayList<>();
+    synchronized (recent) {
+      long available = Math.min(recentCount, TAIL_CAPACITY);
+      for (long i = recentCount - available; i < recentCount; i++) {
+        ConsoleLine line = recent[(int) (i % TAIL_CAPACITY)];
+        if (line != null && shows(line, focus)) {
+          lines.add(line);
+        }
+      }
+    }
+    List<ConsoleLine> last = lines.subList(Math.max(0, lines.size() - count), lines.size());
+    Glyphs glyphs = Glyphs.of(mode.unicode());
+    String rule = glyphs.rule().repeat(3);
+    String title =
+        last.size() == 1
+            ? "last line"
+            : "last " + last.size() + " lines" + (focus == null ? "" : " of " + focus);
+    var _ =
+        buffer.offer(
+            new ConsoleLine(
+                Level.INFO,
+                new Styled(mode.palette(), glyphs)
+                    .append(Style.MUTED, rule + " " + title + " " + rule)
+                    .toString(),
+                null));
+    for (ConsoleLine line : last) {
+      // Never collapsed into a "repeated" count: a replay shows each line as it was.
+      var _ = buffer.offer(new ConsoleLine(line.level(), line.text(), null, line.tag()));
+    }
+    var _ =
+        buffer.offer(
+            new ConsoleLine(
+                Level.INFO,
+                new Styled(mode.palette(), glyphs).append(Style.MUTED, rule).toString(),
+                null));
+    return last.size();
+  }
+
+  /** Keeps a line for {@link #replay}. Logging thread only, but replay reads from another. */
+  private void remember(ConsoleLine line) {
+    synchronized (recent) {
+      recent[(int) (recentCount % TAIL_CAPACITY)] = line;
+      recentCount++;
+    }
+  }
+
+  /** Whether the console shows a line under a filter: its source's lines and every error. */
+  private static boolean shows(ConsoleLine line, @Nullable String focus) {
+    String tag = line.tag();
+    return focus == null
+        || tag == null
+        || tag.equals(focus)
+        || line.level().isMoreSpecificThan(Level.ERROR);
   }
 
   /** Starts the writer thread. */
@@ -406,7 +510,7 @@ public final class ConsoleOutput {
   }
 
   private void reportRepeats(StringBuilder text) {
-    Styled notice = new Styled(mode.colors(), Glyphs.of(mode.unicode()));
+    Styled notice = new Styled(mode.palette(), Glyphs.of(mode.unicode()));
     notice
         .pad(LineFormatter.MESSAGE_COLUMN)
         .append(
@@ -420,7 +524,7 @@ public final class ConsoleOutput {
   }
 
   private String droppedNotice(long dropped) {
-    Styled notice = new Styled(mode.colors(), Glyphs.of(mode.unicode()));
+    Styled notice = new Styled(mode.palette(), Glyphs.of(mode.unicode()));
     return notice
         .pad(LineFormatter.MESSAGE_COLUMN)
         .append(
@@ -523,7 +627,7 @@ public final class ConsoleOutput {
   /** The status line until the proxy is ready. */
   private String starting() {
     Glyphs glyphs = Glyphs.of(mode.unicode());
-    return new Styled(mode.colors(), glyphs)
+    return new Styled(mode.palette(), glyphs)
         .append(' ')
         .append(Style.CAUTION, glyphs.up())
         .append(' ')

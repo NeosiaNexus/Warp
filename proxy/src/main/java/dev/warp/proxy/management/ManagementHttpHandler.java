@@ -20,6 +20,7 @@ import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
 import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.antibot.AntiBotStatus;
+import dev.warp.proxy.logging.LogCode;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -218,6 +219,7 @@ final class ManagementHttpHandler extends SimpleChannelInboundHandler<FullHttpRe
     }
     if (!authorized(request, expected)) {
       logger.warn(
+          LogCode.MANAGEMENT_UNAUTHORIZED.marker(),
           "Refused POST {} from {}: missing or wrong bearer token",
           endpoint,
           ctx.channel().remoteAddress());
