@@ -541,6 +541,9 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
       releaseHeldPackets();
     }
     setSessionHandler(handler);
+    if (answered.isEmpty()) {
+      return;
+    }
     for (Object msg = answered.poll(); msg != null; msg = answered.poll()) {
       if (!channel.isActive()) {
         ReferenceCountUtil.release(msg);
@@ -548,6 +551,11 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
         return;
       }
       dispatch(msg);
+    }
+    // The end of a read, as Netty would signal it: what the handler forwarded goes out now.
+    SessionHandler reading = sessionHandler;
+    if (reading != null) {
+      reading.readComplete();
     }
   }
 

@@ -376,7 +376,8 @@ class MinecraftConnectionTest {
               "acknowledgement written",
               "activated",
               "handled BundleDelimiter",
-              "handled KeepAlive"),
+              "handled KeepAlive",
+              "read complete"),
           events);
       assertEquals(List.of(new BundleDelimiter(), new KeepAlive(42)), play.packets);
       assertTrue(configuration.packets().isEmpty());
@@ -519,6 +520,11 @@ class MinecraftConnectionTest {
     public void handle(Packet packet) {
       events.add("handled " + packet.getClass().getSimpleName());
       packets.add(packet);
+    }
+
+    @Override
+    public void readComplete() {
+      events.add("read complete");
     }
   }
 
