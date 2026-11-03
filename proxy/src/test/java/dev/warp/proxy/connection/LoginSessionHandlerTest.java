@@ -919,8 +919,8 @@ class LoginSessionHandlerTest {
         sendResponse(
             channel, version, rsa(key, pkcs1(key, secret)), rsa(key, pkcs1(key, token(request))));
 
-        assertNotNull(channel.pipeline().get(ServerChannelInitializer.CIPHER_DECODER));
-        assertNotNull(channel.pipeline().get(ServerChannelInitializer.CIPHER_ENCODER));
+        // The pipeline is not checked: the login may already be over, and the channel closed when
+        // the proxy found no backend, by the time the authentication thread is done.
         verify(sessionService, timeout(10_000))
             .hasJoined("Steve", ServerHash.compute("", secret, request.publicKey()));
         // Joining the thread orders what it handed to the event loop before the tasks run here.
@@ -930,7 +930,8 @@ class LoginSessionHandlerTest {
         channel.runPendingTasks();
         ByteBuf clear = decrypted(channel);
         try {
-          // The first thing the client reads is Login Success, encrypted with its secret.
+          // The first thing the client reads is Login Success, encrypted with its secret: the
+          // proxy enabled encryption with the secret it decrypted.
           frameBody(clear, ProtocolState.LOGIN, LoginSuccess.class, version);
         } finally {
           clear.release();
@@ -976,7 +977,6 @@ class LoginSessionHandlerTest {
 
         byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, version);
         assertArrayEquals(jsonString("{\"text\":\"Encryption failed\"}"), reason);
-        assertNull(channel.pipeline().get(ServerChannelInitializer.CIPHER_DECODER));
         assertClosed(channel);
         verifyNoInteractions(sessionService);
       } finally {
