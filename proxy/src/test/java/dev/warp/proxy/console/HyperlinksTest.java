@@ -98,18 +98,32 @@ class HyperlinksTest {
     @DisplayName("should link a relative path to the file in the working directory")
     void shouldLinkRelativePaths() {
       // given
-      String text = "Loaded 3 kits from plugins/showcase/kits.conf";
+      String text = "JSON layout in src/main/resources/warp-log-layout.json";
 
       // when
       List<Piece> pieces = split(text);
 
       // then
       Piece path = pieces.get(1);
-      assertEquals("plugins/showcase/kits.conf", path.text());
+      assertEquals("src/main/resources/warp-log-layout.json", path.text());
       assertNotNull(path.uri());
       assertTrue(path.uri().startsWith("file://"), path.uri());
-      String expected = Path.of("plugins/showcase/kits.conf").toAbsolutePath().toUri().getRawPath();
+      String expected =
+          Path.of("src/main/resources/warp-log-layout.json").toAbsolutePath().toUri().getRawPath();
       assertTrue(path.uri().endsWith(expected), path.uri());
+    }
+
+    @Test
+    @DisplayName("should not link a path to no file, such as a backend's")
+    void shouldNotLinkMissingFiles() {
+      // given
+      String text = "Paper: proxies.velocity.secret in config/paper-global.yml";
+
+      // when
+      List<Piece> pieces = split(text);
+
+      // then
+      assertEquals(List.of(new Piece(text, null)), pieces);
     }
 
     @Test

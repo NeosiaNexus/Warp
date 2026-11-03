@@ -44,7 +44,13 @@ public final class StartupTimings {
    * @param parts what it is made of (each plugin of {@code plugins}), possibly empty
    */
   public record Phase(String name, long nanos, List<Phase> parts) {
-    /** Copies the parts. */
+    /**
+     * Creates a phase, copying its parts.
+     *
+     * @param name its name
+     * @param nanos how long it took
+     * @param parts what it is made of
+     */
     public Phase {
       parts = List.copyOf(parts);
     }

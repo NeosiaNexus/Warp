@@ -131,7 +131,7 @@ class ConsoleOutputTest {
       return bytes.toString(StandardCharsets.UTF_8).lines().toList();
     }
 
-    private LogEvent event(String logger, Level level, String message) {
+    private LogEvent eventOf(String logger, Level level, String message) {
       return Log4jLogEvent.newBuilder()
           .setLoggerName(logger)
           .setLevel(level)
@@ -148,11 +148,11 @@ class ConsoleOutputTest {
       output.filter("antibot");
 
       // when
-      output.submit(event("dev.warp.proxy.antibot.AttackDetector", Level.INFO, "attack over"));
-      output.submit(event("dev.warp.proxy.connection.X", Level.INFO, "Steve joined"));
-      output.submit(event("dev.warp.proxy.drain.Y", Level.ERROR, "drain step failed"));
+      output.submit(eventOf("dev.warp.proxy.antibot.AttackDetector", Level.INFO, "attack over"));
+      output.submit(eventOf("dev.warp.proxy.connection.X", Level.INFO, "Steve joined"));
+      output.submit(eventOf("dev.warp.proxy.drain.Y", Level.ERROR, "drain step failed"));
       output.filter(null);
-      output.submit(event("dev.warp.proxy.connection.X", Level.INFO, "Alex joined"));
+      output.submit(eventOf("dev.warp.proxy.connection.X", Level.INFO, "Alex joined"));
       output.close();
 
       // then
@@ -169,8 +169,8 @@ class ConsoleOutputTest {
       // given
       ConsoleOutput output = output();
       output.filter("antibot");
-      output.submit(event("dev.warp.proxy.connection.X", Level.INFO, "Steve joined"));
-      output.submit(event("dev.warp.proxy.connection.X", Level.INFO, "Alex joined"));
+      output.submit(eventOf("dev.warp.proxy.connection.X", Level.INFO, "Steve joined"));
+      output.submit(eventOf("dev.warp.proxy.connection.X", Level.INFO, "Alex joined"));
       output.filter(null);
 
       // when
@@ -191,8 +191,8 @@ class ConsoleOutputTest {
     void replaysFiltered() {
       // given
       ConsoleOutput output = output();
-      output.submit(event("dev.warp.proxy.connection.X", Level.INFO, "Steve joined"));
-      output.submit(event("dev.warp.proxy.antibot.Z", Level.INFO, "calm"));
+      output.submit(eventOf("dev.warp.proxy.connection.X", Level.INFO, "Steve joined"));
+      output.submit(eventOf("dev.warp.proxy.antibot.Z", Level.INFO, "calm"));
       output.filter("antibot");
 
       // when

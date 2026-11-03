@@ -893,37 +893,65 @@ public enum LogCode {
     return id == null ? null : BY_ID.get(id);
   }
 
-  /** Returns the code as shown: {@code W-CFG-001}. */
+  /**
+   * Returns the code as shown.
+   *
+   * @return the id, such as {@code W-CFG-001}
+   */
   public String id() {
     return id;
   }
 
-  /** Returns the marker that carries the code on a log record. */
+  /**
+   * Returns the marker that carries the code on a log record: the first argument of the call.
+   *
+   * @return the marker, named after the id
+   */
   public Marker marker() {
     return MarkerFactory.getMarker(id);
   }
 
-  /** Returns whether the code is logged as an error (else as a warning). */
+  /**
+   * Returns whether the code is logged as an error.
+   *
+   * @return {@code true} for an error, {@code false} for a warning
+   */
   public boolean error() {
     return error;
   }
 
-  /** Returns what happened, in a few words. */
+  /**
+   * Returns what happened, in a few words.
+   *
+   * @return the title of the entry
+   */
   public String title() {
     return title;
   }
 
-  /** Returns why it happens. */
+  /**
+   * Returns why it happens.
+   *
+   * @return the cause, a sentence or two
+   */
   public String cause() {
     return cause;
   }
 
-  /** Returns what to do about it. */
+  /**
+   * Returns what to do about it.
+   *
+   * @return the fix, a sentence or two
+   */
   public String fix() {
     return fix;
   }
 
-  /** Returns the address of the code's entry in the documentation. */
+  /**
+   * Returns the address of the code's entry in the documentation.
+   *
+   * @return the URL, with the anchor of the entry
+   */
   public String documentation() {
     return DOCUMENTATION + "#" + id.toLowerCase(Locale.ROOT);
   }

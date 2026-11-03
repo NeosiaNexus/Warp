@@ -34,7 +34,8 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>File paths become {@code file://} links with this machine's host name, as the OSC 8
  * specification asks, so that a terminal on another machine (over SSH) does not open a file of its
- * own by the same name. Relative paths resolve against the proxy's working directory.
+ * own by the same name. Relative paths resolve against the proxy's working directory, and only
+ * paths to files that exist become links (a stat, on the logging thread, only where links show).
  */
 final class Hyperlinks {
 
@@ -47,7 +48,7 @@ final class Hyperlinks {
           "(?<url>https?://[^\\s<>\"'`{}|\\\\^]+)"
               + "|(?<![\\w/\\\\.:-])(?<path>(?:[A-Za-z]:[\\\\/]|/|\\.{1,2}/)?"
               + "(?:[\\w.-]+[\\\\/])*[\\w-][\\w.-]*"
-              + "\\.(?:conf|jar|log|gz|json|ya?ml|toml|properties|txt|zip|db|journal|snapshot))"
+              + "\\.(?:conf|jar|log|gz|json|ya?ml|toml|properties|txt|zip|db|journal|snapshot|secret|key))"
               + "(?![\\w/\\\\.-])");
 
   /** Characters that end a sentence rather than a URL. */
@@ -154,11 +155,15 @@ final class Hyperlinks {
    * Returns the {@code file://} URI of a path, resolved against the working directory.
    *
    * @param path the path, as written
-   * @return the URI, or {@code null} when it is not a valid path
+   * @return the URI, or {@code null} when it is not a valid path or names no file: a path in a
+   *     message may be a backend's, which a link would open on the wrong machine
    */
   static @Nullable String fileUri(String path) {
     try {
       Path resolved = WORKING_DIRECTORY.resolve(path).normalize();
+      if (!Files.exists(resolved)) {
+        return null;
+      }
       return "file://" + HOST + resolved.toUri().getRawPath();
     } catch (InvalidPathException | java.io.IOError | SecurityException e) {
       return null;

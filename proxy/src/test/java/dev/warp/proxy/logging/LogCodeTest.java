@@ -261,7 +261,7 @@ class LogCodeTest {
   // ---------------------------------------------------------------------------
 
   /** Renders docs/errors.md. */
-  static String render() {
+  String render() {
     StringBuilder page = new StringBuilder();
     page.append("# Warning and error codes\n\n")
         .append(
@@ -315,13 +315,13 @@ class LogCodeTest {
     return page.toString();
   }
 
-  private static List<Path> javaFiles() throws IOException {
+  private List<Path> javaFiles() throws IOException {
     try (Stream<Path> files = Files.walk(SOURCES)) {
       return files.filter(file -> file.toString().endsWith(".java")).sorted().toList();
     }
   }
 
-  private static String allSources() throws IOException {
+  private String allSources() throws IOException {
     StringBuilder all = new StringBuilder();
     for (Path file : javaFiles()) {
       if (!file.endsWith(Path.of("dev/warp/proxy/logging/LogCode.java"))) {
@@ -331,7 +331,7 @@ class LogCodeTest {
     return all.toString();
   }
 
-  private static int line(String text, int offset) {
+  private int line(String text, int offset) {
     int line = 1;
     for (int i = 0; i < offset; i++) {
       if (text.charAt(i) == '\n') {
