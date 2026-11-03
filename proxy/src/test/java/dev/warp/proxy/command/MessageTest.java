@@ -49,7 +49,7 @@ class MessageTest {
       for (String tag : new String[] {"<value>", "<good>", "<bad>", "<warn>", "<dim>"}) {
         assertFalse(text.contains(tag), message + " renders " + text);
       }
-      assertFalse(message.template().contains("—"), message + " has an em dash");
+      assertFalse(message.template().indexOf(0x2014) >= 0, message + " has an em dash");
     }
   }
 
