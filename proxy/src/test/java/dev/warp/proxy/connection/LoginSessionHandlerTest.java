@@ -28,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -55,6 +56,8 @@ import dev.warp.protocol.packet.cookie.CookieResponse;
 import dev.warp.protocol.packet.cookie.StoreCookie;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.login.EncryptionRequest;
+import dev.warp.protocol.packet.login.EncryptionResponse;
+import dev.warp.protocol.packet.login.EncryptionResponse.EncryptedToken;
 import dev.warp.protocol.packet.login.LoginAcknowledged;
 import dev.warp.protocol.packet.login.LoginDisconnect;
 import dev.warp.protocol.packet.login.LoginSuccess;
@@ -63,6 +66,7 @@ import dev.warp.protocol.text.ComponentCodec;
 import dev.warp.proxy.auth.AuthenticationException;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
+import dev.warp.proxy.auth.ServerHash;
 import dev.warp.proxy.config.DuplicateLoginPolicy;
 import dev.warp.proxy.config.LogFormat;
 import dev.warp.proxy.config.LoggingConfig;
@@ -88,6 +92,7 @@ import java.security.MessageDigest;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.Signature;
+import java.security.interfaces.RSAPublicKey;
 import java.security.spec.X509EncodedKeySpec;
 import java.time.Duration;
 import java.time.InstantSource;
@@ -98,6 +103,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.SplittableRandom;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
@@ -124,6 +130,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /**
@@ -869,6 +876,245 @@ class LoginSessionHandlerTest {
       } catch (GeneralSecurityException e) {
         throw new AssertionError(e);
       }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Encryption responses
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("encryption responses")
+  class EncryptionResponses {
+
+    private static final ProfileKeys PROFILE_KEYS =
+        new ProfileKeys(generateRsaKeyPair().getPublic(), InstantSource.system());
+
+    private static final UUID STEVE = UUID.fromString("f81d4fae-7dec-11d0-a765-00a0c91e6bf6");
+
+    private final MojangSessionService sessionService = mock(MojangSessionService.class);
+
+    /** Builds the padding: seeded, so that a failure replays with the same blocks. */
+    private final SplittableRandom random = new SplittableRandom(0x5741_5250L);
+
+    /** The shared secret: random, as a client's, since it is also the AES key and IV. */
+    private final byte[] secret = randomSecret();
+
+    /** Ways a client can get an encryption response wrong, padding valid or not. */
+    enum Invalid {
+      TOKEN_BADLY_PADDED,
+      TOKEN_WITH_A_ZERO_IN_ITS_PADDING,
+      WRONG_TOKEN,
+      TOKEN_OF_5_BYTES,
+      SECRET_BADLY_PADDED,
+      SECRET_WITHOUT_SEPARATOR,
+      SECRET_OF_15_BYTES,
+      SECRET_OF_17_BYTES,
+      SECRET_LARGER_THAN_THE_MODULUS
+    }
+
+    static Stream<ProtocolVersion> versions() {
+      return Stream.of(
+          ProtocolVersion.MINECRAFT_1_7_2,
+          ProtocolVersion.MINECRAFT_1_8,
+          ProtocolVersion.MINECRAFT_1_19,
+          ProtocolVersion.MINECRAFT_1_19_3,
+          ProtocolVersion.latest());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("versions")
+    @DisplayName("should enable encryption and authenticate with the secret of a valid response")
+    void validResponse(ProtocolVersion version) throws Exception {
+      AtomicReference<Thread> authThread = new AtomicReference<>();
+      when(sessionService.hasJoined(eq("Steve"), anyString()))
+          .thenAnswer(
+              invocation -> {
+                authThread.set(Thread.currentThread());
+                return new GameProfile(STEVE, "Steve", List.of());
+              });
+      EmbeddedChannel channel = onlineChannel(version);
+      try {
+        sendLoginStart(channel, "Steve", version);
+        EncryptionRequest request = encryptionRequest(channel, version);
+        RSAPublicKey key = publicKey(request);
+
+        sendResponse(
+            channel, version, rsa(key, pkcs1(key, secret)), rsa(key, pkcs1(key, token(request))));
+
+        // The pipeline is not checked: the login may already be over, and the channel closed when
+        // the proxy found no backend, by the time the authentication thread is done.
+        verify(sessionService, timeout(10_000))
+            .hasJoined("Steve", ServerHash.compute("", secret, request.publicKey()));
+        // Joining the thread orders what it handed to the event loop before the tasks run here.
+        Thread auth = authThread.get();
+        assertNotNull(auth, "the session server was asked");
+        auth.join(10_000);
+        channel.runPendingTasks();
+        ByteBuf clear = decrypted(channel);
+        try {
+          // The first thing the client reads is Login Success, encrypted with its secret: the
+          // proxy enabled encryption with the secret it decrypted.
+          frameBody(clear, ProtocolState.LOGIN, LoginSuccess.class, version);
+        } finally {
+          clear.release();
+        }
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(Invalid.class)
+    @DisplayName("should give every invalid response the same reply, without authenticating")
+    void sameReplyForEveryInvalidResponse(Invalid invalid) {
+      ProtocolVersion version = ProtocolVersion.latest();
+      EmbeddedChannel channel = onlineChannel(version);
+      try {
+        sendLoginStart(channel, "Steve", version);
+        EncryptionRequest request = encryptionRequest(channel, version);
+        RSAPublicKey key = publicKey(request);
+        byte[] token = token(request);
+        byte[] wrongToken = token.clone();
+        wrongToken[0] ^= 1;
+
+        byte[] tokenBlock =
+            switch (invalid) {
+              case TOKEN_BADLY_PADDED -> blockType(pkcs1(key, token), 1);
+              case TOKEN_WITH_A_ZERO_IN_ITS_PADDING -> withByte(pkcs1(key, token), 5, 0);
+              case WRONG_TOKEN -> pkcs1(key, wrongToken);
+              case TOKEN_OF_5_BYTES -> pkcs1(key, Arrays.copyOf(token, 5));
+              default -> pkcs1(key, token);
+            };
+        byte[] secretCiphertext =
+            switch (invalid) {
+              case SECRET_BADLY_PADDED -> rsa(key, blockType(pkcs1(key, secret), 1));
+              case SECRET_WITHOUT_SEPARATOR ->
+                  rsa(key, withByte(pkcs1(key, secret), blockSize(key) - 17, 0x5A));
+              case SECRET_OF_15_BYTES -> rsa(key, pkcs1(key, Arrays.copyOf(secret, 15)));
+              case SECRET_OF_17_BYTES -> rsa(key, pkcs1(key, Arrays.copyOf(secret, 17)));
+              case SECRET_LARGER_THAN_THE_MODULUS -> unsigned(key.getModulus().add(BigInteger.ONE));
+              default -> rsa(key, pkcs1(key, secret));
+            };
+        sendResponse(channel, version, secretCiphertext, rsa(key, tokenBlock));
+
+        byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, version);
+        assertArrayEquals(
+            jsonString(
+                ComponentCodec.json(Component.text(ProfileKeyLogin.ENCRYPTION_FAILED), version)),
+            reason);
+        assertClosed(channel);
+        verifyNoInteractions(sessionService);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    private EmbeddedChannel onlineChannel(ProtocolVersion version) {
+      return loginChannel(version, TestLoginContexts.online(sessionService, PROFILE_KEYS));
+    }
+
+    private EncryptionRequest encryptionRequest(EmbeddedChannel channel, ProtocolVersion version) {
+      byte[] body = nextPacket(channel, ProtocolState.LOGIN, EncryptionRequest.class, version);
+      ByteBuf buf = Unpooled.wrappedBuffer(body);
+      try {
+        return EncryptionRequest.CODEC.decode(buf, version);
+      } finally {
+        buf.release();
+      }
+    }
+
+    private void sendResponse(
+        EmbeddedChannel channel, ProtocolVersion version, byte[] secret, byte[] token) {
+      send(
+          channel,
+          ProtocolState.LOGIN,
+          new EncryptionResponse(secret, new EncryptedToken(token)),
+          version);
+    }
+
+    /** Everything the proxy sent since it enabled encryption, decrypted with the secret. */
+    private ByteBuf decrypted(EmbeddedChannel channel) throws GeneralSecurityException {
+      Cipher cipher = Cipher.getInstance("AES/CFB8/NoPadding");
+      cipher.init(
+          Cipher.DECRYPT_MODE, new SecretKeySpec(secret, "AES"), new IvParameterSpec(secret));
+      ByteBuf clear = Unpooled.buffer();
+      for (ByteBuf encrypted; (encrypted = channel.readOutbound()) != null; ) {
+        try {
+          clear.writeBytes(cipher.update(ByteBufUtil.getBytes(encrypted)));
+        } finally {
+          encrypted.release();
+        }
+      }
+      return clear;
+    }
+
+    private byte[] token(EncryptionRequest request) {
+      assertEquals(4, request.verifyToken().length, "verify token length");
+      return request.verifyToken();
+    }
+
+    /**
+     * A PKCS#1 v1.5 encryption block (RFC 8017 §7.2.1) carrying {@code message}: {@code 00 02},
+     * nonzero random padding, {@code 00}, then the message.
+     */
+    private byte[] pkcs1(RSAPublicKey key, byte[] message) {
+      byte[] block = new byte[blockSize(key)];
+      int separator = block.length - message.length - 1;
+      block[1] = 2;
+      for (int i = 2; i < separator; i++) {
+        block[i] = (byte) random.nextInt(1, 256);
+      }
+      System.arraycopy(message, 0, block, separator + 1, message.length);
+      return block;
+    }
+
+    /** {@code block} with its second byte, the block type, set to {@code type}. */
+    private byte[] blockType(byte[] block, int type) {
+      return withByte(block, 1, type);
+    }
+
+    private byte[] withByte(byte[] block, int index, int value) {
+      block[index] = (byte) value;
+      return block;
+    }
+
+    private static byte[] randomSecret() {
+      byte[] secret = new byte[16];
+      ThreadLocalRandom.current().nextBytes(secret);
+      return secret;
+    }
+
+    private RSAPublicKey publicKey(EncryptionRequest request) {
+      try {
+        return (RSAPublicKey)
+            KeyFactory.getInstance("RSA")
+                .generatePublic(new X509EncodedKeySpec(request.publicKey()));
+      } catch (GeneralSecurityException e) {
+        throw new AssertionError("the proxy sent an invalid public key", e);
+      }
+    }
+
+    private int blockSize(RSAPublicKey key) {
+      return (key.getModulus().bitLength() + 7) / 8;
+    }
+
+    /**
+     * Raw RSA with the public key, {@code block^e mod n}: what a client's cipher sends once it has
+     * padded the value. Built by hand so that the test chooses the padding, valid or not.
+     */
+    private byte[] rsa(RSAPublicKey key, byte[] block) {
+      BigInteger value = new BigInteger(1, block).modPow(key.getPublicExponent(), key.getModulus());
+      byte[] ciphertext = unsigned(value);
+      byte[] padded = new byte[blockSize(key)];
+      System.arraycopy(ciphertext, 0, padded, padded.length - ciphertext.length, ciphertext.length);
+      return padded;
+    }
+
+    /** The big-endian bytes of a nonnegative number, without the sign byte. */
+    private byte[] unsigned(BigInteger value) {
+      byte[] bytes = value.toByteArray();
+      return bytes[0] == 0 ? Arrays.copyOfRange(bytes, 1, bytes.length) : bytes;
     }
   }
 
