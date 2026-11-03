@@ -366,6 +366,12 @@ reconnects on its own and resumes where it left off; a refused token is not retr
   proxy's `X-Forwarded-For`) and the operator the client names; so are attachments and refusals.
 - **No secrets in the stream.** The tokens, the drain token and the forwarding secret are masked
   wherever they appear, as is whatever follows `Bearer`, `token=` or `password=`.
+- **The local console's look.** Lines keep their theme (`WARP_THEME` on the client's side), the
+  code of each warning (refusals, lockouts and the client's own warnings have `W-RCON-...` codes,
+  see [docs/errors.md](docs/errors.md)) and their links; file paths are not linked, as they name
+  files of the proxy's machine.
+- **`/log` from afar.** `/log level` runs on the proxy, for a token with `commands`; `/log filter`
+  and `/log tail` act on what the client shows, whatever the token's scopes.
 
 The endpoints are plain HTTP for other tools: `GET /console/logs` (Server-Sent Events; `?level=`,
 `?tags=`, `?grep=`, `?replay=N`, `Last-Event-ID` to resume), `POST /console/command` (the command as
