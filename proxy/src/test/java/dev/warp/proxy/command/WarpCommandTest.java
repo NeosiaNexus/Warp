@@ -59,7 +59,7 @@ class WarpCommandTest {
       timings.record("config", 250_000_000L);
       timings.record("plugins", 500_000_000L, java.util.Map.of("showcase", 450_000_000L));
       timings.finish(1_000_000_000L);
-      proxy.control.startup = timings;
+      proxy.control.startup(timings);
       AdminFixture.Source console = AdminFixture.console();
 
       // when

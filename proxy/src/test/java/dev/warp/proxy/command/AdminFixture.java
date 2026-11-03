@@ -314,7 +314,12 @@ final class AdminFixture {
     }
 
     /** What /warp startup shows, or {@code null} for no timings. */
-    volatile dev.warp.proxy.console.@Nullable StartupTimings startup;
+    private volatile dev.warp.proxy.console.@Nullable StartupTimings startup;
+
+    /** Sets what /warp startup shows. */
+    void startup(dev.warp.proxy.console.StartupTimings timings) {
+      this.startup = timings;
+    }
 
     @Override
     public dev.warp.proxy.console.@Nullable StartupTimings startup() {
