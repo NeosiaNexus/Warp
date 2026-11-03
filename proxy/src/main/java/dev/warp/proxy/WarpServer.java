@@ -66,6 +66,7 @@ import dev.warp.proxy.logging.SinkAppender;
 import dev.warp.proxy.management.ManagementServer;
 import dev.warp.proxy.management.ProxyHealth;
 import dev.warp.proxy.management.ReadinessHolds;
+import dev.warp.proxy.management.console.RemoteConsole;
 import dev.warp.proxy.messaging.BungeeCordChannel;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.network.CidrRanges;
@@ -79,6 +80,7 @@ import dev.warp.proxy.status.ServerList;
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -274,6 +276,9 @@ public final class WarpServer implements Warp {
   /** The management server, when enabled. */
   private @Nullable ManagementServer management;
 
+  /** The remote console on the management server, when enabled. */
+  private final @Nullable RemoteConsole remoteConsole;
+
   /** Netty boss group — accepts incoming connections. */
   private @Nullable MultiThreadIoEventLoopGroup bossGroup;
 
@@ -339,6 +344,7 @@ public final class WarpServer implements Warp {
   WarpServer(WarpConfig config, Path directory, IntConsumer exit, Duration shutdownQuietPeriod) {
     this.config = config;
     this.consoleSource = new ConsoleCommandSource(config::messages);
+    this.remoteConsole = createRemoteConsole(config);
     this.directory = directory;
     this.exit = exit;
     this.shutdownQuietPeriod = shutdownQuietPeriod;
@@ -351,7 +357,14 @@ public final class WarpServer implements Warp {
             new BungeeCordChannel(config.bungeeCord(), playerRegistry, serverRegistry));
     ProxyCommands.register(commands, serverRegistry);
     // The command lists players see follow the commands and the permissions that filter them.
-    commands.onChange(() -> playerRegistry.all().forEach(ConnectedPlayer::refreshCommands));
+    commands.onChange(
+        () -> {
+          playerRegistry.all().forEach(ConnectedPlayer::refreshCommands);
+          RemoteConsole remote = remoteConsole;
+          if (remote != null) {
+            remote.commandsChanged();
+          }
+        });
     permissions.trackPlayers(this::players);
     this.pluginManager =
         new WarpPluginManager(
@@ -699,10 +712,17 @@ public final class WarpServer implements Warp {
     if (!config.management().enabled()) {
       return;
     }
-    ManagementServer server = new ManagementServer(config.management(), new Health());
+    RemoteConsole remote = remoteConsole;
+    if (remote != null) {
+      remote.start();
+    }
+    ManagementServer server = new ManagementServer(config.management(), new Health(), remote);
     try {
       server.start();
     } catch (IllegalStateException e) {
+      if (remote != null) {
+        remote.stop();
+      }
       shutdownEventLoops();
       throw e;
     }
@@ -710,10 +730,31 @@ public final class WarpServer implements Warp {
   }
 
   private void stopManagement() {
+    RemoteConsole remote = remoteConsole;
+    if (remote != null) {
+      remote.stop();
+    }
     ManagementServer server = management;
     if (server != null) {
       server.stop();
     }
+  }
+
+  /**
+   * Creates the remote console, if enabled: it keeps the proxy's secrets out of what it streams.
+   */
+  private @Nullable RemoteConsole createRemoteConsole(WarpConfig config) {
+    if (!config.management().enabled() || !config.management().console().enabled()) {
+      return null;
+    }
+    List<String> secrets = new ArrayList<>();
+    secrets.add(new String(config.forwardingSecret(), StandardCharsets.UTF_8));
+    String token = config.management().token();
+    if (token != null) {
+      secrets.add(token);
+    }
+    return new RemoteConsole(
+        config.management().console(), commands, config::messages, WarpBuildInfo.VERSION, secrets);
   }
 
   /** Makes SIGTERM start a drain, and a second SIGTERM stop at once. */

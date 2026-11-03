@@ -1578,6 +1578,34 @@ public final class WarpConfig {
           token-file = ""
           # Ready only once at least one backend server is registered.
           ready-requires-server = true
+          # TLS on this port, from PEM files read again when they change (cert-manager renewals).
+          # The key must be PKCS#8 ("BEGIN PRIVATE KEY"). Probes then use scheme HTTPS.
+          tls {
+            certificate = ""
+            key = ""
+          }
+          # Remote console, for hosts without a terminal (Kubernetes, panels, docker without -it):
+          #   GET /console/logs       the live log (Server-Sent Events), with a replay
+          #   POST /console/command   runs a command, answers its output
+          # Attach with: java -jar warp.jar console attach --url http://host:9901 --token-file f
+          console {
+            enabled = false
+            # Who may attach: a name (in the audit log), scopes (logs, commands) and one of file,
+            # env (a variable) or sha256 (the token's digest, so that no file here holds it).
+            # Tokens have at least 32 characters (openssl rand -hex 32), never the drain token's.
+            tokens = [
+              # { name = "ops", scopes = [logs, commands], file = "console-ops.token" }
+              # { name = "dashboard", scopes = [logs], env = "WARP_CONSOLE_DASHBOARD_TOKEN" }
+            ]
+            # Without TLS, commands are accepted from loopback only, and from these networks: a
+            # VPN, or the ingress that terminates TLS in front of Warp.
+            trusted-networks = []
+            # Lines kept for the replay of a client that attaches or reconnects.
+            history = 1000
+            # Wrong tokens from one address (IPv6: its /64) before it is locked out, and how long.
+            lockout-after = 5
+            lockout-duration = 15m
+          }
         }
 
         # Draining: empty the proxy before it stops, for restarts without kicking anyone.

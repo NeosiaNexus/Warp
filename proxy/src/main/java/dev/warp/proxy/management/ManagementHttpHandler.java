@@ -20,6 +20,7 @@ import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
 import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.antibot.AntiBotStatus;
+import dev.warp.proxy.management.console.RemoteConsole;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -59,6 +60,7 @@ import org.slf4j.LoggerFactory;
  *   <li>{@code GET /drain}: where the drain stands
  *   <li>{@code POST /drain}: starts the drain (bearer token): 202, or 200 if one was in progress;
  *       with {@code ?wait=true}, answers 200 once every player left or the time-out expired
+ *   <li>{@code /console/...}: the remote console, when enabled (see {@link RemoteConsole})
  * </ul>
  *
  * <p>Probes also answer {@code HEAD}. Runs on the management event loop; reads only what {@link
@@ -76,6 +78,7 @@ final class ManagementHttpHandler extends SimpleChannelInboundHandler<FullHttpRe
   private final ProxyHealth health;
   private final boolean requireServer;
   private final byte @Nullable [] tokenDigest;
+  private final @Nullable RemoteConsole console;
 
   /**
    * Creates the handler of one connection.
@@ -83,11 +86,17 @@ final class ManagementHttpHandler extends SimpleChannelInboundHandler<FullHttpRe
    * @param health the proxy
    * @param requireServer whether readiness needs a registered backend server
    * @param tokenDigest the SHA-256 of the bearer token, or {@code null} if none is configured
+   * @param console the remote console, or {@code null} when it is off
    */
-  ManagementHttpHandler(ProxyHealth health, boolean requireServer, byte @Nullable [] tokenDigest) {
+  ManagementHttpHandler(
+      ProxyHealth health,
+      boolean requireServer,
+      byte @Nullable [] tokenDigest,
+      @Nullable RemoteConsole console) {
     this.health = health;
     this.requireServer = requireServer;
     this.tokenDigest = tokenDigest;
+    this.console = console;
   }
 
   @Override
@@ -99,6 +108,19 @@ final class ManagementHttpHandler extends SimpleChannelInboundHandler<FullHttpRe
     HttpMethod method = request.method();
     boolean head = HttpMethod.HEAD.equals(method);
     QueryStringDecoder uri = new QueryStringDecoder(request.uri());
+    if (uri.path().equals("/console") || uri.path().startsWith("/console/")) {
+      RemoteConsole remote = console;
+      if (remote == null) {
+        respond(
+            ctx,
+            head,
+            HttpResponseStatus.NOT_FOUND,
+            error("the remote console is off; see management.console in warp.conf"));
+      } else {
+        remote.handle(ctx, request, uri);
+      }
+      return;
+    }
     switch (uri.path()) {
       case "/livez" -> {
         if (readOnly(ctx, method, head)) {

@@ -21,6 +21,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.function.UnaryOperator;
 
 import org.jspecify.annotations.Nullable;
@@ -36,13 +37,44 @@ import org.spongepowered.configurate.CommentedConfigurationNode;
  * @param token the bearer token the mutating endpoints require, or {@code null} when none is
  *     configured: they are then refused
  * @param readyRequiresServer whether readiness also needs a registered backend server
+ * @param tls the certificate and key the HTTP port speaks TLS with, or {@code null} for plain HTTP
+ * @param console the remote console
  */
 public record ManagementConfig(
     boolean enabled,
     InetSocketAddress bind,
     @Nullable InetSocketAddress agentCheck,
     @Nullable String token,
-    boolean readyRequiresServer) {
+    boolean readyRequiresServer,
+    @Nullable Tls tls,
+    RemoteConsoleConfig console) {
+
+  /**
+   * The TLS of the management HTTP port, in PEM files that are read again when they change (as
+   * cert-manager renews them).
+   *
+   * @param certificate the certificate chain, such as {@code tls.crt} of a Kubernetes TLS secret
+   * @param key its private key, in PKCS#8 ({@code BEGIN PRIVATE KEY})
+   */
+  public record Tls(Path certificate, Path key) {}
+
+  /**
+   * Creates the section without TLS and without the remote console.
+   *
+   * @param enabled whether the management server runs
+   * @param bind the HTTP address
+   * @param agentCheck the agent check's address, or {@code null}
+   * @param token the bearer token of the mutating endpoints, or {@code null}
+   * @param readyRequiresServer whether readiness needs a registered backend server
+   */
+  public ManagementConfig(
+      boolean enabled,
+      InetSocketAddress bind,
+      @Nullable InetSocketAddress agentCheck,
+      @Nullable String token,
+      boolean readyRequiresServer) {
+    this(enabled, bind, agentCheck, token, readyRequiresServer, null, RemoteConsoleConfig.DISABLED);
+  }
 
   /** The environment variable that holds the token, ahead of {@code token-file}. */
   public static final String ENV_TOKEN = "WARP_MANAGEMENT_TOKEN";
@@ -79,7 +111,38 @@ public record ManagementConfig(
         readToken(
             env.apply(ENV_TOKEN), directory, WarpConfig.stringValue(node.node("token-file"), ""));
     boolean readyRequiresServer = WarpConfig.booleanValue(node.node("ready-requires-server"), true);
-    return new ManagementConfig(enabled, bind, agentCheck, token, readyRequiresServer);
+    Tls tls = parseTls(node.node("tls"), directory);
+    RemoteConsoleConfig console =
+        RemoteConsoleConfig.parse(node.node("console"), directory, env, token, bind, tls != null);
+    if (console.enabled() && !enabled) {
+      throw new ConfigurationException(
+          "management.console.enabled is true but management.enabled is false: the remote"
+              + " console lives on the management server; enable both");
+    }
+    return new ManagementConfig(
+        enabled, bind, agentCheck, token, readyRequiresServer, tls, console);
+  }
+
+  private static @Nullable Tls parseTls(CommentedConfigurationNode node, Path directory)
+      throws ConfigurationException {
+    String certificate = WarpConfig.stringValue(node.node("certificate"), "").strip();
+    String key = WarpConfig.stringValue(node.node("key"), "").strip();
+    if (certificate.isEmpty() && key.isEmpty()) {
+      return null;
+    }
+    if (certificate.isEmpty() || key.isEmpty()) {
+      throw new ConfigurationException(
+          "management.tls needs both certificate and key (PEM files), or neither for plain HTTP");
+    }
+    Path certificateFile = directory.resolve(certificate);
+    Path keyFile = directory.resolve(key);
+    for (Path file : List.of(certificateFile, keyFile)) {
+      if (!Files.isReadable(file)) {
+        throw new ConfigurationException(
+            "management.tls: " + file + " does not exist or cannot be read");
+      }
+    }
+    return new Tls(certificateFile, keyFile);
   }
 
   private static @Nullable String readToken(
@@ -124,6 +187,10 @@ public record ManagementConfig(
         + ", token "
         + (token == null ? "none (POST /drain refused)" : "set")
         + ", ready requires a server: "
-        + readyRequiresServer;
+        + readyRequiresServer
+        + ", tls "
+        + (tls == null ? "off" : "on")
+        + ", console "
+        + console;
   }
 }
