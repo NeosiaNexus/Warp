@@ -87,6 +87,17 @@ class Pkcs1DecryptionTest {
     }
 
     @Test
+    @DisplayName("should decrypt a value that leaves exactly the 8 padding bytes required")
+    void decryptsWithTheShortestPadding() {
+      byte[] value = randomBytes(BLOCK_SIZE - 11);
+
+      byte[] decrypted =
+          Pkcs1Decryption.decrypt(KEY.getPrivate(), encrypt(pkcs1(value)), value.length);
+
+      assertArrayEquals(value, decrypted);
+    }
+
+    @Test
     @DisplayName("should tell the expected value from another of the same length")
     void checksTheValue() {
       byte[] token = randomBytes(4);
@@ -144,6 +155,15 @@ class Pkcs1DecryptionTest {
 
       assertNull(Pkcs1Decryption.decrypt(KEY.getPrivate(), ciphertext, value.length));
       assertFalse(Pkcs1Decryption.decryptsTo(KEY.getPrivate(), ciphertext, value));
+    }
+
+    @Test
+    @DisplayName("should not match a value longer than the block")
+    void refusesALongerExpectedValue() {
+      byte[] ciphertext = encrypt(pkcs1(secret));
+
+      assertFalse(
+          Pkcs1Decryption.decryptsTo(KEY.getPrivate(), ciphertext, new byte[BLOCK_SIZE + 1]));
     }
 
     @Test
