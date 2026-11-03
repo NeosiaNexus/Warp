@@ -37,8 +37,9 @@ import com.mojang.brigadier.tree.LiteralCommandNode;
  * The commands a remote client may run, as JSON: the client rebuilds the tree, so that it
  * highlights, hints and completes command names as the local console does, without a round trip per
  * key. Arguments keep their Brigadier type when it is one of Brigadier's own; any other type is
- * sent as a word (or the rest of the line, at the end of a branch), and its completions come from
- * the server.
+ * sent as a token, everything up to the next space (or the rest of the line, at the end of a
+ * branch), and its completions come from the server. Clients that do not know tokens read them as
+ * words.
  *
  * <p>Each node is {@code {"literal": name}} or {@code {"argument": name, "type": ...}}, with {@code
  * "executes": true} when the command can end there, and its {@code "children"}. A node that
@@ -138,7 +139,7 @@ final class CommandTreeJson {
         json.addProperty("min", number.getMinimum());
         json.addProperty("max", number.getMaximum());
       }
-      default -> json.addProperty("type", last ? "greedy" : "word");
+      default -> json.addProperty("type", last ? "greedy" : "token");
     }
   }
 }

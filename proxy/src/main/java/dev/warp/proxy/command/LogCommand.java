@@ -46,7 +46,7 @@ import org.apache.logging.log4j.Level;
 import org.jspecify.annotations.Nullable;
 
 /**
- * {@code /log}: the console's control of logging while the proxy runs, for the console only.
+ * {@code /log}: the operator's control of logging while the proxy runs, never a player's.
  *
  * <ul>
  *   <li>{@code /log level <source> <level>} changes the level of a source (a tag such as {@code
@@ -60,8 +60,11 @@ import org.jspecify.annotations.Nullable;
  * </ul>
  *
  * <p>Each subcommand has its node ({@value #LEVEL_PERMISSION}, {@value #FILTER_PERMISSION}, {@value
- * #TAIL_PERMISSION}), which only the console holds: the command does not exist for players,
- * whatever a permission plugin grants them. Sources are completed from the loggers that exist.
+ * #TAIL_PERMISSION}), and the command does not exist for players, whatever a permission plugin
+ * grants them. {@code /log level} is the console's and that of the remote console's sessions whose
+ * token may run commands ({@link OperatorSource}); {@code filter} and {@code tail} act on what a
+ * console shows, so they stay the console's, and the remote console's client has its own ({@link
+ * #view}). Sources are completed from the loggers that exist.
  */
 final class LogCommand {
 
@@ -90,60 +93,106 @@ final class LogCommand {
       LogLevels levels, Supplier<@Nullable ConsoleOutput> output) {
     return LiteralArgumentBuilder.<CommandSource>literal("log")
         .requires(
-            console(LEVEL_PERMISSION).or(console(FILTER_PERMISSION)).or(console(TAIL_PERMISSION)))
+            operator(LEVEL_PERMISSION).or(console(FILTER_PERMISSION)).or(console(TAIL_PERMISSION)))
+        .then(levelNode(levels))
+        .then(filterNode(output, LogLevels::sources, tag -> LogLevels.sources().contains(tag)))
+        .then(tailNode(output));
+  }
+
+  /**
+   * Builds the {@code /log} of the remote console's client: {@code filter} and {@code tail}, over
+   * what this console shows of the remote proxies. Their loggers are not this process's, so any
+   * source is accepted and the sources of the lines received are completed. {@code /log level}
+   * comes from the proxy, whose tree has it for a token that may run commands there.
+   *
+   * @param output this console's output, or {@code null} when it writes JSON
+   * @return the command
+   */
+  static LiteralArgumentBuilder<CommandSource> view(Supplier<@Nullable ConsoleOutput> output) {
+    return LiteralArgumentBuilder.<CommandSource>literal("log")
+        .requires(console(FILTER_PERMISSION).or(console(TAIL_PERMISSION)))
         .then(
-            LiteralArgumentBuilder.<CommandSource>literal("level")
-                .requires(console(LEVEL_PERMISSION))
-                .executes(context -> list(levels, context.getSource()))
+            filterNode(
+                output,
+                () -> {
+                  ConsoleOutput current = output.get();
+                  return current == null ? List.of() : current.recentTags();
+                },
+                _ -> true))
+        .then(tailNode(output));
+  }
+
+  private static LiteralArgumentBuilder<CommandSource> levelNode(LogLevels levels) {
+    return LiteralArgumentBuilder.<CommandSource>literal("level")
+        .requires(operator(LEVEL_PERMISSION))
+        .executes(context -> list(levels, context.getSource()))
+        .then(
+            RequiredArgumentBuilder.<CommandSource, String>argument(
+                    "source", SourceArgument.INSTANCE)
+                .suggests((context, builder) -> suggest(LogLevels.sources(), builder))
                 .then(
                     RequiredArgumentBuilder.<CommandSource, String>argument(
-                            "source", SourceArgument.INSTANCE)
-                        .suggests(LogCommand::suggestSources)
-                        .then(
-                            RequiredArgumentBuilder.<CommandSource, String>argument(
-                                    "level", StringArgumentType.word())
-                                .suggests(LogCommand::suggestLevels)
-                                .executes(
-                                    context ->
-                                        level(
-                                            levels,
-                                            context.getSource(),
-                                            context.getArgument("source", String.class),
-                                            StringArgumentType.getString(context, "level"))))))
-        .then(
-            LiteralArgumentBuilder.<CommandSource>literal("filter")
-                .requires(console(FILTER_PERMISSION))
-                .then(
-                    LiteralArgumentBuilder.<CommandSource>literal("off")
-                        .executes(context -> filter(output.get(), context.getSource(), null)))
-                .then(
-                    RequiredArgumentBuilder.<CommandSource, String>argument(
-                            "source", SourceArgument.INSTANCE)
-                        .suggests(LogCommand::suggestSources)
+                            "level", StringArgumentType.word())
+                        .suggests(LogCommand::suggestLevels)
                         .executes(
                             context ->
-                                filter(
-                                    output.get(),
+                                level(
+                                    levels,
                                     context.getSource(),
-                                    context.getArgument("source", String.class)))))
+                                    context.getArgument("source", String.class),
+                                    StringArgumentType.getString(context, "level")))));
+  }
+
+  private static LiteralArgumentBuilder<CommandSource> filterNode(
+      Supplier<@Nullable ConsoleOutput> output,
+      Supplier<? extends Collection<String>> sources,
+      Predicate<String> known) {
+    return LiteralArgumentBuilder.<CommandSource>literal("filter")
+        .requires(console(FILTER_PERMISSION))
         .then(
-            LiteralArgumentBuilder.<CommandSource>literal("tail")
-                .requires(console(TAIL_PERMISSION))
-                .executes(context -> tail(output.get(), context.getSource(), DEFAULT_TAIL))
-                .then(
-                    RequiredArgumentBuilder.<CommandSource, Integer>argument(
-                            "lines", IntegerArgumentType.integer(1, ConsoleOutput.TAIL_CAPACITY))
-                        .executes(
-                            context ->
-                                tail(
-                                    output.get(),
-                                    context.getSource(),
-                                    IntegerArgumentType.getInteger(context, "lines")))));
+            LiteralArgumentBuilder.<CommandSource>literal("off")
+                .executes(context -> filter(output.get(), context.getSource(), null, known)))
+        .then(
+            RequiredArgumentBuilder.<CommandSource, String>argument(
+                    "source", SourceArgument.INSTANCE)
+                .suggests((context, builder) -> suggest(sources.get(), builder))
+                .executes(
+                    context ->
+                        filter(
+                            output.get(),
+                            context.getSource(),
+                            context.getArgument("source", String.class),
+                            known)));
+  }
+
+  private static LiteralArgumentBuilder<CommandSource> tailNode(
+      Supplier<@Nullable ConsoleOutput> output) {
+    return LiteralArgumentBuilder.<CommandSource>literal("tail")
+        .requires(console(TAIL_PERMISSION))
+        .executes(context -> tail(output.get(), context.getSource(), DEFAULT_TAIL))
+        .then(
+            RequiredArgumentBuilder.<CommandSource, Integer>argument(
+                    "lines", IntegerArgumentType.integer(1, ConsoleOutput.TAIL_CAPACITY))
+                .executes(
+                    context ->
+                        tail(
+                            output.get(),
+                            context.getSource(),
+                            IntegerArgumentType.getInteger(context, "lines"))));
   }
 
   /** The console, holding a node: never a player, whatever its permissions. */
   private static Predicate<CommandSource> console(String permission) {
     return source -> source instanceof ConsoleCommandSource && source.hasPermission(permission);
+  }
+
+  /**
+   * The console or a remote console session that may run commands, holding a node: never a player.
+   * {@code /log filter} and {@code /log tail} stay the console's, as they act on what it shows (the
+   * remote console's client has its own).
+   */
+  private static Predicate<CommandSource> operator(String permission) {
+    return source -> source instanceof OperatorSource && source.hasPermission(permission);
   }
 
   // ---------------------------------------------------------------------------
@@ -205,7 +254,10 @@ final class LogCommand {
   // ---------------------------------------------------------------------------
 
   private static int filter(
-      @Nullable ConsoleOutput output, CommandSource source, @Nullable String tag) {
+      @Nullable ConsoleOutput output,
+      CommandSource source,
+      @Nullable String tag,
+      Predicate<String> known) {
     if (output == null) {
       source.sendMessage(Message.LOG_UNAVAILABLE.of());
       return 0;
@@ -215,7 +267,7 @@ final class LogCommand {
       source.sendMessage(Message.LOG_FILTER_OFF.of());
       return Command.SINGLE_SUCCESS;
     }
-    if (!LogLevels.sources().contains(tag)) {
+    if (!known.test(tag)) {
       return unknown(source, tag);
     }
     // The reply first: once the filter is on, the console still shows replies, but not echoes.
@@ -235,11 +287,6 @@ final class LogCommand {
   // ---------------------------------------------------------------------------
   // Completion
   // ---------------------------------------------------------------------------
-
-  private static CompletableFuture<Suggestions> suggestSources(
-      CommandContext<CommandSource> context, SuggestionsBuilder builder) {
-    return suggest(LogLevels.sources(), builder);
-  }
 
   private static CompletableFuture<Suggestions> suggestLevels(
       CommandContext<CommandSource> context, SuggestionsBuilder builder) {

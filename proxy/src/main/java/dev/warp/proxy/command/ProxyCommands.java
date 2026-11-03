@@ -132,6 +132,17 @@ public final class ProxyCommands {
   }
 
   /**
+   * Returns the {@code /log} of the remote console's client: {@code /log filter} and {@code /log
+   * tail} over what its console shows of the remote proxies. {@code /log level} runs on the proxy,
+   * for a token that may run commands there.
+   *
+   * @return the command, for this process's console
+   */
+  public static LiteralArgumentBuilder<CommandSource> clientLog() {
+    return LogCommand.view(ConsoleOutput::get);
+  }
+
+  /**
    * {@code /server}: lists the servers, or moves the player to one. The console gets the list, and
    * is pointed to {@code /send} to move someone.
    */

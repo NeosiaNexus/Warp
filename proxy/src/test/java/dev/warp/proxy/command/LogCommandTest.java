@@ -18,6 +18,7 @@ package dev.warp.proxy.command;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -95,6 +96,71 @@ class LogCommandTest {
     @DisplayName("should exist for the console")
     void shouldExistForTheConsole() {
       assertTrue(dispatcher.getRoot().getChild("log").canUse(console));
+    }
+
+    @Test
+    @DisplayName("should give a remote console session level, but not filter and tail")
+    void shouldGiveRemoteSessionsLevelOnly() throws CommandSyntaxException {
+      // given: a remote console session, whose token may run commands
+      OperatorSource remote = mock(OperatorSource.class);
+      when(remote.hasPermission(anyString())).thenReturn(true);
+      var log = dispatcher.getRoot().getChild("log");
+
+      // when
+      dispatcher.execute("log level antibot debug", remote);
+
+      // then: filter and tail act on the proxy's own console, which the session does not see
+      assertTrue(log.canUse(remote));
+      assertTrue(log.getChild("level").canUse(remote));
+      assertFalse(log.getChild("filter").canUse(remote));
+      assertFalse(log.getChild("tail").canUse(remote));
+      assertTrue(LogManager.getLogger("dev.warp.proxy.antibot.AttackDetector").isDebugEnabled());
+      assertThrows(CommandSyntaxException.class, () -> dispatcher.execute("log tail", remote));
+    }
+  }
+
+  @Nested
+  @DisplayName("at the remote console's client")
+  class Client {
+
+    private final CommandDispatcher<CommandSource> client = new CommandDispatcher<>();
+
+    Client() {
+      client.register(LogCommand.view(() -> null));
+    }
+
+    @Test
+    @DisplayName("should offer filter and tail, and leave level to the proxy")
+    void shouldOfferFilterAndTail() {
+      // when
+      var log = client.getRoot().getChild("log");
+
+      // then
+      assertTrue(log.canUse(console));
+      assertTrue(log.getChild("filter").canUse(console));
+      assertTrue(log.getChild("tail").canUse(console));
+      assertNull(log.getChild("level"));
+    }
+
+    @Test
+    @DisplayName("should not exist for a player")
+    void shouldNotExistForPlayers() {
+      // given
+      Player player = mock(Player.class);
+      when(player.hasPermission(anyString())).thenReturn(true);
+
+      // then
+      assertFalse(client.getRoot().getChild("log").canUse(player));
+    }
+
+    @Test
+    @DisplayName("should take a remote proxy's source as typed, colon included")
+    void shouldTakeRemoteSources() throws CommandSyntaxException {
+      // when: no local logger has this tag, the proxy's lines do
+      client.execute("log filter plugin:showcase", console);
+
+      // then: past parsing and the check of known sources, to the console's output
+      assertEquals("warp.command.log.unavailable", lastReply());
     }
   }
 

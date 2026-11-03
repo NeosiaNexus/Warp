@@ -25,11 +25,13 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.warp.api.command.CommandSource;
+import dev.warp.proxy.command.ProxyCommands;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.config.RemoteConsoleConfig;
 import dev.warp.proxy.config.RemoteConsoleConfig.Scope;
 import dev.warp.proxy.config.RemoteConsoleConfig.Token;
 import dev.warp.proxy.i18n.PlayerMessages;
+import dev.warp.proxy.logging.LogLevels;
 import dev.warp.proxy.network.CidrRanges;
 
 import java.net.InetSocketAddress;
@@ -415,6 +417,86 @@ class RemoteConsoleTest {
       assertEquals("text", text.get("argument").getAsString());
       assertEquals("greedy", text.get("type").getAsString());
       assertTrue(text.get("executes").getAsBoolean());
+    }
+  }
+
+  @Nested
+  @DisplayName("/log")
+  class Log {
+
+    private final LogLevels levels = new LogLevels();
+
+    Log() {
+      ProxyCommands.registerConsole(commands, levels);
+    }
+
+    @AfterEach
+    void resetLevels() {
+      var _ = levels.reset("antibot");
+    }
+
+    private @Nullable JsonObject log(JsonObject tree) {
+      for (var element : tree.getAsJsonArray("commands")) {
+        JsonObject command = element.getAsJsonObject();
+        if (command.has("literal") && command.get("literal").getAsString().equals("log")) {
+          return command;
+        }
+      }
+      return null;
+    }
+
+    @Test
+    @DisplayName("should offer /log level to a token that runs commands, its source as a token")
+    void shouldOfferLevel() throws Exception {
+      // when
+      JsonObject tree =
+          json(send(LOOPBACK, false, request(HttpMethod.GET, "/console/commands", OPS_SECRET, "")));
+
+      // then: filter and tail act on the proxy's own console, so the client has its own
+      JsonObject log = log(tree);
+      assertNotNull(log);
+      assertEquals(1, log.getAsJsonArray("children").size());
+      JsonObject level = log.getAsJsonArray("children").get(0).getAsJsonObject();
+      assertEquals("level", level.get("literal").getAsString());
+      JsonObject source = level.getAsJsonArray("children").get(0).getAsJsonObject();
+      assertEquals("token", source.get("type").getAsString());
+    }
+
+    @Test
+    @DisplayName("should change a level from the remote console, and refuse tail")
+    void shouldChangeLevel() throws Exception {
+      // given
+      var logger = org.apache.logging.log4j.LogManager.getLogger("dev.warp.proxy.antibot.Probe");
+
+      // when
+      JsonObject level =
+          json(
+              send(
+                  LOOPBACK,
+                  false,
+                  request(
+                      HttpMethod.POST, "/console/command", OPS_SECRET, "log level antibot debug")));
+      JsonObject tail =
+          json(
+              send(
+                  LOOPBACK,
+                  false,
+                  request(HttpMethod.POST, "/console/command", OPS_SECRET, "log tail")));
+
+      // then
+      assertTrue(level.get("found").getAsBoolean());
+      assertTrue(logger.isDebugEnabled());
+      assertTrue(
+          level
+              .getAsJsonArray("output")
+              .get(0)
+              .getAsJsonObject()
+              .get("text")
+              .getAsString()
+              .contains("antibot"));
+      String refused =
+          tail.getAsJsonArray("output").get(0).getAsJsonObject().get("text").getAsString();
+      assertTrue(refused.startsWith("Incorrect argument"), refused);
     }
   }
 

@@ -22,8 +22,10 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.warp.proxy.command.ProxyCommands;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.console.ComponentMessage;
+import dev.warp.proxy.console.ConsoleCommandSource;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -245,6 +247,29 @@ class RemoteClientTest {
     }
 
     @Test
+    @DisplayName("should send an argument of the proxy's own type as typed, colon included")
+    void token() throws Exception {
+      // given
+      remote.replace(
+          json(
+              "{\"commands\":[{\"literal\":\"log\",\"children\":[{\"literal\":\"level\","
+                  + "\"children\":[{\"argument\":\"source\",\"type\":\"token\",\"children\":"
+                  + "[{\"argument\":\"level\",\"type\":\"word\",\"executes\":true}]}]}]}]}"));
+
+      // when
+      boolean found =
+          commands
+              .execute(
+                  new dev.warp.proxy.console.ConsoleCommandSource(),
+                  "log level plugin:showcase debug")
+              .get(5, TimeUnit.SECONDS);
+
+      // then
+      assertTrue(found);
+      assertEquals(List.of("log level plugin:showcase debug"), ran);
+    }
+
+    @Test
     @DisplayName("should skip suggestions whose range lies outside the line")
     void outOfRange() {
       Suggestions suggestions =
@@ -252,6 +277,79 @@ class RemoteClientTest {
               "ab", json("{\"suggestions\":[{\"start\":0,\"end\":9,\"text\":\"x\"}]}"));
 
       assertTrue(suggestions.isEmpty());
+    }
+  }
+
+  @Nested
+  @DisplayName("RemoteCommands, with the client's own /log")
+  class ClientLog {
+
+    private static final String LOG_LEVEL_TREE =
+        "{\"commands\":[{\"literal\":\"log\",\"children\":[{\"literal\":\"level\","
+            + "\"executes\":true,\"children\":[{\"argument\":\"source\",\"type\":\"token\","
+            + "\"children\":[{\"argument\":\"level\",\"type\":\"word\",\"executes\":true}]}]}]}]}";
+
+    private final WarpCommandManager commands = new WarpCommandManager(Runnable::run);
+    private final List<String> ran = new ArrayList<>();
+    private final ConsoleCommandSource console = new ConsoleCommandSource();
+    private final RemoteCommands remote =
+        new RemoteCommands(
+            commands,
+            line -> {
+              ran.add(line);
+              return 1;
+            },
+            line -> CompletableFuture.completedFuture(Suggestions.empty().join()),
+            List.of(ProxyCommands.clientLog()));
+
+    private List<String> subcommands() throws Exception {
+      return commands.suggest(console, "log ").get(5, TimeUnit.SECONDS).getList().stream()
+          .map(Suggestion::getText)
+          .toList();
+    }
+
+    @Test
+    @DisplayName("should offer /log filter and /log tail when the proxy runs nothing for the token")
+    void shouldOfferTheClientsOwn() throws Exception {
+      // when: a token without the commands scope
+      int count = remote.replace(json("{\"commands\":[]}"));
+
+      // then
+      assertEquals(0, count);
+      assertTrue(commands.hasCommand("log"));
+      assertEquals(List.of("filter", "tail"), subcommands());
+    }
+
+    @Test
+    @DisplayName("should run /log level on the proxy, and /log filter and /log tail here")
+    void shouldMergeWithTheProxys() throws Exception {
+      // given: the proxy's tree, for a token that may run commands
+      int count = remote.replace(json(LOG_LEVEL_TREE));
+
+      // when
+      boolean level = commands.execute(console, "log level antibot debug").get(5, TimeUnit.SECONDS);
+      boolean tail = commands.execute(console, "log tail 5").get(5, TimeUnit.SECONDS);
+
+      // then
+      assertEquals(1, count);
+      assertTrue(level);
+      assertTrue(tail);
+      assertEquals(List.of("filter", "level", "tail"), subcommands());
+      assertEquals(List.of("log level antibot debug"), ran);
+    }
+
+    @Test
+    @DisplayName("should keep the client's own /log when the proxy's tree changes")
+    void shouldKeepTheClientsOwnOnReload() throws Exception {
+      // given
+      remote.replace(json(LOG_LEVEL_TREE));
+
+      // when: the proxy no longer lets the token change levels
+      remote.replace(json("{\"commands\":[{\"literal\":\"glist\",\"executes\":true}]}"));
+
+      // then
+      assertTrue(commands.hasCommand("glist"));
+      assertEquals(List.of("filter", "tail"), subcommands());
     }
   }
 }

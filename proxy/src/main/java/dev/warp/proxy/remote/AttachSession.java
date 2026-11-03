@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.remote;
 
+import dev.warp.proxy.command.ProxyCommands;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.console.ConsoleCommandSource;
 import dev.warp.proxy.console.WarpConsole;
@@ -136,7 +137,10 @@ final class AttachSession {
     WarpCommandManager commands = new WarpCommandManager();
     RemoteCommands remote =
         new RemoteCommands(
-            commands, line -> runCommand(target, line), line -> suggest(target, line));
+            commands,
+            line -> runCommand(target, line),
+            line -> suggest(target, line),
+            List.of(ProxyCommands.clientLog()));
     try {
       Files.createDirectories(historyFile.getParent());
     } catch (IOException e) {

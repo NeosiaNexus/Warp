@@ -26,6 +26,8 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.SortedSet;
+import java.util.TreeSet;
 import java.util.function.Supplier;
 
 import org.apache.logging.log4j.Level;
@@ -391,6 +393,25 @@ public final class ConsoleOutput {
                 new Styled(mode.palette(), glyphs).append(Style.MUTED, rule).toString(),
                 null));
     return last.size();
+  }
+
+  /**
+   * Returns the source tags of the last lines received: what {@code /log filter} completes at the
+   * remote console's client, where the loggers are the remote proxies', not this process's.
+   *
+   * @return the tags, sorted
+   */
+  public SortedSet<String> recentTags() {
+    SortedSet<String> tags = new TreeSet<>();
+    synchronized (recent) {
+      for (ConsoleLine line : recent) {
+        String tag = line == null ? null : line.tag();
+        if (tag != null) {
+          tags.add(tag);
+        }
+      }
+    }
+    return tags;
   }
 
   /** Keeps a line for {@link #replay}. Logging thread only, but replay reads from another. */

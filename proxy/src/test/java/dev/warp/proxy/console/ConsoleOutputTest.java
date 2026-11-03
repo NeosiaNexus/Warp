@@ -187,6 +187,23 @@ class ConsoleOutputTest {
     }
 
     @Test
+    @DisplayName("knows the sources of the lines it received, for /log filter at the client")
+    void knowsRecentTags() {
+      // given
+      ConsoleOutput output = output();
+      output.submit(eventOf("dev.warp.proxy.connection.X", Level.INFO, "Steve joined"));
+      output.submit(eventOf("dev.warp.proxy.antibot.Z", Level.WARN, "attack"));
+      output.submit(eventOf("dev.warp.proxy.connection.X", Level.INFO, "Alex joined"));
+
+      // when
+      var tags = output.recentTags();
+      output.close();
+
+      // then
+      assertEquals(List.of("antibot", "conn"), List.copyOf(tags));
+    }
+
+    @Test
     @DisplayName("replays only what the current filter shows")
     void replaysFiltered() {
       // given

@@ -16,8 +16,8 @@
  */
 package dev.warp.proxy.management.console;
 
-import dev.warp.api.command.CommandSource;
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.proxy.command.OperatorSource;
 import dev.warp.proxy.console.ComponentMessage;
 import dev.warp.proxy.i18n.PlayerMessages;
 
@@ -33,16 +33,17 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 /**
- * Someone at the remote console, running one command: every permission, as at the console, and what
- * it is sent is both logged (the log file, the local console and the other remote clients see it)
- * and collected for the command's answer.
+ * Someone at the remote console, running one command: every permission, as at the console (its
+ * token may run commands, or it would not get this far), and what it is sent is both logged (the
+ * log file, the local console and the other remote clients see it) and collected for the command's
+ * answer.
  *
  * <p>The lines collected are logged with the session they belong to, so that the client that ran
  * the command, which shows them from the answer, does not show them twice from its stream. Lines
  * sent once the answer is written (an asynchronous command replying late) are logged without it:
  * that client then sees them in its stream.
  */
-final class RemoteCommandSource implements CommandSource {
+final class RemoteCommandSource implements OperatorSource {
 
   /** The same logger as the console's: what a command answers reads the same, local or remote. */
   private static final Logger logger = LogManager.getLogger("dev.warp.proxy.console.Console");

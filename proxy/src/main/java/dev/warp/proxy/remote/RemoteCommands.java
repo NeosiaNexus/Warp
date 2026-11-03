@@ -29,6 +29,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.LiteralMessage;
+import com.mojang.brigadier.StringReader;
 import com.mojang.brigadier.arguments.ArgumentType;
 import com.mojang.brigadier.arguments.BoolArgumentType;
 import com.mojang.brigadier.arguments.DoubleArgumentType;
@@ -40,9 +41,12 @@ import com.mojang.brigadier.builder.ArgumentBuilder;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import com.mojang.brigadier.context.StringRange;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.suggestion.Suggestion;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
 import com.mojang.brigadier.suggestion.Suggestions;
+import com.mojang.brigadier.tree.CommandNode;
+import com.mojang.brigadier.tree.LiteralCommandNode;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -50,6 +54,10 @@ import org.jspecify.annotations.Nullable;
  * hints at the arguments and completes command names as it does for the proxy's own commands,
  * without a round trip per key. Arguments are completed by the proxy ({@code POST
  * /console/suggest}), and running a command sends the line to it.
+ *
+ * <p>The client's own commands ({@code /log filter} and {@code /log tail}, over what this console
+ * shows) are there whatever the proxy allows, and merge with the proxy's command of the same name:
+ * {@code /log} has the proxy's {@code level} and the client's {@code filter} and {@code tail}.
  */
 final class RemoteCommands {
 
@@ -59,10 +67,11 @@ final class RemoteCommands {
   private final WarpCommandManager commands;
   private final Command<CommandSource> run;
   private final SuggestionProvider<CommandSource> suggest;
+  private final List<LiteralCommandNode<CommandSource>> local;
   private final List<String> names = new ArrayList<>();
 
   /**
-   * Creates the commands of a remote proxy.
+   * Creates the commands of a remote proxy, without commands of the client's own.
    *
    * @param commands the local dispatcher the prompt reads
    * @param run runs a command line on the proxy
@@ -72,9 +81,27 @@ final class RemoteCommands {
       WarpCommandManager commands,
       Function<String, Integer> run,
       Function<String, CompletableFuture<Suggestions>> suggest) {
+    this(commands, run, suggest, List.of());
+  }
+
+  /**
+   * Creates the commands of a remote proxy, and registers the client's own at once.
+   *
+   * @param commands the local dispatcher the prompt reads
+   * @param run runs a command line on the proxy
+   * @param suggest completes a line up to the cursor on the proxy
+   * @param local the client's own commands, which run here
+   */
+  RemoteCommands(
+      WarpCommandManager commands,
+      Function<String, Integer> run,
+      Function<String, CompletableFuture<Suggestions>> suggest,
+      List<LiteralArgumentBuilder<CommandSource>> local) {
     this.commands = commands;
     this.run = context -> run.apply(context.getInput());
     this.suggest = (context, builder) -> suggest.apply(builder.getInput());
+    this.local = local.stream().map(LiteralArgumentBuilder::build).toList();
+    registerLocal();
   }
 
   /**
@@ -88,25 +115,64 @@ final class RemoteCommands {
       commands.unregister(name);
     }
     names.clear();
+    int remote = 0;
     JsonElement list = tree.get("commands");
-    if (list == null || !list.isJsonArray()) {
-      return 0;
-    }
-    for (JsonElement element : list.getAsJsonArray()) {
-      if (element.isJsonObject() && element.getAsJsonObject().has("literal")) {
-        JsonObject node = element.getAsJsonObject();
-        @SuppressWarnings("unchecked")
-        LiteralArgumentBuilder<CommandSource> literal =
-            (LiteralArgumentBuilder<CommandSource>) node(node, 0);
-        try {
-          var _ = commands.register(OWNER, literal);
-          names.add(literal.getLiteral());
-        } catch (IllegalStateException e) {
-          // A name twice in the tree: the first wins.
+    if (list != null && list.isJsonArray()) {
+      for (JsonElement element : list.getAsJsonArray()) {
+        if (element.isJsonObject() && element.getAsJsonObject().has("literal")) {
+          JsonObject node = element.getAsJsonObject();
+          @SuppressWarnings("unchecked")
+          LiteralArgumentBuilder<CommandSource> literal =
+              (LiteralArgumentBuilder<CommandSource>) node(node, 0);
+          if (names.contains(literal.getLiteral())) {
+            // A name twice in the tree: the first wins.
+            continue;
+          }
+          merge(literal);
+          try {
+            var _ = commands.register(OWNER, literal);
+            names.add(literal.getLiteral());
+            remote++;
+          } catch (IllegalStateException e) {
+            // Another owner's name.
+          }
         }
       }
     }
-    return names.size();
+    registerLocal();
+    return remote;
+  }
+
+  /** Adds the client's own subcommands to the proxy's command of the same name. */
+  private void merge(LiteralArgumentBuilder<CommandSource> literal) {
+    for (LiteralCommandNode<CommandSource> mine : local) {
+      if (mine.getLiteral().equals(literal.getLiteral())) {
+        for (CommandNode<CommandSource> child : mine.getChildren()) {
+          literal.then(child);
+        }
+        if (literal.getCommand() == null && mine.getCommand() != null) {
+          literal.executes(mine.getCommand());
+        }
+      }
+    }
+  }
+
+  /** Registers the client's own commands the proxy has no command of the same name for. */
+  private void registerLocal() {
+    for (LiteralCommandNode<CommandSource> mine : local) {
+      if (names.contains(mine.getLiteral())) {
+        continue;
+      }
+      LiteralArgumentBuilder<CommandSource> literal =
+          LiteralArgumentBuilder.literal(mine.getLiteral());
+      merge(literal);
+      try {
+        var _ = commands.register(OWNER, literal);
+        names.add(mine.getLiteral());
+      } catch (IllegalStateException e) {
+        // Another owner's name.
+      }
+    }
   }
 
   private ArgumentBuilder<CommandSource, ?> node(JsonObject json, int depth) {
@@ -141,6 +207,7 @@ final class RemoteCommands {
     String type = text(json, "type");
     ArgumentType<?> argument =
         switch (type == null ? "" : type) {
+          case "token" -> TokenArgument.INSTANCE;
           case "phrase" -> StringArgumentType.string();
           case "greedy" -> StringArgumentType.greedyString();
           case "bool" -> BoolArgumentType.bool();
@@ -196,6 +263,32 @@ final class RemoteCommands {
       }
     }
     return Suggestions.create(input, list);
+  }
+
+  /**
+   * An argument the proxy parses with a type of its own: here, everything up to the next space, so
+   * that the line reaches the proxy as typed ({@code plugin:showcase}, {@code
+   * dev.warp.proxy.drain}).
+   */
+  static final class TokenArgument implements ArgumentType<String> {
+
+    static final TokenArgument INSTANCE = new TokenArgument();
+
+    private TokenArgument() {}
+
+    @Override
+    public String parse(StringReader reader) throws CommandSyntaxException {
+      int start = reader.getCursor();
+      while (reader.canRead() && reader.peek() != ' ') {
+        reader.skip();
+      }
+      if (reader.getCursor() == start) {
+        throw CommandSyntaxException.BUILT_IN_EXCEPTIONS
+            .dispatcherUnknownArgument()
+            .createWithContext(reader);
+      }
+      return reader.getString().substring(start, reader.getCursor());
+    }
   }
 
   private static @Nullable String text(JsonObject json, String name) {
