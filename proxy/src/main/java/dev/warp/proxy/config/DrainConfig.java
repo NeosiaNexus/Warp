@@ -16,13 +16,12 @@
  */
 package dev.warp.proxy.config;
 
+import dev.warp.proxy.i18n.Message;
+
 import java.time.Duration;
 import java.util.Locale;
 
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.minimessage.MiniMessage;
-import net.kyori.adventure.text.minimessage.ParsingException;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.jspecify.annotations.Nullable;
 import org.spongepowered.configurate.CommentedConfigurationNode;
 
@@ -36,8 +35,8 @@ import org.spongepowered.configurate.CommentedConfigurationNode;
  * @param cannotTransfer what happens to a player the proxy cannot transfer
  * @param newPlayers what happens to a player who logs in while the proxy drains
  * @param timeout how long the proxy waits for the players it kept, once the transfers are done
- * @param message shown to the players the drain disconnects and to the logins it refuses, written
- *     in MiniMessage in the configuration
+ * @param message shown to the players the drain disconnects and to the logins it refuses: {@link
+ *     Message#RESTARTING}, rendered in each player's language
  */
 public record DrainConfig(
     @Nullable Target transferTo,
@@ -55,7 +54,6 @@ public record DrainConfig(
   static final Duration DEFAULT_PROPAGATION_DELAY = Duration.ofSeconds(5);
   static final Duration DEFAULT_TRANSFER_INTERVAL = Duration.ofMillis(100);
   static final Duration DEFAULT_TIMEOUT = Duration.ofMinutes(30);
-  static final String DEFAULT_MESSAGE = "<yellow>This proxy is restarting. Please reconnect.";
 
   /**
    * An address players are transferred to.
@@ -99,8 +97,8 @@ public record DrainConfig(
    */
   static DrainConfig parse(CommentedConfigurationNode root) throws ConfigurationException {
     CommentedConfigurationNode node = root.node("drain");
-    Target transferTo = parseTarget(node.node("transfer-to").getString(""));
-    boolean onSigterm = node.node("on-sigterm").getBoolean(false);
+    Target transferTo = parseTarget(WarpConfig.stringValue(node.node("transfer-to"), ""));
+    boolean onSigterm = WarpConfig.booleanValue(node.node("on-sigterm"), false);
     Duration propagationDelay =
         parseDuration(node, "propagation-delay", DEFAULT_PROPAGATION_DELAY, false);
     Duration transferInterval =
@@ -109,7 +107,7 @@ public record DrainConfig(
         parseEnum(CannotTransfer.class, node, "cannot-transfer", CannotTransfer.KEEP);
     NewPlayers newPlayers = parseEnum(NewPlayers.class, node, "new-players", NewPlayers.ACCEPT);
     Duration timeout = parseDuration(node, "timeout", DEFAULT_TIMEOUT, true);
-    Component message = parseMessage(node.node("message").getString(DEFAULT_MESSAGE));
+    Component message = Message.RESTARTING.of();
     return new DrainConfig(
         transferTo,
         onSigterm,
@@ -119,27 +117,6 @@ public record DrainConfig(
         newPlayers,
         timeout,
         message);
-  }
-
-  /**
-   * Parses the message, in MiniMessage like {@code status.motd}.
-   *
-   * @param source the configured text
-   * @return the message
-   * @throws ConfigurationException if the text is blank, or not valid MiniMessage
-   */
-  static Component parseMessage(String source) throws ConfigurationException {
-    Component message;
-    try {
-      message = MiniMessage.miniMessage().deserialize(source);
-    } catch (ParsingException e) {
-      throw new ConfigurationException(
-          "drain.message is not valid MiniMessage: " + e.getMessage(), e);
-    }
-    if (PlainTextComponentSerializer.plainText().serialize(message).isBlank()) {
-      throw new ConfigurationException("drain.message must not be blank");
-    }
-    return message;
   }
 
   /**

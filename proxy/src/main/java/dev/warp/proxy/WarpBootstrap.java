@@ -56,8 +56,8 @@ public final class WarpBootstrap {
     try {
       config = WarpConfig.load(directory);
     } catch (ConfigurationException e) {
-      logger.error("Failed to load configuration: {}", e.getMessage());
-      exit(1);
+      logger.error(describe(e));
+      exit(StartupException.CONFIGURATION);
       return; // unreachable, but keeps the compiler happy
     }
     if (config.logging().format() != format) {
@@ -71,10 +71,36 @@ public final class WarpBootstrap {
 
     try {
       new WarpServer(config, directory).start();
+    } catch (StartupException e) {
+      // The operator's to fix, and the message says how: no stack trace.
+      logger.error("Warp cannot start. {}", e.getMessage());
+      exit(e.exitCode());
     } catch (RuntimeException e) {
       logger.error("Failed to start Warp", e);
       exit(1);
     }
+  }
+
+  /**
+   * What the log says of an invalid configuration: every problem on its own line, with its file and
+   * line, then what to do.
+   *
+   * @param e the problems
+   * @return the message
+   */
+  static String describe(ConfigurationException e) {
+    StringBuilder text =
+        new StringBuilder(
+            e.problems().size() == 1
+                ? "Warp cannot start: its configuration has a problem."
+                : "Warp cannot start: its configuration has " + e.problems().size() + " problems.");
+    for (ConfigurationException.Problem problem : e.problems()) {
+      text.append(System.lineSeparator()).append("  - ").append(problem.format());
+    }
+    return text.append(System.lineSeparator())
+        .append(
+            "Fix them, then start Warp again: it does not run on a configuration it cannot read.")
+        .toString();
   }
 
   /**

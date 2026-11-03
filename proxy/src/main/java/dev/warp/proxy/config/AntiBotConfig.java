@@ -250,7 +250,7 @@ public record AntiBotConfig(
     CommentedConfigurationNode attackNode = node.node("attack");
     CommentedConfigurationNode blocklistNode = node.node("blocklist");
     try {
-      boolean enabled = node.node("enabled").getBoolean(d.enabled());
+      boolean enabled = WarpConfig.booleanValue(node.node("enabled"), d.enabled());
       CommentedConfigurationNode exemptNode = node.node("exempt");
       CidrRanges exempt =
           exemptNode.virtual()
@@ -274,8 +274,8 @@ public record AntiBotConfig(
                   verifiedNode.node("prefix", "ipv6"),
                   "anti-bot.verified.prefix.ipv6",
                   dv.ipv6Prefix()),
-              verifiedNode.node("persist").getBoolean(dv.persist()),
-              verifiedNode.node("secret-file").getString(dv.secretFile()),
+              WarpConfig.booleanValue(verifiedNode.node("persist"), dv.persist()),
+              WarpConfig.stringValue(verifiedNode.node("secret-file"), dv.secretFile()),
               WarpConfig.parseDuration(
                   verifiedNode.node("shared-store-timeout"),
                   "anti-bot.verified.shared-store-timeout",

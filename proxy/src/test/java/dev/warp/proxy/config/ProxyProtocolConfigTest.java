@@ -158,7 +158,7 @@ class ProxyProtocolConfigTest {
                       "forwarding { mode = \"none\" }\n"
                           + "proxy-protocol { trusted-proxies = [\"10.0.0.0/8\", \"lb.local\"] }"));
 
-      assertTrue(String.valueOf(error.getMessage()).startsWith("proxy-protocol.trusted-proxies:"));
+      assertTrue(String.valueOf(error.getMessage()).contains("proxy-protocol.trusted-proxies:"));
       assertTrue(
           String.valueOf(error.getMessage()).contains("'lb.local'"),
           String.valueOf(error.getMessage()));

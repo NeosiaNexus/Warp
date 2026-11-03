@@ -17,6 +17,7 @@
 package dev.warp.proxy.config;
 
 import dev.warp.api.server.Favicon;
+import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.messaging.BungeeCordSettings;
 import dev.warp.proxy.messaging.BungeeCordSubchannel;
 import dev.warp.proxy.network.CidrRange;
@@ -131,6 +132,34 @@ public final class WarpConfig {
   private final boolean tcpFastOpen;
   private final LoggingConfig logging;
   private final BungeeCordSettings bungeeCord;
+  private final Locale defaultLocale;
+
+  /** Set by {@link #load} before it returns the configuration, which is then never changed. */
+  private @Nullable PlayerMessages messages;
+
+  // ---------------------------------------------------------------------------
+  // Layout
+  // ---------------------------------------------------------------------------
+
+  /** The layout of {@code warp.conf} this Warp writes and reads ({@code config-version}). */
+  static final int CONFIG_VERSION = 1;
+
+  /** The settings that exist: the keys of the default file, with their shapes. */
+  private static final ConfigFile SCHEMA = ConfigFile.parse(defaultConfig()).normalized();
+
+  /** Settings that exist without being in the default file: their absence means something. */
+  private static final Set<String> OPTIONAL_KEYS =
+      Set.of("status.max-players", "status.version-name");
+
+  /** Settings of earlier layouts, with what replaced them. */
+  private static final Map<String, String> MOVED_KEYS =
+      Map.of(
+          "backend",
+          "list the servers in the servers block, such as servers { lobby { address ="
+              + " \"localhost:25565\" } }",
+          "drain.message",
+          "the message is warp.disconnect.restarting in messages/messages.properties, where it"
+              + " can be overridden per language");
 
   // ---------------------------------------------------------------------------
   // Constructor (private — use load())
@@ -158,7 +187,9 @@ public final class WarpConfig {
       TimeoutsConfig timeouts,
       boolean tcpFastOpen,
       LoggingConfig logging,
-      BungeeCordSettings bungeeCord) {
+      BungeeCordSettings bungeeCord,
+      Locale defaultLocale) {
+    this.defaultLocale = defaultLocale;
     this.bind = bind;
     this.onlineMode = onlineMode;
     this.servers = Map.copyOf(servers);
@@ -200,27 +231,109 @@ public final class WarpConfig {
   public static WarpConfig load(Path directory) throws ConfigurationException {
     Path configPath = directory.resolve(CONFIG_FILE);
 
-    if (!Files.exists(configPath)) {
+    boolean fresh = !Files.exists(configPath);
+    if (fresh) {
       writeDefaultConfig(configPath);
       logger.info("Created default configuration file: {}", configPath);
+    } else if (!Files.isRegularFile(configPath) || !Files.isReadable(configPath)) {
+      throw ConfigurationException.of(
+          List.of(
+              new ConfigurationException.Problem(
+                  configPath,
+                  0,
+                  null,
+                  "cannot be read: "
+                      + (Files.isDirectory(configPath)
+                          ? "it is a directory. Move it away, and Warp writes a default file"
+                          : "give the user running Warp read access to it"))));
     }
 
-    HoconConfigurationLoader loader = HoconConfigurationLoader.builder().path(configPath).build();
+    // The layout first: a syntax error is reported with its line, and so is every unknown key.
+    ConfigFile layout = ConfigFile.read(configPath);
+    List<ConfigurationException.Problem> problems =
+        new ArrayList<>(layout.compareWith(configPath, SCHEMA, OPTIONAL_KEYS, MOVED_KEYS));
 
+    HoconConfigurationLoader loader = HoconConfigurationLoader.builder().path(configPath).build();
     CommentedConfigurationNode root;
     try {
       root = loader.load();
     } catch (IOException e) {
-      throw new ConfigurationException("Failed to read " + configPath, e);
+      throw ConfigurationException.of(
+          List.of(
+              new ConfigurationException.Problem(
+                  configPath, 0, null, "cannot be read: " + e.getMessage())));
     }
 
+    WarpConfig config = null;
+    try {
+      config = parse(root, directory, fresh);
+    } catch (ConfigurationException e) {
+      List<ConfigurationException.Problem> layoutProblems = List.copyOf(problems);
+      for (ConfigurationException.Problem problem :
+          e.locatedIn(configPath, layout::lineOf).problems()) {
+        // A key the layout already reported, or one of the block it is in (a misspelt address,
+        // then the address missing), is reported once, by the layout.
+        if (layoutProblems.stream().noneMatch(p -> related(p.key(), problem.key()))) {
+          problems.add(problem);
+        }
+      }
+    }
+    PlayerMessages messages = null;
+    try {
+      messages =
+          PlayerMessages.load(
+              directory, config != null ? config.defaultLocale : PlayerMessages.DEFAULT_LOCALE);
+    } catch (ConfigurationException e) {
+      problems.addAll(e.problems());
+    }
+    if (!problems.isEmpty() || config == null || messages == null) {
+      throw ConfigurationException.of(problems);
+    }
+    config.messages = messages;
+    logConfig(config);
+    return config;
+  }
+
+  /**
+   * Whether a value problem is about what a layout problem already reports: the same key, or a key
+   * of the same block (other than the top level).
+   */
+  private static boolean related(@Nullable String layoutKey, @Nullable String valueKey) {
+    if (layoutKey == null || valueKey == null) {
+      return false;
+    }
+    if (layoutKey.equals(valueKey)) {
+      return true;
+    }
+    int dot = layoutKey.lastIndexOf('.');
+    return dot > 0 && valueKey.startsWith(layoutKey.substring(0, dot + 1));
+  }
+
+  /** Reads the settings of a configuration whose layout is valid. */
+  private static WarpConfig parse(CommentedConfigurationNode root, Path directory, boolean fresh)
+      throws ConfigurationException {
     // ---------------------------------------------------------------------------
     // Parse
     // ---------------------------------------------------------------------------
 
-    InetSocketAddress bind = parseAddress(root.node("bind").getString(DEFAULT_BIND), "bind");
+    int configVersion = intValue(root.node("config-version"), CONFIG_VERSION);
+    if (configVersion > CONFIG_VERSION) {
+      throw ConfigurationException.at(
+          "config-version",
+          "this file was written for a newer Warp (layout "
+              + configVersion
+              + "); this Warp reads layout "
+              + CONFIG_VERSION
+              + " and older. Run the Warp it was written for, or start from a fresh warp.conf");
+    }
+    if (configVersion < 1) {
+      throw ConfigurationException.invalid(
+          "config-version", "a layout from 1 to " + CONFIG_VERSION, configVersion);
+    }
 
-    boolean onlineMode = root.node("online-mode").getBoolean(DEFAULT_ONLINE_MODE);
+    InetSocketAddress bind = parseAddress(stringValue(root.node("bind"), DEFAULT_BIND), "bind");
+
+    boolean onlineMode = booleanValue(root.node("online-mode"), DEFAULT_ONLINE_MODE);
 
     // Parse server list.
     Map<String, InetSocketAddress> servers = parseServers(root);
@@ -228,21 +341,32 @@ public final class WarpConfig {
     List<String> fallbackOrder = parseFallbackOrder(root, servers, defaultServer);
 
     DuplicateLoginPolicy duplicateLoginPolicy =
-        parseDuplicateLoginPolicy(root.node("duplicate-login").getString(DEFAULT_DUPLICATE_LOGIN));
+        parseDuplicateLoginPolicy(
+            stringValue(root.node("duplicate-login"), DEFAULT_DUPLICATE_LOGIN));
 
-    String modeStr = root.node("forwarding", "mode").getString(DEFAULT_FORWARDING_MODE);
+    String modeStr = stringValue(root.node("forwarding", "mode"), DEFAULT_FORWARDING_MODE);
     ForwardingMode forwardingMode = parseForwardingMode(modeStr);
 
-    String secretPath = root.node("forwarding", "secret-file").getString(DEFAULT_SECRET_FILE);
-    byte[] forwardingSecret = loadForwardingSecret(directory, secretPath, forwardingMode);
+    String secretPath = stringValue(root.node("forwarding", "secret-file"), DEFAULT_SECRET_FILE);
+    byte[] forwardingSecret = loadForwardingSecret(directory, secretPath, forwardingMode, fresh);
 
     int compressionThreshold =
-        root.node("compression", "threshold").getInt(DEFAULT_COMPRESSION_THRESHOLD);
-    int compressionLevel = root.node("compression", "level").getInt(DEFAULT_COMPRESSION_LEVEL);
+        intValue(root.node("compression", "threshold"), DEFAULT_COMPRESSION_THRESHOLD);
+    int compressionLevel = intValue(root.node("compression", "level"), DEFAULT_COMPRESSION_LEVEL);
     boolean compressionPassthrough =
-        root.node("compression", "passthrough").getBoolean(DEFAULT_COMPRESSION_PASSTHROUGH);
+        booleanValue(root.node("compression", "passthrough"), DEFAULT_COMPRESSION_PASSTHROUGH);
 
-    boolean acceptsTransfers = root.node("accepts-transfers").getBoolean(DEFAULT_ACCEPTS_TRANSFERS);
+    boolean acceptsTransfers =
+        booleanValue(root.node("accepts-transfers"), DEFAULT_ACCEPTS_TRANSFERS);
+
+    String localeText = stringValue(root.node("messages", "default-locale"), "en_US");
+    Locale defaultLocale = PlayerMessages.parseLocale(localeText);
+    if (defaultLocale == null) {
+      throw ConfigurationException.invalid(
+          "messages.default-locale",
+          "a language such as en_US, fr_FR or de",
+          "'" + localeText + "'");
+    }
 
     ManagementConfig management = ManagementConfig.parse(root, directory, System::getenv);
     DrainConfig drain = DrainConfig.parse(root);
@@ -260,46 +384,58 @@ public final class WarpConfig {
     // ---------------------------------------------------------------------------
 
     if (compressionThreshold < -1) {
-      throw new ConfigurationException(
-          "compression.threshold must be >= -1, got " + compressionThreshold);
+      throw ConfigurationException.invalid(
+          "compression.threshold",
+          "a size in bytes, 0 or more, or -1 to turn compression off",
+          compressionThreshold);
     }
     if (compressionLevel < -1 || compressionLevel > 9) {
-      throw new ConfigurationException(
-          "compression.level must be -1 to 9, got " + compressionLevel);
+      throw ConfigurationException.invalid(
+          "compression.level",
+          "a level from 0 (fastest) to 9 (smallest), or -1 for zlib's default",
+          compressionLevel);
     }
 
-    WarpConfig config =
-        new WarpConfig(
-            bind,
-            onlineMode,
-            servers,
-            defaultServer,
-            fallbackOrder,
-            duplicateLoginPolicy,
-            forwardingMode,
-            forwardingSecret,
-            compressionThreshold,
-            compressionLevel,
-            compressionPassthrough,
-            acceptsTransfers,
-            management,
-            drain,
-            status,
-            proxyProtocol,
-            limits,
-            antiBot,
-            timeouts,
-            tcpFastOpen,
-            logging,
-            bungeeCord);
-
-    logConfig(config);
-    return config;
+    return new WarpConfig(
+        bind,
+        onlineMode,
+        servers,
+        defaultServer,
+        fallbackOrder,
+        duplicateLoginPolicy,
+        forwardingMode,
+        forwardingSecret,
+        compressionThreshold,
+        compressionLevel,
+        compressionPassthrough,
+        acceptsTransfers,
+        management,
+        drain,
+        status,
+        proxyProtocol,
+        limits,
+        antiBot,
+        timeouts,
+        tcpFastOpen,
+        logging,
+        bungeeCord,
+        defaultLocale);
   }
 
   // ---------------------------------------------------------------------------
   // Accessors
   // ---------------------------------------------------------------------------
+
+  /**
+   * Returns what the proxy tells players, in their languages, with the operator's overrides from
+   * the {@code messages} directory.
+   *
+   * @return the player messages
+   */
+  public PlayerMessages messages() {
+    PlayerMessages loaded = messages;
+    return loaded != null ? loaded : PlayerMessages.bundled();
+  }
 
   /**
    * Returns the address and port to listen on.
@@ -519,18 +655,20 @@ public final class WarpConfig {
 
   static InetSocketAddress parseAddress(String value, String field) throws ConfigurationException {
     int lastColon = value.lastIndexOf(':');
+    String expected = "host:port, such as \"0.0.0.0:25577\" or \"localhost:25565\"";
     if (lastColon <= 0 || lastColon == value.length() - 1) {
-      throw new ConfigurationException(field + " must be host:port, got '" + value + "'");
+      throw ConfigurationException.invalid(field, expected, "'" + value + "'");
     }
     String host = value.substring(0, lastColon);
     int port;
     try {
       port = Integer.parseInt(value.substring(lastColon + 1));
     } catch (NumberFormatException e) {
-      throw new ConfigurationException(field + " has invalid port in '" + value + "'");
+      throw ConfigurationException.invalid(
+          field, expected + ", the port a number", "'" + value + "'");
     }
     if (port < 1 || port > 65535) {
-      throw new ConfigurationException(field + " port must be 1-65535, got " + port);
+      throw ConfigurationException.invalid(field, "a port from 1 to 65535", port);
     }
     return new InetSocketAddress(host, port);
   }
@@ -541,34 +679,34 @@ public final class WarpConfig {
     Map<String, InetSocketAddress> servers = new LinkedHashMap<>();
 
     if (!serversNode.virtual() && !serversNode.isMap() && !serversNode.empty()) {
-      throw new ConfigurationException(
-          "servers must be a block of named servers, for example servers { lobby { address ="
-              + " \"localhost:25565\" } }");
+      throw ConfigurationException.invalid(
+          "servers",
+          "a block of named servers, such as servers { lobby { address = \"localhost:25565\" } }",
+          "'" + serversNode.raw() + "'");
     }
 
     if (!serversNode.virtual() && serversNode.isMap()) {
       for (var entry : serversNode.childrenMap().entrySet()) {
-        String name = entry.getKey().toString().toLowerCase(Locale.ROOT);
-        String addressStr = entry.getValue().node("address").getString();
-        if (addressStr == null || addressStr.isBlank()) {
-          throw new ConfigurationException(
-              "Server '" + name + "' is missing an address in servers configuration");
+        String key = entry.getKey().toString();
+        String name = key.toLowerCase(Locale.ROOT);
+        String addressKey = "servers." + key + ".address";
+        CommentedConfigurationNode address = entry.getValue().node("address");
+        if (address.virtual()) {
+          throw ConfigurationException.at(
+              addressKey,
+              "missing: each server needs its address, such as address = \"localhost:25565\"");
         }
-        servers.put(name, parseAddress(addressStr, "servers." + name + ".address"));
+        String addressStr = stringValue(address, "");
+        if (addressStr.isBlank()) {
+          throw ConfigurationException.invalid(addressKey, "host:port", "an empty address");
+        }
+        servers.put(name, parseAddress(addressStr, addressKey));
       }
     }
 
     // An explicit empty block means no static server: servers are registered at runtime.
     if (!serversNode.virtual()) {
       return servers;
-    }
-
-    // Fallback: if no servers block, check legacy backend.address.
-    if (servers.isEmpty()) {
-      String legacyAddress = root.node("backend", "address").getString();
-      if (legacyAddress != null && !legacyAddress.isBlank()) {
-        servers.put(DEFAULT_SERVER_NAME, parseAddress(legacyAddress, "backend.address"));
-      }
     }
 
     if (servers.isEmpty()) {
@@ -586,60 +724,68 @@ public final class WarpConfig {
       throws ConfigurationException {
     CommentedConfigurationNode node = root.node("default-server");
     if (servers.isEmpty()) {
-      String configured = node.getString();
-      if (configured != null && !configured.isBlank()) {
-        throw new ConfigurationException(
-            "default-server '"
+      String configured = stringValue(node, "");
+      if (!configured.isBlank()) {
+        throw ConfigurationException.at(
+            "default-server",
+            "'"
                 + configured
                 + "' is set but no server is configured: remove default-server, or add the server"
                 + " to the servers block");
       }
       return null;
     }
-    String defaultServer = node.getString(DEFAULT_SERVER_NAME).toLowerCase(Locale.ROOT);
+    String defaultServer = stringValue(node, DEFAULT_SERVER_NAME).toLowerCase(Locale.ROOT);
     if (!servers.containsKey(defaultServer)) {
-      throw new ConfigurationException(
-          "default-server '" + defaultServer + "' not found in servers list: " + servers.keySet());
+      throw unknownServer("default-server", defaultServer, servers);
     }
     return defaultServer;
+  }
+
+  /** A server name that is not in the servers block, with the closest one if it is a typo. */
+  private static ConfigurationException unknownServer(
+      String key, String name, Map<String, InetSocketAddress> servers) {
+    String suggestion = Suggestions.closest(name, servers.keySet());
+    return ConfigurationException.invalid(
+        key,
+        "one of the servers block: " + String.join(", ", servers.keySet()),
+        "'" + name + "'" + (suggestion != null ? ". Did you mean '" + suggestion + "'?" : ""));
   }
 
   private static List<String> parseFallbackOrder(
       CommentedConfigurationNode root,
       Map<String, InetSocketAddress> servers,
-      @Nullable String defaultServer) {
+      @Nullable String defaultServer)
+      throws ConfigurationException {
     CommentedConfigurationNode fallbackNode = root.node("fallback-order");
+    if (!fallbackNode.virtual() && !fallbackNode.isList()) {
+      throw ConfigurationException.invalid(
+          "fallback-order", "a list of server names, such as [\"lobby\"]", fallbackNode.raw());
+    }
 
     if (defaultServer == null) {
       if (!fallbackNode.virtual() && !fallbackNode.childrenList().isEmpty()) {
-        logger.warn("fallback-order is ignored: no server is configured");
+        throw ConfigurationException.at(
+            "fallback-order",
+            "lists servers, but the servers block has none: remove fallback-order, or add the"
+                + " servers");
       }
       return List.of();
     }
 
-    if (fallbackNode.virtual()
-        || (fallbackNode.isList() && fallbackNode.childrenList().isEmpty())) {
-      // Not configured: default to [defaultServer].
+    if (fallbackNode.virtual() || fallbackNode.childrenList().isEmpty()) {
+      // Not configured: default to [defaultServer], the documented behaviour.
       return List.of(defaultServer);
     }
 
     List<String> result = new ArrayList<>();
     for (var child : fallbackNode.childrenList()) {
-      String name = child.getString();
-      if (name == null || name.isBlank()) {
-        continue;
-      }
+      String name = stringValue(child, "");
       String key = name.toLowerCase(Locale.ROOT);
       if (!servers.containsKey(key)) {
-        logger.warn("fallback-order references unknown server '{}', skipping", name);
-        continue;
+        throw unknownServer("fallback-order", name, servers);
       }
       result.add(key);
-    }
-
-    if (result.isEmpty()) {
-      logger.warn("fallback-order is empty after validation, defaulting to [{}]", defaultServer);
-      return List.of(defaultServer);
     }
     return result;
   }
@@ -794,7 +940,18 @@ public final class WarpConfig {
         // Reported below.
       }
     }
-    throw new ConfigurationException(path(node) + " must be a whole number, got '" + raw + "'");
+    throw ConfigurationException.invalid(path(node), "a whole number", describe(node));
+  }
+
+  /** What a node holds, for "found ..." in errors. */
+  static String describe(ConfigurationNode node) {
+    if (node.isMap()) {
+      return "a block { ... }";
+    }
+    if (node.isList()) {
+      return "a list [ ... ]";
+    }
+    return "'" + node.raw() + "'";
   }
 
   static boolean booleanValue(ConfigurationNode node, boolean fallback)
@@ -810,7 +967,7 @@ public final class WarpConfig {
         && (text.equalsIgnoreCase("true") || text.equalsIgnoreCase("false"))) {
       return Boolean.parseBoolean(text);
     }
-    throw new ConfigurationException(path(node) + " must be true or false, got '" + raw + "'");
+    throw ConfigurationException.invalid(path(node), "true or false", describe(node));
   }
 
   static String stringValue(ConfigurationNode node, String fallback) throws ConfigurationException {
@@ -819,13 +976,13 @@ public final class WarpConfig {
     }
     String value = node.isMap() || node.isList() ? null : node.getString();
     if (value == null) {
-      throw new ConfigurationException(path(node) + " must be a string");
+      throw ConfigurationException.invalid(path(node), "a text in quotes", describe(node));
     }
     return value;
   }
 
   /** The dotted path of a node, such as {@code status.max-players}, for error messages. */
-  private static String path(ConfigurationNode node) {
+  static String path(ConfigurationNode node) {
     StringBuilder path = new StringBuilder();
     for (Object key : node.path()) {
       if (!path.isEmpty()) {
@@ -863,7 +1020,7 @@ public final class WarpConfig {
   private static ProxyProtocolConfig parseProxyProtocol(CommentedConfigurationNode root)
       throws ConfigurationException {
     CommentedConfigurationNode section = root.node("proxy-protocol");
-    boolean enabled = section.node("enabled").getBoolean(false);
+    boolean enabled = booleanValue(section.node("enabled"), false);
 
     CidrRanges trusted =
         parseCidrRanges(section.node("trusted-proxies"), "proxy-protocol.trusted-proxies");
@@ -927,7 +1084,7 @@ public final class WarpConfig {
     CommentedConfigurationNode exemptNode = section.node("exempt");
     CommentedConfigurationNode loginsNode = section.node("logins");
 
-    boolean enabled = section.node("enabled").getBoolean(defaults.enabled());
+    boolean enabled = booleanValue(section.node("enabled"), defaults.enabled());
     CidrRanges exempt =
         exemptNode.virtual() ? defaults.exempt() : parseCidrRanges(exemptNode, "limits.exempt");
     LimitsConfig.Rate connections =
@@ -1114,7 +1271,14 @@ public final class WarpConfig {
     return Durations.parse(node, key, defaultValue);
   }
 
-  private static byte[] loadForwardingSecret(Path directory, String secretPath, ForwardingMode mode)
+  /**
+   * Reads the forwarding secret: from {@code WARP_FORWARDING_SECRET}, else from the secret file.
+   * The default file, {@code forwarding.secret}, is generated when it does not exist, as
+   * documented; a file the operator named must exist, since generating a secret the backends do not
+   * have would lock every player out (an unmounted secret volume, a typo in the path).
+   */
+  private static byte[] loadForwardingSecret(
+      Path directory, String secretPath, ForwardingMode mode, boolean fresh)
       throws ConfigurationException {
     // Environment variable takes precedence.
     @Nullable String envSecret = System.getenv(ENV_FORWARDING_SECRET);
@@ -1127,30 +1291,60 @@ public final class WarpConfig {
       return new byte[0];
     }
 
+    String key = "forwarding.secret-file";
+    String fix =
+        "Put the secret your backends use in it (Paper: proxies.velocity.secret in"
+            + " config/paper-global.yml), or set "
+            + ENV_FORWARDING_SECRET;
     Path file = directory.resolve(secretPath);
     if (!Files.exists(file)) {
+      if (!secretPath.equals(DEFAULT_SECRET_FILE)) {
+        throw ConfigurationException.at(
+            key,
+            file + " does not exist. " + fix + ", or remove secret-file to use a generated one");
+      }
       String generated = generateSecret();
       try {
         Files.writeString(file, generated, StandardCharsets.UTF_8);
       } catch (IOException e) {
-        throw new ConfigurationException("Failed to write forwarding secret to " + file, e);
+        throw ConfigurationException.at(
+            key,
+            "cannot create "
+                + file
+                + " ("
+                + e
+                + "): give the user running Warp write access to its directory, or set "
+                + ENV_FORWARDING_SECRET);
       }
-      logger.info("Generated a random forwarding secret in {}", file);
+      if (fresh) {
+        logger.info("Generated a random forwarding secret in {}", file);
+      } else {
+        logger.warn(
+            "{} did not exist: generated a new forwarding secret. Give it to every backend (Paper:"
+                + " proxies.velocity.secret in config/paper-global.yml), or players cannot join",
+            file);
+      }
+    }
+    if (Files.isDirectory(file)) {
+      throw ConfigurationException.at(key, file + " is a directory, not a file. " + fix);
     }
 
     String secret;
     try {
       secret = Files.readString(file, StandardCharsets.UTF_8).trim();
     } catch (IOException e) {
-      throw new ConfigurationException("Failed to read forwarding secret from " + file, e);
+      throw ConfigurationException.at(
+          key,
+          "cannot read "
+              + file
+              + " ("
+              + e.getClass().getSimpleName()
+              + "): give the user running Warp read access to it, or set "
+              + ENV_FORWARDING_SECRET);
     }
 
     if (secret.isEmpty()) {
-      throw new ConfigurationException(
-          "Forwarding secret file is empty: "
-              + file
-              + " — generate a secret or set "
-              + ENV_FORWARDING_SECRET);
+      throw ConfigurationException.at(key, file + " is empty. " + fix);
     }
 
     return secret.getBytes(StandardCharsets.UTF_8);
@@ -1166,9 +1360,35 @@ public final class WarpConfig {
   }
 
   private static void writeDefaultConfig(Path path) throws ConfigurationException {
-    String content =
-        """
+    try {
+      Files.writeString(path, defaultConfig(), StandardCharsets.UTF_8);
+    } catch (IOException e) {
+      throw ConfigurationException.of(
+          List.of(
+              new ConfigurationException.Problem(
+                  path,
+                  0,
+                  null,
+                  "cannot be created ("
+                      + e
+                      + "): give the user running Warp write access to its directory")));
+    }
+  }
+
+  /**
+   * Returns the default {@code warp.conf}, which documents every setting: the one Warp writes on
+   * first start, and the reference unknown keys are found against.
+   *
+   * @return the file's text
+   */
+  static String defaultConfig() {
+    return """
         # Warp Proxy Configuration, in HOCON (https://github.com/lightbend/config/blob/main/HOCON.md).
+        #
+        # Warp checks this file when it starts, and refuses to start if anything is wrong with it: a
+        # key it does not know (with the closest one it does), a value of the wrong kind, a server
+        # that does not exist. Each error names the line. A key left out takes the default shown
+        # here. The messages players see are overridden in the messages directory next to this file.
         #
         # Durations take a unit: 200ms, 30s, 5m, 1h or 30d (a bare 0 is zero, any other bare number
         # is refused).
@@ -1183,6 +1403,10 @@ public final class WarpConfig {
         # Secrets stay out of this file: the forwarding secret is read from forwarding.secret-file or
         # the WARP_FORWARDING_SECRET variable, the management token from management.token-file or the
         # WARP_MANAGEMENT_TOKEN variable.
+
+        # The layout of this file. Warp reads its own layout and older ones, and refuses a file written
+        # for a newer Warp rather than misread it. Leave it as it is.
+        config-version = 1
 
         # Address to listen on.
         bind = "0.0.0.0:25577"
@@ -1382,9 +1606,8 @@ public final class WarpConfig {
           new-players = accept
           # Longest wait for the players kept, once the transfers are done.
           timeout = 30m
-          # Shown to the players the drain disconnects and to the logins it refuses, in MiniMessage
-          # like status.motd.
-          message = "<yellow>This proxy is restarting. Please reconnect."
+          # The players the drain disconnects and the logins it refuses are told the message
+          # warp.disconnect.restarting, in their language: override it in the messages directory.
         }
 
         # PROXY protocol (v1 and v2), for a load balancer in front of Warp that sends it: HAProxy
@@ -1584,15 +1807,22 @@ public final class WarpConfig {
           # forwards never wait. 0 drops them at once.
           forward-hold = 30s
         }
-        """
-            .replace("{default-version-name}", StatusSettings.defaultVersionName());
 
-    try {
-      Files.createDirectories(path.getParent());
-      Files.writeString(path, content, StandardCharsets.UTF_8);
-    } catch (IOException e) {
-      throw new ConfigurationException("Failed to write default config to " + path, e);
-    }
+        # ---------------------------------------------------------------------------
+        # Player messages
+        # ---------------------------------------------------------------------------
+        # Warp talks to each player in the language of its game: English and French are bundled,
+        # any other language falls back to English. Every message can be overridden, for every
+        # language or for one, in the messages directory next to this file: Warp writes a template
+        # there on first start, listing them all.
+        messages {
+          # The language for a player whose game has not said which one it uses yet: one refused
+          # at login on its first visit. On later visits, Warp uses the language it last played in.
+          # A code such as en_US, fr_FR, de or pt_BR.
+          default-locale = "en_US"
+        }
+        """
+        .replace("{default-version-name}", StatusSettings.defaultVersionName());
   }
 
   private static void logConfig(WarpConfig config) {

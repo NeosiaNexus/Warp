@@ -22,6 +22,7 @@ import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerRegistry;
 import dev.warp.proxy.antibot.AntiBotService;
+import dev.warp.proxy.i18n.Message;
 
 import java.util.Comparator;
 import java.util.List;
@@ -107,8 +108,7 @@ public final class ProxyCommands {
                       String name = StringArgumentType.getString(context, "server");
                       Optional<RegisteredServer> target = servers.server(name);
                       if (target.isEmpty()) {
-                        player.sendMessage(
-                            Component.text("Unknown server: " + name, NamedTextColor.RED));
+                        player.sendMessage(Message.UNKNOWN_SERVER.of(name));
                         return 0;
                       }
                       var _ =
@@ -119,17 +119,12 @@ public final class ProxyCommands {
                                     switch (result) {
                                       case ConnectionResult.AlreadyConnected(var server) ->
                                           player.sendMessage(
-                                              Component.text(
-                                                  "Already connected to " + server.name() + "."));
+                                              Message.ALREADY_ON_SERVER.of(server.name()));
                                       case ConnectionResult.InProgress _ ->
-                                          player.sendMessage(
-                                              Component.text("Already switching servers."));
+                                          player.sendMessage(Message.ALREADY_SWITCHING.of());
                                       case ConnectionResult.Denied(var server) ->
                                           player.sendMessage(
-                                              Component.text(
-                                                  "You cannot join "
-                                                      + server.name()
-                                                      + " right now."));
+                                              Message.CONNECT_DENIED.of(server.name()));
                                       default -> {
                                         // Connected, or failed: the player was told on the way.
                                       }
@@ -141,14 +136,14 @@ public final class ProxyCommands {
 
   /**
    * The answer to {@code /server}: "Servers: [lobby], survival", the current server in brackets,
-   * each other one a link that moves the player there.
+   * each other one a link that moves the player there; rendered in the player's language.
    *
    * @param names the servers' names, in order
    * @param current the server the player is on, or {@code null}
    * @return the message
    */
   public static Component serverList(List<String> names, @Nullable String current) {
-    TextComponent.Builder list = Component.text().content("Servers: ").color(NamedTextColor.GRAY);
+    TextComponent.Builder list = Component.text().color(NamedTextColor.GRAY);
     boolean first = true;
     for (String name : names) {
       if (!first) {
@@ -160,8 +155,8 @@ public final class ProxyCommands {
               ? Component.text("[" + name + "]", NamedTextColor.GREEN)
               : Component.text(name, NamedTextColor.AQUA)
                   .clickEvent(ClickEvent.runCommand("/server " + name))
-                  .hoverEvent(HoverEvent.showText(Component.text("Connect to " + name))));
+                  .hoverEvent(HoverEvent.showText(Message.SERVER_LIST_HOVER.of(name))));
     }
-    return list.build();
+    return Message.SERVER_LIST.of(list.build());
   }
 }

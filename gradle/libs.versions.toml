@@ -15,6 +15,8 @@ caffeine = "3.3.0"
 disruptor = "4.0.0"
 gson = "2.14.0"
 configurate = "4.2.0"
+# The HOCON parser Configurate uses, read directly for the line of each configuration key.
+typesafe-config = "1.4.1"
 jspecify = "1.0.0"
 
 # Via plugin: ViaVersion, ViaBackwards, ViaRewind (and the Guava they expect their platform to
@@ -89,6 +91,7 @@ disruptor = { group = "com.lmax", name = "disruptor", version.ref = "disruptor" 
 caffeine = { group = "com.github.ben-manes.caffeine", name = "caffeine", version.ref = "caffeine" }
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 configurate-hocon = { group = "org.spongepowered", name = "configurate-hocon", version.ref = "configurate" }
+typesafe-config = { group = "com.typesafe", name = "config", version.ref = "typesafe-config" }
 
 # Via plugin
 viaversion-common = { group = "com.viaversion", name = "viaversion-common", version.ref = "viaversion" }

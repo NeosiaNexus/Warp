@@ -26,6 +26,8 @@ import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.handshake.HandshakePacket;
 import dev.warp.protocol.packet.login.LoginDisconnect;
+import dev.warp.proxy.i18n.Message;
+import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.limit.Refusal;
 
 import io.netty.channel.ChannelFutureListener;
@@ -65,9 +67,6 @@ import org.slf4j.LoggerFactory;
 final class HandshakeSessionHandler implements SessionHandler {
 
   private static final Logger logger = LoggerFactory.getLogger(HandshakeSessionHandler.class);
-
-  /** Vanilla's reason for refusing a transfer, translated by the client (1.20.5+). */
-  static final String TRANSFERS_DISABLED = "multiplayer.disconnect.transfers_disabled";
 
   /** What a client of Minecraft 1.6 or older is told when it tries to join. */
   static final String OUTDATED_CLIENT =
@@ -238,6 +237,10 @@ final class HandshakeSessionHandler implements SessionHandler {
     // In the login state, whose disconnect packet the client reads: the handshake state has none,
     // and a disconnect written in it never reaches the player (Velocity, Gate).
     connection.setState(ProtocolState.LOGIN);
-    connection.writeAndClose(LoginDisconnect.ofTranslation(TRANSFERS_DISABLED));
+    PlayerMessages messages = loginContext.messages();
+    connection.writeAndClose(
+        LoginDisconnect.of(
+            messages.render(Message.TRANSFERS_DISABLED.of(), messages.defaultLocale(), version),
+            version));
   }
 }

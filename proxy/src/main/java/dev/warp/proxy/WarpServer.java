@@ -330,6 +330,13 @@ public final class WarpServer implements Warp {
         WarpBuildInfo.GIT_COMMIT,
         WarpBuildInfo.GIT_BRANCH);
 
+    // What the operator can fix is checked before anything starts: one clear message each.
+    StartupException.checkBindable(config.bind(), "bind");
+    if (config.management().enabled()) {
+      StartupException.checkBindable(config.management().bind(), "management.bind");
+    }
+    StartupException.checkReadableDirectory(directory.resolve("plugins"), "plugins");
+
     TransportInfo transport = detectTransport();
     this.transportInfo = transport;
     // Loads and self-tests native compression before any connection, so the log tells the truth.
@@ -417,7 +424,7 @@ public final class WarpServer implements Warp {
     } catch (Exception e) {
       shutdownEventLoops();
       stopManagement();
-      throw new RuntimeException("Failed to bind to " + config.bind(), e);
+      throw StartupException.cannotBind(config.bind(), "bind", e);
     }
 
     Runtime.getRuntime().addShutdownHook(new Thread(this::onJvmShutdown, "warp-shutdown"));
@@ -865,7 +872,8 @@ public final class WarpServer implements Warp {
         config.logging(),
         config.tcpFastOpen() && transport.tcpFastOpen(),
         bots,
-        pipelines);
+        pipelines,
+        config.messages());
   }
 
   /**

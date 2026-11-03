@@ -53,6 +53,8 @@ import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.event.player.GameProfileRequestEventImpl;
 import dev.warp.proxy.event.player.LoginEventImpl;
 import dev.warp.proxy.event.player.PreLoginEventImpl;
+import dev.warp.proxy.i18n.Message;
+import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.limit.AuthenticationLane;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.limit.LoginAdmission;
@@ -82,7 +84,6 @@ import io.netty.channel.ChannelPipeline;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import io.netty.util.concurrent.ScheduledFuture;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -134,31 +135,17 @@ final class LoginSessionHandler implements SessionHandler {
   /** Verify token length in bytes. */
   private static final int VERIFY_TOKEN_LENGTH = 4;
 
-  /**
-   * Vanilla's reason for refusing a client that answers a query it was not sent, such as a cookie
-   * the proxy never requested, translated by the client.
-   */
-  static final String UNEXPECTED_QUERY_RESPONSE =
-      "multiplayer.disconnect.unexpected_query_response";
-
-  /** Why a player beyond the player limit ({@code status.max-players}) is refused. */
-  static final String SERVER_FULL = "The server is full.";
+  /** Why a player beyond the player limit ({@code player-limit}) is refused: vanilla's. */
+  static final Component SERVER_FULL = Message.SERVER_FULL.of();
 
   /** Told to a player over the limit of logins in progress from its address. */
-  static final String TOO_MANY_LOGINS_REASON =
-      "Too many logins in progress from your address. Please try again in a moment.";
-
-  /** Told to a player who starts an online login while the proxy authenticates its most. */
-  static final String BUSY_REASON =
-      "The server is busy logging players in. Please try again in a moment.";
+  static final Component TOO_MANY_LOGINS_REASON = Message.TOO_MANY_LOGINS.of();
 
   /** Told to a player the anti-bot does not know, during a lockdown. */
-  static final String LOCKDOWN_REASON =
-      "This server only lets in players who have played here before, for now. Please try again"
-          + " later.";
+  static final Component LOCKDOWN_REASON = Message.LOCKDOWN.of();
 
-  /** Told to a player whose login took longer than the login timeout. */
-  static final String TIMED_OUT_REASON = "Login timed out";
+  /** Told to a player whose login took longer than the login timeout: vanilla's. */
+  static final Component TIMED_OUT_REASON = Message.SLOW_LOGIN.of();
 
   /** Warnings that the session server fails, shared by every login: one a minute at most. */
   private static final LogThrottle SESSION_SERVER_WARNINGS = new LogThrottle(Duration.ofMinutes(1));
@@ -370,19 +357,20 @@ final class LoginSessionHandler implements SessionHandler {
           connection.remoteAddress(),
           response.key());
       state = LoginState.REFUSED;
-      connection.writeAndClose(LoginDisconnect.ofTranslation(UNEXPECTED_QUERY_RESPONSE));
+      connection.writeAndClose(
+          LoginDisconnect.of(render(Message.UNEXPECTED_QUERY_RESPONSE.of()), clientVersion()));
     }
   }
 
   private void handleLoginStart(LoginStart packet) {
     if (state != LoginState.AWAITING_LOGIN_START) {
-      deny(Refusal.UNEXPECTED_PACKET, "Unexpected LoginStart");
+      deny(Refusal.UNEXPECTED_PACKET, Message.UNEXPECTED_PACKET.of(), "Unexpected LoginStart");
       return;
     }
 
     String name = packet.name();
     if (!USERNAME_PATTERN.matcher(name).matches()) {
-      deny(Refusal.INVALID_LOGIN, "Invalid username");
+      deny(Refusal.INVALID_LOGIN, Message.INVALID_USERNAME.of(), "Invalid username");
       return;
     }
 
@@ -578,11 +566,8 @@ final class LoginSessionHandler implements SessionHandler {
   }
 
   /** The reason shown to a player who waited in line too long, with when to try again. */
-  static String busyReason(Duration retryAfter) {
-    long seconds = Math.max(1, retryAfter.toSeconds());
-    return "The server is busy logging players in. Please try again in "
-        + seconds
-        + (seconds == 1 ? " second." : " seconds.");
+  static Component busyReason(Duration retryAfter) {
+    return Message.LOGIN_BUSY.of(Math.max(1, retryAfter.toSeconds()));
   }
 
   private AntiBotService.Recognition recognition() {
@@ -595,7 +580,10 @@ final class LoginSessionHandler implements SessionHandler {
 
   private void handleEncryptionResponse(EncryptionResponse packet) {
     if (state != LoginState.AWAITING_ENCRYPTION_RESPONSE) {
-      deny(Refusal.UNEXPECTED_PACKET, "Unexpected EncryptionResponse");
+      deny(
+          Refusal.UNEXPECTED_PACKET,
+          Message.UNEXPECTED_PACKET.of(),
+          "Unexpected EncryptionResponse");
       return;
     }
 
@@ -662,7 +650,7 @@ final class LoginSessionHandler implements SessionHandler {
   private void authenticate(EncryptionResponse packet) {
     byte[] token = this.verifyToken;
     if (token == null) {
-      disconnect("Internal error");
+      internalError("no verify token for the encryption response");
       return;
     }
     // The slot is given back here, unless the session server request is under way: it does.
@@ -678,14 +666,20 @@ final class LoginSessionHandler implements SessionHandler {
       switch (packet.verifyToken()) {
         case EncryptedToken(byte[] encrypted) -> {
           if (playerKey != null || !MessageDigest.isEqual(token, rsaCipher.doFinal(encrypted))) {
-            deny(Refusal.AUTHENTICATION_FAILED, "Verify token mismatch");
+            deny(
+                Refusal.AUTHENTICATION_FAILED,
+                Message.ENCRYPTION_FAILED.of(),
+                "Verify token mismatch");
             return;
           }
         }
         case SignedToken(long salt, byte[] signature) -> {
           if (playerKey == null
               || !ProfileKeys.signsVerifyToken(playerKey, token, salt, signature)) {
-            deny(Refusal.AUTHENTICATION_FAILED, "Invalid verify token signature");
+            deny(
+                Refusal.AUTHENTICATION_FAILED,
+                Message.ENCRYPTION_FAILED.of(),
+                "Invalid verify token signature");
             return;
           }
         }
@@ -695,7 +689,10 @@ final class LoginSessionHandler implements SessionHandler {
 
       // Validate shared secret length.
       if (decryptedSharedSecret.length != SHARED_SECRET_LENGTH) {
-        deny(Refusal.AUTHENTICATION_FAILED, "Invalid shared secret length");
+        deny(
+            Refusal.AUTHENTICATION_FAILED,
+            Message.ENCRYPTION_FAILED.of(),
+            "Invalid shared secret length");
         return;
       }
 
@@ -708,7 +705,7 @@ final class LoginSessionHandler implements SessionHandler {
 
     } catch (GeneralSecurityException e) {
       // Bytes that do not decrypt (a padding error): what a forged encryption response produces.
-      deny(Refusal.AUTHENTICATION_FAILED, "Encryption error: " + e);
+      deny(Refusal.AUTHENTICATION_FAILED, Message.ENCRYPTION_FAILED.of(), "Encryption error: " + e);
     } finally {
       if (!requested) {
         releaseAuthSlot();
@@ -727,7 +724,10 @@ final class LoginSessionHandler implements SessionHandler {
   private void handleLoginAcknowledged() {
     logger.debug("LoginAcknowledged received from {}, state={}", username, state);
     if (state != LoginState.AWAITING_LOGIN_ACKNOWLEDGED) {
-      deny(Refusal.UNEXPECTED_PACKET, "Unexpected LoginAcknowledged");
+      deny(
+          Refusal.UNEXPECTED_PACKET,
+          Message.UNEXPECTED_PACKET.of(),
+          "Unexpected LoginAcknowledged");
       return;
     }
 
@@ -785,7 +785,7 @@ final class LoginSessionHandler implements SessionHandler {
   private void beginOfflineMode() {
     String name = this.username;
     if (name == null) {
-      disconnect("Internal error");
+      internalError("offline login without a username");
       return;
     }
     UUID offlineUuid =
@@ -803,7 +803,7 @@ final class LoginSessionHandler implements SessionHandler {
   private boolean authenticateAsync(byte[] sharedSecret) {
     String playerName = this.username;
     if (playerName == null) {
-      disconnect("Internal error");
+      internalError("online login without a username");
       return false;
     }
     // The request owns the slot from now on, and gives it back when the session server answers,
@@ -870,7 +870,12 @@ final class LoginSessionHandler implements SessionHandler {
                                   LogThrottle.suffix(more, "session server failures"));
                             }
                           }
-                          deny(Refusal.AUTHENTICATION_FAILED, "Authentication failed");
+                          deny(
+                              Refusal.AUTHENTICATION_FAILED,
+                              e.serverFault()
+                                  ? Message.AUTHENTICATION_SERVERS_DOWN.of()
+                                  : Message.AUTHENTICATION_FAILED.of(),
+                              "Authentication failed: " + e.getMessage());
                         });
               } finally {
                 if (requestSlot != null) {
@@ -922,7 +927,7 @@ final class LoginSessionHandler implements SessionHandler {
     if (!(loginContext.playerRegistry().register(joining, kickExisting)
         instanceof PlayerRegistry.Registration.Registered(int place))) {
       // Counted, not logged: in offline mode anyone can claim the name of a player online.
-      deny(Refusal.DUPLICATE_LOGIN, "You are already connected to this proxy.");
+      deny(Refusal.DUPLICATE_LOGIN, Message.ALREADY_CONNECTED.of());
       return;
     }
     this.player = joining;
@@ -931,7 +936,7 @@ final class LoginSessionHandler implements SessionHandler {
     // exactly one gets it. A session replacing a duplicate takes the place it frees.
     LoginEvent.Result proposed =
         loginContext.serverList().settings().isFull(place)
-            ? new LoginEvent.Denied(Component.text(SERVER_FULL))
+            ? new LoginEvent.Denied(SERVER_FULL)
             : new LoginEvent.Allowed();
 
     WarpEventBus events = loginContext.events();
@@ -1105,7 +1110,7 @@ final class LoginSessionHandler implements SessionHandler {
   private void initiateBackendConnection() {
     ConnectedPlayer joining = this.player;
     if (joining == null) {
-      disconnect("Internal error");
+      internalError("no player to connect to its first server");
       return;
     }
     joining.join();
@@ -1159,18 +1164,15 @@ final class LoginSessionHandler implements SessionHandler {
    * once it is logged in. Counted by the limits, not logged one by one, so that a flood cannot fill
    * the logs.
    */
-  private void refuse(String reason) {
+  private void refuse(Component reason) {
     state = LoginState.REFUSED;
     endOfLogin();
-    connection.writeAndClose(LoginDisconnect.ofPlainText(reason));
+    connection.writeAndClose(LoginDisconnect.of(render(reason), clientVersion()));
   }
 
   /** The reason shown to a player who tries to log in too often, with how long to wait. */
-  static String tooFastReason(Duration retryAfter) {
-    long seconds = Math.max(1, (retryAfter.toMillis() + 999) / 1000);
-    return "You are logging in too fast. Please try again in "
-        + seconds
-        + (seconds == 1 ? " second." : " seconds.");
+  static Component tooFastReason(Duration retryAfter) {
+    return Message.LOGIN_TOO_FAST.of(Math.max(1, (retryAfter.toMillis() + 999) / 1000));
   }
 
   // ---------------------------------------------------------------------------
@@ -1194,7 +1196,17 @@ final class LoginSessionHandler implements SessionHandler {
         problem.description());
     state = LoginState.REFUSED;
     endOfLogin();
-    connection.writeAndClose(LoginDisconnect.ofTranslation(ProfileKeys.REFUSAL_REASON));
+    connection.writeAndClose(
+        LoginDisconnect.of(render(Message.INVALID_PUBLIC_KEY_SIGNATURE.of()), clientVersion()));
+  }
+
+  /**
+   * Renders a reason in the language of the player logging in: the one it last played in, as its
+   * client has not said yet (see {@link PlayerMessages#localeOf}).
+   */
+  private Component render(Component reason) {
+    PlayerMessages messages = loginContext.messages();
+    return messages.render(reason, messages.localeOf(username), clientVersion());
   }
 
   /**
@@ -1202,20 +1214,16 @@ final class LoginSessionHandler implements SessionHandler {
    * under {@code reason} and logged at DEBUG only, so that a flood of them cannot fill the logs.
    */
   private void deny(Refusal reason, Component message) {
-    countDenial(reason, PlainTextComponentSerializer.plainText().serialize(message));
-    Packet disconnectPacket =
-        switch (connection.encoder().state()) {
-          case HANDSHAKE, STATUS, LOGIN -> LoginDisconnect.of(message, clientVersion());
-          case CONFIGURATION -> ConfigDisconnect.of(message, clientVersion());
-          case PLAY -> PlayDisconnect.of(message, clientVersion());
-        };
-    connection.writeAndClose(disconnectPacket);
+    deny(reason, message, loginContext.messages().plainEnglish(message));
   }
 
-  /** Refuses a login as {@link #deny(Refusal, Component)} does, with a plain text reason. */
-  private void deny(Refusal reason, String message) {
-    countDenial(reason, message);
-    connection.writeAndClose(plainDisconnect(message));
+  /**
+   * Refuses a login as {@link #deny(Refusal, Component)} does, logging {@code detail} rather than
+   * what the player is told: the technical cause, which the player never sees.
+   */
+  private void deny(Refusal reason, Component message, String detail) {
+    countDenial(reason, detail);
+    connection.writeAndClose(disconnectPacket(render(message)));
   }
 
   private void countDenial(Refusal reason, String message) {
@@ -1231,17 +1239,21 @@ final class LoginSessionHandler implements SessionHandler {
   }
 
   /**
-   * Disconnects the client over something that may reveal a bug in the proxy: logged at WARN.
+   * Disconnects the client over something that may reveal a bug in the proxy: logged at WARN with a
+   * short reference, which the player is shown instead of the cause, so that staff can find the
+   * line it reports.
    *
-   * @param reason the reason, shown to the client
+   * @param detail what went wrong, for the log only
    */
-  private void disconnect(String reason) {
+  private void internalError(String detail) {
+    String reference = InternalErrors.reference();
     logger.warn(
-        "Disconnecting {} from {}: {}",
+        "Disconnecting {} from {} (reference {}): {}",
         username != null ? username : "unknown",
         connection.remoteAddress(),
-        reason);
-    connection.writeAndClose(plainDisconnect(reason));
+        reference,
+        detail);
+    connection.writeAndClose(disconnectPacket(render(Message.INTERNAL_ERROR.of(reference))));
   }
 
   /**
@@ -1249,11 +1261,11 @@ final class LoginSessionHandler implements SessionHandler {
    * from 1.20.2, to PLAY before. The login reason is JSON in every version; the configuration and
    * play reasons follow the client's version.
    */
-  private Packet plainDisconnect(String reason) {
+  private Packet disconnectPacket(Component rendered) {
     return switch (connection.encoder().state()) {
-      case HANDSHAKE, STATUS, LOGIN -> LoginDisconnect.ofPlainText(reason);
-      case CONFIGURATION -> ConfigDisconnect.ofPlainText(reason, clientVersion());
-      case PLAY -> PlayDisconnect.ofPlainText(reason, clientVersion());
+      case HANDSHAKE, STATUS, LOGIN -> LoginDisconnect.of(rendered, clientVersion());
+      case CONFIGURATION -> ConfigDisconnect.of(rendered, clientVersion());
+      case PLAY -> PlayDisconnect.of(rendered, clientVersion());
     };
   }
 }

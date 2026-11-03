@@ -158,6 +158,7 @@ final class SwitchHarness implements AutoCloseable {
       servers.put(server.name(), server.address());
     }
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
+    when(loginContext.messages()).thenReturn(dev.warp.proxy.i18n.PlayerMessages.bundled());
     when(loginContext.logging()).thenReturn(LoggingConfig.DEFAULTS);
     when(loginContext.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
     when(loginContext.antiBot()).thenReturn(TestLoginContexts.calmAntiBot());

@@ -69,6 +69,8 @@ import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.i18n.Message;
+import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.logging.LogCapture;
 import dev.warp.proxy.status.StatusSettings;
 
@@ -93,6 +95,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -119,6 +123,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /**
@@ -162,7 +167,14 @@ class LoginSessionHandlerTest {
         sendLoginStart(channel, "x", version);
 
         byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, version);
-        assertArrayEquals(jsonString("{\"text\":\"Invalid username\"}"), reason);
+        assertArrayEquals(
+            jsonString(
+                ComponentCodec.json(
+                    Component.text(
+                        "Your username is not valid: it must be 3 to 16 letters, digits or"
+                            + " underscores."),
+                    version)),
+            reason);
         assertClosed(channel);
       } finally {
         channel.finishAndReleaseAll();
@@ -181,7 +193,7 @@ class LoginSessionHandlerTest {
         nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version);
         byte[] reason = nextPacket(channel, ProtocolState.PLAY, PlayDisconnect.class, version);
         // Plain text is a bare string before 1.9, as vanilla writes it.
-        String text = "\"Could not connect to any available server.\"";
+        String text = "\"Could not connect to any server. Please try again in a moment.\"";
         assertArrayEquals(
             jsonString(
                 version.isOlderThan(ProtocolVersion.MINECRAFT_1_9)
@@ -203,7 +215,9 @@ class LoginSessionHandlerTest {
         byte[] reason =
             nextPacket(channel, ProtocolState.CONFIGURATION, ConfigDisconnect.class, version);
         assertArrayEquals(
-            jsonString("{\"text\":\"Could not connect to any available server.\"}"), reason);
+            jsonString(
+                "{\"text\":\"Could not connect to any server. Please try again in a moment.\"}"),
+            reason);
         assertClosed(channel);
       } finally {
         channel.finishAndReleaseAll();
@@ -218,7 +232,8 @@ class LoginSessionHandlerTest {
       try {
         byte[] reason =
             nextPacket(channel, ProtocolState.CONFIGURATION, ConfigDisconnect.class, version);
-        assertArrayEquals(nbtString("Could not connect to any available server."), reason);
+        assertArrayEquals(
+            nbtString("Could not connect to any server. Please try again in a moment."), reason);
         assertClosed(channel);
       } finally {
         channel.finishAndReleaseAll();
@@ -240,7 +255,11 @@ class LoginSessionHandlerTest {
 
         byte[] reason =
             nextPacket(channel, ProtocolState.CONFIGURATION, ConfigDisconnect.class, version);
-        assertArrayEquals(nbtString("Unexpected LoginStart"), reason);
+        assertArrayEquals(
+            nbtString(
+                "Your game sent something unexpected while logging in. Please reconnect; if it keeps"
+                    + " happening, try without mods."),
+            reason);
         assertClosed(channel);
       } finally {
         channel.finishAndReleaseAll();
@@ -306,7 +325,7 @@ class LoginSessionHandlerTest {
         nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, version);
         byte[] reason = nextPacket(channel, ProtocolState.PLAY, PlayDisconnect.class, version);
         // Plain text is a bare string before 1.9, as vanilla writes it.
-        String text = "\"Could not connect to any available server.\"";
+        String text = "\"Could not connect to any server. Please try again in a moment.\"";
         assertArrayEquals(
             jsonString(
                 version.isOlderThan(ProtocolVersion.MINECRAFT_1_9)
@@ -495,7 +514,7 @@ class LoginSessionHandlerTest {
         sendEncryptionResponse(
             channel, rsaEncrypt(request, sharedSecret()), signedToken(2L, signature));
 
-        assertRefusedPlainText(channel, version, "Invalid verify token signature");
+        assertRefusedPlainText(channel, version, ENCRYPTION_FAILED);
       } finally {
         channel.finishAndReleaseAll();
       }
@@ -515,7 +534,7 @@ class LoginSessionHandlerTest {
             rsaEncrypt(request, sharedSecret()),
             encryptedToken(version, rsaEncrypt(request, request.verifyToken())));
 
-        assertRefusedPlainText(channel, version, "Verify token mismatch");
+        assertRefusedPlainText(channel, version, ENCRYPTION_FAILED);
       } finally {
         channel.finishAndReleaseAll();
       }
@@ -532,7 +551,7 @@ class LoginSessionHandlerTest {
 
         sendSignedResponse(channel, request, sharedSecret(), 42L, PLAYER.getPrivate());
 
-        assertRefusedPlainText(channel, version, "Invalid verify token signature");
+        assertRefusedPlainText(channel, version, ENCRYPTION_FAILED);
       } finally {
         channel.finishAndReleaseAll();
       }
@@ -632,6 +651,10 @@ class LoginSessionHandlerTest {
         channel.finishAndReleaseAll();
       }
     }
+
+    /** What a player whose encryption handshake failed is told. */
+    private static final String ENCRYPTION_FAILED =
+        "Your game could not set up a secure connection. Please reconnect.";
 
     /** The proxy refused the encryption response in clear text, without authenticating. */
     private void assertRefusedPlainText(
@@ -943,7 +966,13 @@ class LoginSessionHandlerTest {
 
         byte[] reason = nextPacket(second, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
         assertArrayEquals(
-            jsonString("{\"text\":\"You are already connected to this proxy.\"}"), reason);
+            jsonString(
+                ComponentCodec.json(
+                    Component.text(
+                        "You are already connected to this server. If you just left, wait a"
+                            + " moment and try again."),
+                    VERSION)),
+            reason);
         assertClosed(second);
         assertTrue(first.isOpen());
         assertEquals(1, context.playerRegistry().count());
@@ -1255,6 +1284,56 @@ class LoginSessionHandlerTest {
       bus.close();
     }
 
+    @ParameterizedTest(name = "{0}: {1}")
+    @CsvSource({
+      "fr_FR, Le serveur est complet.",
+      "fr_CA, Le serveur est complet.",
+      "en_GB, The server is full.",
+      "de_DE, The server is full."
+    })
+    @DisplayName(
+        "should tell a 1.8 player, too old for vanilla's key, the server is full in the language"
+            + " it last played in, English when Warp has none")
+    void fullInRememberedLanguage(String locale, String expected) {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_8;
+      ServerLoginContext context = TestLoginContexts.offline(bus, limit(1));
+      context
+          .messages()
+          .remember("Steve", Objects.requireNonNull(PlayerMessages.parseLocale(locale)));
+      fill(context, 1);
+      EmbeddedChannel channel = loginChannel(version, context);
+      try {
+        sendLoginStart(channel, "Steve", version);
+        channel.runPendingTasks();
+
+        byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, version);
+        assertArrayEquals(
+            jsonString(ComponentCodec.json(Component.text(expected), version)), reason);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName(
+        "should leave vanilla's server full key to a 1.21.4 client, which translates it itself")
+    void fullTranslatedByClient() {
+      ServerLoginContext context = TestLoginContexts.offline(bus, limit(1));
+      context.messages().remember("Steve", Locale.FRANCE);
+      fill(context, 1);
+      EmbeddedChannel channel = loginChannel(VERSION, context);
+      try {
+        sendLoginStart(channel, "Steve", VERSION);
+        channel.runPendingTasks();
+
+        byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
+        assertArrayEquals(
+            jsonString("{\"translate\":\"multiplayer.disconnect.server_full\"}"), reason);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
     @Test
     @DisplayName("should refuse a player beyond the limit, telling it the server is full")
     void full() {
@@ -1266,7 +1345,8 @@ class LoginSessionHandlerTest {
         channel.runPendingTasks();
 
         byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
-        assertArrayEquals(jsonString("{\"text\":\"The server is full.\"}"), reason);
+        assertArrayEquals(
+            jsonString("{\"translate\":\"multiplayer.disconnect.server_full\"}"), reason);
         assertClosed(channel);
         assertEquals(1, context.playerRegistry().count());
       } finally {
@@ -1309,8 +1389,7 @@ class LoginSessionHandlerTest {
         channel.runPendingTasks();
 
         nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, VERSION);
-        assertEquals(
-            List.of(new LoginEvent.Denied(Component.text("The server is full."))), proposed);
+        assertEquals(List.of(new LoginEvent.Denied(Message.SERVER_FULL.of())), proposed);
         assertEquals(2, context.playerRegistry().count());
       } finally {
         channel.finishAndReleaseAll();
@@ -1330,8 +1409,7 @@ class LoginSessionHandlerTest {
 
         byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
         assertArrayEquals(
-            jsonString(ComponentCodec.json(Component.text("The server is full."), VERSION)),
-            reason);
+            jsonString(ComponentCodec.json(Message.SERVER_FULL.of(), VERSION)), reason);
         assertEquals(1, context.playerRegistry().count());
       } finally {
         channel.finishAndReleaseAll();
@@ -1382,7 +1460,8 @@ class LoginSessionHandlerTest {
         channel.runPendingTasks();
 
         byte[] reason = nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, VERSION);
-        assertArrayEquals(jsonString("{\"text\":\"The server is full.\"}"), reason);
+        assertArrayEquals(
+            jsonString("{\"translate\":\"multiplayer.disconnect.server_full\"}"), reason);
         assertEquals(0, context.playerRegistry().count());
       } finally {
         channel.finishAndReleaseAll();

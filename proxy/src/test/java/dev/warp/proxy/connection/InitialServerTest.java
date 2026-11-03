@@ -33,6 +33,7 @@ import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.event.player.PlayerChooseInitialServerEventImpl;
+import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.server.BackendServer;
 
 import java.util.ArrayList;
@@ -149,8 +150,8 @@ class InitialServerTest {
           PlayerChooseInitialServerEventImpl.NO_SERVER_AVAILABLE,
           assertInstanceOf(PlayerChooseInitialServerEvent.Denied.class, event.result()).reason());
       assertEquals(
-          PlainTextComponentSerializer.plainText()
-              .serialize(PlayerChooseInitialServerEventImpl.NO_SERVER_AVAILABLE),
+          PlayerMessages.bundled()
+              .plainEnglish(PlayerChooseInitialServerEventImpl.NO_SERVER_AVAILABLE),
           lastReason(setup));
       assertFalse(setup.client.channel().isOpen());
     }
@@ -181,8 +182,8 @@ class InitialServerTest {
       setup.runPendingTasks();
 
       assertEquals(
-          PlainTextComponentSerializer.plainText()
-              .serialize(PlayerChooseInitialServerEventImpl.NO_SERVER_AVAILABLE),
+          PlayerMessages.bundled()
+              .plainEnglish(PlayerChooseInitialServerEventImpl.NO_SERVER_AVAILABLE),
           lastReason(setup));
       assertFalse(setup.client.channel().isOpen());
     }

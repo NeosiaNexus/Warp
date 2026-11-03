@@ -26,6 +26,7 @@ import dev.warp.proxy.config.ForwardingMode;
 import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
@@ -77,6 +78,7 @@ import io.netty.channel.Channel;
  *     and the transport supports it
  * @param antiBot the anti-bot: attack detection, trusted identities, lockdown, plugin checks
  * @param pipelines the pipeline initializers plugins registered
+ * @param messages what the proxy tells players, rendered in each player's language
  */
 @SuppressWarnings("ArrayRecordComponent") // forwardingSecret is treated as immutable
 public record ServerLoginContext(
@@ -105,7 +107,8 @@ public record ServerLoginContext(
     LoggingConfig logging,
     boolean tcpFastOpen,
     AntiBotService antiBot,
-    PipelineRegistry pipelines) {
+    PipelineRegistry pipelines,
+    PlayerMessages messages) {
 
   /** Validates configuration invariants. */
   public ServerLoginContext {
