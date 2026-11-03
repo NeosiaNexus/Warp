@@ -31,6 +31,7 @@ import dev.warp.proxy.config.RemoteConsoleConfig;
 import dev.warp.proxy.config.RemoteConsoleConfig.Scope;
 import dev.warp.proxy.config.RemoteConsoleConfig.Token;
 import dev.warp.proxy.i18n.PlayerMessages;
+import dev.warp.proxy.logging.LogCapture;
 import dev.warp.proxy.logging.LogLevels;
 import dev.warp.proxy.network.CidrRanges;
 
@@ -549,6 +550,35 @@ class RemoteConsoleTest {
 
       assertTrue(awaitAudit("refused a wrong token from 203.0.113.9").contains("1 of 3"));
       assertTrue(awaitAudit("locked out 203.0.113.9").contains("for 15m"));
+    }
+
+    @Test
+    @DisplayName("should keep a hostile filter from forging a second audit line in a log sink")
+    void hostileFilter() throws Exception {
+      remote.start();
+      try (LogCapture capture = new LogCapture()) {
+        FullHttpRequest attach =
+            request(
+                HttpMethod.GET,
+                "/console/logs?grep=x%0D%0ARemote%20console:%20forged%1B%5B2J",
+                DASH_SECRET,
+                "");
+
+        EmbeddedChannel stream = channel(LOOPBACK, false);
+        stream.writeInbound(attach);
+
+        String audit =
+            capture.await(record -> record.message().contains("attached to the log")).message();
+        assertEquals(
+            "Remote console: dash (operator \"alice@laptop\") from 127.0.0.1 attached to the log"
+                + " (level info, grep \"x\\r\\nremote console: forged\\u001B[2j\")",
+            audit);
+        assertTrue(audit.chars().noneMatch(c -> c == '\n' || c == '\r' || c == 0x1B));
+        assertFalse(
+            capture.anyAfterSettling(
+                record -> record.message().startsWith("remote console: forged")));
+        var _ = stream.close();
+      }
     }
   }
 

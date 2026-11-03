@@ -21,6 +21,7 @@ import dev.warp.api.command.SimpleCommand;
 import dev.warp.api.event.Subscription;
 import dev.warp.proxy.i18n.Message;
 import dev.warp.proxy.logging.LogCode;
+import dev.warp.proxy.logging.LogValues;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -353,7 +354,11 @@ public final class WarpCommandManager implements AutoCloseable {
           } catch (CommandSyntaxException e) {
             source.sendMessage(Component.text(String.valueOf(e.getMessage()), NamedTextColor.RED));
           } catch (RuntimeException e) {
-            logger.error(LogCode.COMMAND_FAILED.marker(), "Command /{} failed", commandLine, e);
+            logger.error(
+                LogCode.COMMAND_FAILED.marker(),
+                "Command /{} failed",
+                LogValues.safe(commandLine),
+                e);
             // Rendered by the source: a player in its language, the console in the default one.
             source.sendMessage(Message.COMMAND_FAILED.of());
           }

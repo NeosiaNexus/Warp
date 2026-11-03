@@ -24,6 +24,7 @@ import dev.warp.proxy.config.RemoteConsoleConfig.Token;
 import dev.warp.proxy.console.Ansi;
 import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.logging.LogCode;
+import dev.warp.proxy.logging.LogValues;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -331,8 +332,8 @@ public final class RemoteConsole {
       AUDIT.warn(
           LogCode.REMOTE_CONSOLE_SCOPE_REFUSED.marker(),
           "Remote console: refused {} {}: the token lacks the {} scope",
-          who,
-          uri.path(),
+          LogValues.safe(who),
+          LogValues.safe(uri.path()),
           endpoint.scope.configName());
       respond(
           ctx,
@@ -345,8 +346,8 @@ public final class RemoteConsole {
           LogCode.REMOTE_CONSOLE_PLAINTEXT_REFUSED.marker(),
           "Remote console: refused {} {}: commands without TLS are accepted from loopback and"
               + " management.console.trusted-networks only",
-          who,
-          uri.path());
+          LogValues.safe(who),
+          LogValues.safe(uri.path()));
       respond(
           ctx,
           HttpResponseStatus.FORBIDDEN,
@@ -377,7 +378,8 @@ public final class RemoteConsole {
         return granted.token();
       }
       case ConsoleAuth.Result.LockedOut locked -> {
-        logger.debug("Remote console: {} is locked out, refused {}", address(peer), path);
+        logger.debug(
+            "Remote console: {} is locked out, refused {}", address(peer), LogValues.safe(path));
         FullHttpResponse response =
             response(
                 HttpResponseStatus.TOO_MANY_REQUESTS,
@@ -397,13 +399,13 @@ public final class RemoteConsole {
               ConsoleAuth.key(peer.getAddress()),
               Durations.format(config.lockoutDuration()),
               wrong.failures(),
-              path);
+              LogValues.safe(path));
         } else {
           AUDIT.warn(
               LogCode.REMOTE_CONSOLE_WRONG_TOKEN.marker(),
               "Remote console: refused a wrong token from {} on {} ({} of {} before a lockout)",
               address(peer),
-              path,
+              LogValues.safe(path),
               wrong.failures(),
               wrong.limit());
         }
@@ -492,8 +494,8 @@ public final class RemoteConsole {
     long started = System.nanoTime();
     AUDIT.info(
         "Remote console: {} attached to the log ({}{})",
-        who,
-        describeFilter(filter),
+        LogValues.safe(who),
+        LogValues.safe(describeFilter(filter)),
         resumed ? ", resumed" : "");
     var _ =
         ctx.channel()
@@ -506,7 +508,7 @@ public final class RemoteConsole {
                   long sent = stream.closed();
                   AUDIT.info(
                       "Remote console: {} detached from the log after {} ({} lines)",
-                      who,
+                      LogValues.safe(who),
                       Durations.format(
                           Duration.ofSeconds(
                               TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - started))),
@@ -583,7 +585,7 @@ public final class RemoteConsole {
       AUDIT.warn(
           LogCode.REMOTE_CONSOLE_RATE_LIMITED.marker(),
           "Remote console: refused {}: more than {} commands in {}",
-          who,
+          LogValues.safe(who),
           ConsoleAuth.COMMANDS_PER_WINDOW,
           Durations.format(ConsoleAuth.WINDOW));
       respond(ctx, HttpResponseStatus.TOO_MANY_REQUESTS, error("too many commands; slow down"));
@@ -594,7 +596,10 @@ public final class RemoteConsole {
     try (var _ =
         CloseableThreadContext.put(ConsoleRecord.USER_KEY, token.name())
             .put(ConsoleRecord.SESSION_KEY, session)) {
-      AUDIT.info("Remote console: {} ran \"{}\"", who, line);
+      AUDIT.info(
+          "Remote console: {} ran \"{}\"",
+          LogValues.safe(who),
+          LogValues.safe(line, MAX_COMMAND_LENGTH));
     }
     var _ =
         Thread.ofVirtual()
