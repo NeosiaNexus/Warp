@@ -2632,6 +2632,28 @@ public final class ConnectedPlayer {
   // ---------------------------------------------------------------------------
 
   /**
+   * Returns the BungeeCord channel to register with a backend on the client's behalf, as BungeeCord
+   * and Velocity do: Bukkit's {@code Player#sendPluginMessage} only sends on a channel the client
+   * registered, which a vanilla client never does for this one. There is one to register when the
+   * proxy answers the channel for that backend's server, or a plugin took the channel over.
+   *
+   * @param backend a backend connection of this player
+   * @return {@code bungeecord:main} from 1.13, {@code BungeeCord} before; or {@code null} if nobody
+   *     answers the channel for that server, or the connection is not the player's backend
+   */
+  @Nullable String bungeeCordChannelToRegister(MinecraftConnection backend) {
+    BackendConnection current = backendConnection;
+    if (current == null || current.connection() != backend) {
+      return null;
+    }
+    ChannelRegistry channels = loginContext.channels();
+    String channel = BungeeCordChannel.nameFor(protocolVersion);
+    BungeeCordChannel bungeeCord = channels.bungeeCord();
+    boolean answered = bungeeCord.enabled() && bungeeCord.speaksWith(current.server().name());
+    return answered || channels.lookup(channel) != null ? channel : null;
+  }
+
+  /**
    * Hands a plugin message on a channel a plugin owns to {@link PluginMessageEvent}, and a
    * backend's message on the BungeeCord channel to the proxy's answer (through the event first,
    * when a plugin listens). A client's message on the BungeeCord channel is dropped, unless a

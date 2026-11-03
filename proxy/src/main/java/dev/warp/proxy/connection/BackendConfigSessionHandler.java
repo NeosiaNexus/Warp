@@ -20,11 +20,14 @@ import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
+import dev.warp.protocol.packet.config.ConfigPluginMessage;
 import dev.warp.protocol.packet.config.FinishConfiguration;
 import dev.warp.protocol.packet.cookie.CookieRequest;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.ResourcePackPop;
 import dev.warp.protocol.packet.play.ResourcePackPush;
+
+import java.nio.charset.StandardCharsets;
 
 import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
@@ -45,6 +48,9 @@ import org.slf4j.LoggerFactory;
 final class BackendConfigSessionHandler implements SessionHandler {
 
   private static final Logger logger = LoggerFactory.getLogger(BackendConfigSessionHandler.class);
+
+  /** The channel a client registers its channels on. */
+  private static final String REGISTER = "minecraft:register";
 
   private final ConnectedPlayer player;
   private final MinecraftConnection backendConnection;
@@ -70,6 +76,8 @@ final class BackendConfigSessionHandler implements SessionHandler {
     if (cached != null) {
       backendConnection.writeAndFlush(cached);
     }
+
+    registerBungeeCordChannel();
 
     // A new server: the packs of the one the player left become stale (1.20.3+).
     player.resourcePacks().configurationStarted(backendConnection);
@@ -102,6 +110,22 @@ final class BackendConfigSessionHandler implements SessionHandler {
               // otherwise.
               clientConn.setAutoRead(true);
             });
+  }
+
+  /**
+   * Registers the BungeeCord channel with the server on the client's behalf (see {@link
+   * ConnectedPlayer#bungeeCordChannelToRegister}) while it configures the player. The server takes
+   * the registration on its main thread, ahead of the client's acknowledgement that ends the
+   * configuration, so it knows the channel by the time it fires {@code PlayerJoinEvent}, where
+   * plugins commonly send on it. Registered in PLAY instead, it would only reach the server's main
+   * thread after the join, and Bukkit silently drops what a plugin sends meanwhile.
+   */
+  private void registerBungeeCordChannel() {
+    String channel = player.bungeeCordChannelToRegister(backendConnection);
+    if (channel != null) {
+      backendConnection.writeAndFlush(
+          new ConfigPluginMessage(REGISTER, channel.getBytes(StandardCharsets.UTF_8)));
+    }
   }
 
   // ---------------------------------------------------------------------------
