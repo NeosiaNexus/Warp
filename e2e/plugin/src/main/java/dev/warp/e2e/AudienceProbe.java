@@ -16,18 +16,24 @@
  */
 package dev.warp.e2e;
 
+import dev.warp.api.command.CommandSource;
 import dev.warp.api.command.SimpleCommand;
+import dev.warp.api.permission.Tristate;
 import dev.warp.api.player.Player;
 import dev.warp.api.plugin.Plugin;
 import dev.warp.api.plugin.PluginContext;
 import dev.warp.api.plugin.WarpPlugin;
 
 import java.net.URI;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import com.mojang.brigadier.Command;
+import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import net.kyori.adventure.bossbar.BossBar;
 import net.kyori.adventure.key.Key;
 import net.kyori.adventure.resource.ResourcePackInfo;
@@ -45,6 +51,10 @@ import net.kyori.adventure.text.Component;
  * updates arrive across its server switches: one sent while its client has no bar (in the
  * configuration phase from 1.20.2) fails the run. The pack comes from the system properties {@code
  * warp.e2e.pack.url}, {@code warp.e2e.pack.sha1} and {@code warp.e2e.pack.id}.
+ *
+ * <p>For the {@code command-refresh} scenario, {@code /e2egrant} grants or takes back the
+ * permission {@code /e2eperm} requires, from a permission provider of the plugin's own, and tells
+ * the proxy: the bot sees whether its command list follows.
  */
 @Plugin(
     id = "e2e-audience",
@@ -63,6 +73,12 @@ public final class AudienceProbe implements WarpPlugin {
       BossBar.bossBar(
           Component.text("Warp e2e"), 0, BossBar.Color.PINK, BossBar.Overlay.NOTCHED_10);
 
+  /** The permission {@code /e2eperm} requires. */
+  private static final String PERMISSION = "e2e.perm";
+
+  /** The players {@code /e2egrant} granted {@link #PERMISSION}. */
+  private final Set<UUID> granted = ConcurrentHashMap.newKeySet();
+
   private final ScheduledExecutorService animation =
       Executors.newSingleThreadScheduledExecutor(
           Thread.ofPlatform().name("e2e-audience").daemon().factory());
@@ -79,6 +95,23 @@ public final class AudienceProbe implements WarpPlugin {
   @Override
   public void enable() {
     context.commands().register("audience", this::show);
+    var _ =
+        context
+            .permissions()
+            .register(
+                0,
+                (player, permission) ->
+                    permission.equals(PERMISSION)
+                        ? Tristate.of(granted.contains(player.uniqueId()))
+                        : Tristate.UNDEFINED);
+    var _ =
+        context
+            .commands()
+            .register(
+                LiteralArgumentBuilder.<CommandSource>literal("e2eperm")
+                    .requires(source -> source.hasPermission(PERMISSION))
+                    .executes(command -> Command.SINGLE_SUCCESS));
+    var _ = context.commands().register("e2egrant", this::toggle);
     var _ = animation.scheduleAtFixedRate(this::animate, 100, 100, TimeUnit.MILLISECONDS);
   }
 
@@ -93,6 +126,16 @@ public final class AudienceProbe implements WarpPlugin {
     if (next > 1) {
       bar.color(bar.color() == BossBar.Color.PINK ? BossBar.Color.BLUE : BossBar.Color.PINK);
     }
+  }
+
+  private void toggle(SimpleCommand.Invocation invocation) {
+    if (!(invocation.source() instanceof Player player)) {
+      invocation.source().sendMessage(Component.text("e2egrant: players only"));
+      return;
+    }
+    boolean on = granted.add(player.uniqueId()) || !granted.remove(player.uniqueId());
+    context.permissions().changed(player);
+    player.sendMessage(Component.text("e2egrant " + (on ? "on" : "off")));
   }
 
   private void show(SimpleCommand.Invocation invocation) {

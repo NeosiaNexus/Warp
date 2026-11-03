@@ -54,6 +54,7 @@ a closed port and which lets a single player in) and run the scenarios:
 | `player-chat` | Two players on the lobby, each listing the other: a chat line from one comes back to it and reaches the other, and so does a `/tell`, a command Warp does not own and only the backend can deliver |
 | `resource-pack` | Lobby's resource pack offer (URL, SHA-1, and its id from 1.20.3) reaches the player, then survival's after a switch; each pack downloads with the SHA-1 offered |
 | `audience` | A plugin of Warp's own (`e2e/plugin`) answers `/audience`: it shows a boss bar animated ten times a second for the whole run, plays a sound at a position and one following the player, and sends a pack of its own. The bot gets each as its version has them (no boss bar before 1.9, the sound following the player by its registry id from 1.14, checked against the id in Mojang's reports, by its name from 1.19.3, none before 1.14), the plugin hears the pack's statuses, and after a switch the bar is still on screen. The bot keeps boss bars as the vanilla client does (cleared in the configuration phase from 1.20.2): an update for a bar it does not have fails the run. From 1.20.3, the plugin's pack is not sent again and the lobby's own is removed after the switch |
+| `command-refresh` | The probe plugin's `/e2egrant` grants the permission its `/e2eperm` requires, from a permission provider of its own, and tells Warp (`Permissions#changed`); the bot, staying on the lobby, must get its command list again with `/e2eperm`, then without it once `/e2egrant` takes the permission back (from 1.13, which brought the command list) |
 | `switching` | Six `/server` switches back and forth (configuration phase from 1.20.2, Join Game and Respawn before) |
 | `tab-list` | After a switch, the tab list lists none of the previous server's players: a witness stays on the lobby while another bot moves to survival. Each bot keeps the tab list as the vanilla client does (by name on 1.7, by UUID after, across a Join Game before 1.20.2), not as mineflayer does |
 | `profile-key` | 1.19 to 1.19.2 only: a bot with a chat signing key, as every client of a Microsoft account, joins (online, it signs the verify token instead of encrypting it), chats and switches. Online, Warp refuses a key Mojang did not sign, an expired one and, from 1.19.1, a key issued to another player; offline, it ignores the key and lets the first two in |
@@ -71,7 +72,8 @@ A scenario a run cannot hold is skipped and says why: `forwarding` without forwa
 (Warp then forwards the UUID a backend derives itself, so nothing tells them apart), `switching`
 and the fallbacks in a `--direct` run, `resource-pack` before 1.8 (offers were a plugin message,
 without the SHA-1), `audience` on 1.7 and on versions bridged through ViaProxy, and without the
-plugin (`--jar` without `--plugin`), `transfer` before 1.20.5 and through ViaProxy (Warp would see
+plugin (`--jar` without `--plugin`), `command-refresh` before 1.13, through ViaProxy and without the
+plugin, `transfer` before 1.20.5 and through ViaProxy (Warp would see
 the bridge's handshake, not the bot's), `drain` through ViaProxy (no bridge leads to warp-drain),
 `bungeecord` on vanilla servers (no plugin to speak the channel) and in a `--direct` run. The
 features are in `features()` in `src/scenarios.js`.

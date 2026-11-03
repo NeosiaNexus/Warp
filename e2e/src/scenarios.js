@@ -74,6 +74,13 @@ export function features(protocol, { direct = false, forwarding = 'none', online
       protocol >= 47 || 'the 1.7 bot does not follow boss bars, sounds or plugin message packs',
       !bridged || 'ViaProxy translates what the bot receives',
     ),
+    // The probe plugin grants a permission and tells Warp, which re-sends the command list.
+    commandRefresh: all(
+      proxy,
+      plugin || 'no probe plugin (--jar without --plugin)',
+      protocol >= COMMANDS_PACKET || 'no command list before 1.13: clients ask for completions',
+      !bridged || 'ViaProxy translates the command list the bot receives',
+    ),
     // 1.19 to 1.19.2 clients send their chat signing key in Login Start.
     profileKeys: (protocol >= FIRST_PROTOCOL && protocol <= LAST_PROTOCOL) || 'only 1.19 to 1.19.2 clients send a profile key in Login Start',
     // Bots can sign their chat: from 1.20 a server fetches the keys that verify chat sessions from
@@ -448,7 +455,34 @@ const BOSS_BARS = 107;
 const ENTITY_SOUNDS = 477;
 const NAMED_ENTITY_SOUNDS = 761;
 const CONFIGURATION = 764;
+/** The first protocol with a command list (Declare Commands): 1.13. */
+const COMMANDS_PACKET = 393;
 const MULTIPLE_PACKS = 765;
+
+/**
+ * A permission granted, then taken, while the player stays on its server: the probe plugin's
+ * /e2egrant flips the permission /e2eperm requires and tells Warp, which must send the command list
+ * again with /e2eperm, then without it (Velocity #352: the list stays stale until a switch).
+ */
+async function commandRefresh(ctx) {
+  const bot = await joinWarp(ctx, 'e2e_commands');
+  // Whether each command list from here on offers /e2eperm. The name is in the packet as is,
+  // whatever minecraft-protocol makes of the version's argument types.
+  const lists = [];
+  bot.bot._client.on('raw.declare_commands', (buffer) => lists.push(buffer.includes('e2eperm')));
+  try {
+    let from = lists.length;
+    await bot.command('e2egrant', /^e2egrant on$/);
+    await bot.waitFor(() => lists.slice(from).includes(true), 'a command list offering /e2eperm once granted', 10_000);
+    from = lists.length;
+    await bot.command('e2egrant', /^e2egrant off$/);
+    await bot.waitFor(() => lists.length > from && !lists.at(-1), 'a command list without /e2eperm once taken', 10_000);
+    bot.healthy();
+    return `command list re-sent with /e2eperm once granted, without it once taken (${lists.length} lists)`;
+  } finally {
+    bot.quit();
+  }
+}
 
 /** What the audience probe plugin shows: its bar, and the sound both its plays name. */
 const PROBE_BAR = 'Warp e2e';
@@ -1122,6 +1156,7 @@ export const SCENARIOS = [
   { name: 'player-chat', run: playerChat },
   { name: 'resource-pack', run: resourcePack, requires: 'resourcePack' },
   { name: 'audience', run: audience, requires: 'audience' },
+  { name: 'command-refresh', run: commandRefresh, requires: 'commandRefresh' },
   { name: 'switching', run: switching, requires: 'switching' },
   { name: 'tab-list', run: tabList, requires: 'switching' },
   { name: 'profile-key', run: profileKey, requires: 'profileKeys' },

@@ -67,6 +67,7 @@ public final class WarpCommandManager implements AutoCloseable {
   private final Map<String, Registered> registrations = new LinkedHashMap<>();
   private volatile CommandDispatcher<CommandSource> dispatcher = new CommandDispatcher<>();
   private final Executor executor;
+  private volatile Runnable onChange = () -> {};
 
   /** Creates a manager running commands on virtual threads. */
   public WarpCommandManager() {
@@ -181,6 +182,17 @@ public final class WarpCommandManager implements AutoCloseable {
       next.getRoot().addChild(registered.node());
     }
     this.dispatcher = next;
+    onChange.run();
+  }
+
+  /**
+   * Sets what runs once the commands changed, to refresh the command lists players see.
+   *
+   * @param listener runs after every registration and removal, under the manager's lock: it must
+   *     only schedule work
+   */
+  public void onChange(Runnable listener) {
+    this.onChange = listener;
   }
 
   /** Builds an alias: a literal that runs the command, and redirects to it for its arguments. */
@@ -282,6 +294,16 @@ public final class WarpCommandManager implements AutoCloseable {
    */
   public RootCommandNode<CommandSource> root() {
     return dispatcher.getRoot();
+  }
+
+  /**
+   * Returns the executor commands run on, for other work that calls into plugins and must stay off
+   * the event loop, such as the permission checks of a command list.
+   *
+   * @return the executor
+   */
+  public Executor executor() {
+    return executor;
   }
 
   /**

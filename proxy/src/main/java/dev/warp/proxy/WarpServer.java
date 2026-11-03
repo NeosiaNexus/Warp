@@ -296,6 +296,9 @@ public final class WarpServer implements Warp {
         new ChannelRegistry(
             new BungeeCordChannel(config.bungeeCord(), playerRegistry, serverRegistry));
     ProxyCommands.register(commands, serverRegistry);
+    // The command lists players see follow the commands and the permissions that filter them.
+    commands.onChange(() -> playerRegistry.all().forEach(ConnectedPlayer::refreshCommands));
+    permissions.trackPlayers(this::players);
     this.pluginManager =
         new WarpPluginManager(
             this,
