@@ -47,6 +47,7 @@ import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.antibot.AntiBotService.RoutineLine;
 import dev.warp.proxy.auth.AuthenticationException;
 import dev.warp.proxy.auth.MojangSessionService;
+import dev.warp.proxy.auth.Pkcs1Decryption;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.auth.ServerHash;
 import dev.warp.proxy.event.WarpEventBus;
@@ -63,7 +64,7 @@ import dev.warp.proxy.player.PlayerRegistry;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
-import java.security.MessageDigest;
+import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.time.Duration;
 import java.util.List;
@@ -74,7 +75,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
-import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
@@ -133,6 +133,12 @@ final class LoginSessionHandler implements SessionHandler {
 
   /** Verify token length in bytes. */
   private static final int VERIFY_TOKEN_LENGTH = 4;
+
+  /**
+   * The one reason given for an encryption response that cannot be used, whatever the cause: see
+   * {@link #sharedSecret}.
+   */
+  private static final String ENCRYPTION_FAILED = "Encryption failed";
 
   /**
    * Vanilla's reason for refusing a client that answers a query it was not sent, such as a cookie
@@ -658,7 +664,7 @@ final class LoginSessionHandler implements SessionHandler {
     connection.close();
   }
 
-  /** Decrypts an encryption response with a slot held, then asks the session server. */
+  /** Checks an encryption response with a slot held, then asks the session server. */
   private void authenticate(EncryptionResponse packet) {
     byte[] token = this.verifyToken;
     if (token == null) {
@@ -668,52 +674,58 @@ final class LoginSessionHandler implements SessionHandler {
     // The slot is given back here, unless the session server request is under way: it does.
     boolean requested = false;
     try {
-      Cipher rsaCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
-      rsaCipher.init(Cipher.DECRYPT_MODE, loginContext.rsaKeyPair().getPrivate());
-
-      // The client proves it received the verify token: encrypted with the proxy's key, or, from a
-      // 1.19 to 1.19.2 client that sent a profile key, signed with that key. A client with a key
-      // must sign (vanilla and Velocity refuse the encrypted form from it), one without cannot.
-      @Nullable PublicKey playerKey = this.profileKey;
-      switch (packet.verifyToken()) {
-        case EncryptedToken(byte[] encrypted) -> {
-          if (playerKey != null || !MessageDigest.isEqual(token, rsaCipher.doFinal(encrypted))) {
-            deny(Refusal.AUTHENTICATION_FAILED, "Verify token mismatch");
-            return;
-          }
-        }
-        case SignedToken(long salt, byte[] signature) -> {
-          if (playerKey == null
-              || !ProfileKeys.signsVerifyToken(playerKey, token, salt, signature)) {
-            deny(Refusal.AUTHENTICATION_FAILED, "Invalid verify token signature");
-            return;
-          }
-        }
-      }
-
-      byte[] decryptedSharedSecret = rsaCipher.doFinal(packet.sharedSecret());
-
-      // Validate shared secret length.
-      if (decryptedSharedSecret.length != SHARED_SECRET_LENGTH) {
-        deny(Refusal.AUTHENTICATION_FAILED, "Invalid shared secret length");
+      byte[] secret = sharedSecret(packet, token);
+      if (secret == null) {
+        deny(Refusal.AUTHENTICATION_FAILED, ENCRYPTION_FAILED);
         return;
       }
 
-      // Install cipher on the pipeline BEFORE async auth — secures the channel immediately.
-      SecretKey sharedSecret = new SecretKeySpec(decryptedSharedSecret, "AES");
-      enableEncryption(sharedSecret);
+      // Install cipher on the pipeline BEFORE async auth: it secures the channel immediately.
+      enableEncryption(new SecretKeySpec(secret, "AES"));
 
       // Authenticate with Mojang asynchronously on a virtual thread.
-      requested = authenticateAsync(decryptedSharedSecret);
+      requested = authenticateAsync(secret);
 
     } catch (GeneralSecurityException e) {
-      // Bytes that do not decrypt (a padding error): what a forged encryption response produces.
-      deny(Refusal.AUTHENTICATION_FAILED, "Encryption error: " + e);
+      // AES/CFB8 is in every JDK: a broken runtime, nothing a client can bring about.
+      logger.error("Cannot enable encryption for {}", connection.remoteAddress(), e);
+      connection.writeAndClose(plainDisconnect("Internal error"));
     } finally {
       if (!requested) {
         releaseAuthSlot();
       }
     }
+  }
+
+  /**
+   * Returns the shared secret of an encryption response, or {@code null} if the response is
+   * invalid, whatever the reason: a verify token proof that does not check, a value that is not a
+   * valid ciphertext, or a secret that is not {@value #SHARED_SECRET_LENGTH} bytes.
+   *
+   * <p>RSA with PKCS#1 v1.5 padding, which the protocol fixes, falls to Bleichenbacher's attack
+   * wherever a client can tell a well padded ciphertext from a badly padded one. So every invalid
+   * response gets the same reply ({@value #ENCRYPTION_FAILED}), {@link Pkcs1Decryption} checks the
+   * padding in time that does not depend on it, and, as the vanilla server does, the token is
+   * checked before the secret is decrypted: the work a response costs depends on whether its token
+   * checks, which the client knows, never on a padding.
+   *
+   * <p>The client proves it received the verify token: encrypted with the proxy's key, or, from a
+   * 1.19 to 1.19.2 client that sent a profile key, signed with that key. A client with a key must
+   * sign (vanilla and Velocity refuse the encrypted form from it), one without cannot.
+   */
+  private byte @Nullable [] sharedSecret(EncryptionResponse packet, byte[] token) {
+    PrivateKey key = loginContext.rsaKeyPair().getPrivate();
+    @Nullable PublicKey playerKey = this.profileKey;
+    boolean proven =
+        switch (packet.verifyToken()) {
+          case EncryptedToken(byte[] encrypted) ->
+              playerKey == null && Pkcs1Decryption.decryptsTo(key, encrypted, token);
+          case SignedToken(long salt, byte[] signature) ->
+              playerKey != null && ProfileKeys.signsVerifyToken(playerKey, token, salt, signature);
+        };
+    return proven
+        ? Pkcs1Decryption.decrypt(key, packet.sharedSecret(), SHARED_SECRET_LENGTH)
+        : null;
   }
 
   private void releaseAuthSlot() {
