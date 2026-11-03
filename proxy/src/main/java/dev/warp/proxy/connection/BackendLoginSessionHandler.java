@@ -145,7 +145,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
       case EncryptionRequest _ -> {
         logger.warn(
             LogCode.BACKEND_ONLINE_MODE.marker(),
-            "Backend sent EncryptionRequest — is it running in online-mode?");
+            "Backend sent EncryptionRequest: is it running in online-mode?");
         player.disconnect();
       }
     }

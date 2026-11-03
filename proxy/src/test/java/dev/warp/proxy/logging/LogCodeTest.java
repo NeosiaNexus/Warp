@@ -186,7 +186,7 @@ class LogCodeTest {
       String docs = render();
 
       // when
-      int found = docs.indexOf('—');
+      int found = docs.indexOf((char) 0x2014);
 
       // then
       assertEquals(-1, found, "em dash in the documentation of the codes");
