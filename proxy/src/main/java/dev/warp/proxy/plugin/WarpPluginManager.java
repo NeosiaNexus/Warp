@@ -32,6 +32,7 @@ import dev.warp.api.plugin.PluginManager;
 import dev.warp.api.plugin.PluginState;
 import dev.warp.api.plugin.WarpPlugin;
 import dev.warp.proxy.command.WarpCommandManager;
+import dev.warp.proxy.console.SourceTags;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.logging.LogSinkRegistry;
 import dev.warp.proxy.management.ReadinessHolds;
@@ -284,6 +285,8 @@ public final class WarpPluginManager implements PluginManager {
           loader,
           () -> {
             Class<?> mainClass = Class.forName(description.mainClass(), true, loader);
+            // The console tags the loggers of the plugin's classes with the plugin's id.
+            SourceTags.registerPlugin(mainClass.getPackageName(), description.id());
             Object instance =
                 PluginInjector.construct(
                     mainClass, injectables(context), directory.resolve(description.id()));
