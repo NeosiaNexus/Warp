@@ -25,6 +25,7 @@ import dev.warp.protocol.packet.cookie.CookieRequest;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.ResourcePackPop;
 import dev.warp.protocol.packet.play.ResourcePackPush;
+import dev.warp.proxy.logging.LogCode;
 
 import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
@@ -86,6 +87,7 @@ final class BackendConfigSessionHandler implements SessionHandler {
             () -> {
               if (!clientConn.channel().isActive()) {
                 logger.warn(
+                    LogCode.BACKEND_CLIENT_GONE.marker(),
                     "Client channel inactive when installing ConfigHandler for {}",
                     player.username());
                 return;

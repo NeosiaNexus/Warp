@@ -16,6 +16,8 @@
  */
 package dev.warp.proxy.antibot;
 
+import dev.warp.proxy.logging.LogCode;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -120,7 +122,10 @@ final class VerifiedFiles implements AutoCloseable {
         Path aside = directory.resolve(SNAPSHOT + ".damaged");
         Files.move(snapshot, aside, StandardCopyOption.REPLACE_EXISTING);
         logger.warn(
-            "{} fails its checksum: set aside as {}; replaying the journal alone", snapshot, aside);
+            LogCode.ANTIBOT_SNAPSHOT_CORRUPT.marker(),
+            "{} fails its checksum: set aside as {}; replaying the journal alone",
+            snapshot,
+            aside);
       } else {
         fromSnapshot = count;
       }
@@ -201,6 +206,7 @@ final class VerifiedFiles implements AutoCloseable {
     }
     if (position < size) {
       logger.warn(
+          LogCode.ANTIBOT_JOURNAL_TRUNCATED.marker(),
           "{}: cut off {} bytes after its last valid change (a crash mid-write)",
           journal,
           size - position);

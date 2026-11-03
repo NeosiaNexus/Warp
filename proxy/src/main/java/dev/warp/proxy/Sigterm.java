@@ -16,6 +16,8 @@
  */
 package dev.warp.proxy;
 
+import dev.warp.proxy.logging.LogCode;
+
 import java.lang.reflect.Proxy;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -84,7 +86,7 @@ final class Sigterm {
     try {
       callback.run();
     } catch (RuntimeException e) {
-      logger.error("Handling SIGTERM failed", e);
+      logger.error(LogCode.SIGTERM_HANDLER_FAILED.marker(), "Handling SIGTERM failed", e);
     }
   }
 }

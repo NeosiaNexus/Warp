@@ -32,6 +32,7 @@ import dev.warp.protocol.packet.login.LoginPluginResponse;
 import dev.warp.protocol.packet.login.LoginStart;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.login.SetCompression;
+import dev.warp.proxy.logging.LogCode;
 
 import java.net.InetSocketAddress;
 import java.util.Set;
@@ -126,7 +127,9 @@ final class BackendLoginSessionHandler implements SessionHandler {
     }
     if (!(packet instanceof LoginPacket loginPacket)) {
       logger.warn(
-          "Unexpected packet in backend LOGIN state: {}", packet.getClass().getSimpleName());
+          LogCode.BACKEND_UNEXPECTED_PACKET.marker(),
+          "Unexpected packet in backend LOGIN state: {}",
+          packet.getClass().getSimpleName());
       return;
     }
 
@@ -140,7 +143,9 @@ final class BackendLoginSessionHandler implements SessionHandler {
           backendConnection.close();
       // Backend should not send EncryptionRequest (we connect offline-mode).
       case EncryptionRequest _ -> {
-        logger.warn("Backend sent EncryptionRequest — is it running in online-mode?");
+        logger.warn(
+            LogCode.BACKEND_ONLINE_MODE.marker(),
+            "Backend sent EncryptionRequest — is it running in online-mode?");
         player.disconnect();
       }
     }
@@ -171,6 +176,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
         && threshold != playerThreshold
         && COMPRESSION_ADVICE_GIVEN.add(serverAddress)) {
       logger.warn(
+          LogCode.BACKEND_COMPRESSION_MISMATCH.marker(),
           "Backend {} compresses packets from {} bytes but players use {}: packets between the two"
               + " thresholds are re-encoded instead of forwarded as-is. Set"
               + " network-compression-threshold={} on the backend for full compression"
@@ -196,6 +202,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
         && !backendConnection.isCompressed()
         && COMPRESSION_ADVICE_GIVEN.add(serverAddress)) {
       logger.warn(
+          LogCode.BACKEND_COMPRESSION_OFF.marker(),
           "Backend {} has compression disabled, so Warp must compress its traffic for every player."
               + " Set network-compression-threshold={} on the backend: Warp then forwards its"
               + " compressed packets without recompressing them.",

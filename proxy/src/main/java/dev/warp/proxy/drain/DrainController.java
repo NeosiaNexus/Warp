@@ -27,6 +27,7 @@ import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
 import dev.warp.api.player.TransferResult;
 import dev.warp.proxy.config.DrainConfig;
+import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.logging.Plural;
 
 import java.time.Duration;
@@ -390,6 +391,7 @@ public final class DrainController<P extends DrainCandidate> {
           status.refused());
     } else {
       logger.warn(
+          LogCode.DRAIN_TIMED_OUT.marker(),
           "Drain timed out after {}: "
               + Plural.of(status.players(), "the {} player left is", "the {} players left are")
               + " disconnected ({} transferred, {} kept, {} kicked, {} logins refused)",
@@ -507,6 +509,7 @@ public final class DrainController<P extends DrainCandidate> {
         DECISION_TIMEOUT,
         () -> {
           logger.warn(
+              LogCode.DRAIN_DECISION_SLOW.marker(),
               "Drain: plugins took more than {} to decide about {}; applying the default",
               DrainConfig.format(DECISION_TIMEOUT),
               pending.player().username());
@@ -516,7 +519,11 @@ public final class DrainController<P extends DrainCandidate> {
     try {
       decision = host.decide(pending.player(), pending.reason(), fallback);
     } catch (RuntimeException e) {
-      logger.error("Drain: could not ask plugins about {}", pending.player().username(), e);
+      logger.error(
+          LogCode.DRAIN_DECISION_FAILED.marker(),
+          "Drain: could not ask plugins about {}",
+          pending.player().username(),
+          e);
       decision = CompletableFuture.completedFuture(fallback);
     }
     var _ =
@@ -551,7 +558,11 @@ public final class DrainController<P extends DrainCandidate> {
         }
       }
     } catch (RuntimeException e) {
-      logger.error("Drain: could not deal with {}", player.username(), e);
+      logger.error(
+          LogCode.DRAIN_PLAYER_FAILED.marker(),
+          "Drain: could not deal with {}",
+          player.username(),
+          e);
     }
     release(current);
   }
@@ -564,6 +575,7 @@ public final class DrainController<P extends DrainCandidate> {
         TRANSFER_TIMEOUT,
         () -> {
           logger.warn(
+              LogCode.DRAIN_TRANSFER_SLOW.marker(),
               "Drain: the transfer of {} was not written within {}; moving on",
               player.username(),
               DrainConfig.format(TRANSFER_TIMEOUT));

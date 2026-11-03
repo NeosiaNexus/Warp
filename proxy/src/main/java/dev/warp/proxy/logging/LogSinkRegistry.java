@@ -238,7 +238,11 @@ public final class LogSinkRegistry implements AutoCloseable {
         failed.incrementAndGet();
         if (failed.get() == 1) {
           // The first failure in full, at once: it is usually a configuration error.
-          logger.warn("The log sink of plugin {} failed on a record", owner, e);
+          logger.warn(
+              LogCode.LOG_SINK_FAILED.marker(),
+              "The log sink of plugin {} failed on a record",
+              owner,
+              e);
           reportedFailed = 1;
         } else {
           lastFailure = e;
@@ -246,7 +250,11 @@ public final class LogSinkRegistry implements AutoCloseable {
       } catch (LinkageError e) {
         // The plugin's classes are gone, or never loaded: the sink cannot work again.
         failed.incrementAndGet();
-        logger.warn("The log sink of plugin {} cannot run, removed", owner, e);
+        logger.warn(
+            LogCode.LOG_SINK_REMOVED.marker(),
+            "The log sink of plugin {} cannot run, removed",
+            owner,
+            e);
         unsubscribe();
       }
     }
@@ -266,6 +274,7 @@ public final class LogSinkRegistry implements AutoCloseable {
       reportedFailed = failedNow;
       if (newlyDropped > 0) {
         logger.warn(
+            LogCode.LOG_SINK_LOST_RECORDS.marker(),
             "The log sink of plugin {} lost {} records{}",
             owner,
             newlyDropped,
@@ -275,6 +284,7 @@ public final class LogSinkRegistry implements AutoCloseable {
         Exception failure = lastFailure;
         lastFailure = null;
         logger.warn(
+            LogCode.LOG_SINK_FAILED.marker(),
             "The log sink of plugin {} failed on {} more records, last: {}",
             owner,
             newlyFailed,

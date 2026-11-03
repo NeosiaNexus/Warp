@@ -18,6 +18,7 @@ package dev.warp.proxy.event;
 
 import dev.warp.api.event.Subscribe;
 import dev.warp.api.event.Subscription;
+import dev.warp.proxy.logging.LogCode;
 
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
@@ -290,6 +291,7 @@ public final class WarpEventBus implements AutoCloseable {
               () -> {
                 if (resumed.compareAndSet(false, true)) {
                   logger.warn(
+                      LogCode.EVENT_HANDLER_TIMED_OUT.marker(),
                       "{} held {} for more than {} s: skipped. Raise timeoutSeconds if it needs"
                           + " longer",
                       handler,
@@ -334,13 +336,19 @@ public final class WarpEventBus implements AutoCloseable {
     }
 
     private void failed(Handler handler, Throwable error) {
-      logger.error("{} failed on {}", handler, event.getClass().getSimpleName(), error);
+      logger.error(
+          LogCode.EVENT_HANDLER_FAILED.marker(),
+          "{} failed on {}",
+          handler,
+          event.getClass().getSimpleName(),
+          error);
     }
 
     private void reportIfSlow(Handler handler, long start) {
       long elapsed = System.nanoTime() - start;
       if (elapsed > SLOW_HANDLER_NANOS) {
         logger.warn(
+            LogCode.EVENT_HANDLER_SLOW.marker(),
             "{} took {} ms on {}: later events of the same player waited",
             handler,
             TimeUnit.NANOSECONDS.toMillis(elapsed),
@@ -570,7 +578,10 @@ public final class WarpEventBus implements AutoCloseable {
       service.shutdown();
       try {
         if (!service.awaitTermination(SHUTDOWN_GRACE_SECONDS, TimeUnit.SECONDS)) {
-          logger.warn("Events were still being delivered after {} s", SHUTDOWN_GRACE_SECONDS);
+          logger.warn(
+              LogCode.EVENTS_STILL_RUNNING.marker(),
+              "Events were still being delivered after {} s",
+              SHUTDOWN_GRACE_SECONDS);
           service.shutdownNow();
         }
       } catch (InterruptedException e) {

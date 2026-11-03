@@ -19,6 +19,7 @@ package dev.warp.proxy.event.proxy;
 import dev.warp.api.event.proxy.ProxyPingEvent;
 import dev.warp.api.player.InboundConnection;
 import dev.warp.api.server.ServerPing;
+import dev.warp.proxy.logging.LogCode;
 
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -110,6 +111,7 @@ public final class ProxyPingEventImpl implements ProxyPingEvent {
             + " CompletableFuture, to hold the ping until it is done";
     if (REPORTED_LATE_CHANGE.compareAndSet(false, true)) {
       logger.warn(
+          LogCode.PING_CHANGED_LATE.marker(),
           "{} (reported once; later ones are logged at DEBUG)",
           message,
           new IllegalStateException("Changed here"));

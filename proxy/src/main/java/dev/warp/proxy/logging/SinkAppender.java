@@ -126,7 +126,9 @@ public final class SinkAppender extends AbstractAppender {
    */
   public void install() {
     if (!(LogManager.getContext(false) instanceof LoggerContext context)) {
-      logger.warn("Log sinks receive nothing: the logging backend is not Log4j Core");
+      logger.warn(
+          LogCode.LOG_SINKS_UNAVAILABLE.marker(),
+          "Log sinks receive nothing: the logging backend is not Log4j Core");
       return;
     }
     Configuration configuration = context.getConfiguration();

@@ -28,6 +28,7 @@ import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.proxy.config.ProxyProtocolConfig;
 import dev.warp.proxy.limit.ClientLimits;
+import dev.warp.proxy.logging.LogCode;
 
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -305,6 +306,7 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
     long suppressed = untrustedPeerWarnings.tryAcquire();
     if (suppressed >= 0) {
       logger.warn(
+          LogCode.PROXY_PROTOCOL_UNTRUSTED.marker(),
           "Refused a connection from {}: the PROXY protocol is on and this address is not in"
               + " proxy-protocol.trusted-proxies. If it is one of your load balancers, add it"
               + " there.{}",

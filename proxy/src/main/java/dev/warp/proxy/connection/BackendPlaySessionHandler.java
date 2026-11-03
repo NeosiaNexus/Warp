@@ -57,6 +57,7 @@ import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
 import dev.warp.protocol.packet.play.TabListHeaderFooter;
 import dev.warp.protocol.packet.play.Transfer;
+import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.messaging.BungeeCordChannel;
 import dev.warp.proxy.messaging.ChannelRegistry;
 
@@ -174,7 +175,9 @@ final class BackendPlaySessionHandler implements SessionHandler {
     }
     if (!(packet instanceof PlayPacket playPacket)) {
       logger.warn(
-          "Unexpected packet in backend PLAY handler: {}", packet.getClass().getSimpleName());
+          LogCode.BACKEND_UNEXPECTED_PACKET.marker(),
+          "Unexpected packet in backend PLAY handler: {}",
+          packet.getClass().getSimpleName());
       return;
     }
 
