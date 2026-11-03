@@ -1129,6 +1129,14 @@ async function remoteConsole(ctx) {
       await client.waitFor(/^\s+1 player online/, 10_000, mark);
       await client.waitFor(/^\s+- lobby\b.*1/, 5_000, mark);
       await instance.process.waitFor(/Remote console: e2e \(operator "[^"]+"\) from 127\.0\.0\.1 ran "glist"/, 5_000);
+      // /log from afar: level runs on the proxy (the token runs commands), tail on the client's own console.
+      const logMark = client.mark();
+      client.send('log level antibot debug');
+      await client.waitFor(/antibot logs from debug until Warp stops/, 10_000, logMark);
+      await instance.process.waitFor(/Remote console: e2e \(operator "[^"]+"\) from 127\.0\.0\.1 ran "log level antibot debug"/, 5_000);
+      const tailMark = client.mark();
+      client.send('log tail 3');
+      await client.waitFor(/last 3 lines/, 5_000, tailMark);
       const run = consoleClient(base, instance, `${name}-run`, ['run', '--url', url, 'glist', 'lobby']);
       run.start();
       const ran = await run.exited;
@@ -1140,8 +1148,12 @@ async function remoteConsole(ctx) {
       if (refused.status !== 403) throw new Error(`a read-only token running a command got ${refused.status}, expected 403`);
       const wrong = await fetch(`${url}/console/logs`, { headers: { Authorization: 'Bearer wrong' } });
       if (wrong.status !== 401) throw new Error(`a wrong token got ${wrong.status}, expected 401`);
+      // Each refusal has its code, on the proxy's console and through the stream on the client's.
+      await instance.process.waitFor(/Remote console: refused e2e-reader .* the token lacks the commands scope\s+W-RCON-002/, 5_000);
+      await instance.process.waitFor(/Remote console: refused a wrong token from 127\.0\.0\.1 .*W-RCON-004/, 5_000);
+      await client.waitFor(/Remote console: refused e2e-reader .* the token lacks the commands scope\s+W-RCON-002/, 10_000);
       bot.healthy();
-      detail = `console attach streamed e2e_remote's login and ran /glist (1 player, audited); console run glist lobby listed it; a read-only token was refused commands (403), a wrong token the stream (401)`;
+      detail = `console attach streamed e2e_remote's login, ran /glist (1 player, audited), /log level on the proxy and /log tail on the client; console run glist lobby listed it; a read-only token was refused commands (403, W-RCON-002, shown on the client too), a wrong token the stream (401, W-RCON-004)`;
     } finally {
       bot.quit();
     }
