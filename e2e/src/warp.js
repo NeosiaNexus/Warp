@@ -48,6 +48,8 @@ export class Warp {
    *   secret the backends share, or null for none
    * @param {{http: number, agent: number, token: string}} [options.management] the management server
    *   (probes, HAProxy agent check, drain endpoint) on these ports, with this token; off if absent
+   * @param {{token: string, reader: string}} [options.console] the remote console on the management
+   *   server: `token` may read the log and run commands, `reader` only read the log
    * @param {Record<string, string|number|boolean>} [options.drain] keys of the `drain` section
    * @param {string} options.logDir
    * @param {string[]} [options.jvmArgs] JVM options after the defaults (the last -Xmx wins)
@@ -95,7 +97,7 @@ compression {
   level = -1
   passthrough = ${this.passthrough}
 }
-${this.management ? managementSection(this.management) : ''}${this.drain ? drainSection(this.drain) : ''}${this.statusBlock()}`;
+${this.management ? managementSection(this.management, this.console) : ''}${this.drain ? drainSection(this.drain) : ''}${this.statusBlock()}`;
   }
 
   /** The `status` block and `player-limit`, or nothing for Warp's defaults. */
@@ -128,6 +130,7 @@ ${this.management ? managementSection(this.management) : ''}${this.drain ? drain
       env: {
         ...(this.forwarding ? { WARP_FORWARDING_SECRET: this.forwarding.secret } : {}),
         ...(this.management ? { WARP_MANAGEMENT_TOKEN: this.management.token } : {}),
+        ...(this.console ? { WARP_E2E_CONSOLE_TOKEN: this.console.token, WARP_E2E_CONSOLE_READER: this.console.reader } : {}),
       },
       logFile: join(this.logDir, `${this.name}.log`),
       failures: WARP_FAILURES,
@@ -190,13 +193,26 @@ function jcmd(java) {
   return join(dirname(java), 'jcmd');
 }
 
-/** The `management` section: both ports on the loopback; the token goes in the environment. */
-function managementSection({ http, agent }) {
+/**
+ * The `management` section: both ports on the loopback; the tokens go in the environment. With a
+ * remote console, its two tokens: one that runs commands, one that only reads the log.
+ */
+function managementSection({ http, agent }, console = null) {
+  const consoleBlock = console
+    ? `  console {
+    enabled = true
+    tokens = [
+      { name = "e2e", scopes = [logs, commands], env = "WARP_E2E_CONSOLE_TOKEN" }
+      { name = "e2e-reader", scopes = [logs], env = "WARP_E2E_CONSOLE_READER" }
+    ]
+  }
+`
+    : '';
   return `management {
   enabled = true
   bind = "127.0.0.1:${http}"
   agent-check = "127.0.0.1:${agent}"
-}
+${consoleBlock}}
 `;
 }
 
