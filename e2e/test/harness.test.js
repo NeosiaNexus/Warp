@@ -215,6 +215,13 @@ describe('scenario features', () => {
     assert.equal(features(777, { plugin: true, bridged: true }).audience, 'ViaProxy translates what the bot receives');
   });
 
+  it('attaches the remote console to a Warp of its own, which no ViaProxy bridge leads to', () => {
+    assert.equal(features(5).remoteConsole, true);
+    assert.equal(features(769).remoteConsole, true);
+    assert.equal(features(769, { direct: true }).remoteConsole, 'no proxy in a control run');
+    assert.equal(features(5, { bridged: true }).remoteConsole, 'through ViaProxy, the bridges only lead to warp and warp-alt');
+  });
+
   it('offers resource packs from 1.8, where they became a packet of their own', () => {
     assert.equal(features(47).resourcePack, true);
     assert.equal(features(5).resourcePack, 'no Resource Pack Send packet before 1.8');

@@ -96,6 +96,8 @@ export function features(protocol, { direct = false, forwarding = 'none', online
     ),
     // The drain runs on a Warp of its own, which no ViaProxy bridge leads to.
     drain: all(proxy, !bridged || 'through ViaProxy, the bridges only lead to warp and warp-alt'),
+    // So does the remote console, whose bot must log in to it to have a line to stream.
+    remoteConsole: all(proxy, !bridged || 'through ViaProxy, the bridges only lead to warp and warp-alt'),
     // A backend plugin speaks the BungeeCord channel, which Warp answers: Paper loads it, vanilla
     // servers load no plugin.
     bungeeChannel: all(proxy, paper || 'vanilla servers load no plugin to speak the channel'),
@@ -1340,7 +1342,7 @@ export const SCENARIOS = [
   { name: 'admin-commands', run: adminCommands, requires: 'adminCommands' },
   { name: 'bungeecord', run: bungeeCord, requires: 'bungeeChannel' },
   { name: 'transfer', run: transfer, requires: 'transfers' },
-  { name: 'remote-console', run: remoteConsole, requires: 'proxy' },
+  { name: 'remote-console', run: remoteConsole, requires: 'remoteConsole' },
   { name: 'drain', run: drain, requires: 'drain' },
   { name: 'player-limit', run: playerLimit, requires: 'proxy' },
   { name: 'flood', run: (ctx) => flood(ctx, joinWarp, LOBBY_MODE), requires: 'proxy' },
