@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791340733221,
+  "lastUpdate": 1793702180875,
   "repoUrl": "https://github.com/NeosiaNexus/Warp",
   "entries": {
     "Hot path on AMD EPYC 9V45 96-Core Processor (4 CPUs)": [
@@ -482,6 +482,156 @@ window.BENCHMARK_DATA = {
             "range": "± 1.7",
             "unit": "ns/packet",
             "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "63867369+NeosiaNexus@users.noreply.github.com",
+            "name": "NeosiaNexus",
+            "username": "NeosiaNexus"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4bd75ffb6d5f93374b615a72db37480163e91600",
+          "message": "fix(proxy): give every invalid encryption response the same reply (#162)\n\nPorts the one change of the unmerged branch\n`security/uniform-key-exchange-failures` that `main` does not have yet\n(35e1092). The other commits of that branch are on `main` already, in\nanother form: see the end.\n\n## Problem\n\nThe protocol fixes RSA with PKCS#1 v1.5 padding for the encryption\nresponse, which falls to Bleichenbacher's attack wherever a client can\ntell a badly padded ciphertext from a well padded one: by the reply, or\nby the time the reply takes. With such an oracle, an attacker who\nrecorded a login can recover its shared secret, one chosen ciphertext\nper login attempt.\n\n`LoginSessionHandler` gave one away. An invalid response got a reason\nthat depended on why it failed:\n\n| Response | Reason before |\n|---|---|\n| Token or secret that is not a valid PKCS#1 v1.5 ciphertext |\n`Encryption error: javax.crypto.BadPaddingException: ...` |\n| Well padded token, wrong value | `Verify token mismatch` |\n| Well padded secret, not 16 bytes | `Invalid shared secret length` |\n| 1.19 to 1.19.2 signed token that does not check | `Invalid verify\ntoken signature` |\n\nThe secret is the field an attacker probes (they encrypt their own\nsession's token correctly): a bad padding and a good padding of the\nwrong length got different replies. Even with one reply, the JDK's\n`RSA/ECB/PKCS1Padding` throws for a bad padding and returns otherwise,\nso building the exception makes a bad padding take time a good one does\nnot.\n\n## What changed\n\n- Every invalid encryption response gets the same reply, `Encryption\nfailed`, whatever the cause. It is still counted as a failed\nauthentication (`Refusal.AUTHENTICATION_FAILED`), so the anti-bot\ndetector and the aggregated refusal report see it as before, and it is\nlogged at DEBUG only.\n- New `dev.warp.proxy.auth.Pkcs1Decryption` decrypts each value with raw\nRSA (`RSA/ECB/NoPadding`) and checks the PKCS#1 v1.5 padding itself,\nwithout branching on it. The length of each value is known (4 bytes for\nthe token, 16 for the secret), so a valid block has one layout: `00 02`,\nat least 8 nonzero padding bytes, `00`, the value. Anything else is\ninvalid, including a well padded value of another length, so that case\ncannot be told apart either. The token is compared with\n`MessageDigest.isEqual` whatever its padding.\n- Each value gets its own `Cipher`.\n- As in the vanilla server (`ServerLoginPacketListenerImpl.handleKey`\nchecks the challenge before `getSecretKey`), the token is checked before\nthe secret is decrypted. The work a response costs depends on whether\nits token checks, which the client knows, never on a padding.\n- A client with a 1.19 to 1.19.2 profile key must still sign the token,\none without must encrypt it; both failures get the same reply as the\nrest.\n- A failure to set up AES/CFB8 (a broken runtime, nothing a client can\ncause) is logged at ERROR and closes with `Internal error`, instead of\npassing as a client's encryption error.\n\nWhat stays observable is what the protocol requires: a well padded\n16-byte secret behind a valid token enables encryption and asks the\nsession server. Vanilla and every proxy below do the same.\n\n## Known issues in other proxies that Warp avoids\n\nChecked against their default branches (Velocity `ed4c46e`, BungeeCord\n`55e1b0b`, Gate `ebecaf7`). All three check the token before the secret\nand create a fresh RSA cipher per value; none checks the secret's length\nexplicitly.\n\n- **BungeeCord** sends the exception to the client.\n`InitialHandler.exception` disconnects with `Util.exception(t)` while in\nthe ENCRYPT state ([InitialHandler\nL179-L188](https://github.com/SpigotMC/BungeeCord/blob/55e1b0bbe776e4b3af6c572a2b3d43fb60a526b1/proxy/src/main/java/net/md_5/bungee/connection/InitialHandler.java#L179-L188),\n[Util\nL103-L109](https://github.com/SpigotMC/BungeeCord/blob/55e1b0bbe776e4b3af6c572a2b3d43fb60a526b1/api/src/main/java/net/md_5/bungee/Util.java#L103-L109)):\na bad padding reads `BadPaddingException : Decryption error`, a wrong\ntoken `IllegalStateException : Invalid verification`. A direct padding\noracle. Each bad padding is also logged at SEVERE with its stack trace\n([HandlerBoss\nL169-L236](https://github.com/SpigotMC/BungeeCord/blob/55e1b0bbe776e4b3af6c572a2b3d43fb60a526b1/proxy/src/main/java/net/md_5/bungee/netty/HandlerBoss.java#L169-L236)),\nwhich a client can repeat at will:\n[BungeeCord#3432](https://github.com/SpigotMC/BungeeCord/issues/3432)\nreports a misbehaving client filling the log with\n`javax.crypto.BadPaddingException`.\n- **Gate** decrypts with Go's `rsa.DecryptPKCS1v15` ([authenticator.go\nL194-L204](https://github.com/minekube/gate/blob/ebecaf74132249268dcc5fd9c0fed2424a363b8c/pkg/edition/java/auth/authenticator.go#L194-L204)),\nwhose documentation warns that whether it returns an error discloses\nsecret information, rather than the constant time\n`DecryptPKCS1v15SessionKey` ([pkcs1v15.go\nL104-L168](https://github.com/golang/go/blob/44b6bc904602c7ffe674956d59f804a997f9bae3/src/crypto/rsa/pkcs1v15.go#L104-L168)).\nA badly padded secret closes the connection silently, while a well\npadded one of a length AES rejects gets a `Disconnect` with an internal\nerror message and an ERROR log ([session_client_initial_login.go\nL352-L367](https://github.com/minekube/gate/blob/ebecaf74132249268dcc5fd9c0fed2424a363b8c/pkg/edition/java/proxy/session_client_initial_login.go#L352-L367)):\nan oracle on the shared secret, reachable with a valid token for the\nattacker's own session. 24 and 32 byte secrets are accepted, since only\n`aes.NewCipher` checks the length.\n- **Velocity** closes silently in every case, so the client sees one\noutcome. But a bad padding is a `GeneralSecurityException` logged at\nERROR with its stack trace ([InitialLoginSessionHandler\nL267-L270](https://github.com/PaperMC/Velocity/blob/ed4c46ef43e7d93db0f69522a354a39412c66117/proxy/src/main/java/com/velocitypowered/proxy/connection/client/InitialLoginSessionHandler.java#L267-L270)),\none per forged packet, while a wrong token is an `IllegalStateException`\nthe frontline handler does not log. Its `EncryptionUtils.decryptRsa`\nuses the JDK's PKCS#1 v1.5 cipher, so the exception's cost remains.\n\nNo issue in the three repositories mentions a padding oracle or\nBleichenbacher.\n\n## Tests\n\n- `Pkcs1DecryptionTest`, every ciphertext built by hand: decrypts a\n4-byte and a 16-byte value, a value that leaves exactly the 8 required\npadding bytes, and a ciphertext without its leading zero; refuses a\nnonzero first byte, block types 0 and 1, a zero in the padding, a\nmissing separator, well padded values of 0, 4, 15, 17 and 32 bytes,\nfewer than 8 padding bytes, an expected value longer than the block, a\nnumber not below the modulus, an empty ciphertext and one longer than\nthe modulus. The JDK's PKCS#1 v1.5 cipher, which clients encrypt with,\nlogs in through it in the existing `LoginSessionHandlerTest` profile key\ntests (1.8 to the latest version).\n- `LoginSessionHandlerTest` \"encryption responses\": RSA ciphertexts\nbuilt by hand so that the test chooses the padding. Nine invalid\nresponses (badly padded token, zero in the token's padding, wrong token,\n5-byte token, badly padded secret, secret without separator, 15 and\n17-byte secrets, secret above the modulus) all get `{\"text\":\"Encryption\nfailed\"}`, install no cipher and never reach the session server. A valid\nresponse on 1.7.2, 1.8, 1.19, 1.19.3 and the latest version installs the\ncipher, asks the session server with the hash of the hand-built secret,\nand the first thing the proxy sends, decrypted with that secret, is\nLogin Success. The profile key tests now expect the same reply.\n- `ConnectionLimitsTest` still counts forged responses as failed\nauthentications without logging them.\n- `./gradlew build -x installGitHooks`: green. PIT on the changed\nclasses (`:proxy:pitest -Pwarp.pitest.since=origin/main`): 59%,\nthreshold 47.\n- E2E online mode: `e2e/run.sh --mc 1.8.8,26.1.2 --variants online --jar\nproxy/build/libs/warp-*.jar`, all pass (login through the encrypted\npath, chat signed on 26.1.2, and the flood scenario's 50 forged logins\nall closed with 5 log lines):\n\n```\n  PASS  1.8.8    77s  online:pass\n  PASS  26.1.2   93s  online:pass\n```\n\n## Rest of the branch, already on `main`\n\n| Commit | On `main` as |\n|---|---|\n| e334427 say where a generated forwarding secret was written |\n`WarpConfig` logs `Generated a random forwarding secret in {}` with the\nfile |\n| cae875f say where the protocol fixes the handshake cryptography |\ncomments in `AesCfb8` (IV), `WarpServer.RSA_KEY_SIZE` (1024 bits),\n`ServerHash` (SHA-1) |\n| 2010fd1 unnamed patterns for ignored packets | every handler matches\nthem with `_` |\n| 9881119 disconnect reasons the client can read during login |\n`LoginDisconnect.ofPlainText` / `TextComponent.plainTextJson`, tested in\n\"disconnect reasons\" |\n| 69b5f54 DeflatePeek's code-length run bound | `DeflatePeek` computes\n`end` once; `ZlibStreams.maximalDynamicBlock` tests |",
+          "timestamp": "2026-11-03T11:01:47+01:00",
+          "tree_id": "7f4cab62f308296db787817f36b91eb188232fe5",
+          "url": "https://github.com/NeosiaNexus/Warp/commit/4bd75ffb6d5f93374b615a72db37480163e91600"
+        },
+        "date": 1793702180460,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "CipherBenchmark.decrypt[buffer=DIRECT,frameSize=1024]",
+            "value": 20026.7,
+            "range": "± 88.2",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "CipherBenchmark.decrypt[buffer=HEAP,frameSize=1024]",
+            "value": 19533.9,
+            "range": "± 41.8",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "CipherBenchmark.encrypt[buffer=DIRECT,frameSize=1024]",
+            "value": 20293.9,
+            "range": "± 111.1",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "CipherBenchmark.encrypt[buffer=HEAP,frameSize=1024]",
+            "value": 20553.1,
+            "range": "± 123.4",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "CodecCostBenchmark.deflate[connections=1,implementation=WARP_NATIVE,level=6,workload=CHUNK]",
+            "value": 283299.2,
+            "range": "± 506.5",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "CodecCostBenchmark.deflate[connections=1,implementation=WARP_NATIVE,level=6,workload=MIXED]",
+            "value": 11716,
+            "range": "± 18.3",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "CodecCostBenchmark.deflate[connections=1,implementation=WARP_NATIVE,level=6,workload=SMALL]",
+            "value": 16173.4,
+            "range": "± 45.0",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "CodecCostBenchmark.inflate[connections=1,implementation=WARP_NATIVE,level=6,workload=CHUNK]",
+            "value": 25197.9,
+            "range": "± 111.1",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "CodecCostBenchmark.inflate[connections=1,implementation=WARP_NATIVE,level=6,workload=MIXED]",
+            "value": 1292.3,
+            "range": "± 4.0",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "CodecCostBenchmark.inflate[connections=1,implementation=WARP_NATIVE,level=6,workload=SMALL]",
+            "value": 4859,
+            "range": "± 18.6",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 3079.4,
+            "range": "± 70.4",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 182.2,
+            "range": "± 0.9",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 420.6,
+            "range": "± 3.4",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 80826.6,
+            "range": "± 129.5",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 617.5,
+            "range": "± 1.8",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 5962.9,
+            "range": "± 226",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=CHUNK]",
+            "value": 1677.1,
+            "range": "± 7.1",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=MIXED]",
+            "value": 1280.5,
+            "range": "± 6.6",
+            "unit": "ns/packet",
+            "extra": "INTEL(R) XEON(R) PLATINUM 8573C (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
           }
         ]
       }
