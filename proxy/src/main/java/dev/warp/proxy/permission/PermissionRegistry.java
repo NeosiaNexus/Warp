@@ -130,6 +130,18 @@ public final class PermissionRegistry {
    * @return whether it is granted
    */
   public boolean check(Player player, String permission) {
+    return value(player, permission) == Tristate.TRUE;
+  }
+
+  /**
+   * Returns the first opinion the providers have on a player's permission. A provider that throws
+   * is logged and skipped.
+   *
+   * @param player the player
+   * @param permission the permission node
+   * @return the answer, {@link Tristate#UNDEFINED} if no provider has one
+   */
+  public Tristate value(Player player, String permission) {
     for (Entry entry : providers) {
       Tristate answer;
       try {
@@ -144,9 +156,9 @@ public final class PermissionRegistry {
         continue;
       }
       if (answer != Tristate.UNDEFINED) {
-        return answer == Tristate.TRUE;
+        return answer;
       }
     }
-    return false;
+    return Tristate.UNDEFINED;
   }
 }

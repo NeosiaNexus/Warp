@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.permission;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.clearInvocations;
@@ -44,6 +45,19 @@ class PermissionRegistryTest {
   @DisplayName("should refuse every permission without a provider")
   void noProvider() {
     assertFalse(registry.check(player, "lobby.use"));
+  }
+
+  @Test
+  @DisplayName("should tell a permission nobody set from one denied")
+  void value() {
+    registry.register(
+        "perms",
+        0,
+        (p, permission) ->
+            permission.equals("warp.command.server") ? Tristate.FALSE : Tristate.UNDEFINED);
+
+    assertEquals(Tristate.FALSE, registry.value(player, "warp.command.server"));
+    assertEquals(Tristate.UNDEFINED, registry.value(player, "warp.command.glist"));
   }
 
   @Test

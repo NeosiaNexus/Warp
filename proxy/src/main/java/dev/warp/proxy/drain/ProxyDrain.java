@@ -39,6 +39,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
+import net.kyori.adventure.text.Component;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -95,12 +96,33 @@ public final class ProxyDrain implements DrainHost<PlayerCandidate> {
    * @return completed with the final status before the proxy shuts down; the same for every call
    */
   public CompletableFuture<DrainStatus> start(DrainTrigger trigger) {
+    return start(trigger, null);
+  }
+
+  /**
+   * Starts the drain with a message of its own, if it has not started yet.
+   *
+   * @param trigger what starts it
+   * @param reason shown in place of {@code drain.message}, or {@code null}; ignored if the drain
+   *     had started
+   * @return completed with the final status before the proxy shuts down; the same for every call
+   */
+  public CompletableFuture<DrainStatus> start(DrainTrigger trigger, @Nullable Component reason) {
     if (subscribed.compareAndSet(false, true)) {
       var _ = own.subscribe(PreLoginEvent.class, Integer.MIN_VALUE, this::onPreLogin);
       var _ =
           own.subscribe(ServerPostConnectEvent.class, Subscribe.LATE, this::onServerPostConnect);
     }
-    return controller.start(trigger);
+    return controller.start(trigger, reason);
+  }
+
+  /**
+   * Returns what the players the drain disconnects are told.
+   *
+   * @return the reason the drain started with, or {@code drain.message}
+   */
+  public Component message() {
+    return controller.message();
   }
 
   /**
@@ -172,7 +194,7 @@ public final class ProxyDrain implements DrainHost<PlayerCandidate> {
     if (refusal == null) {
       return;
     }
-    event.setResult(new PreLoginEvent.Denied(config.message()));
+    event.setResult(new PreLoginEvent.Denied(controller.message()));
     controller.loginRefused();
     logger.info(
         "Refused the login of {} from {} while draining: {}",

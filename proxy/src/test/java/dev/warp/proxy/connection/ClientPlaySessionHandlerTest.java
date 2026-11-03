@@ -154,9 +154,7 @@ class ClientPlaySessionHandlerTest {
 
       session.handler().handle(command(version, "server nowhere"));
 
-      byte[] content =
-          ComponentCodec.encode(
-              Component.text("Unknown server: nowhere", NamedTextColor.RED), version);
+      byte[] content = ComponentCodec.encode(ProxyCommands.unknownServer("nowhere"), version);
       assertArrayEquals(concat(new byte[] {(byte) packetId}, content, trailer), session.toPlayer());
       assertNull(session.toBackend());
     }

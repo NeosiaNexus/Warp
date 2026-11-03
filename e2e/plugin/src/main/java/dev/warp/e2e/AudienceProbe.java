@@ -55,6 +55,10 @@ import net.kyori.adventure.text.Component;
  * <p>For the {@code command-refresh} scenario, {@code /e2egrant} grants or takes back the
  * permission {@code /e2eperm} requires, from a permission provider of the plugin's own, and tells
  * the proxy: the bot sees whether its command list follows.
+ *
+ * <p>The same provider makes players whose name starts with {@value #ADMIN_PREFIX} hold every
+ * {@code warp.command.*} permission, for the {@code admin-commands} scenario, and nobody else holds
+ * any.
  */
 @Plugin(
     id = "e2e-audience",
@@ -65,6 +69,9 @@ public final class AudienceProbe implements WarpPlugin {
   /** The sound both plays use, in every version's sound list since 1.9 (a name before). */
   private static final Sound SOUND =
       Sound.sound(Key.key("entity.experience_orb.pickup"), Sound.Source.PLAYER, 1, 1);
+
+  /** Players whose name starts with this hold the proxy's command permissions. */
+  static final String ADMIN_PREFIX = "e2e_admin";
 
   private final PluginContext context;
 
@@ -103,7 +110,10 @@ public final class AudienceProbe implements WarpPlugin {
                 (player, permission) ->
                     permission.equals(PERMISSION)
                         ? Tristate.of(granted.contains(player.uniqueId()))
-                        : Tristate.UNDEFINED);
+                        : player.username().startsWith(ADMIN_PREFIX)
+                                && permission.startsWith("warp.command.")
+                            ? Tristate.TRUE
+                            : Tristate.UNDEFINED);
     var _ =
         context
             .commands()

@@ -261,6 +261,33 @@ class DrainControllerTest {
     }
 
     @Test
+    @DisplayName("should kick with the reason it started with, in place of the message")
+    void kicksWithReason() {
+      FakePlayer old = legacy("Old");
+      host.with(old);
+      DrainController<FakePlayer> drain =
+          controller(config(TARGET, DrainConfig.CannotTransfer.KICK));
+
+      var _ = drain.start(DrainTrigger.COMMAND, Component.text("Maintenance"));
+      var _ = drain.start(DrainTrigger.HTTP, Component.text("Ignored"));
+      clock.advance(PROPAGATION);
+
+      assertEquals(Component.text("Maintenance"), old.kickedWith());
+      assertEquals(Component.text("Maintenance"), drain.message());
+      assertEquals(DrainTrigger.COMMAND, drain.status().trigger());
+    }
+
+    @Test
+    @DisplayName("should tell the configured message when started without a reason")
+    void messageWithoutReason() {
+      DrainController<FakePlayer> drain = controller();
+
+      var _ = drain.start(DrainTrigger.SIGNAL);
+
+      assertEquals(Component.text(MESSAGE), drain.message());
+    }
+
+    @Test
     @DisplayName(
         "should kick clients older than 1.20.5 with the message, paced, when so configured")
     void kicksLegacy() {

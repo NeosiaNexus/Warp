@@ -69,35 +69,33 @@ final class AntiBotCommand {
   private AntiBotCommand() {}
 
   /**
-   * Builds {@code /warp} with its {@code antibot} subcommand.
+   * Builds the anti-bot subcommand of {@code /warp}.
    *
    * @param antiBot the anti-bot
    * @param players finds a connected player by name
-   * @return the command
+   * @return the subcommand, for sources granted {@value #PERMISSION}
    */
-  static LiteralArgumentBuilder<CommandSource> warp(
+  static LiteralArgumentBuilder<CommandSource> node(
       AntiBotService antiBot, Function<String, Optional<Player>> players) {
-    return LiteralArgumentBuilder.<CommandSource>literal("warp")
+    return LiteralArgumentBuilder.<CommandSource>literal("antibot")
         .requires(source -> source.hasPermission(PERMISSION))
+        .executes(
+            context -> {
+              context.getSource().sendMessage(status(antiBot.status()));
+              return Command.SINGLE_SUCCESS;
+            })
         .then(
-            LiteralArgumentBuilder.<CommandSource>literal("antibot")
-                .executes(
-                    context -> {
-                      context.getSource().sendMessage(status(antiBot.status()));
-                      return Command.SINGLE_SUCCESS;
-                    })
+            LiteralArgumentBuilder.<CommandSource>literal("lockdown")
                 .then(
-                    LiteralArgumentBuilder.<CommandSource>literal("lockdown")
-                        .then(
-                            RequiredArgumentBuilder.<CommandSource, String>argument(
-                                    "state", StringArgumentType.word())
-                                .suggests(
-                                    (context, builder) ->
-                                        builder.suggest("on").suggest("off").buildFuture())
-                                .executes(context -> lockdown(antiBot, context))))
-                .then(identityCommand("verify", antiBot, players))
-                .then(identityCommand("unverify", antiBot, players))
-                .then(identityCommand("check", antiBot, players)));
+                    RequiredArgumentBuilder.<CommandSource, String>argument(
+                            "state", StringArgumentType.word())
+                        .suggests(
+                            (context, builder) ->
+                                builder.suggest("on").suggest("off").buildFuture())
+                        .executes(context -> lockdown(antiBot, context))))
+        .then(identityCommand("verify", antiBot, players))
+        .then(identityCommand("unverify", antiBot, players))
+        .then(identityCommand("check", antiBot, players));
   }
 
   private static LiteralArgumentBuilder<CommandSource> identityCommand(

@@ -165,7 +165,7 @@ class CommandsTest {
 
       assertTrue(new PluginCommandManager(withServer, "router", s -> {}).unregister("server"));
 
-      assertFalse(withServer.owns("server lobby"));
+      assertFalse(withServer.owns(source(), "server lobby"));
     }
 
     @Test

@@ -62,6 +62,7 @@ a closed port and which lets a single player in) and run the scenarios:
 | `fallback-unreachable` | Default server down: the player lands on the next one |
 | `fallback-rejected` | Lobby refuses the login (whitelist): the player lands on survival |
 | `switch-refused` | Survival refuses a `/server survival` (whitelist): the player stays on the lobby, told why, never disconnected |
+| `admin-commands` | With the e2e plugin, which grants the bots named `e2e_admin*` every `warp.command.*` permission: `e2e_admin` runs `/glist` (the lobby counted, then its players by name) and `/send` on another bot, which lands on survival; sending it again moves nothing, an unknown player and an unknown server are named, and `/send survival lobby` brings it back. The other bot holds no permission: its `/glist` reaches the backend, which answers that it does not know the command |
 | `bungeecord` | Paper backends only: the lobby's probe plugin (`plugins/bungee-probe`, built with `javac --release 8` against the Bukkit stubs in `plugins/bukkit-stubs`, so one jar loads from 1.8.8 on) speaks BungeeCord's plugin messaging channel as Paper plugins do, `Player#sendPluginMessage` on `BungeeCord`, which Paper only sends once Warp registered the channel for the client. Its GetServers, PlayerCount and GetServer get Warp's replies; its Connect moves the bot to survival, where GetServer answers survival |
 | `transfer` | From 1.20.5, bots speaking the version natively: the lobby sends the player away with its own Transfer packet (`/transfer` to Warp's address), which reaches it through Warp exactly as sent; the player comes back with a transfer handshake (intent 3), which Warp lets in onto the lobby (`accepts-transfers` on). warp-alt, where it is off, refuses one with vanilla's `multiplayer.disconnect.transfers_disabled` |
 | `drain` | A Warp of its own, warp-drain, with its management server and HAProxy agent check, drains towards warp. From 1.20.5, by SIGTERM (`drain.on-sigterm`, as under Kubernetes): `/readyz` answers 503 and the agent `drain` at once, the player gets a Transfer packet to warp and comes back there by transfer, and warp-drain, empty, exits with 0. Before 1.20.5, by `POST /drain?wait=true` (a wrong token gets 401): the player, whose client cannot be transferred, is kept, never kicked; once it leaves, the request answers `drained` and warp-drain exits with 0 |
@@ -75,7 +76,8 @@ without the SHA-1), `audience` on 1.7 and on versions bridged through ViaProxy, 
 plugin (`--jar` without `--plugin`), `command-refresh` before 1.13, through ViaProxy and without the
 plugin, `transfer` before 1.20.5 and through ViaProxy (Warp would see
 the bridge's handshake, not the bot's), `drain` through ViaProxy (no bridge leads to warp-drain),
-`bungeecord` on vanilla servers (no plugin to speak the channel) and in a `--direct` run. The
+`bungeecord` on vanilla servers (no plugin to speak the channel) and in a `--direct` run,
+`admin-commands` without the plugin (nobody holds the command permissions). The
 features are in `features()` in `src/scenarios.js`.
 
 The audience probe plugin is the Gradle project `:e2e-plugin` (`e2e/plugin`). Without `--jar`, the

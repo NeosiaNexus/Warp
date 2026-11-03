@@ -30,9 +30,11 @@ import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.command.ProxyCommands;
+import dev.warp.proxy.command.ProxyControl;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.compression.Compression;
 import dev.warp.proxy.config.AntiBotConfig;
+import dev.warp.proxy.config.DrainConfig;
 import dev.warp.proxy.config.WarpConfig;
 import dev.warp.proxy.connection.BackendPinger;
 import dev.warp.proxy.connection.ConnectedPlayer;
@@ -60,6 +62,7 @@ import dev.warp.proxy.server.ServerRegistry;
 import dev.warp.proxy.status.ServerList;
 
 import java.io.IOException;
+import java.lang.management.ManagementFactory;
 import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -363,7 +366,7 @@ public final class WarpServer implements Warp {
         workerGroup.scheduleAtFixedRate(
             limits::report, reportMillis, reportMillis, TimeUnit.MILLISECONDS);
     var _ = workerGroup.scheduleAtFixedRate(bots::tick, 1, 1, TimeUnit.SECONDS);
-    ProxyCommands.registerAntiBot(commands, bots, this::player);
+    ProxyCommands.registerAdmin(commands, this, new Control(), bots);
     if (channels.bungeeCord().enabled()) {
       var _ =
           workerGroup.scheduleAtFixedRate(
@@ -516,7 +519,7 @@ public final class WarpServer implements Warp {
 
   /** Phase 3 of a drain: stops the proxy, then ends the process with the drain's outcome. */
   private void stopAfterDrain(DrainStatus status) {
-    if (stop(config.drain().message())) {
+    if (stop(drain.message())) {
       int code = status.outcome() == DrainOutcome.TIMED_OUT ? EXIT_DRAIN_TIMED_OUT : EXIT_DRAINED;
       logger.info("Exiting with code {}", code);
       exit.accept(code);
@@ -737,6 +740,33 @@ public final class WarpServer implements Warp {
       throw new IllegalStateException("The proxy is not running: it cannot drain");
     }
     return drain.start(trigger);
+  }
+
+  /** What the administration commands need beyond the API. */
+  private final class Control implements ProxyControl {
+
+    @Override
+    public Duration uptime() {
+      return Duration.ofMillis(ManagementFactory.getRuntimeMXBean().getUptime());
+    }
+
+    @Override
+    public String compression() {
+      return Compression.describe();
+    }
+
+    @Override
+    public DrainConfig drain() {
+      return config.drain();
+    }
+
+    @Override
+    public CompletableFuture<DrainStatus> shutdown(@Nullable Component reason) {
+      if (!started || stopping.get()) {
+        throw new IllegalStateException("The proxy is not running");
+      }
+      return drain.start(DrainTrigger.COMMAND, reason);
+    }
   }
 
   /** The proxy as the management server reads it. */
