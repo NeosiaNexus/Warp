@@ -19,6 +19,7 @@ package dev.warp.proxy.config;
 import dev.warp.api.server.Favicon;
 import dev.warp.proxy.console.ConsoleMarkers;
 import dev.warp.proxy.i18n.PlayerMessages;
+import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.messaging.BungeeCordSettings;
 import dev.warp.proxy.messaging.BungeeCordSubchannel;
 import dev.warp.proxy.network.CidrRange;
@@ -150,7 +151,7 @@ public final class WarpConfig {
 
   /** Settings that exist without being in the default file: their absence means something. */
   private static final Set<String> OPTIONAL_KEYS =
-      Set.of("status.max-players", "status.version-name");
+      Set.of("status.max-players", "status.version-name", "logging.levels.*");
 
   /** Settings of earlier layouts, with what replaced them. */
   private static final Map<String, String> MOVED_KEYS =
@@ -876,12 +877,17 @@ public final class WarpConfig {
     }
     if (LEGACY_CODE.matcher(source).find()) {
       logger.warn(
+          LogCode.MOTD_LEGACY_COLORS.marker(),
           "status.motd contains legacy color codes (such as &a), shown as typed: use MiniMessage"
               + " tags instead, such as <green>");
     }
     long lines = PlainTextComponentSerializer.plainText().serialize(motd).lines().count();
     if (lines > MOTD_LINES) {
-      logger.warn("status.motd has {} lines: clients only show the first {}", lines, MOTD_LINES);
+      logger.warn(
+          LogCode.MOTD_TOO_MANY_LINES.marker(),
+          "status.motd has {} lines: clients only show the first {}",
+          lines,
+          MOTD_LINES);
     }
     return motd;
   }
@@ -1039,6 +1045,7 @@ public final class WarpConfig {
     for (CidrRange range : trusted.ranges()) {
       if (range.prefixLength() == 0) {
         logger.warn(
+            LogCode.TRUSTED_PROXIES_EVERYONE.marker(),
             "proxy-protocol.trusted-proxies contains {}, which trusts every {} address: anyone"
                 + " who can reach Warp's port directly can spoof their address. List only your"
                 + " load balancers.",
@@ -1321,6 +1328,7 @@ public final class WarpConfig {
         logger.info("Generated a random forwarding secret in {}", file);
       } else {
         logger.warn(
+            LogCode.FORWARDING_SECRET_GENERATED.marker(),
             "{} did not exist: generated a new forwarding secret. Give it to every backend (Paper:"
                 + " proxies.velocity.secret in config/paper-global.yml), or players cannot join",
             file);
@@ -1557,6 +1565,20 @@ public final class WarpConfig {
           # Each command a player sends, with its arguments. Off by default: commands carry passwords
           # on offline-mode networks (/login, /register).
           commands = false
+
+          # Levels of log sources, kept across restarts: a source as the console names it (antibot,
+          # conn, drain, warp, plugin:<id>, netty...) or a logger name, then error, warn, info, debug
+          # or trace. Quote names with a colon or dots. /log level changes a level until the next
+          # restart, for instance levels { antibot = debug, "plugin:showcase" = trace }
+          levels {}
+        }
+
+        console {
+          # The console's colours: auto follows the terminal's background (light or dark, as the
+          # terminal answers or COLORFGBG says), dark, light, or colorblind (blue and orange where
+          # others use green and red, for the background found). WARP_THEME takes precedence. A log
+          # file is never coloured.
+          theme = auto
         }
 
         # Management HTTP server: Kubernetes probes, load balancer health checks and the drain.
@@ -1578,6 +1600,34 @@ public final class WarpConfig {
           token-file = ""
           # Ready only once at least one backend server is registered.
           ready-requires-server = true
+          # TLS on this port, from PEM files read again when they change (cert-manager renewals).
+          # The key must be PKCS#8 ("BEGIN PRIVATE KEY"). Probes then use scheme HTTPS.
+          tls {
+            certificate = ""
+            key = ""
+          }
+          # Remote console, for hosts without a terminal (Kubernetes, panels, docker without -it):
+          #   GET /console/logs       the live log (Server-Sent Events), with a replay
+          #   POST /console/command   runs a command, answers its output
+          # Attach with: java -jar warp.jar console attach --url http://host:9901 --token-file f
+          console {
+            enabled = false
+            # Who may attach: a name (in the audit log), scopes (logs, commands) and one of file,
+            # env (a variable) or sha256 (the token's digest, so that no file here holds it).
+            # Tokens have at least 32 characters (openssl rand -hex 32), never the drain token's.
+            tokens = [
+              # { name = "ops", scopes = [logs, commands], file = "console-ops.token" }
+              # { name = "dashboard", scopes = [logs], env = "WARP_CONSOLE_DASHBOARD_TOKEN" }
+            ]
+            # Without TLS, commands are accepted from loopback only, and from these networks: a
+            # VPN, or the ingress that terminates TLS in front of Warp.
+            trusted-networks = []
+            # Lines kept for the replay of a client that attaches or reconnects.
+            history = 1000
+            # Wrong tokens from one address (IPv6: its /64) before it is locked out, and how long.
+            lockout-after = 5
+            lockout-duration = 15m
+          }
         }
 
         # Draining: empty the proxy before it stops, for restarts without kicking anyone.

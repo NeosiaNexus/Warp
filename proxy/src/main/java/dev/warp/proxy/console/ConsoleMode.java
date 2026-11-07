@@ -22,6 +22,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.function.UnaryOperator;
 
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.ansi.ANSIComponentSerializer;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -47,6 +50,16 @@ import org.jspecify.annotations.Nullable;
  *       both a TTY, {@code TERM} not {@code dumb}, and no panel. Panels give the server a TTY, but
  *       their web console sends whole lines and cannot redraw a prompt. {@code WARP_CONSOLE=plain}
  *       turns them off on any other host of that kind; {@code interactive} keeps them on a panel.
+ *   <li>The theme: {@code WARP_THEME}, else {@code console.theme} of {@code warp.conf} ({@code
+ *       auto}, {@code dark}, {@code light} or {@code colorblind}). {@code auto} and {@code
+ *       colorblind} follow the background: light or dark as {@code COLORFGBG} says, else as the
+ *       terminal answers an OSC 11 query (interactive terminals only, with a short time-out), else
+ *       dark, the safe default of terminals and panels.
+ *   <li>Clickable links (OSC 8): on terminals known to show them (Windows Terminal, iTerm2,
+ *       WezTerm, kitty, Ghostty, foot, Alacritty, VS Code, VTE terminals such as GNOME Terminal,
+ *       Konsole), never in a pipe, a panel, {@code screen} or {@code tmux}, which may print or eat
+ *       the sequence. {@code WARP_HYPERLINKS=always} or {@code never} decides instead; links never
+ *       show without colours.
  * </ol>
  *
  * @param colors the colours of the output
@@ -54,6 +67,9 @@ import org.jspecify.annotations.Nullable;
  * @param tty whether standard input and output are a terminal, which echoes the commands typed
  * @param panel the panel detected, or {@code null}
  * @param unicode whether the output encoding can show symbols such as {@code ●} and {@code ─}
+ * @param theme the colours of each style
+ * @param probeBackground whether the background is a guess that an OSC 11 query may settle
+ * @param hyperlinks whether the output shows clickable links
  * @param warning a setting that could not be read and was ignored, to log once logging works
  */
 public record ConsoleMode(
@@ -62,6 +78,9 @@ public record ConsoleMode(
     boolean tty,
     @Nullable String panel,
     boolean unicode,
+    Theme theme,
+    boolean probeBackground,
+    boolean hyperlinks,
     @Nullable String warning) {
 
   /** The variable that overrides colour detection: always, never, auto, 16, 256 or truecolor. */
@@ -73,13 +92,110 @@ public record ConsoleMode(
   /** The informal standard that turns colours off when set to anything but the empty string. */
   public static final String ENV_NO_COLOR = "NO_COLOR";
 
+  /** The variable that picks the theme: auto, dark, light or colorblind. */
+  public static final String ENV_THEME = "WARP_THEME";
+
+  /** The variable that overrides link detection: always, never or auto. */
+  public static final String ENV_HYPERLINKS = "WARP_HYPERLINKS";
+
+  /**
+   * The system property that carries {@code console.theme} of {@code warp.conf}, read before
+   * logging starts.
+   */
+  public static final String THEME_PROPERTY = "warp.console.theme";
+
+  /**
+   * The system property that, set to {@code false}, links no file paths: the remote console's
+   * client sets it, since the paths in a remote proxy's lines name files of the proxy's machine.
+   */
+  public static final String FILE_LINKS_PROPERTY = "warp.console.file-links";
+
+  /**
+   * Creates a mode in the dark theme, without links.
+   *
+   * @param colors the colours of the output
+   * @param interactive whether the prompt and the status line may move the cursor
+   * @param tty whether standard input and output are a terminal
+   * @param panel the panel detected, or {@code null}
+   * @param unicode whether the output encoding can show symbols
+   * @param warning a setting that could not be read, or {@code null}
+   */
+  public ConsoleMode(
+      ColorDepth colors,
+      boolean interactive,
+      boolean tty,
+      @Nullable String panel,
+      boolean unicode,
+      @Nullable String warning) {
+    this(colors, interactive, tty, panel, unicode, Theme.DARK, false, false, warning);
+  }
+
   /**
    * Returns this mode without the prompt and the status line: for a terminal JLine cannot open.
    *
    * @return the mode, not interactive
    */
   public ConsoleMode withoutPrompt() {
-    return new ConsoleMode(colors, false, tty, panel, unicode, warning);
+    return new ConsoleMode(colors, false, tty, panel, unicode, theme, false, hyperlinks, warning);
+  }
+
+  /**
+   * Returns this mode in the theme of a background the terminal told: the light or dark variant of
+   * the same kind (colour-blind or not).
+   *
+   * @param light whether the background is light
+   * @return the mode, its background settled
+   */
+  public ConsoleMode withBackground(boolean light) {
+    Theme settled = Theme.of(theme.colorblind() ? "colorblind" : "auto", light);
+    return new ConsoleMode(
+        colors,
+        interactive,
+        tty,
+        panel,
+        unicode,
+        settled == null ? theme : settled,
+        false,
+        hyperlinks,
+        warning);
+  }
+
+  /**
+   * Returns this mode as plain text, without colour, link or cursor trick: for a Windows console
+   * that reads escape codes only once JLine turned their processing on.
+   *
+   * @return the mode, plain
+   */
+  public ConsoleMode plain() {
+    return new ConsoleMode(
+        ColorDepth.NONE, false, tty, panel, unicode, theme, false, false, warning);
+  }
+
+  /**
+   * Returns what styled text may use on this output.
+   *
+   * @return the palette
+   */
+  Palette palette() {
+    return Palette.of(colors, theme, hyperlinks);
+  }
+
+  /**
+   * Renders a component as the console writes a command's reply: in colour, its colours adjusted to
+   * read on the theme's background, or as plain text on an output without colours.
+   *
+   * @param component the component
+   * @return the text to write
+   */
+  public String render(Component component) {
+    Palette palette = palette();
+    if (!palette.colored()) {
+      return PlainTextComponentSerializer.plainText().serialize(component);
+    }
+    return ANSIComponentSerializer.builder()
+        .colorLevel(palette.depth().adventureLevel())
+        .build()
+        .serialize(LineFormatter.readable(component, palette.theme()));
   }
 
   /** Plain text without cursor tricks: for tests, and whenever nothing better is known. */
@@ -106,7 +222,14 @@ public record ConsoleMode(
     } catch (RuntimeException e) {
       charset = Charset.defaultCharset();
     }
-    return detect(System::getenv, console != null && console.isTerminal(), charset);
+    UnaryOperator<@Nullable String> env =
+        name -> {
+          String value = System.getenv(name);
+          return value == null && name.equals(ENV_THEME)
+              ? System.getProperty(THEME_PROPERTY)
+              : value;
+        };
+    return detect(env, console != null && console.isTerminal(), charset);
   }
 
   /**
@@ -161,7 +284,112 @@ public record ConsoleMode(
           }
         };
     boolean unicode = charset.equals(StandardCharsets.UTF_8);
-    return new ConsoleMode(colors, interactive, terminal, panel, unicode, warning);
+
+    String themeSetting = lower(env.apply(ENV_THEME));
+    Boolean light = lightBackground(env.apply("COLORFGBG"));
+    Theme theme = Theme.of(themeSetting, Boolean.TRUE.equals(light));
+    if (theme == null) {
+      if (warning == null) {
+        warning =
+            ENV_THEME
+                + "="
+                + env.apply(ENV_THEME)
+                + " is not auto, dark, light or colorblind: auto";
+      }
+      themeSetting = "auto";
+      theme = Boolean.TRUE.equals(light) ? Theme.LIGHT : Theme.DARK;
+    }
+    boolean probe =
+        light == null
+            && interactive
+            && colors.colored()
+            && !themeSetting.equals("dark")
+            && !themeSetting.equals("light");
+
+    String linkSetting = lower(env.apply(ENV_HYPERLINKS));
+    boolean hyperlinks =
+        switch (linkSetting) {
+          case "always", "on", "true", "1" -> true;
+          case "never", "off", "false", "0" -> false;
+          default -> {
+            if (!linkSetting.isEmpty() && !linkSetting.equals("auto") && warning == null) {
+              warning =
+                  ENV_HYPERLINKS
+                      + "="
+                      + env.apply(ENV_HYPERLINKS)
+                      + " is not always, never or auto: auto";
+            }
+            yield terminal && !dumb && panel == null && showsLinks(env, term);
+          }
+        };
+    return new ConsoleMode(
+        colors,
+        interactive,
+        terminal,
+        panel,
+        unicode,
+        theme,
+        probe,
+        hyperlinks && colors.colored(),
+        warning);
+  }
+
+  /**
+   * Returns whether {@code COLORFGBG} ({@code fg;bg}, set by rxvt, Konsole, iTerm2 and others) says
+   * the background is light: colours 7 and 9 to 15 are light, 0 to 6 and 8 dark.
+   *
+   * @param colorFgBg the variable, or {@code null}
+   * @return whether the background is light, or {@code null} when the variable does not say
+   */
+  static @Nullable Boolean lightBackground(@Nullable String colorFgBg) {
+    if (colorFgBg == null || colorFgBg.isBlank()) {
+      return null;
+    }
+    String background = colorFgBg.substring(colorFgBg.lastIndexOf(';') + 1).strip();
+    try {
+      int color = Integer.parseInt(background);
+      if (color < 0 || color > 15) {
+        return null;
+      }
+      return color == 7 || color >= 9;
+    } catch (NumberFormatException e) {
+      return null;
+    }
+  }
+
+  /**
+   * Returns whether the terminal is one known to show OSC 8 links. Multiplexers come first: inside
+   * {@code screen} or {@code tmux} the outer terminal's variables still show, but the multiplexer
+   * decides what reaches it.
+   */
+  private static boolean showsLinks(UnaryOperator<@Nullable String> env, String term) {
+    if (term.startsWith("screen") || term.startsWith("tmux") || env.apply("TMUX") != null) {
+      return false;
+    }
+    String program = orEmpty(env.apply("TERM_PROGRAM"));
+    return switch (program) {
+      case "iTerm.app", "WezTerm", "vscode", "ghostty", "Hyper", "Tabby", "rio", "WarpTerminal" ->
+          true;
+      default ->
+          env.apply("WT_SESSION") != null
+              || env.apply("KITTY_WINDOW_ID") != null
+              || env.apply("ALACRITTY_WINDOW_ID") != null
+              || version(env.apply("VTE_VERSION")) >= 5000
+              || version(env.apply("KONSOLE_VERSION")) >= 201200
+              || term.equals("xterm-kitty")
+              || term.equals("xterm-ghostty")
+              || term.equals("wezterm")
+              || term.equals("alacritty")
+              || term.startsWith("foot");
+    };
+  }
+
+  private static int version(@Nullable String value) {
+    try {
+      return value == null ? -1 : Integer.parseInt(value.strip());
+    } catch (NumberFormatException e) {
+      return -1;
+    }
   }
 
   /**

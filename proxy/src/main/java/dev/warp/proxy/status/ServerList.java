@@ -22,6 +22,7 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.legacy.LegacyDisconnect;
 import dev.warp.protocol.legacy.LegacyPing;
 import dev.warp.proxy.connection.ConnectedPlayer;
+import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.player.PlayerRegistry;
 
 import java.util.ArrayList;
@@ -252,7 +253,10 @@ public final class ServerList {
             + StatusJson.MAX_LENGTH
             + " characters a client reads: answered without {}";
     if (reportedOversized.compareAndSet(false, true)) {
-      logger.warn(message + " (reported once; later ones are logged at DEBUG)", dropped);
+      logger.warn(
+          LogCode.SERVER_LIST_ENTRY_TOO_LONG.marker(),
+          message + " (reported once; later ones are logged at DEBUG)",
+          dropped);
     } else {
       logger.debug(message, dropped);
     }

@@ -16,8 +16,8 @@
  */
 package dev.warp.proxy.console;
 
-import dev.warp.api.command.CommandSource;
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.proxy.command.OperatorSource;
 import dev.warp.proxy.i18n.PlayerMessages;
 
 import java.util.function.Supplier;
@@ -37,7 +37,7 @@ import org.apache.logging.log4j.Logger;
  * default language, {@code messages.default-locale}, with the operator's overrides; vanilla
  * messages get Warp's text of them, since no game translates them here.
  */
-public final class ConsoleCommandSource implements CommandSource {
+public final class ConsoleCommandSource implements OperatorSource {
 
   /** The logger of what the console is sent; its source tag is {@code console}. */
   private static final Logger logger = LogManager.getLogger("dev.warp.proxy.console.Console");

@@ -95,6 +95,80 @@ class LineFormatterTest {
   }
 
   @Nested
+  @DisplayName("a warning with a code")
+  class Codes {
+
+    private LogEvent coded(String message) {
+      return Log4jLogEvent.newBuilder()
+          .setLoggerName("dev.warp.proxy.WarpServer")
+          .setLevel(Level.WARN)
+          .setMarker(
+              org.apache.logging.log4j.MarkerManager.getMarker(
+                  dev.warp.proxy.logging.LogCode.PORT_IN_USE.id()))
+          .setMessage(new org.apache.logging.log4j.message.SimpleMessage(message))
+          .setTimeMillis(TIME)
+          .build();
+    }
+
+    @Test
+    @DisplayName("should end the first line with the code, in plain text too")
+    void shouldEndWithTheCode() {
+      // given
+      LogEvent event = coded("Cannot listen\n  more");
+
+      // when
+      String line = text(PLAIN, event);
+
+      // then
+      assertTrue(line.startsWith("14:02:11 WARN  warp       Cannot listen  W-START-002\n"), line);
+    }
+
+    @Test
+    @DisplayName("should dim the code and link it to its documentation where links show")
+    void shouldLinkTheCode() {
+      // given
+      ConsoleMode links =
+          new ConsoleMode(
+              ColorDepth.TRUE_COLOR, false, true, null, true, Theme.DARK, false, true, null);
+
+      // when
+      String line = text(links, coded("Cannot listen"));
+
+      // then
+      String muted = Palette.of(ColorDepth.TRUE_COLOR, Theme.DARK, true).open(Style.MUTED);
+      String link = dev.warp.proxy.logging.LogCode.PORT_IN_USE.documentation();
+      assertTrue(
+          line.endsWith(
+              "\u001B]8;;"
+                  + link
+                  + "\u001B\\"
+                  + muted
+                  + "W-START-002"
+                  + Ansi.RESET
+                  + "\u001B]8;;\u001B\\"),
+          line);
+    }
+
+    @Test
+    @DisplayName("should colour the same line in the light theme's colours")
+    void shouldFollowTheTheme() {
+      // given
+      ConsoleMode light =
+          new ConsoleMode(
+              ColorDepth.TRUE_COLOR, false, true, null, true, Theme.LIGHT, false, false, null);
+
+      // when
+      String line = text(light, coded("Cannot listen"));
+
+      // then
+      assertTrue(
+          line.contains(Palette.of(ColorDepth.TRUE_COLOR, Theme.LIGHT, false).open(Style.WARN)));
+      assertFalse(
+          line.contains(Palette.of(ColorDepth.TRUE_COLOR, Theme.DARK, false).open(Style.WARN)));
+    }
+  }
+
+  @Nested
   @DisplayName("a log line")
   class Lines {
 
@@ -178,7 +252,7 @@ class LineFormatterTest {
   class Highlighting {
 
     private String styled(Style style, String text) {
-      return style.open(ColorDepth.TRUE_COLOR) + text + Ansi.RESET;
+      return Palette.of(ColorDepth.TRUE_COLOR, Theme.DARK, false).open(style) + text + Ansi.RESET;
     }
 
     @Test
@@ -204,7 +278,10 @@ class LineFormatterTest {
 
       assertNotNull(line);
       assertTrue(line.contains(styled(Style.NUMBER, "3.5")));
-      assertTrue(line.contains(Style.MUTED.open(ColorDepth.TRUE_COLOR) + "/127.0.0.1:25565"));
+      assertTrue(
+          line.contains(
+              Palette.of(ColorDepth.TRUE_COLOR, Theme.DARK, false).open(Style.MUTED)
+                  + "/127.0.0.1:25565"));
     }
 
     @Test

@@ -39,6 +39,7 @@ import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.limit.Blocklist;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.limit.Refusal;
+import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.network.CidrRanges;
 
 import java.io.IOException;
@@ -289,7 +290,8 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
     try {
       detector.tick();
     } catch (RuntimeException e) {
-      logger.error("Anti-bot: the attack detector failed", e);
+      logger.error(
+          LogCode.ANTIBOT_DETECTOR_FAILED.marker(), "Anti-bot: the attack detector failed", e);
     }
   }
 
@@ -403,7 +405,11 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
       try {
         verdict = check.check(attempt);
       } catch (RuntimeException e) {
-        logger.warn("Anti-bot: a plugin's check failed for {}", attempt.name(), e);
+        logger.warn(
+            LogCode.ANTIBOT_PLUGIN_CHECK_FAILED.marker(),
+            "Anti-bot: a plugin's check failed for {}",
+            attempt.name(),
+            e);
         continue;
       }
       verdicts.add(
@@ -508,7 +514,10 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
     }
     lockdown = enabled;
     if (enabled) {
-      logger.warn("Lockdown on ({}): only players who have played here before may log in", source);
+      logger.warn(
+          LogCode.ANTIBOT_LOCKDOWN.marker(),
+          "Lockdown on ({}): only players who have played here before may log in",
+          source);
     } else {
       logger.info("Lockdown off ({})", source);
     }
@@ -741,6 +750,7 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
       unloggedAtStart = unloggedTotals();
       unloggedAtSummary = unloggedAtStart;
       logger.warn(
+          LogCode.ANTIBOT_ATTACK.marker(),
           "Bot attack detected: {} at {}{} (threshold {}). Unknown identities are no longer learned"
               + " from joins; one summary every {}. To let only known players in: /warp antibot"
               + " lockdown on",

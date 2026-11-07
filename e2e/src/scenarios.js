@@ -9,9 +9,9 @@ import { dirname, join } from 'node:path';
 import { flood } from './flood.js';
 import { FORWARDED_PLAYER, mojangUuid, offlineUuid } from './mojang.js';
 import { sha1 } from './packs.js';
-import { sleep } from './proc.js';
+import { ManagedProcess, sleep } from './proc.js';
 import { FIRST_PROTOCOL, LAST_PROTOCOL, createProfileKeys, createSigner } from './profile-keys.js';
-import { Warp } from './warp.js';
+import { WARP_FAILURES, Warp } from './warp.js';
 
 export const LOBBY_MODE = 'creative';
 export const SURVIVAL_MODE = 'adventure';
@@ -21,6 +21,9 @@ const BRANDS = { paper: /Paper/, vanilla: /vanilla/ };
 
 /** First protocol (1.20) whose servers can be made to trust the mock Mojang's key (see mojang.js). */
 export const SIGNED_CHAT = 763;
+
+/** From 1.20.5, ViaVersion withholds a player's chat session from an older server that does not enforce secure chat. */
+const CHAT_SESSION_WITHHELD = 766;
 
 /** The first protocol with transfers: 1.20.5. */
 export const TRANSFER_PROTOCOL = 766;
@@ -51,7 +54,7 @@ export const ALT_MAX_PLAYERS = 1;
  *   `paper`: the backends are Paper servers
  * @returns {Record<string, true|string>}
  */
-export function features(protocol, { direct = false, forwarding = 'none', online = false, plugin = false, bridged = false, paper = false } = {}) {
+export function features(protocol, { client = protocol, direct = false, forwarding = 'none', online = false, plugin = false, bridged = false, paper = false } = {}) {
   const proxy = direct ? 'no proxy in a control run' : true;
   return {
     proxy,
@@ -86,7 +89,14 @@ export function features(protocol, { direct = false, forwarding = 'none', online
     // Bots can sign their chat: from 1.20 a server fetches the keys that verify chat sessions from
     // the services host, which the harness mocks. Before, it only trusts Mojang's own key, bundled in
     // authlib, so no bot can open a chat session there.
-    signedChat: protocol >= SIGNED_CHAT || "before 1.20 a server trusts only Mojang's own key to verify chat",
+    // Through ViaVersion, a bot of 1.20.5 or newer keeps its chat session from a server before 1.20.5
+    // that does not enforce secure chat, as the harness's do not (Protocol1_20_3To1_20_5), and chats
+    // unsigned there.
+    signedChat: all(
+      protocol >= SIGNED_CHAT || "before 1.20 a server trusts only Mojang's own key to verify chat",
+      client < CHAT_SESSION_WITHHELD || protocol >= CHAT_SESSION_WITHHELD
+        || 'ViaVersion keeps a 1.20.5+ chat session from a server before 1.20.5 that does not enforce secure chat',
+    ),
     // Transfers arrived in 1.20.5. The bot declares the transfer intent in its own handshake, which
     // a bridge would replace with the one it opens to Warp.
     transfers: all(
@@ -96,6 +106,15 @@ export function features(protocol, { direct = false, forwarding = 'none', online
     ),
     // The drain runs on a Warp of its own, which no ViaProxy bridge leads to.
     drain: all(proxy, !bridged || 'through ViaProxy, the bridges only lead to warp and warp-alt'),
+    // So does the remote console, whose bot must log in to it to have a line to stream.
+    remoteConsole: all(proxy, !bridged || 'through ViaProxy, the bridges only lead to warp and warp-alt'),
+    // A draining Warp transfers players itself: that takes the bot's version only, whatever its
+    // server runs (`client`: the bots' protocol, newer than the backends' when Warp translates).
+    drainTransfers: all(
+      proxy,
+      client >= TRANSFER_PROTOCOL || 'no Transfer packet before 1.20.5',
+      !bridged || 'through ViaProxy, Warp sees the bridge’s handshake, not the bot’s',
+    ),
     // A backend plugin speaks the BungeeCord channel, which Warp answers: Paper loads it, vanilla
     // servers load no plugin.
     bungeeChannel: all(proxy, paper || 'vanilla servers load no plugin to speak the channel'),
@@ -1016,7 +1035,7 @@ async function drain(ctx) {
   await instance.start();
   let detail;
   try {
-    detail = has(ctx, 'transfers') ? await drainBySigterm(ctx, instance) : await drainByHttp(ctx, instance);
+    detail = has(ctx, 'drainTransfers') ? await drainBySigterm(ctx, instance) : await drainByHttp(ctx, instance);
   } finally {
     await instance.stop();
   }
@@ -1085,6 +1104,95 @@ async function drainByHttp(ctx, instance) {
   }
   await expectExit(instance, /Drain complete after .*: 0 transferred, 1 kept/);
   return 'POST /drain?wait: the player, whose client cannot be transferred, was kept until it left; then the drain answered "drained" and warp-drain exited with 0';
+}
+
+/** The remote console's tokens: at least 32 characters, as Warp requires. */
+const CONSOLE_TOKEN = `e2e-console-${'c'.repeat(32)}`;
+const CONSOLE_READER = `e2e-reader-${'r'.repeat(32)}`;
+
+/**
+ * The remote console, as an operator without a terminal uses it: a Warp of its own with the console
+ * on its management server, and `java -jar warp.jar console attach` (the same jar) attached to it
+ * through a pipe. The client must show a bot's login line as it streams by, run `/glist` typed on
+ * its standard input and show the answer; Warp must audit the command. `console run` runs one
+ * command for scripts; a read-only token is refused commands and a wrong token is refused outright.
+ */
+async function remoteConsole(ctx) {
+  const base = ctx.warp.instance;
+  const name = `warp-console-${ctx.variant.name}`;
+  const instance = new Warp({
+    ...base,
+    name,
+    dir: join(dirname(base.dir), name),
+    port: ctx.ports.drain,
+    acceptsTransfers: false,
+    jvmArgs: [],
+    management: { http: ctx.ports.drainHttp, agent: ctx.ports.drainAgent, token: DRAIN_TOKEN },
+    console: { token: CONSOLE_TOKEN, reader: CONSOLE_READER },
+    drain: null,
+  });
+  instance.prepare();
+  await instance.start();
+  const url = `http://127.0.0.1:${ctx.ports.drainHttp}`;
+  const client = consoleClient(base, instance, `${name}-client`, ['attach', '--url', url, '--replay', '0']);
+  let detail;
+  try {
+    client.start();
+    await client.waitFor(/Attached to http:\/\/127\.0\.0\.1:\d+ \(Warp .*\) as e2e, reads the log and runs commands/, 30_000);
+    const bot = await joinWarp(ctx, 'e2e_remote', { port: instance.port });
+    try {
+      await bot.waitForGameMode(LOBBY_MODE, 20_000);
+      await client.waitFor(/ INFO .*Player e2e_remote \(.*\) logged in from /, 10_000);
+      const mark = client.mark();
+      client.send('glist');
+      await client.waitFor(/^\s+1 player online/, 10_000, mark);
+      await client.waitFor(/^\s+- lobby\b.*1/, 5_000, mark);
+      await instance.process.waitFor(/Remote console: e2e \(operator "[^"]+"\) from 127\.0\.0\.1 ran "glist"/, 5_000);
+      // /log from afar: level runs on the proxy (the token runs commands), tail on the client's own console.
+      const logMark = client.mark();
+      client.send('log level antibot debug');
+      await client.waitFor(/antibot logs from debug until Warp stops/, 10_000, logMark);
+      await instance.process.waitFor(/Remote console: e2e \(operator "[^"]+"\) from 127\.0\.0\.1 ran "log level antibot debug"/, 5_000);
+      const tailMark = client.mark();
+      client.send('log tail 3');
+      await client.waitFor(/last 3 lines/, 5_000, tailMark);
+      const run = consoleClient(base, instance, `${name}-run`, ['run', '--url', url, 'glist', 'lobby']);
+      run.start();
+      const ran = await run.exited;
+      const names = run.lines.join('\n');
+      if (ran.code !== 0 || !names.includes('e2e_remote')) {
+        throw new Error(`console run glist lobby exited with ${ran.code}: ${names}`);
+      }
+      const refused = await fetch(`${url}/console/command`, { method: 'POST', headers: { Authorization: `Bearer ${CONSOLE_READER}` }, body: 'glist' });
+      if (refused.status !== 403) throw new Error(`a read-only token running a command got ${refused.status}, expected 403`);
+      const wrong = await fetch(`${url}/console/logs`, { headers: { Authorization: 'Bearer wrong' } });
+      if (wrong.status !== 401) throw new Error(`a wrong token got ${wrong.status}, expected 401`);
+      // Each refusal has its code, on the proxy's console and through the stream on the client's.
+      await instance.process.waitFor(/Remote console: refused e2e-reader .* the token lacks the commands scope\s+W-RCON-002/, 5_000);
+      await instance.process.waitFor(/Remote console: refused a wrong token from 127\.0\.0\.1 .*W-RCON-004/, 5_000);
+      await client.waitFor(/Remote console: refused e2e-reader .* the token lacks the commands scope\s+W-RCON-002/, 10_000);
+      bot.healthy();
+      detail = `console attach streamed e2e_remote's login, ran /glist (1 player, audited), /log level on the proxy and /log tail on the client; console run glist lobby listed it; a read-only token was refused commands (403, W-RCON-002, shown on the client too), a wrong token the stream (401, W-RCON-004)`;
+    } finally {
+      bot.quit();
+    }
+  } finally {
+    await client.stop({ graceMs: 5_000 });
+    await instance.stop();
+  }
+  const failures = [...instance.failures(), ...client.failures()];
+  if (failures.length) throw new Error(`${name}: ${failures[0]}`);
+  return detail;
+}
+
+/** `java -jar warp.jar console ...` from the Warp instance's own jar, its token in the environment. */
+function consoleClient(base, instance, name, args) {
+  return new ManagedProcess(name, base.java, ['-jar', join(instance.dir, 'warp.jar'), 'console', ...args], {
+    cwd: instance.dir,
+    env: { WARP_CONSOLE_TOKEN: CONSOLE_TOKEN, NO_COLOR: '1', WARP_COLOR: 'never' },
+    logFile: join(base.logDir, `${name}.log`),
+    failures: WARP_FAILURES,
+  });
 }
 
 /** Checks warp-drain's readiness probe and HAProxy agent check. */
@@ -1251,6 +1359,7 @@ export const SCENARIOS = [
   { name: 'admin-commands', run: adminCommands, requires: 'adminCommands' },
   { name: 'bungeecord', run: bungeeCord, requires: 'bungeeChannel' },
   { name: 'transfer', run: transfer, requires: 'transfers' },
+  { name: 'remote-console', run: remoteConsole, requires: 'remoteConsole' },
   { name: 'drain', run: drain, requires: 'drain' },
   { name: 'player-limit', run: playerLimit, requires: 'proxy' },
   { name: 'flood', run: (ctx) => flood(ctx, joinWarp, LOBBY_MODE), requires: 'proxy' },

@@ -40,6 +40,10 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.StateRegistry;
+import dev.warp.protocol.packet.config.AcknowledgeFinishConfiguration;
+import dev.warp.protocol.packet.config.ConfigPluginMessage;
+import dev.warp.protocol.packet.config.FinishConfiguration;
+import dev.warp.protocol.packet.login.LoginAcknowledged;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPluginMessage;
 import dev.warp.protocol.packet.play.SystemChatMessage;
@@ -639,9 +643,54 @@ class BungeeCordChannelTest {
   @DisplayName("registration with the backend")
   class Registration {
 
+    /**
+     * What a server hears from the proxy while it logs in and configures a player, once: the
+     * registration comes ahead of the acknowledgement that ends the configuration. Paper handles
+     * both on its main thread, in order, and fires PlayerJoinEvent on that acknowledgement: a
+     * plugin sending on the channel from there finds it registered. Registered after it, in PLAY,
+     * the registration only reaches the main thread after the join (Paper reads no PLAY packet
+     * before placing the player), and Bukkit drops what a plugin sends meanwhile without a word.
+     */
+    private static final List<String> CONFIGURED =
+        List.of(
+            "Login Acknowledged",
+            "minecraft:register bungeecord:main",
+            "Acknowledge Finish Configuration");
+
     @Test
-    @DisplayName("should register bungeecord:main for the client from 1.13")
+    @DisplayName(
+        "should register bungeecord:main while the server configures a joining player, before"
+            + " the configuration ends and the server fires its join event (1.20.2+)")
+    void beforeJoin() {
+      steve = harness("Steve", VERSION, ProtocolState.CONFIGURATION);
+      channels(BungeeCordSettings.DEFAULTS);
+
+      MinecraftConnection lobby = steve.login(LOBBY);
+      finishConfiguration(steve, lobby);
+
+      assertEquals(CONFIGURED, heardBy(steve, lobby));
+    }
+
+    @Test
+    @DisplayName(
+        "should register bungeecord:main with the next server while it configures the player, on"
+            + " a switch (1.20.2+)")
+    void beforeJoinOnSwitch() {
+      start(BungeeCordSettings.DEFAULTS);
+      steve.holdConnections();
+      steve.player.switchServer(SURVIVAL);
+      MinecraftConnection survival = steve.login(SURVIVAL);
+
+      ((ReconfigurationSwitch) steve.player.serverSwitch()).acknowledged(SURVIVAL);
+      finishConfiguration(steve, survival);
+
+      assertEquals(CONFIGURED, heardBy(steve, survival));
+    }
+
+    @Test
+    @DisplayName("should register bungeecord:main once the server plays, from 1.13 until 1.20.2")
     void modern() {
+      steve = harness("Steve", ProtocolVersion.MINECRAFT_1_19_4);
       start(BungeeCordSettings.DEFAULTS);
 
       PlayPluginMessage register = lobbyMessages().getFirst();
@@ -767,6 +816,12 @@ class BungeeCordChannelTest {
 
   /** Sets up the proxy's channels with {@code settings}, and Steve playing on the lobby. */
   private void start(BungeeCordSettings settings) {
+    channels(settings);
+    lobby = playOn(steve, LOBBY);
+  }
+
+  /** Sets up the proxy's channels with {@code settings}, Steve online but on no server yet. */
+  private void channels(BungeeCordSettings settings) {
     ServerLoginContext context = steve.player.loginContext();
     when(context.events()).thenReturn(bus);
     players = context.playerRegistry();
@@ -774,7 +829,6 @@ class BungeeCordChannelTest {
     channels = new ChannelRegistry(new BungeeCordChannel(settings, players, servers));
     when(context.channels()).thenReturn(channels);
     var _ = players.register(steve.player, false);
-    lobby = playOn(steve, LOBBY);
   }
 
   /** Another player, sharing Steve's proxy, playing on {@code server}. */
@@ -791,9 +845,22 @@ class BungeeCordChannelTest {
   }
 
   private SwitchHarness harness(String name, ProtocolVersion version) {
-    SwitchHarness setup = new SwitchHarness(version, List.of(), ProtocolState.PLAY, name);
+    return harness(name, version, ProtocolState.PLAY);
+  }
+
+  private SwitchHarness harness(String name, ProtocolVersion version, ProtocolState clientState) {
+    SwitchHarness setup = new SwitchHarness(version, List.of(), clientState, name);
     harnesses.add(setup);
     return setup;
+  }
+
+  /** The server ends the configuration, and the client acknowledges that it did. */
+  private static void finishConfiguration(SwitchHarness setup, MinecraftConnection backend) {
+    setup.receive(
+        backend, frame(setup.version, ProtocolState.CONFIGURATION, new FinishConfiguration()));
+    ((ClientConfigSessionHandler) Objects.requireNonNull(setup.client.sessionHandler()))
+        .handle(new AcknowledgeFinishConfiguration());
+    setup.runPendingTasks();
   }
 
   /** Puts a player in a game on a server, its server counting it. */
@@ -853,6 +920,43 @@ class BungeeCordChannelTest {
     return pluginMessages(setup, backend).stream()
         .filter(message -> BungeeCordChannel.isChannel(message.channel()))
         .toList();
+  }
+
+  /**
+   * Drains what a backend received from its login on, in order, each packet named after the state
+   * it was written in: Login Acknowledged moves on to the configuration, Acknowledge Finish
+   * Configuration to PLAY. A registration is named after the channels it registers.
+   */
+  private static List<String> heardBy(SwitchHarness setup, MinecraftConnection backend) {
+    ProtocolVersion version = setup.version;
+    ProtocolState state = ProtocolState.LOGIN;
+    List<String> heard = new ArrayList<>();
+    for (byte[] frame : setup.framesSentOn(backend)) {
+      ByteBuf buf = Unpooled.wrappedBuffer(frame);
+      VarInt.read(buf);
+      int id = VarInt.read(buf);
+      var registry = StateRegistry.get(state, PacketDirection.SERVERBOUND);
+      if (state == ProtocolState.LOGIN
+          && id == registry.packetId(version, LoginAcknowledged.class)) {
+        heard.add("Login Acknowledged");
+        state = ProtocolState.CONFIGURATION;
+      } else if (state == ProtocolState.CONFIGURATION
+          && id == registry.packetId(version, AcknowledgeFinishConfiguration.class)) {
+        heard.add("Acknowledge Finish Configuration");
+        state = ProtocolState.PLAY;
+      } else if (state == ProtocolState.CONFIGURATION
+          && id == registry.packetId(version, ConfigPluginMessage.class)) {
+        ConfigPluginMessage message = ConfigPluginMessage.CODEC.decode(buf, version);
+        heard.add(message.channel() + " " + new String(message.data(), StandardCharsets.UTF_8));
+      } else if (state == ProtocolState.PLAY
+          && id == registry.packetId(version, PlayPluginMessage.class)) {
+        PlayPluginMessage message = PlayPluginMessage.CODEC.decode(buf, version);
+        heard.add(message.channel() + " " + new String(message.data(), StandardCharsets.UTF_8));
+      } else {
+        heard.add(state + " 0x" + Integer.toHexString(id));
+      }
+    }
+    return heard;
   }
 
   /** Drains the plugin messages a backend received. */

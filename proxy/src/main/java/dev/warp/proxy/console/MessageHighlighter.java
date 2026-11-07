@@ -69,18 +69,18 @@ final class MessageHighlighter {
       String formatted,
       NameDirectory names,
       Styled out) {
-    if (!out.depth().colored()
+    if (!out.palette().colored()
         || format == null
         || parameters == null
         || parameters.length == 0
         || format.equals(formatted)) {
-      out.append(formatted);
+      out.appendLinking(null, formatted);
       return;
     }
     List<String> literals = literals(format);
     int values = Math.min(literals.size() - 1, parameters.length);
     if (values <= 0 || !split(literals, values, formatted, parameters, names, out)) {
-      out.append(formatted);
+      out.appendLinking(null, formatted);
     }
   }
 
@@ -126,11 +126,11 @@ final class MessageHighlighter {
         return false;
       }
     }
-    out.append(first);
+    out.appendLinking(null, first);
     for (int i = 0; i < values; i++) {
       String text = formatted.substring(starts[i], ends[i]);
-      out.append(classify(parameters[i], text, names), text);
-      out.append(i == values - 1 ? last : literals.get(i + 1));
+      out.appendLinking(classify(parameters[i], text, names), text);
+      out.appendLinking(null, i == values - 1 ? last : literals.get(i + 1));
     }
     return true;
   }

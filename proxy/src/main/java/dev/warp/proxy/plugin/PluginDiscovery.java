@@ -19,6 +19,7 @@ package dev.warp.proxy.plugin;
 import dev.warp.api.plugin.Capability;
 import dev.warp.api.plugin.PluginDependency;
 import dev.warp.api.plugin.PluginDescription;
+import dev.warp.proxy.logging.LogCode;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -83,7 +84,11 @@ final class PluginDiscovery {
                 .toList();
       }
     } catch (IOException e) {
-      logger.error("Cannot list the plugins directory {}: {}", directory, e.getMessage());
+      logger.error(
+          LogCode.PLUGINS_DIRECTORY_UNLISTABLE.marker(),
+          "Cannot list the plugins directory {}: {}",
+          directory,
+          e.getMessage());
       return List.of();
     }
 
@@ -99,6 +104,7 @@ final class PluginDiscovery {
     for (var entry : byId.entrySet()) {
       if (entry.getValue().size() > 1) {
         logger.error(
+            LogCode.PLUGIN_ID_DUPLICATE.marker(),
             "Plugin id '{}' is declared by several jars, none of them is loaded: {}. Keep only"
                 + " one.",
             entry.getKey(),
@@ -121,7 +127,12 @@ final class PluginDiscovery {
     try (ZipFile zip = new ZipFile(jar.toFile())) {
       ZipEntry descriptor = zip.getEntry(DESCRIPTOR);
       if (descriptor == null) {
-        logger.error("{} is not a Warp plugin: it has no {}{}", name, DESCRIPTOR, hint(zip));
+        logger.error(
+            LogCode.PLUGIN_NOT_A_PLUGIN.marker(),
+            "{} is not a Warp plugin: it has no {}{}",
+            name,
+            DESCRIPTOR,
+            hint(zip));
         return null;
       }
       try (InputStream in = zip.getInputStream(descriptor);
@@ -129,9 +140,18 @@ final class PluginDiscovery {
         return new PluginCandidate(jar, parse(JsonParser.parseReader(reader)));
       }
     } catch (IOException e) {
-      logger.error("Cannot read plugin jar {}: {}", name, e.getMessage());
+      logger.error(
+          LogCode.PLUGIN_JAR_UNREADABLE.marker(),
+          "Cannot read plugin jar {}: {}",
+          name,
+          e.getMessage());
     } catch (JsonParseException | IllegalArgumentException | IllegalStateException e) {
-      logger.error("Invalid {} in {}: {}", DESCRIPTOR, name, e.getMessage());
+      logger.error(
+          LogCode.PLUGIN_DESCRIPTOR_INVALID.marker(),
+          "Invalid {} in {}: {}",
+          DESCRIPTOR,
+          name,
+          e.getMessage());
     }
     return null;
   }

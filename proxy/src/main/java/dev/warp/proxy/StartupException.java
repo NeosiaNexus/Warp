@@ -16,6 +16,8 @@
  */
 package dev.warp.proxy;
 
+import dev.warp.proxy.logging.LogCode;
+
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -51,17 +53,20 @@ public final class StartupException extends RuntimeException {
   public static final int IO_ERROR = 74;
 
   private final int exitCode;
+  private final LogCode code;
 
   /**
    * Creates the exception.
    *
    * @param exitCode the process's exit code
+   * @param code the code of the error, which links to its documentation
    * @param message what happened and what to do, for the operator
    * @param cause the underlying error, or {@code null}
    */
-  public StartupException(int exitCode, String message, @Nullable Throwable cause) {
+  public StartupException(int exitCode, LogCode code, String message, @Nullable Throwable cause) {
     super(message, cause);
     this.exitCode = exitCode;
+    this.code = code;
   }
 
   /**
@@ -71,6 +76,15 @@ public final class StartupException extends RuntimeException {
    */
   public int exitCode() {
     return exitCode;
+  }
+
+  /**
+   * Returns the code of the error, which the log shows with a link to its documentation.
+   *
+   * @return the code
+   */
+  public LogCode code() {
+    return code;
   }
 
   // ---------------------------------------------------------------------------
@@ -89,6 +103,7 @@ public final class StartupException extends RuntimeException {
     if (address.isUnresolved()) {
       throw new StartupException(
           CONFIGURATION,
+          LogCode.LISTEN_ADDRESS_UNRESOLVED,
           "Cannot listen on "
               + describe(address)
               + ": the host name does not resolve. Fix "
@@ -116,7 +131,9 @@ public final class StartupException extends RuntimeException {
     String why = String.valueOf(cause.getMessage()).toLowerCase(Locale.ROOT);
     String where = describe(address);
     String message;
+    LogCode code;
     if (why.contains("in use")) {
+      code = LogCode.PORT_IN_USE;
       message =
           "Cannot listen on "
               + where
@@ -127,6 +144,7 @@ public final class StartupException extends RuntimeException {
               + key
               + " in warp.conf";
     } else if (why.contains("permission denied") || why.contains("access")) {
+      code = LogCode.PORT_PERMISSION_DENIED;
       message =
           "Cannot listen on "
               + where
@@ -135,6 +153,7 @@ public final class StartupException extends RuntimeException {
               + key
               + " in warp.conf (25565 is Minecraft's), and forward the low port to it if needed";
     } else if (why.contains("assign") || why.contains("not available")) {
+      code = LogCode.ADDRESS_NOT_LOCAL;
       message =
           "Cannot listen on "
               + where
@@ -144,6 +163,7 @@ public final class StartupException extends RuntimeException {
               + key
               + " in warp.conf, or 0.0.0.0 to listen on all of them";
     } else {
+      code = LogCode.CANNOT_LISTEN;
       message =
           "Cannot listen on "
               + where
@@ -153,7 +173,7 @@ public final class StartupException extends RuntimeException {
               + key
               + " in warp.conf";
     }
-    return new StartupException(UNAVAILABLE, message, cause);
+    return new StartupException(UNAVAILABLE, code, message, cause);
   }
 
   /**
@@ -169,6 +189,7 @@ public final class StartupException extends RuntimeException {
     if (Files.exists(absolute) && !Files.isDirectory(absolute)) {
       throw new StartupException(
           IO_ERROR,
+          LogCode.PLUGINS_DIRECTORY_UNREADABLE,
           "Cannot read the "
               + what
               + " directory "
@@ -184,6 +205,7 @@ public final class StartupException extends RuntimeException {
     } catch (AccessDeniedException e) {
       throw new StartupException(
           IO_ERROR,
+          LogCode.PLUGINS_DIRECTORY_UNREADABLE,
           "Cannot read the "
               + what
               + " directory "
@@ -194,7 +216,10 @@ public final class StartupException extends RuntimeException {
           e);
     } catch (IOException e) {
       throw new StartupException(
-          IO_ERROR, "Cannot read the " + what + " directory " + absolute + " (" + e + ")", e);
+          IO_ERROR,
+          LogCode.PLUGINS_DIRECTORY_UNREADABLE,
+          "Cannot read the " + what + " directory " + absolute + " (" + e + ")",
+          e);
     }
   }
 

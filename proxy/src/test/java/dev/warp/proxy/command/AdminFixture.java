@@ -313,6 +313,19 @@ final class AdminFixture {
       this.refusal = refusal;
     }
 
+    /** What /warp startup shows, or {@code null} for no timings. */
+    private volatile dev.warp.proxy.console.@Nullable StartupTimings startup;
+
+    /** Sets what /warp startup shows. */
+    void startup(dev.warp.proxy.console.StartupTimings timings) {
+      this.startup = timings;
+    }
+
+    @Override
+    public dev.warp.proxy.console.@Nullable StartupTimings startup() {
+      return startup;
+    }
+
     @Override
     public Duration uptime() {
       return Duration.ofHours(27).plusMinutes(5);

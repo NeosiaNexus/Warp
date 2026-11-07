@@ -59,6 +59,7 @@ import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
 import dev.warp.protocol.packet.play.TabListHeaderFooter;
 import dev.warp.protocol.packet.play.Transfer;
+import dev.warp.proxy.logging.LogCode;
 
 import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
@@ -117,7 +118,9 @@ final class ClientPlaySessionHandler implements SessionHandler {
     }
     if (!(packet instanceof PlayPacket playPacket)) {
       logger.warn(
-          "Unexpected packet in client PLAY handler: {}", packet.getClass().getSimpleName());
+          LogCode.CLIENT_UNEXPECTED_PACKET.marker(),
+          "Unexpected packet in client PLAY handler: {}",
+          packet.getClass().getSimpleName());
       return;
     }
 
@@ -283,9 +286,10 @@ final class ClientPlaySessionHandler implements SessionHandler {
               if (!backendConn.channel().isActive()) {
                 return;
               }
-              backendConn.writeAndFlush(new AcknowledgeConfiguration());
-              backendConn.setState(ProtocolState.CONFIGURATION);
-              backendConn.setSessionHandler(new BackendConfigSessionHandler(player, backendConn));
+              backendConn.acknowledgeStateChange(
+                  new AcknowledgeConfiguration(),
+                  ProtocolState.CONFIGURATION,
+                  new BackendConfigSessionHandler(player, backendConn));
             });
   }
 

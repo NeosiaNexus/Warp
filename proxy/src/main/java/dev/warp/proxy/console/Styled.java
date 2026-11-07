@@ -26,22 +26,22 @@ import org.jspecify.annotations.Nullable;
 final class Styled {
 
   private final StringBuilder out;
-  private final ColorDepth depth;
+  private final Palette palette;
   private final Glyphs glyphs;
 
   /**
    * Creates a builder.
    *
-   * @param depth the colours of the output
+   * @param palette the colours and links of the output
    * @param glyphs the symbols the output can show
    */
-  Styled(ColorDepth depth, Glyphs glyphs) {
-    this(new StringBuilder(128), depth, glyphs);
+  Styled(Palette palette, Glyphs glyphs) {
+    this(new StringBuilder(128), palette, glyphs);
   }
 
-  private Styled(StringBuilder out, ColorDepth depth, Glyphs glyphs) {
+  private Styled(StringBuilder out, Palette palette, Glyphs glyphs) {
     this.out = out;
-    this.depth = depth;
+    this.palette = palette;
     this.glyphs = glyphs;
   }
 
@@ -53,10 +53,10 @@ final class Styled {
    * @return this builder
    */
   Styled append(@Nullable Style style, CharSequence text) {
-    if (style == null || !depth.colored() || text.isEmpty()) {
+    if (style == null || !palette.colored() || text.isEmpty()) {
       out.append(text);
     } else {
-      out.append(style.open(depth)).append(text).append(Ansi.RESET);
+      out.append(palette.open(style)).append(text).append(Ansi.RESET);
     }
     return this;
   }
@@ -94,9 +94,52 @@ final class Styled {
     return this;
   }
 
+  /**
+   * Appends text in a style that opens a link when clicked, on an output that shows links (OSC 8);
+   * elsewhere the text alone, so that nothing changes for an output that would print the sequence.
+   *
+   * @param uri where the link goes
+   * @param style the style, or {@code null} for the terminal's default
+   * @param text the text
+   * @return this builder
+   */
+  Styled link(String uri, @Nullable Style style, CharSequence text) {
+    if (!palette.hyperlinks() || text.isEmpty()) {
+      return append(style, text);
+    }
+    out.append(Hyperlinks.open(uri));
+    append(style, text);
+    out.append(Hyperlinks.CLOSE);
+    return this;
+  }
+
+  /**
+   * Appends text in a style, its URLs and file paths as links on an output that shows them.
+   *
+   * @param style the style, or {@code null} for the terminal's default
+   * @param text the text
+   * @return this builder
+   */
+  Styled appendLinking(@Nullable Style style, String text) {
+    if (palette.hyperlinks()) {
+      Hyperlinks.split(
+          text,
+          (piece, uri) -> {
+            if (uri == null) {
+              append(style, piece);
+            } else {
+              link(uri, style, piece);
+            }
+          });
+    } else {
+      append(style, text);
+    }
+    return this;
+  }
+
   /** Returns the colours of the output. */
-  ColorDepth depth() {
-    return depth;
+  Palette palette() {
+    return palette;
   }
 
   /** Returns the symbols the output can show. */

@@ -6,9 +6,10 @@
         <!--
           The log file: always plain text. Escape sequences and control characters (but tab and line
           feed) are removed from messages, so that neither a coloured message nor a forged one (a
-          name with a carriage return, say) reaches the file as such.
+          name with a carriage return, say) reaches the file as such. A warning or error of Warp
+          ends with its code, such as [W-CFG-001], documented in docs/errors.md.
         -->
-        <Property name="log.pattern">%d{yyyy-MM-dd HH:mm:ss.SSS} [%t] %-5level %logger{36} - %replace{%msg}{\x1B(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(\x07|\x1B\\)|[@-Z\\-_])|[\x00-\x08\x0B-\x1F\x7F-\x9F]}{}%n</Property>
+        <Property name="log.pattern">%d{yyyy-MM-dd HH:mm:ss.SSS} [%t] %-5level %logger{36} - %replace{%msg}{\x1B(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(\x07|\x1B\\)|[@-Z\\-_])|[\x00-\x08\x0B-\x1F\x7F-\x9F]}{}%notEmpty{ [%replace{%markerSimpleName}{^(?!W-[A-Z]+-[0-9][0-9][0-9]$).*}{}]}%n</Property>
     </Properties>
 
     <Appenders>
@@ -19,7 +20,7 @@
         -->
         <Select>
             <SystemPropertyArbiter propertyName="warp.log.format" propertyValue="json">
-                <!-- One JSON object per line: timestamp, level, logger, thread, message, exception, context. -->
+                <!-- One JSON object per line: timestamp, level, logger, thread, message, exception, marker (a code such as W-CFG-001), context. -->
                 <Console name="Console" target="SYSTEM_OUT">
                     <JsonTemplateLayout eventTemplateUri="classpath:warp-log-layout.json"/>
                 </Console>

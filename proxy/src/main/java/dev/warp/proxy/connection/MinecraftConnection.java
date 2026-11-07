@@ -32,6 +32,7 @@ import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.proxy.compression.Compression;
 import dev.warp.proxy.limit.Refusal;
+import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.pipeline.PipelineHost;
 
 import java.io.IOException;
@@ -138,6 +139,12 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
   private final Queue<Held> heldUntilStateChange = new ArrayDeque<>();
 
   /**
+   * What the peer answered while {@link #acknowledgeStateChange} wrote its acknowledgement, kept
+   * for the session handler of the new state; {@code null} outside that write.
+   */
+  private @Nullable Queue<Object> answeredDuringAcknowledgement;
+
+  /**
    * Watches a client connection until its client is logged in; {@code null} afterwards, and for a
    * backend connection.
    */
@@ -189,6 +196,17 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
 
   @Override
   public void channelRead(ChannelHandlerContext ctx, Object msg) {
+    Queue<Object> answered = answeredDuringAcknowledgement;
+    if (answered != null) {
+      // Read during the write of an acknowledgement: for the next state's session handler.
+      answered.add(msg);
+      return;
+    }
+    dispatch(msg);
+  }
+
+  /** Hands a decoded packet or an uninspected frame to the session handler. */
+  private void dispatch(Object msg) {
     if (sessionHandler == null) {
       // No handler installed — release to prevent leaks.
       ReferenceCountUtil.release(msg);
@@ -228,6 +246,10 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
         held.promise().tryFailure(new ClosedChannelException());
       }
     }
+    Queue<Object> answered = answeredDuringAcknowledgement;
+    if (answered != null) {
+      releaseAll(answered);
+    }
     if (sessionHandler != null) {
       sessionHandler.disconnected();
     }
@@ -266,6 +288,7 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
       } else {
         // Everything else is logged in full, naming the plugin handlers it may come from.
         logger.error(
+            LogCode.PIPELINE_EXCEPTION.marker(),
             "Exception in pipeline for {}{}",
             remoteAddress(),
             describePluginHandlers(ctx.pipeline().names()),
@@ -486,6 +509,64 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
     return stateChangePending;
   }
 
+  /**
+   * Acknowledges the state change the peer announced (Login Success from 1.20.2, Finish
+   * Configuration, Start Configuration), then moves this connection to {@code state} under {@code
+   * handler}. Must be called on the event loop.
+   *
+   * <p>The acknowledgement is encoded in the state the peer leaves, and what the proxy writes after
+   * it (from {@code handler}'s activation on) in {@code state}. The peer answers in {@code state},
+   * and an answer may come back before the write returns: a plugin handler that plays the peer in
+   * this pipeline, as ViaVersion does for a backend older than 1.20.2, takes the acknowledgement
+   * and passes up, during the write, the packets it held for it (Join Game and the rest of the play
+   * packets once the configuration it emulates is over). So the decoder reads the new state before
+   * the write, and what it reads during the write waits for {@code handler}, which gets it in order
+   * once active. A server only answers once it reads the acknowledgement: for it, nothing changes.
+   *
+   * @param acknowledgement the packet that confirms the change to the peer
+   * @param state the state both directions move to
+   * @param handler the session handler of that state
+   */
+  public void acknowledgeStateChange(
+      Packet acknowledgement, ProtocolState state, SessionHandler handler) {
+    decoder().setState(state);
+    updateFrameLimits();
+    Queue<Object> answered = new ArrayDeque<>();
+    answeredDuringAcknowledgement = answered;
+    try {
+      writeAndFlush(acknowledgement);
+    } finally {
+      answeredDuringAcknowledgement = null;
+    }
+    encoder().setState(state);
+    if (stateChangePending) {
+      releaseHeldPackets();
+    }
+    setSessionHandler(handler);
+    if (answered.isEmpty()) {
+      return;
+    }
+    for (Object msg = answered.poll(); msg != null; msg = answered.poll()) {
+      if (!channel.isActive()) {
+        ReferenceCountUtil.release(msg);
+        releaseAll(answered);
+        return;
+      }
+      dispatch(msg);
+    }
+    // The end of a read, as Netty would signal it: what the handler forwarded goes out now.
+    SessionHandler reading = sessionHandler;
+    if (reading != null) {
+      reading.readComplete();
+    }
+  }
+
+  private static void releaseAll(Queue<Object> messages) {
+    for (Object msg = messages.poll(); msg != null; msg = messages.poll()) {
+      ReferenceCountUtil.release(msg);
+    }
+  }
+
   private void releaseHeldPackets() {
     stateChangePending = false;
     MinecraftEncoder enc = encoder();
@@ -497,6 +578,7 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
         var _ = channel.writeAndFlush(packet, held.promise());
       } else {
         logger.warn(
+            LogCode.HELD_PACKET_DROPPED.marker(),
             "Dropped {} held for {}: it does not exist in {}",
             packet.getClass().getSimpleName(),
             channel.remoteAddress(),

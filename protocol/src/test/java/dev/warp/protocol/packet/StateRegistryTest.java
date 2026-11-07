@@ -36,6 +36,7 @@ import dev.warp.protocol.packet.config.AcknowledgeFinishConfiguration;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.config.ConfigPacket;
+import dev.warp.protocol.packet.config.ConfigPluginMessage;
 import dev.warp.protocol.packet.config.FinishConfiguration;
 import dev.warp.protocol.packet.cookie.CookiePacket;
 import dev.warp.protocol.packet.cookie.CookieRequest;
@@ -187,6 +188,8 @@ class StateRegistryTest {
                 AcknowledgeFinishConfiguration.class,
                 "minecraft:finish_configuration"),
             new PacketName(CONFIGURATION, SERVERBOUND, KeepAlive.class, "minecraft:keep_alive"),
+            new PacketName(
+                CONFIGURATION, SERVERBOUND, ConfigPluginMessage.class, "minecraft:custom_payload"),
             new PacketName(
                 CONFIGURATION, CLIENTBOUND, ConfigDisconnect.class, "minecraft:disconnect"),
             new PacketName(
@@ -398,6 +401,7 @@ class StateRegistryTest {
                 AcknowledgeFinishConfiguration.class,
                 "finish_configuration"),
             new PacketName(CONFIGURATION, SERVERBOUND, KeepAlive.class, "keep_alive"),
+            new PacketName(CONFIGURATION, SERVERBOUND, ConfigPluginMessage.class, "custom_payload"),
             new PacketName(CONFIGURATION, CLIENTBOUND, ConfigDisconnect.class, "disconnect"),
             new PacketName(
                 CONFIGURATION, CLIENTBOUND, FinishConfiguration.class, "finish_configuration"),

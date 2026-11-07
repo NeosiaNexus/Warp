@@ -26,6 +26,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -224,6 +226,151 @@ class ConsoleModeTest {
   void unicode() {
     assertTrue(ConsoleMode.detect(_ -> null, true, StandardCharsets.UTF_8).unicode());
     assertFalse(ConsoleMode.detect(_ -> null, true, StandardCharsets.US_ASCII).unicode());
+  }
+
+  @Test
+  @DisplayName("has no warning when every setting is understood, the new ones included")
+  void noWarningForNewSettings() {
+    assertNull(detect(true, "WARP_THEME", "light", "WARP_HYPERLINKS", "never").warning());
+  }
+
+  @Nested
+  @DisplayName("the theme")
+  class Themes {
+
+    @Test
+    @DisplayName("is dark by default, and asks the terminal when it is interactive")
+    void darkByDefault() {
+      // given an interactive terminal that says nothing of its background
+      ConsoleMode mode = detect(true, "TERM", "xterm-256color");
+
+      // when
+      Theme theme = mode.theme();
+
+      // then
+      assertEquals(Theme.DARK, theme);
+      assertTrue(mode.probeBackground());
+    }
+
+    @Test
+    @DisplayName("renders a reply in its colours, readable on its background, or as plain text")
+    void rendersReplies() {
+      // given: aqua, as Minecraft's chat has it, washed out on a white terminal
+      ConsoleMode light = detect(false, "WARP_COLOR", "truecolor", "WARP_THEME", "light");
+      Component reply = Component.text("ready", NamedTextColor.AQUA);
+
+      // when
+      String colored = light.render(reply);
+      String plain = ConsoleMode.PLAIN.render(reply);
+
+      // then
+      assertEquals("ready", plain);
+      assertTrue(colored.contains("ready") && colored.contains("\u001B["), colored);
+      assertFalse(colored.contains("38;2;85;255;255"), colored);
+    }
+
+    @Test
+    @DisplayName("follows COLORFGBG, without asking the terminal")
+    void followsColorFgBg() {
+      // given
+      ConsoleMode light = detect(true, "TERM", "xterm", "COLORFGBG", "0;15");
+      ConsoleMode dark = detect(true, "TERM", "xterm", "COLORFGBG", "15;default;0");
+
+      // then
+      assertEquals(Theme.LIGHT, light.theme());
+      assertFalse(light.probeBackground());
+      assertEquals(Theme.DARK, dark.theme());
+    }
+
+    @Test
+    @DisplayName("is what WARP_THEME says, colour-blind on the background found")
+    void followsWarpTheme() {
+      assertEquals(Theme.LIGHT, detect(true, "TERM", "xterm", "WARP_THEME", "light").theme());
+      assertFalse(detect(true, "TERM", "xterm", "WARP_THEME", "dark").probeBackground());
+      assertEquals(
+          Theme.COLORBLIND_LIGHT,
+          detect(true, "TERM", "xterm", "WARP_THEME", "colorblind", "COLORFGBG", "0;7").theme());
+    }
+
+    @Test
+    @DisplayName("takes the terminal's answer, keeping colour blindness")
+    void takesTheAnswer() {
+      // given
+      ConsoleMode mode = detect(true, "TERM", "xterm", "WARP_THEME", "colorblind");
+
+      // when
+      ConsoleMode settled = mode.withBackground(true);
+
+      // then
+      assertEquals(Theme.COLORBLIND_LIGHT, settled.theme());
+      assertFalse(settled.probeBackground());
+    }
+
+    @Test
+    @DisplayName("warns about an unknown theme and uses auto")
+    void warnsAboutUnknownThemes() {
+      // given
+      ConsoleMode mode = detect(true, "TERM", "xterm", "WARP_THEME", "solarized");
+
+      // then
+      assertEquals(Theme.DARK, mode.theme());
+      assertNotNull(mode.warning());
+      assertTrue(mode.warning().contains("WARP_THEME=solarized"));
+    }
+
+    @Test
+    @DisplayName("never asks a pipe, which cannot answer")
+    void neverAsksAPipe() {
+      assertFalse(detect(false, "TERM", "xterm", "WARP_COLOR", "always").probeBackground());
+    }
+  }
+
+  @Nested
+  @DisplayName("links")
+  class Links {
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(
+        strings = {
+          "WT_SESSION=1",
+          "TERM_PROGRAM=iTerm.app",
+          "TERM_PROGRAM=WezTerm",
+          "TERM_PROGRAM=vscode",
+          "VTE_VERSION=7200",
+          "KITTY_WINDOW_ID=1",
+          "KONSOLE_VERSION=230804"
+        })
+    @DisplayName("are on in terminals known to show them")
+    void onInKnownTerminals(String variable) {
+      // given
+      String[] pair = variable.split("=", 2);
+
+      // when
+      ConsoleMode mode = detect(true, "TERM", "xterm-256color", pair[0], pair[1]);
+
+      // then
+      assertTrue(mode.hyperlinks(), variable);
+    }
+
+    @Test
+    @DisplayName("are off in an unknown terminal, an old VTE, tmux, screen, a panel and a pipe")
+    void offElsewhere() {
+      assertFalse(detect(true, "TERM", "xterm").hyperlinks());
+      assertFalse(detect(true, "TERM", "xterm", "VTE_VERSION", "4600").hyperlinks());
+      assertFalse(detect(true, "TERM", "tmux-256color", "TERM_PROGRAM", "iTerm.app").hyperlinks());
+      assertFalse(detect(true, "TERM", "xterm", "WT_SESSION", "1", "TMUX", "/tmp/t").hyperlinks());
+      assertFalse(detect(true, "TERM", "screen", "WT_SESSION", "1").hyperlinks());
+      assertFalse(detect(true, "P_SERVER_UUID", "x", "WT_SESSION", "1").hyperlinks());
+      assertFalse(detect(false, "WT_SESSION", "1", "WARP_COLOR", "always").hyperlinks());
+    }
+
+    @Test
+    @DisplayName("follow WARP_HYPERLINKS, but never without colours")
+    void followTheVariable() {
+      assertTrue(detect(true, "TERM", "xterm", "WARP_HYPERLINKS", "always").hyperlinks());
+      assertFalse(detect(true, "WT_SESSION", "1", "WARP_HYPERLINKS", "never").hyperlinks());
+      assertFalse(detect(true, "WARP_HYPERLINKS", "always", "WARP_COLOR", "never").hyperlinks());
+    }
   }
 
   @Test

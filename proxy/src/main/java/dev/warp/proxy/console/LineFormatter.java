@@ -16,12 +16,17 @@
  */
 package dev.warp.proxy.console;
 
+import dev.warp.proxy.logging.LogCode;
+
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.zone.ZoneRules;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Function;
 
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.TextColor;
 import net.kyori.adventure.text.serializer.ansi.ANSIComponentSerializer;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.apache.logging.log4j.Level;
@@ -58,7 +63,7 @@ final class LineFormatter {
   /** Indentation of command replies and stack traces. */
   private static final String INDENT = "  ";
 
-  private final ColorDepth depth;
+  private final Palette palette;
   private final Glyphs glyphs;
   private final boolean echoed;
   private final ZoneRules zone;
@@ -79,15 +84,16 @@ final class LineFormatter {
    * @param zone the time zone of the times shown
    */
   LineFormatter(ConsoleMode mode, ZoneId zone) {
-    this.depth = mode.colors();
+    this.palette = mode.palette();
     this.glyphs = Glyphs.of(mode.unicode());
     // A terminal (the line discipline, or JLine) already shows what is typed at it.
     this.echoed = mode.tty() || mode.interactive();
     this.zone = zone.getRules();
-    if (depth.colored()) {
+    if (palette.colored()) {
       ANSIComponentSerializer ansi =
-          ANSIComponentSerializer.builder().colorLevel(depth.adventureLevel()).build();
-      this.components = ansi::serialize;
+          ANSIComponentSerializer.builder().colorLevel(palette.depth().adventureLevel()).build();
+      Theme theme = palette.theme();
+      this.components = component -> ansi.serialize(readable(component, theme));
     } else {
       this.components = PlainTextComponentSerializer.plainText()::serialize;
     }
@@ -107,7 +113,7 @@ final class LineFormatter {
     Message message = event.getMessage();
     Level level = event.getLevel();
     if (message instanceof ConsoleBlock block) {
-      return new ConsoleLine(level, block.render(depth, glyphs), null);
+      return new ConsoleLine(level, block.render(palette, glyphs), null);
     }
     if (message instanceof ComponentMessage component) {
       String text = INDENT + components.apply(component.component()).replace("\n", "\n" + INDENT);
@@ -120,7 +126,7 @@ final class LineFormatter {
       return null;
     }
 
-    Styled out = new Styled(depth, glyphs);
+    Styled out = new Styled(palette, glyphs);
     String time = time(event.getInstant().getEpochSecond());
     long day = second.epochDay();
     if (day != lastDay) {
@@ -140,21 +146,64 @@ final class LineFormatter {
 
     String formatted = message == null ? "" : message.getFormattedMessage();
     String clean = Ansi.clean(formatted == null ? "" : formatted);
-    Styled text = new Styled(depth, glyphs);
+    Styled text = new Styled(palette, glyphs);
     if (message != null && clean.equals(formatted)) {
       MessageHighlighter.append(message.getFormat(), message.getParameters(), clean, names, text);
     } else {
-      text.append(clean);
+      text.appendLinking(null, clean);
     }
     String rendered = text.toString();
+    LogCode code = marker == null ? null : LogCode.byId(marker.getName());
+    if (code != null) {
+      // At the end of the first line, out of the way: dimmed, a link to its documentation.
+      String suffix =
+          new Styled(palette, glyphs)
+              .append("  ")
+              .link(code.documentation(), Style.MUTED, code.id())
+              .toString();
+      int newline = rendered.indexOf('\n');
+      rendered =
+          newline < 0
+              ? rendered + suffix
+              : rendered.substring(0, newline) + suffix + rendered.substring(newline);
+    }
     out.append(rendered.indexOf('\n') < 0 ? rendered : rendered.replace("\n", CONTINUATION));
 
     Throwable thrown = event.getThrown();
     if (thrown != null) {
-      ThrowableRenderer.append(thrown, INDENT, depth.colored(), out);
+      ThrowableRenderer.append(thrown, INDENT, palette.colored(), out);
     }
     String line = out.toString();
-    return new ConsoleLine(level, line, start == 0 ? line.substring(body) : null);
+    return new ConsoleLine(level, line, start == 0 ? line.substring(body) : null, tag);
+  }
+
+  /**
+   * Returns a component whose colours read on the theme's background: command replies and plugins'
+   * messages are coloured for Minecraft's dark chat (aqua, green, dark grey), which a light
+   * terminal would wash out and a dark one would hide.
+   *
+   * @param component the component
+   * @param theme the console's theme
+   * @return the component, its colours adjusted where they needed to be
+   */
+  static Component readable(Component component, Theme theme) {
+    TextColor color = component.color();
+    Component result = component;
+    if (color != null) {
+      int adjusted = theme.readable(color.value());
+      if (adjusted != color.value()) {
+        result = result.color(TextColor.color(adjusted));
+      }
+    }
+    List<Component> children = component.children();
+    if (!children.isEmpty()) {
+      List<Component> adapted = new ArrayList<>(children.size());
+      for (Component child : children) {
+        adapted.add(readable(child, theme));
+      }
+      result = result.children(adapted);
+    }
+    return result;
   }
 
   /** {@code ERROR}, {@code WARN }, {@code INFO }...: five columns whatever the level. */

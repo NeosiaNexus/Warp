@@ -24,6 +24,7 @@ import dev.warp.api.network.PipelineInitializer;
 import dev.warp.api.player.InboundConnection;
 import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
+import dev.warp.proxy.logging.LogCode;
 
 import java.net.InetSocketAddress;
 import java.util.List;
@@ -172,7 +173,11 @@ public final class PipelineRegistry {
         initializerOf(registration).initialize(pipeline);
       } catch (Exception | LinkageError e) {
         logger.error(
-            "Plugin {} failed to set up the {}: closing it", registration.plugin(), description, e);
+            LogCode.PIPELINE_SETUP_FAILED.marker(),
+            "Plugin {} failed to set up the {}: closing it",
+            registration.plugin(),
+            description,
+            e);
         var _ = host.channel().close();
         return false;
       } finally {
@@ -196,6 +201,7 @@ public final class PipelineRegistry {
   private void report(String plugin, ProtectedHandlers.Violation violation, String description) {
     if (reportedPlugins.add(plugin)) {
       logger.error(
+          LogCode.PIPELINE_TAMPERED.marker(),
           "Plugin {} {} on the {}: closing it. A plugin may add handlers to a pipeline, never"
               + " remove, replace or move the proxy's or another plugin's; each of its connections"
               + " is closed until it is fixed (reported once)",

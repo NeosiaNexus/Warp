@@ -19,7 +19,7 @@ import { findJava } from './java.js';
 import { buildProbePlugin } from './probe-plugin.js';
 import { startMockMojang } from './mojang.js';
 import { Netem } from './netem.js';
-import { startPackServer } from './packs.js';
+import { packsSeenBy, startPackServer } from './packs.js';
 import { killAll, run, sleep } from './proc.js';
 import { signerPem } from './profile-keys.js';
 import { ALT_MAX_PLAYERS, SCENARIOS, STATUS_MOTD, features, startKeepAlive } from './scenarios.js';
@@ -367,6 +367,7 @@ async function runVariant({ matrix, entry, clientEntry, survivalEntry, viaJar, v
     direct: opts.direct,
     // What both sides support: a translated bot cannot use what its server lacks, nor the reverse.
     features: features(Math.min(entry.protocol, bots.protocol, survivalEntry?.protocol ?? entry.protocol), {
+      client: bots.protocol,
       direct: opts.direct,
       forwarding: variant.forwarding,
       online: variant.online,
@@ -380,7 +381,7 @@ async function runVariant({ matrix, entry, clientEntry, survivalEntry, viaJar, v
     ports,
     lobby: backends.lobby,
     survival: backends.survival,
-    packs,
+    packs: packsSeenBy(packs, bots.protocol, { lobby: entry.protocol, survival: (survivalEntry ?? entry).protocol }),
     mojang,
     bots: Number(opts.bots),
     // --soak: its duration, where it writes its time series, and the report it leaves for the summary.

@@ -40,7 +40,10 @@ public final class ConsoleBlock implements Message {
 
   /** A piece of a line: text in a style, or a symbol picked by the output's {@link Glyphs}. */
   record Segment(
-      @Nullable Style style, @Nullable String text, @Nullable Function<Glyphs, String> glyph) {
+      @Nullable Style style,
+      @Nullable String text,
+      @Nullable Function<Glyphs, String> glyph,
+      @Nullable String uri) {
 
     String text(Glyphs glyphs) {
       Function<Glyphs, String> symbol = glyph;
@@ -49,11 +52,11 @@ public final class ConsoleBlock implements Message {
     }
   }
 
-  private ConsoleBlock(String title, List<List<Segment>> lines) {
+  private ConsoleBlock(String title, List<List<Segment>> lines, boolean titleOnly) {
     this.title = title;
     this.lines = lines;
     StringBuilder text = new StringBuilder(title);
-    for (List<Segment> line : lines) {
+    for (List<Segment> line : titleOnly ? List.<List<Segment>>of() : lines) {
       text.append('\n');
       int start = text.length();
       for (Segment segment : line) {
@@ -83,12 +86,12 @@ public final class ConsoleBlock implements Message {
   /**
    * Renders the block for the console.
    *
-   * @param depth the colours of the output
+   * @param palette the colours and links of the output
    * @param glyphs the symbols the output can show
    * @return the lines, separated by line feeds
    */
-  String render(ColorDepth depth, Glyphs glyphs) {
-    Styled out = new Styled(depth, glyphs);
+  String render(Palette palette, Glyphs glyphs) {
+    Styled out = new Styled(palette, glyphs);
     boolean first = true;
     for (List<Segment> line : lines) {
       if (!first) {
@@ -96,7 +99,12 @@ public final class ConsoleBlock implements Message {
       }
       first = false;
       for (Segment segment : line) {
-        out.append(segment.style(), segment.text(glyphs));
+        String uri = segment.uri();
+        if (uri == null) {
+          out.append(segment.style(), segment.text(glyphs));
+        } else {
+          out.link(uri, segment.style(), segment.text(glyphs));
+        }
       }
     }
     return out.toString();
@@ -134,6 +142,7 @@ public final class ConsoleBlock implements Message {
     private final String title;
     private final List<List<Segment>> lines = new ArrayList<>();
     private List<Segment> current = new ArrayList<>();
+    private boolean titleOnly;
 
     private Builder(String title) {
       this.title = title;
@@ -147,7 +156,7 @@ public final class ConsoleBlock implements Message {
      * @return this builder
      */
     Builder text(@Nullable Style style, String text) {
-      current.add(new Segment(style, text, null));
+      current.add(new Segment(style, text, null, null));
       return this;
     }
 
@@ -162,6 +171,19 @@ public final class ConsoleBlock implements Message {
     }
 
     /**
+     * Appends text to the current line that opens a link on a console that shows links.
+     *
+     * @param style the style, or {@code null}
+     * @param text the text
+     * @param uri where the link goes
+     * @return this builder
+     */
+    Builder link(@Nullable Style style, String text, String uri) {
+      current.add(new Segment(style, text, null, uri));
+      return this;
+    }
+
+    /**
      * Appends a symbol to the current line.
      *
      * @param style the style, or {@code null}
@@ -169,7 +191,7 @@ public final class ConsoleBlock implements Message {
      * @return this builder
      */
     Builder glyph(@Nullable Style style, Function<Glyphs, String> glyph) {
-      current.add(new Segment(style, null, glyph));
+      current.add(new Segment(style, null, glyph, null));
       return this;
     }
 
@@ -189,11 +211,22 @@ public final class ConsoleBlock implements Message {
      *
      * @return the block
      */
+    /**
+     * Keeps the lines out of the log file, which gets the title alone: for a block that says the
+     * same as its title.
+     *
+     * @return this builder
+     */
+    Builder titleOnly() {
+      this.titleOnly = true;
+      return this;
+    }
+
     ConsoleBlock build() {
       if (!current.isEmpty()) {
         end();
       }
-      return new ConsoleBlock(title, List.copyOf(lines));
+      return new ConsoleBlock(title, List.copyOf(lines), titleOnly);
     }
   }
 }

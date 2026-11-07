@@ -24,7 +24,9 @@ import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerRegistry;
 import dev.warp.proxy.antibot.AntiBotService;
+import dev.warp.proxy.console.ConsoleOutput;
 import dev.warp.proxy.i18n.Message;
+import dev.warp.proxy.logging.LogLevels;
 
 import java.util.Comparator;
 import java.util.List;
@@ -116,6 +118,28 @@ public final class ProxyCommands {
     var _ = commands.register(owner, FindCommand.build(proxy));
     var _ = commands.register(owner, AlertCommand.build(proxy));
     var _ = commands.register(owner, ShutdownCommand.build(proxy, control));
+  }
+
+  /**
+   * Registers the commands only the console runs: {@code /log}.
+   *
+   * @param commands the command manager
+   * @param levels the levels of log sources
+   */
+  public static void registerConsole(WarpCommandManager commands, LogLevels levels) {
+    var _ =
+        commands.register(WarpCommandManager.PROXY, LogCommand.build(levels, ConsoleOutput::get));
+  }
+
+  /**
+   * Returns the {@code /log} of the remote console's client: {@code /log filter} and {@code /log
+   * tail} over what its console shows of the remote proxies. {@code /log level} runs on the proxy,
+   * for a token that may run commands there.
+   *
+   * @return the command, for this process's console
+   */
+  public static LiteralArgumentBuilder<CommandSource> clientLog() {
+    return LogCommand.view(ConsoleOutput::get);
   }
 
   /**

@@ -146,4 +146,51 @@ class LoggingConfigurationTest {
           assertTrue(line.contains("[main] INFO "), line);
         });
   }
+
+  @Test
+  @DisplayName("ends a coded line of the log file with its code, and no other marker")
+  void codeInFile() throws URISyntaxException {
+    withConfiguration(
+        LogFormat.TEXT,
+        context -> {
+          // given
+          RollingFileAppender file =
+              assertInstanceOf(
+                  RollingFileAppender.class, context.getConfiguration().getAppender("File"));
+          LogEvent coded =
+              Log4jLogEvent.newBuilder()
+                  .setLoggerName("dev.warp.proxy.WarpServer")
+                  .setLevel(Level.WARN)
+                  .setMarker(org.apache.logging.log4j.MarkerManager.getMarker("W-START-002"))
+                  .setMessage(new SimpleMessage("Cannot listen"))
+                  .setThreadName("main")
+                  .setTimeMillis(0)
+                  .build();
+          LogEvent fileOnly =
+              Log4jLogEvent.newBuilder()
+                  .setLoggerName("dev.warp.proxy.config.WarpConfig")
+                  .setLevel(Level.INFO)
+                  .setMarker(org.apache.logging.log4j.MarkerManager.getMarker("WARP_FILE_ONLY"))
+                  .setMessage(new SimpleMessage("  bind: 0.0.0.0:25577"))
+                  .setThreadName("main")
+                  .setTimeMillis(0)
+                  .build();
+
+          // when
+          String codedLine = file.getLayout().toSerializable(coded).toString();
+          String fileOnlyLine = file.getLayout().toSerializable(fileOnly).toString();
+          String plainLine =
+              file.getLayout().toSerializable(event(new SimpleMessage("hi"))).toString();
+
+          // then
+          assertTrue(
+              codedLine.endsWith(" - Cannot listen [W-START-002]" + System.lineSeparator()),
+              codedLine);
+          assertTrue(
+              fileOnlyLine.endsWith(" - bind: 0.0.0.0:25577" + System.lineSeparator())
+                  || fileOnlyLine.endsWith(" -   bind: 0.0.0.0:25577" + System.lineSeparator()),
+              fileOnlyLine);
+          assertTrue(plainLine.endsWith(" - hi" + System.lineSeparator()), plainLine);
+        });
+  }
 }

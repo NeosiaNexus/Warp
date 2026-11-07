@@ -32,6 +32,7 @@ import dev.warp.proxy.command.PluginCommandManager;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.logging.LogSinkRegistry;
 import dev.warp.proxy.logging.PluginLogSinks;
 import dev.warp.proxy.management.ReadinessHolds;
@@ -226,7 +227,11 @@ final class WarpPluginContext implements PluginContext {
       try {
         registration.closer().close();
       } catch (Exception e) {
-        logger.warn("Could not undo a registration of plugin {}", plugin, e);
+        logger.warn(
+            LogCode.PLUGIN_CLEANUP_FAILED.marker(),
+            "Could not undo a registration of plugin {}",
+            plugin,
+            e);
       }
     }
   }

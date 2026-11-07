@@ -22,6 +22,7 @@ import dev.warp.protocol.codec.McIdentifier;
 import dev.warp.protocol.packet.cookie.CookieRequest;
 import dev.warp.protocol.packet.cookie.CookieResponse;
 import dev.warp.protocol.packet.cookie.StoreCookie;
+import dev.warp.proxy.logging.LogCode;
 
 import java.time.Duration;
 import java.util.ArrayDeque;
@@ -183,7 +184,12 @@ final class ClientCookies {
           try {
             sendStore(packet);
           } catch (IllegalStateException e) {
-            logger.warn("Cookie {} not stored on {}: {}", key, describeClient(), e.getMessage());
+            logger.warn(
+                LogCode.COOKIE_NOT_STORED.marker(),
+                "Cookie {} not stored on {}: {}",
+                key,
+                describeClient(),
+                e.getMessage());
           }
         });
   }
@@ -283,7 +289,10 @@ final class ClientCookies {
     }
     if (pendingCount >= MAX_PENDING) {
       logger.warn(
-          "Disconnecting {}: {} cookie requests left unanswered", describeClient(), pendingCount);
+          LogCode.COOKIE_REQUESTS_UNANSWERED.marker(),
+          "Disconnecting {}: {} cookie requests left unanswered",
+          describeClient(),
+          pendingCount);
       client.close();
       return;
     }

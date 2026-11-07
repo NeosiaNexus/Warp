@@ -52,6 +52,7 @@ import dev.warp.proxy.console.ConsoleCommandSource;
 import dev.warp.proxy.console.ConsoleOutput;
 import dev.warp.proxy.console.NameDirectory;
 import dev.warp.proxy.console.ServerChecks;
+import dev.warp.proxy.console.StartupTimings;
 import dev.warp.proxy.console.StatusLine;
 import dev.warp.proxy.console.Summaries;
 import dev.warp.proxy.console.WarpConsole;
@@ -60,12 +61,15 @@ import dev.warp.proxy.drain.ProxyDrain;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.limit.Blocklist;
 import dev.warp.proxy.limit.ClientLimits;
+import dev.warp.proxy.logging.LogCode;
+import dev.warp.proxy.logging.LogLevels;
 import dev.warp.proxy.logging.LogSinkRegistry;
 import dev.warp.proxy.logging.Plural;
 import dev.warp.proxy.logging.SinkAppender;
 import dev.warp.proxy.management.ManagementServer;
 import dev.warp.proxy.management.ProxyHealth;
 import dev.warp.proxy.management.ReadinessHolds;
+import dev.warp.proxy.management.console.RemoteConsole;
 import dev.warp.proxy.messaging.BungeeCordChannel;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.network.CidrRanges;
@@ -79,6 +83,7 @@ import dev.warp.proxy.status.ServerList;
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -223,9 +228,14 @@ public final class WarpServer implements Warp {
   /** The proxy's commands, its own and the plugins'. */
   private final WarpCommandManager commands = new WarpCommandManager();
 
-  /** The console as a command source: every permission, its messages logged. */
   /** The console as a command source, rendering the proxy's messages in the default language. */
   private final ConsoleCommandSource consoleSource;
+
+  /** Where the startup's time went: /warp startup, and the line under Ready in. */
+  private final StartupTimings startup = new StartupTimings();
+
+  /** The levels of log sources: logging.levels, and /log level. */
+  private final LogLevels logLevels = new LogLevels();
 
   /** Pings the backend servers for the startup summary and the status line. */
   private final ServerChecks serverChecks = new ServerChecks();
@@ -273,6 +283,9 @@ public final class WarpServer implements Warp {
 
   /** The management server, when enabled. */
   private @Nullable ManagementServer management;
+
+  /** The remote console on the management server, when enabled. */
+  private final @Nullable RemoteConsole remoteConsole;
 
   /** Netty boss group — accepts incoming connections. */
   private @Nullable MultiThreadIoEventLoopGroup bossGroup;
@@ -339,6 +352,7 @@ public final class WarpServer implements Warp {
   WarpServer(WarpConfig config, Path directory, IntConsumer exit, Duration shutdownQuietPeriod) {
     this.config = config;
     this.consoleSource = new ConsoleCommandSource(config::messages);
+    this.remoteConsole = createRemoteConsole(config);
     this.directory = directory;
     this.exit = exit;
     this.shutdownQuietPeriod = shutdownQuietPeriod;
@@ -351,7 +365,14 @@ public final class WarpServer implements Warp {
             new BungeeCordChannel(config.bungeeCord(), playerRegistry, serverRegistry));
     ProxyCommands.register(commands, serverRegistry);
     // The command lists players see follow the commands and the permissions that filter them.
-    commands.onChange(() -> playerRegistry.all().forEach(ConnectedPlayer::refreshCommands));
+    commands.onChange(
+        () -> {
+          playerRegistry.all().forEach(ConnectedPlayer::refreshCommands);
+          RemoteConsole remote = remoteConsole;
+          if (remote != null) {
+            remote.commandsChanged();
+          }
+        });
     permissions.trackPlayers(this::players);
     this.pluginManager =
         new WarpPluginManager(
@@ -387,16 +408,23 @@ public final class WarpServer implements Warp {
     }
 
     // What the operator can fix is checked before anything starts: one clear message each.
+    long mark = System.nanoTime();
     StartupException.checkBindable(config.bind(), "bind");
     if (config.management().enabled()) {
       StartupException.checkBindable(config.management().bind(), "management.bind");
     }
     StartupException.checkReadableDirectory(directory.resolve("plugins"), "plugins");
+    // Persisted levels first, so that the startup's own lines follow them.
+    for (String unknown : logLevels.configure(config.logging().levels())) {
+      logger.info("logging.levels: {} is no source Warp knows yet, set as a logger name", unknown);
+    }
+    mark = lap("checks", mark);
 
     TransportInfo transport = detectTransport();
     this.transportInfo = transport;
     // Loads and self-tests native compression before any connection, so the log tells the truth.
     Compression.logImplementation();
+    mark = lap("natives", mark);
     // Behind the PROXY protocol, the trusted proxies are never limited: their own connections are
     // health checks, and every other one is limited under the client address of its header.
     AntiBotConfig antiBotConfig = config.antiBot();
@@ -411,11 +439,14 @@ public final class WarpServer implements Warp {
                 ? new Blocklist(blocklist.strikes(), blocklist.duration(), System::nanoTime)
                 : null);
     if (config.tcpFastOpen() && !transport.tcpFastOpen()) {
-      logger.warn("tcp-fast-open is on, but only the epoll transport (Linux) supports it: ignored");
+      logger.warn(
+          LogCode.TCP_FAST_OPEN_UNSUPPORTED.marker(),
+          "tcp-fast-open is on, but only the epoll transport (Linux) supports it: ignored");
     }
     // Before the event loops, so that a configuration error leaves nothing to shut down.
     AntiBotService bots = startAntiBot(limits);
     ServerLoginContext loginContext = createLoginContext(transport, limits, bots);
+    mark = lap("anti-bot", mark);
     this.bossGroup = new MultiThreadIoEventLoopGroup(1, transport.ioFactory());
     this.workerGroup = new MultiThreadIoEventLoopGroup(transport.ioFactory());
     long reportMillis = limits.reportInterval().toMillis();
@@ -424,6 +455,7 @@ public final class WarpServer implements Warp {
             limits::report, reportMillis, reportMillis, TimeUnit.MILLISECONDS);
     var _ = workerGroup.scheduleAtFixedRate(bots::tick, 1, 1, TimeUnit.SECONDS);
     ProxyCommands.registerAdmin(commands, this, new Control(), bots);
+    ProxyCommands.registerConsole(commands, logLevels);
     if (channels.bungeeCord().enabled()) {
       var _ =
           workerGroup.scheduleAtFixedRate(
@@ -442,14 +474,18 @@ public final class WarpServer implements Warp {
     CompletableFuture<List<Summaries.Server>> checks =
         serverChecks.check(serverRegistry.servers(), pingTimeout);
 
+    mark = lap("event loops", mark);
     // Probes get an answer (503) while plugins load, and the agent check from the start.
     startManagement();
+    mark = lap("management", mark);
 
     // Plugins find the API published, and load before the first player can connect. Their log
     // sinks receive the records logged from their registration on.
     registerProvider();
     sinkAppender.install();
     pluginManager.loadAll();
+    startup.record("plugins", System.nanoTime() - mark, pluginManager.loadNanos());
+    mark = System.nanoTime();
 
     ServerBootstrap bootstrap =
         new ServerBootstrap()
@@ -479,6 +515,7 @@ public final class WarpServer implements Warp {
 
     try {
       this.serverChannel = bootstrap.bind(config.bind()).sync().channel();
+      mark = lap("bind", mark);
     } catch (InterruptedException e) {
       shutdownEventLoops();
       stopManagement();
@@ -497,12 +534,15 @@ public final class WarpServer implements Warp {
 
     this.running = true;
     this.started = true;
-    BLOCKS.info(Summaries.startup(startupFacts(transport, awaitChecks(checks, pingTimeout))));
+    List<Summaries.Server> servers = awaitChecks(checks, pingTimeout);
+    var _ = lap("servers", mark);
+    BLOCKS.info(Summaries.startup(startupFacts(transport, servers)));
     this.readyNanos = System.nanoTime();
-    logger.info(
-        "Ready in {} s",
-        String.format(
-            Locale.ROOT, "%.2f", ManagementFactory.getRuntimeMXBean().getUptime() / 1000.0));
+    long uptimeMillis = ManagementFactory.getRuntimeMXBean().getUptime();
+    logger.info("Ready in {} s", String.format(Locale.ROOT, "%.2f", uptimeMillis / 1000.0));
+    startup.finish(TimeUnit.MILLISECONDS.toNanos(uptimeMillis));
+    // Where the time went, in one dimmed line; /warp startup gives the details.
+    BLOCKS.info(startup.block());
     var _ = events.fire(new ProxyReadyEvent(serverChannel.localAddress()));
   }
 
@@ -633,6 +673,23 @@ public final class WarpServer implements Warp {
     }
   }
 
+  /**
+   * Returns where the startup's time goes, for {@link WarpBootstrap} to record what happens before
+   * {@link #start()}: the JVM, logging, the configuration.
+   *
+   * @return the timings
+   */
+  public StartupTimings startupTimings() {
+    return startup;
+  }
+
+  /** Records a phase of the startup that began at {@code since}; returns its end. */
+  private long lap(String phase, long since) {
+    long now = System.nanoTime();
+    startup.record(phase, now - since);
+    return now;
+  }
+
   /** Waits a bounded time for the shutdown in progress. */
   private void awaitStopped() {
     try {
@@ -640,7 +697,10 @@ public final class WarpServer implements Warp {
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
     } catch (ExecutionException | TimeoutException e) {
-      logger.warn("The shutdown in progress did not finish within {} s", STOP_JOIN_TIMEOUT_SECONDS);
+      logger.warn(
+          LogCode.SHUTDOWN_STUCK.marker(),
+          "The shutdown in progress did not finish within {} s",
+          STOP_JOIN_TIMEOUT_SECONDS);
     }
   }
 
@@ -699,10 +759,17 @@ public final class WarpServer implements Warp {
     if (!config.management().enabled()) {
       return;
     }
-    ManagementServer server = new ManagementServer(config.management(), new Health());
+    RemoteConsole remote = remoteConsole;
+    if (remote != null) {
+      remote.start();
+    }
+    ManagementServer server = new ManagementServer(config.management(), new Health(), remote);
     try {
       server.start();
     } catch (IllegalStateException e) {
+      if (remote != null) {
+        remote.stop();
+      }
       shutdownEventLoops();
       throw e;
     }
@@ -710,10 +777,31 @@ public final class WarpServer implements Warp {
   }
 
   private void stopManagement() {
+    RemoteConsole remote = remoteConsole;
+    if (remote != null) {
+      remote.stop();
+    }
     ManagementServer server = management;
     if (server != null) {
       server.stop();
     }
+  }
+
+  /**
+   * Creates the remote console, if enabled: it keeps the proxy's secrets out of what it streams.
+   */
+  private @Nullable RemoteConsole createRemoteConsole(WarpConfig config) {
+    if (!config.management().enabled() || !config.management().console().enabled()) {
+      return null;
+    }
+    List<String> secrets = new ArrayList<>();
+    secrets.add(new String(config.forwardingSecret(), StandardCharsets.UTF_8));
+    String token = config.management().token();
+    if (token != null) {
+      secrets.add(token);
+    }
+    return new RemoteConsole(
+        config.management().console(), commands, config::messages, WarpBuildInfo.VERSION, secrets);
   }
 
   /** Makes SIGTERM start a drain, and a second SIGTERM stop at once. */
@@ -728,13 +816,16 @@ public final class WarpServer implements Warp {
               var _ = startDrain(DrainTrigger.SIGNAL);
             },
             () -> {
-              logger.warn("SIGTERM received again: stopping now, without finishing the drain");
+              logger.warn(
+                  LogCode.DRAIN_SIGTERM_AGAIN.marker(),
+                  "SIGTERM received again: stopping now, without finishing the drain");
               var _ = Thread.ofPlatform().name("warp-stop").start(() -> exit.accept(EXIT_SIGTERM));
             });
     if (caught) {
       logger.info("SIGTERM drains the proxy (drain.on-sigterm)");
     } else {
       logger.warn(
+          LogCode.DRAIN_SIGTERM_UNSUPPORTED.marker(),
           "drain.on-sigterm is on, but this JVM does not let Warp handle SIGTERM: SIGTERM stops"
               + " the proxy at once, without draining");
     }
@@ -747,7 +838,10 @@ public final class WarpServer implements Warp {
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
     } catch (ExecutionException | TimeoutException e) {
-      logger.warn("Shutdown handlers did not finish within {} s", SHUTDOWN_EVENT_TIMEOUT_SECONDS);
+      logger.warn(
+          LogCode.SHUTDOWN_HANDLERS_SLOW.marker(),
+          "Shutdown handlers did not finish within {} s",
+          SHUTDOWN_EVENT_TIMEOUT_SECONDS);
     }
   }
 
@@ -898,6 +992,11 @@ public final class WarpServer implements Warp {
   private final class Control implements ProxyControl {
 
     @Override
+    public StartupTimings startup() {
+      return startup;
+    }
+
+    @Override
     public Duration uptime() {
       return Duration.ofMillis(ManagementFactory.getRuntimeMXBean().getUptime());
     }
@@ -1019,6 +1118,7 @@ public final class WarpServer implements Warp {
     String sessionServer = System.getProperty(MojangSessionService.SESSION_SERVER_PROPERTY);
     if (sessionServer != null) {
       logger.warn(
+          LogCode.SESSION_SERVER_CUSTOM.marker(),
           "Players are authenticated against {} instead of Mojang ({} system property)",
           sessionServer,
           MojangSessionService.SESSION_SERVER_PROPERTY);
@@ -1072,6 +1172,7 @@ public final class WarpServer implements Warp {
     }
     if (signer != null) {
       logger.warn(
+          LogCode.PROFILE_KEY_CUSTOM.marker(),
           "In online mode, the profile keys of 1.19 to 1.19.2 players are checked against {}"
               + " instead of Mojang's key ({} system property)",
           signer,

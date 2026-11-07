@@ -69,6 +69,7 @@ import dev.warp.proxy.event.player.PlayerChooseInitialServerEventImpl;
 import dev.warp.proxy.event.player.ServerPreConnectEventImpl;
 import dev.warp.proxy.i18n.Message;
 import dev.warp.proxy.i18n.PlayerMessages;
+import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.messaging.BungeeCordChannel;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.messaging.PluginMessageEventImpl;
@@ -724,7 +725,10 @@ public final class ConnectedPlayer {
           return;
         }
         if (reason.equals(PlayerChooseInitialServerEventImpl.NO_SERVER_AVAILABLE)) {
-          logger.warn("No server available for {}, disconnecting", username);
+          logger.warn(
+              LogCode.NO_SERVER_AVAILABLE.marker(),
+              "No server available for {}, disconnecting",
+              username);
         } else {
           logger.info("A plugin turned {} away before its first server", username);
         }
@@ -744,7 +748,10 @@ public final class ConnectedPlayer {
       return;
     }
     if (initial == null) {
-      logger.warn("No server available for {}, disconnecting", username);
+      logger.warn(
+          LogCode.NO_SERVER_AVAILABLE.marker(),
+          "No server available for {}, disconnecting",
+          username);
       disconnectFor(
           DisconnectEvent.Cause.NO_SERVER_AVAILABLE,
           PlayerChooseInitialServerEventImpl.NO_SERVER_AVAILABLE);
@@ -1010,6 +1017,7 @@ public final class ConnectedPlayer {
     }
     if (backend == null) {
       logger.warn(
+          LogCode.BACKEND_CONNECT_FAILED.marker(),
           "Could not connect {} to server '{}': {}",
           username,
           target.name(),
@@ -1125,13 +1133,19 @@ public final class ConnectedPlayer {
       // Asynchronous handlers are skipped at their time-out: only a synchronous one blocking past
       // its own gets here. The player cannot wait for ever.
       logger.warn(
-          "Plugins held {} longer than their handlers' time-outs allow: disconnecting", username);
+          LogCode.PLAYER_HELD_TOO_LONG.marker(),
+          "Plugins held {} longer than their handlers' time-outs allow: disconnecting",
+          username);
       disconnectFor(DisconnectEvent.Cause.DISCONNECTED_BY_PROXY, Message.WAIT_TIMED_OUT.of());
       return;
     }
     if (switchWatched && switching) {
       switchWatched = false;
-      logger.warn("Server switch timed out for {} after {}ms", username, SWITCH_TIMEOUT_MS);
+      logger.warn(
+          LogCode.SERVER_SWITCH_TIMED_OUT.marker(),
+          "Server switch timed out for {} after {}ms",
+          username,
+          SWITCH_TIMEOUT_MS);
       serverSwitch.timedOut();
     }
   }
@@ -1538,7 +1552,11 @@ public final class ConnectedPlayer {
     try {
       packet = ComponentPackets.disconnect(reason, state, protocolVersion);
     } catch (IllegalArgumentException tooLarge) {
-      logger.warn("Disconnect reason for {} too large for its client: {}", username, tooLarge);
+      logger.warn(
+          LogCode.DISCONNECT_REASON_TOO_LARGE.marker(),
+          "Disconnect reason for {} too large for its client: {}",
+          username,
+          tooLarge);
       packet =
           ComponentPackets.disconnect(render(Message.REASON_TOO_LONG.of()), state, protocolVersion);
     }
@@ -1783,7 +1801,11 @@ public final class ConnectedPlayer {
                   try {
                     callback.packEventReceived(done.packId(), done.status(), api);
                   } catch (RuntimeException e) {
-                    logger.error("A resource pack callback failed for {}", username, e);
+                    logger.error(
+                        LogCode.PLUGIN_CALLBACK_FAILED.marker(),
+                        "A resource pack callback failed for {}",
+                        username,
+                        e);
                   }
                 },
                 events.executor());
@@ -2208,7 +2230,8 @@ public final class ConnectedPlayer {
    */
   void keepAliveAnswered(long id) {
     if (!handleKeepAliveResponse(id)) {
-      logger.warn("Invalid KeepAlive ID from player {}", username);
+      logger.warn(
+          LogCode.KEEPALIVE_INVALID.marker(), "Invalid KeepAlive ID from player {}", username);
     }
   }
 
@@ -2279,7 +2302,11 @@ public final class ConnectedPlayer {
           try {
             sendTransfer(packet);
           } catch (IllegalStateException e) {
-            logger.warn("Could not transfer {}: {}", username, e.getMessage());
+            logger.warn(
+                LogCode.TRANSFER_FAILED.marker(),
+                "Could not transfer {}: {}",
+                username,
+                e.getMessage());
           }
         });
   }
@@ -2696,6 +2723,28 @@ public final class ConnectedPlayer {
   // ---------------------------------------------------------------------------
   // Plugin messages
   // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the BungeeCord channel to register with a backend on the client's behalf, as BungeeCord
+   * and Velocity do: Bukkit's {@code Player#sendPluginMessage} only sends on a channel the client
+   * registered, which a vanilla client never does for this one. There is one to register when the
+   * proxy answers the channel for that backend's server, or a plugin took the channel over.
+   *
+   * @param backend a backend connection of this player
+   * @return {@code bungeecord:main} from 1.13, {@code BungeeCord} before; or {@code null} if nobody
+   *     answers the channel for that server, or the connection is not the player's backend
+   */
+  @Nullable String bungeeCordChannelToRegister(MinecraftConnection backend) {
+    BackendConnection current = backendConnection;
+    if (current == null || current.connection() != backend) {
+      return null;
+    }
+    ChannelRegistry channels = loginContext.channels();
+    String channel = BungeeCordChannel.nameFor(protocolVersion);
+    BungeeCordChannel bungeeCord = channels.bungeeCord();
+    boolean answered = bungeeCord.enabled() && bungeeCord.speaksWith(current.server().name());
+    return answered || channels.lookup(channel) != null ? channel : null;
+  }
 
   /**
    * Hands a plugin message on a channel a plugin owns to {@link PluginMessageEvent}, and a
@@ -3171,7 +3220,11 @@ public final class ConnectedPlayer {
       }
     } catch (RuntimeException e) {
       // A plugin's requirement that throws, typically: the client keeps the list it has.
-      logger.warn("Could not refresh the command list of {}", username, e);
+      logger.warn(
+          LogCode.COMMAND_LIST_REFRESH_FAILED.marker(),
+          "Could not refresh the command list of {}",
+          username,
+          e);
     }
   }
 

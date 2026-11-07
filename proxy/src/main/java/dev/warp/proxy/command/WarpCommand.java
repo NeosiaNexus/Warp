@@ -23,12 +23,14 @@ import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginDescription;
 import dev.warp.api.plugin.PluginState;
 import dev.warp.proxy.WarpBuildInfo;
+import dev.warp.proxy.console.StartupTimings;
 import dev.warp.proxy.i18n.Message;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import com.mojang.brigadier.Command;
@@ -50,6 +52,7 @@ import org.jspecify.annotations.Nullable;
  *   <li>{@code /warp}: version and build, uptime, Java, players and servers, compression, memory,
  *       plugins, the drain when one runs
  *   <li>{@code /warp plugins}: every plugin, its version and state, why it failed on hover
+ *   <li>{@code /warp startup}: where the startup's time went, phase by phase and plugin by plugin
  *   <li>{@code /warp antibot ...}: see {@link AntiBotCommand}
  * </ul>
  */
@@ -94,11 +97,53 @@ final class WarpCommand {
                         context -> {
                           context.getSource().sendMessage(plugins(proxy.plugins().plugins()));
                           return Command.SINGLE_SUCCESS;
+                        }))
+            .then(
+                LiteralArgumentBuilder.<CommandSource>literal("startup")
+                    .requires(source -> source.hasPermission(PERMISSION))
+                    .executes(
+                        context -> {
+                          context.getSource().sendMessage(startup(control.startup()));
+                          return Command.SINGLE_SUCCESS;
                         }));
     if (antiBot != null) {
       warp.then(antiBot);
     }
     return warp;
+  }
+
+  // ---------------------------------------------------------------------------
+  // /warp startup
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The answer to {@code /warp startup}: where the startup's time went, phase by phase, each plugin
+   * under {@code plugins}.
+   *
+   * @param timings the startup's timings, or {@code null} when nothing recorded them
+   * @return the message
+   */
+  static Component startup(@Nullable StartupTimings timings) {
+    long total = timings == null ? -1 : timings.totalNanos();
+    if (timings == null || total <= 0) {
+      return Message.WARP_STARTUP_PENDING.of();
+    }
+    List<Component> lines = new ArrayList<>();
+    lines.add(Message.WARP_STARTUP.with(Message.text("total", StartupTimings.format(total))));
+    for (StartupTimings.Phase phase : timings.phases()) {
+      lines.add(phase(phase, "", total));
+      for (StartupTimings.Phase part : phase.parts()) {
+        lines.add(phase(part, "  ", total));
+      }
+    }
+    return Component.join(JoinConfiguration.newlines(), lines);
+  }
+
+  private static Component phase(StartupTimings.Phase phase, String indent, long total) {
+    return Message.WARP_STARTUP_PHASE.with(
+        Message.text("phase", indent + phase.name()),
+        Message.text("time", StartupTimings.format(phase.nanos())),
+        Message.text("share", String.format(Locale.ROOT, "%.0f%%", 100.0 * phase.nanos() / total)));
   }
 
   // ---------------------------------------------------------------------------
@@ -173,6 +218,7 @@ final class WarpCommand {
     List<Component> links = new ArrayList<>();
     if (source.hasPermission(PERMISSION)) {
       links.add(subcommand("/warp plugins"));
+      links.add(subcommand("/warp startup"));
     }
     if (antiBot && source.hasPermission(AntiBotCommand.PERMISSION)) {
       links.add(subcommand("/warp antibot"));

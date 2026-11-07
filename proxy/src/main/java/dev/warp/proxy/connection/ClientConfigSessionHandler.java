@@ -94,9 +94,9 @@ final class ClientConfigSessionHandler implements SessionHandler {
               if (!backendConnection.channel().isActive()) {
                 return;
               }
-              backendConnection.writeAndFlush(new AcknowledgeFinishConfiguration());
-              backendConnection.setState(ProtocolState.PLAY);
-              backendConnection.setSessionHandler(
+              backendConnection.acknowledgeStateChange(
+                  new AcknowledgeFinishConfiguration(),
+                  ProtocolState.PLAY,
                   new BackendPlaySessionHandler(player, backendConnection));
             });
   }
