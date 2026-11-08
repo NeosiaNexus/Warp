@@ -1831,7 +1831,7 @@ public final class WarpConfig {
 
           # The verification of players the anti-bot does not know: a probe of the packets every
           # real client answers as it logs in (a ping and a keep-alive to echo, its brand and
-          # settings, its known packs and a cookie from 1.20.5). Nothing is verified twice: once
+          # settings, and a cookie from 1.20.5). Nothing is verified twice: once
           # known, a player goes straight through. In offline mode it runs after Login Success; in
           # online mode after authentication, and before it during an attack, when the client is
           # then transferred back (1.20.5+) or asked to reconnect, so that bots never reach the

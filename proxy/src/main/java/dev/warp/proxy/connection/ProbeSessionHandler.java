@@ -23,7 +23,6 @@ import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigPing;
 import dev.warp.protocol.packet.config.ConfigPluginMessage;
 import dev.warp.protocol.packet.config.ConfigPong;
-import dev.warp.protocol.packet.config.KnownPacks;
 import dev.warp.protocol.packet.cookie.CookieResponse;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
@@ -115,9 +114,6 @@ final class ProbeSessionHandler implements SessionHandler {
     // Everything at once: the client answers in this order, and the last answer closes the probe.
     connection.write(new ConfigPing(probe.pingId()));
     connection.write(new KeepAlive(probe.keepAliveId()));
-    if (!probe.knownPacksOffer().isEmpty()) {
-      connection.write(new KnownPacks(probe.knownPacksOffer()));
-    }
     byte[] cookie = probe.cookiePayload();
     if (cookie != null) {
       connection.flush();
@@ -148,7 +144,6 @@ final class ProbeSessionHandler implements SessionHandler {
     switch (packet) {
       case ConfigPong pong -> judge(probe.pong(pong.id()));
       case KeepAlive keepAlive -> judge(probe.keepAlive(keepAlive.id()));
-      case KnownPacks packs -> judge(probe.knownPacks(packs.packs()));
       case ClientInformation information -> {
         settings = information;
         judge(probe.settings(information));

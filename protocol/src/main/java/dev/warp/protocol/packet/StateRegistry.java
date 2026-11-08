@@ -58,7 +58,6 @@ import dev.warp.protocol.packet.config.ConfigPing;
 import dev.warp.protocol.packet.config.ConfigPluginMessage;
 import dev.warp.protocol.packet.config.ConfigPong;
 import dev.warp.protocol.packet.config.FinishConfiguration;
-import dev.warp.protocol.packet.config.KnownPacks;
 import dev.warp.protocol.packet.cookie.CookieRequest;
 import dev.warp.protocol.packet.cookie.CookieResponse;
 import dev.warp.protocol.packet.cookie.StoreCookie;
@@ -261,11 +260,12 @@ public final class StateRegistry {
    * <p>Intercepted clientbound: Disconnect, FinishConfiguration, KeepAlive, and from 1.20.5 Cookie
    * Request (to route the client's answer back to the server that asked). Intercepted serverbound:
    * AcknowledgeFinishConfiguration, KeepAlive, and from 1.20.5 Cookie Response. Watched serverbound
-   * (read, and the frame forwarded untouched): Pong, Known Packs and the brand among the client's
-   * plugin messages, which the anti-bot's probe asks for. All other CONFIG packets (RegistryData,
-   * the other PluginMessages, etc.) pass through as opaque ByteBufs via {@code handleBlind()},
-   * including a server's Store Cookie and Transfer, and the plugin messages the proxy sends a
-   * server itself (registering the BungeeCord channel), which the proxy only writes (encode-only).
+   * (read, and the frame forwarded untouched): Pong and the brand among the client's plugin
+   * messages, which the anti-bot's probe asks for. All other CONFIG packets (RegistryData, Known
+   * Packs, the other PluginMessages, etc.) pass through as opaque ByteBufs via {@code
+   * handleBlind()}, including a server's Store Cookie and Transfer, and the plugin messages the
+   * proxy sends a server itself (registering the BungeeCord channel), which the proxy only writes
+   * (encode-only).
    */
   private static void registerConfiguration() {
     directionMap(ProtocolState.CONFIGURATION)
@@ -293,18 +293,13 @@ public final class StateRegistry {
                     ConfigPluginMessage.BRAND_WATCH,
                     map(0x01, MINECRAFT_1_20_2),
                     map(0x02, MINECRAFT_1_20_5))
-                // The anti-bot's probe: the answers to its ping and its known packs.
+                // The anti-bot's probe: the answer to its ping.
                 .registerWatched(
                     ConfigPong.class,
                     ConfigPong.CODEC,
                     ConfigPong.WATCH,
                     map(0x04, MINECRAFT_1_20_2),
                     map(0x05, MINECRAFT_1_20_5))
-                .registerWatched(
-                    KnownPacks.class,
-                    KnownPacks.CODEC,
-                    KnownPacks.WATCH,
-                    map(0x07, MINECRAFT_1_20_5))
                 .register(
                     ResourcePackResponse.class,
                     ResourcePackResponse.CODEC,
@@ -332,18 +327,14 @@ public final class StateRegistry {
                     map(0x03, MINECRAFT_1_20_2),
                     map(0x04, MINECRAFT_1_20_5))
                 .register(CookieRequest.class, CookieRequest.CODEC, map(0x00, MINECRAFT_1_20_5))
-                // The anti-bot's probe: a ping and a known packs offer of the proxy's own; a
-                // server's stay opaque.
+                // The anti-bot's probe: a ping of the proxy's own; a server's stay opaque. It
+                // offers no Select Known Packs: node-minecraft-protocol answers one offer per
+                // configuration phase, and the server's would then wait forever.
                 .registerEncodeOnly(
                     ConfigPing.class,
                     ConfigPing.CODEC,
                     map(0x04, MINECRAFT_1_20_2),
                     map(0x05, MINECRAFT_1_20_5))
-                .registerEncodeOnly(
-                    KnownPacks.class,
-                    KnownPacks.CODEC,
-                    map(0x0E, MINECRAFT_1_20_5),
-                    map(0x0F, MINECRAFT_26_3))
                 .registerEncodeOnly(
                     StoreCookie.class,
                     StoreCookie.CODEC,

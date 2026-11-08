@@ -899,9 +899,11 @@ the backend connection, with no world:
    already caches Client Information for replay). Required before the deadline; the brand must be
    printable UTF-8 of at most 128 bytes, the view distance at least 2. No allow-list of brands, no
    locale check (Sonar removed its own "due to a Minecraft bug", 2.1.35).
-2. Select Known Packs (1.20.5+): Warp offers `minecraft:core` with the version name of the client's
-   protocol. A vanilla client of that version answers with it. A different answer is a signal, not a
-   verdict (Via-translated clients may differ).
+2. No Select Known Packs of the proxy's own. The idea was to offer `minecraft:core` at the client's
+   version and compare the answer, but node-minecraft-protocol (mineflayer, and every bot and tool
+   built on it) answers one offer per configuration phase (`client.once('select_known_packs')`): the
+   probe's offer spent that answer, the backend's offer then waited forever, and every 1.20.5+ client
+   of the e2e matrix hung in configuration. A probe must ask nothing a server asks too.
 3. A Ping and a Keep Alive with random IDs, echoed. The ping also measures the round-trip time used to
    size every later deadline (§10).
 4. When the verification runs before authentication (online mode under attack) and passes, Store
@@ -1346,7 +1348,7 @@ and a real bot still joining.
 
 ### Phase 2: the probes (login and configuration packets only)
 
-- Configuration probe for 1.20.2+ (brand, Client Information, Known Packs, Ping, Keep Alive) before the
+- Configuration probe for 1.20.2+ (brand, Client Information, Ping, Keep Alive) before the
   backend connection, and the token cookie; pre-join Keep Alive for 1.8 to 1.20.1; passive brand and settings
   deadline on the backend for older clients.
 - Verification before authentication during attacks, with Transfer and the signed token (1.20.5+) or
@@ -1363,9 +1365,9 @@ authentication`):
 
 - The configuration probe (`Probe`, `ProbeSessionHandler`): Ping and Keep Alive echoed, Client
   Information required, the brand read in place from the client's plugin message (a `PacketWatch`, the
-  frame still forwarded untouched), Select Known Packs offered with `minecraft:core` at every version
-  name of the client's protocol and the answer compared, a random `warp:probe` cookie stored and asked
-  back (1.20.5+). The last answer closes the probe (clients answer in order), the deadline is
+  frame still forwarded untouched), a random `warp:probe` cookie stored and asked back (1.20.5+). No
+  Select Known Packs offer: the e2e matrix showed node-minecraft-protocol answers one offer per
+  configuration phase, so the proxy's offer left the server's unanswered (see §10, item 2). The last answer closes the probe (clients answer in order), the deadline is
   `probe-timeout` + 4 RTT after the pong, 30 s at most. Hard verdicts only on a wrong echo, a packet
   illegal in the state, a changed cookie, or no echo and no settings at the deadline; everything else
   is a flag (`Probe.Flag`), and a pass with two flags or more lets the player in without trusting it.

@@ -185,12 +185,10 @@ class VerificationQueueTest {
       VerificationQueue queue = queue(1, 10_000);
       VerificationQueue.Slot held = queue.tryAcquire();
       assertNotNull(held);
-      Map<Integer, Integer> sizes = new HashMap<>();
       List<Login> all = new ArrayList<>();
       int networks = 8;
       for (int network = 0; network < networks; network++) {
         int size = 1 + random.nextInt(40);
-        sizes.put(network, size);
         // One hash per network, as every address of a network hashes the same.
         int hash = random.nextInt() * networks + network;
         for (int i = 0; i < size; i++) {

@@ -44,7 +44,6 @@ import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.config.ConfigPing;
 import dev.warp.protocol.packet.config.ConfigPluginMessage;
 import dev.warp.protocol.packet.config.ConfigPong;
-import dev.warp.protocol.packet.config.KnownPacks;
 import dev.warp.protocol.packet.cookie.CookieRequest;
 import dev.warp.protocol.packet.cookie.CookieResponse;
 import dev.warp.protocol.packet.cookie.StoreCookie;
@@ -178,7 +177,7 @@ class VerificationLoginTest {
     }
 
     @Test
-    @DisplayName("should ask no known packs and no cookie of a 1.20.2 client, and pass it")
+    @DisplayName("should ask no cookie of a 1.20.2 client, and pass it")
     void firstConfigurationVersion() throws Exception {
       start(false, AntiBotConfig.Verification.DEFAULTS);
       EmbeddedChannel channel = login("Steve", "203.0.113.9", FIRST_CONFIGURATION);
@@ -186,7 +185,6 @@ class VerificationLoginTest {
       send(channel, ProtocolState.LOGIN, new LoginAcknowledged(), FIRST_CONFIGURATION);
 
       Asked asked = asked(channel, FIRST_CONFIGURATION);
-      assertNull(asked.knownPacks);
       assertNull(asked.cookie);
       answerAsVanilla(channel, asked, FIRST_CONFIGURATION);
 
@@ -273,16 +271,13 @@ class VerificationLoginTest {
       send(channel, ProtocolState.LOGIN, new LoginAcknowledged(), MODERN);
       Asked asked = asked(channel, MODERN);
 
-      // No brand, known packs that differ (a Via-translated client), the rest as vanilla.
+      // No brand and no cookie kept (a client that stores none), the rest as vanilla.
       send(channel, ProtocolState.CONFIGURATION, SETTINGS, MODERN);
       send(channel, ProtocolState.CONFIGURATION, new ConfigPong(asked.ping), MODERN);
       send(channel, ProtocolState.CONFIGURATION, new KeepAlive(asked.keepAlive), MODERN);
-      send(channel, ProtocolState.CONFIGURATION, new KnownPacks(List.of()), MODERN);
+      assertNotNull(asked.cookie);
       send(
-          channel,
-          ProtocolState.CONFIGURATION,
-          new CookieResponse(Probe.COOKIE_KEY, Objects.requireNonNull(asked.cookie)),
-          MODERN);
+          channel, ProtocolState.CONFIGURATION, new CookieResponse(Probe.COOKIE_KEY, null), MODERN);
 
       assertTrue(waitFor(() -> bots().status().verifications().passed() == 1));
       assertNotRefused();
@@ -679,11 +674,7 @@ class VerificationLoginTest {
   }
 
   /** What the probe asked, read from the frames the proxy sent on entering configuration. */
-  private record Asked(
-      int ping,
-      long keepAlive,
-      @Nullable List<KnownPacks.Pack> knownPacks,
-      byte @Nullable [] cookie) {}
+  private record Asked(int ping, long keepAlive, byte @Nullable [] cookie) {}
 
   private Asked asked(EmbeddedChannel channel, ProtocolVersion version) {
     ConfigPing ping = nextPacket(channel, ProtocolState.CONFIGURATION, ConfigPing.class, version);
@@ -691,9 +682,8 @@ class VerificationLoginTest {
         nextPacket(channel, ProtocolState.CONFIGURATION, KeepAlive.class, version);
     if (!version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5)) {
       assertNull(channel.readOutbound(), "nothing more asked before 1.20.5");
-      return new Asked(ping.id(), keepAlive.id(), null, null);
+      return new Asked(ping.id(), keepAlive.id(), null);
     }
-    KnownPacks packs = nextPacket(channel, ProtocolState.CONFIGURATION, KnownPacks.class, version);
     StoreCookie stored =
         nextPacket(channel, ProtocolState.CONFIGURATION, StoreCookie.class, version);
     assertEquals(Probe.COOKIE_KEY, stored.key());
@@ -701,7 +691,7 @@ class VerificationLoginTest {
         nextPacket(channel, ProtocolState.CONFIGURATION, CookieRequest.class, version);
     assertEquals(Probe.COOKIE_KEY, request.key());
     assertNull(channel.readOutbound(), "nothing more asked");
-    return new Asked(ping.id(), keepAlive.id(), packs.packs(), stored.payload());
+    return new Asked(ping.id(), keepAlive.id(), stored.payload());
   }
 
   /** Answers as a vanilla client does: settings and brand first, then each request in order. */
@@ -710,11 +700,6 @@ class VerificationLoginTest {
     send(channel, ProtocolState.CONFIGURATION, brand("vanilla"), version);
     send(channel, ProtocolState.CONFIGURATION, new ConfigPong(asked.ping), version);
     send(channel, ProtocolState.CONFIGURATION, new KeepAlive(asked.keepAlive), version);
-    if (asked.knownPacks != null) {
-      KnownPacks.Pack own = new KnownPacks.Pack("minecraft", "core", version.name());
-      assertTrue(asked.knownPacks.contains(own), "the client's own version is offered");
-      send(channel, ProtocolState.CONFIGURATION, new KnownPacks(List.of(own)), version);
-    }
     if (asked.cookie != null) {
       send(
           channel,

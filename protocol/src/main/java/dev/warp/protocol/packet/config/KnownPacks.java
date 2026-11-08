@@ -20,7 +20,6 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.packet.PacketCodec;
-import dev.warp.protocol.packet.PacketWatch;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -74,21 +73,6 @@ public record KnownPacks(List<Pack> packs) implements ConfigPacket {
             McString.write(buf, pack.id());
             McString.write(buf, pack.version());
           }
-        }
-      };
-
-  /**
-   * Watch of the client's known packs answers: read whole for the anti-bot's probe, and the frame
-   * forwarded untouched to the server that asked, if any.
-   */
-  public static final PacketWatch<KnownPacks> WATCH =
-      (buf, version) -> {
-        try {
-          return CODEC.decode(buf, version);
-        } catch (RuntimeException malformed) {
-          // Not one the proxy can read: forwarded as it is, like every other frame of the client,
-          // and judged by whoever waited for it as never having come.
-          return null;
         }
       };
 }

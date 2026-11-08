@@ -112,6 +112,7 @@ public final class VerificationTokens {
   private volatile Key current;
   private volatile @Nullable Key previous;
   private volatile boolean rotating;
+  private final boolean generated;
   private final LongAdder issued = new LongAdder();
   private final LongAdder accepted = new LongAdder();
   private final LongAdder rejected = new LongAdder();
@@ -141,22 +142,25 @@ public final class VerificationTokens {
       this.file = null;
       this.rotateAfter = Duration.ZERO;
       this.current = Key.of(sha256(fromEnvironment.strip().getBytes(StandardCharsets.UTF_8)), now);
+      this.generated = false;
       return;
     }
     this.rotateAfter = rotateAfter;
     this.file = file;
     if (file == null) {
       this.current = Key.of(randomKey(), now);
+      this.generated = false;
       return;
     }
     List<Key> loaded = load(file);
     if (loaded.isEmpty()) {
       this.current = Key.of(randomKey(), now);
       save(file, current, null);
-      logger.info("Anti-bot: generated the key verification tokens are signed under in {}", file);
+      this.generated = true;
     } else {
       this.current = loaded.getFirst();
       this.previous = loaded.size() > 1 ? loaded.get(1) : null;
+      this.generated = false;
     }
   }
 
@@ -264,6 +268,16 @@ public final class VerificationTokens {
    */
   public boolean rotatable() {
     return file != null;
+  }
+
+  /**
+   * Returns whether the key file was absent and a key generated into it when the proxy started: the
+   * caller's cue to log where (the file itself holds a secret, so this class names it nowhere).
+   *
+   * @return {@code true} if the key was generated and saved
+   */
+  public boolean generated() {
+    return generated;
   }
 
   /**

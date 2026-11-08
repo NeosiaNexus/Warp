@@ -324,6 +324,9 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
             verified.persist() ? directory.resolve(verification.tokenSecretFile()) : null,
             env.apply(AntiBotConfig.ENV_TOKEN_SECRET),
             millisClock);
+    if (tokens.generated()) {
+      logger.info("Anti-bot: generated the key that signs verification tokens, in {}", directory);
+    }
     this.store =
         new IdentityStore(
             verified,

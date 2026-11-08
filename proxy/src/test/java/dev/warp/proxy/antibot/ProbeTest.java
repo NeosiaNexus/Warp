@@ -27,10 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.warp.api.antibot.VerificationFailure;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.packet.config.ClientInformation;
-import dev.warp.protocol.packet.config.KnownPacks;
 
 import java.time.Duration;
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Random;
@@ -70,10 +68,6 @@ class ProbeTest {
     return Objects.requireNonNull(probe.cookiePayload(), "a cookie is asked from 1.20.5");
   }
 
-  private static KnownPacks.Pack core(ProtocolVersion version) {
-    return new KnownPacks.Pack("minecraft", "core", version.name());
-  }
-
   /** What a vanilla client sends on entering the configuration phase, in order. */
   private static Probe.Outcome vanillaAnswers(Probe probe, ProtocolVersion version) {
     probe.settings(VANILLA_SETTINGS);
@@ -81,7 +75,6 @@ class ProbeTest {
     probe.pong(probe.pingId());
     Probe.Outcome outcome = probe.keepAlive(probe.keepAliveId());
     if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5)) {
-      probe.knownPacks(List.of(core(version)));
       byte[] cookie = probe.cookiePayload();
       assertNotNull(cookie);
       outcome = probe.cookie(Optional.of(cookie));
@@ -113,24 +106,10 @@ class ProbeTest {
     }
 
     @Test
-    @DisplayName("should offer minecraft:core at every version name sharing the protocol")
-    void offersEveryVersionName() {
-      Probe probe = configuration(ProtocolVersion.MINECRAFT_1_20_5);
-
-      assertEquals(
-          List.of(core(ProtocolVersion.MINECRAFT_1_20_5), core(ProtocolVersion.MINECRAFT_1_20_6)),
-          probe.knownPacksOffer());
-      // A 1.20.6 client answers with its own version: no flag.
-      probe.knownPacks(List.of(core(ProtocolVersion.MINECRAFT_1_20_6)));
-      assertFalse(probe.outcome() instanceof Probe.Outcome.Failed);
-    }
-
-    @Test
-    @DisplayName("should ask no known packs and no cookie before 1.20.5")
+    @DisplayName("should ask no cookie before 1.20.5")
     void nothingToAskBefore1205() {
       Probe probe = configuration(FIRST_CONFIGURATION);
 
-      assertEquals(List.of(), probe.knownPacksOffer());
       assertNull(probe.cookiePayload());
     }
 
@@ -148,7 +127,6 @@ class ProbeTest {
       assertEquals(nanos.get() + BASE.toNanos() + 4 * rtt, probe.deadlineNanos());
       probe.settings(VANILLA_SETTINGS);
       probe.keepAlive(probe.keepAliveId());
-      probe.knownPacks(List.of(core(MODERN)));
       Probe.Outcome.Passed passed =
           assertInstanceOf(Probe.Outcome.Passed.class, probe.cookie(Optional.of(cookieOf(probe))));
       assertEquals(rtt, passed.roundTripNanos());
@@ -217,21 +195,11 @@ class ProbeTest {
       assertEquals(
           VerificationFailure.ILLEGAL_PACKET,
           reason(keepAlives.keepAlive(keepAlives.keepAliveId())));
-
-      Probe packs = configuration(MODERN);
-      packs.knownPacks(List.of(core(MODERN)));
-      assertEquals(
-          VerificationFailure.ILLEGAL_PACKET, reason(packs.knownPacks(List.of(core(MODERN)))));
     }
 
     @Test
-    @DisplayName("should fail a known packs answer or a cookie on a version that has none")
+    @DisplayName("should fail a cookie on a version that has none")
     void answersToNothing() {
-      Probe probe = configuration(FIRST_CONFIGURATION);
-
-      assertEquals(
-          VerificationFailure.ILLEGAL_PACKET,
-          reason(probe.knownPacks(List.of(core(FIRST_CONFIGURATION)))));
       assertEquals(
           VerificationFailure.ILLEGAL_PACKET,
           reason(configuration(FIRST_CONFIGURATION).cookie(Optional.empty())));
@@ -318,7 +286,6 @@ class ProbeTest {
       Probe probe = configuration(MODERN);
       probe.pong(probe.pingId());
       probe.keepAlive(probe.keepAliveId());
-      probe.knownPacks(List.of(core(MODERN)));
       probe.cookie(Optional.of(cookieOf(probe)));
       assertInstanceOf(Probe.Outcome.Pending.class, probe.outcome(), "waits for the settings");
       nanos.set(probe.deadlineNanos());
@@ -342,11 +309,8 @@ class ProbeTest {
 
       Probe.Outcome.Passed passed = assertInstanceOf(Probe.Outcome.Passed.class, probe.deadline());
 
-      assertEquals(
-          Set.of(
-              Probe.Flag.BRAND_MISSING, Probe.Flag.KNOWN_PACKS_MISSING, Probe.Flag.COOKIE_MISSING),
-          passed.flags());
-      assertFalse(passed.trusted(), "three flags: let in, probed again next time");
+      assertEquals(Set.of(Probe.Flag.BRAND_MISSING, Probe.Flag.COOKIE_MISSING), passed.flags());
+      assertFalse(passed.trusted(), "two flags: let in, probed again next time");
     }
   }
 
@@ -359,23 +323,6 @@ class ProbeTest {
   class Flags {
 
     @Test
-    @DisplayName("should flag known packs that differ, as a Via-translated client answers")
-    void knownPacksDiffer() {
-      Probe probe = configuration(MODERN);
-      probe.settings(VANILLA_SETTINGS);
-      probe.brand("vanilla");
-      probe.pong(probe.pingId());
-      probe.keepAlive(probe.keepAliveId());
-      probe.knownPacks(List.of()); // Via answers with none
-
-      Probe.Outcome.Passed passed =
-          assertInstanceOf(Probe.Outcome.Passed.class, probe.cookie(Optional.of(cookieOf(probe))));
-
-      assertEquals(Set.of(Probe.Flag.KNOWN_PACKS_DIFFER), passed.flags());
-      assertTrue(passed.trusted(), "one flag still trusts");
-    }
-
-    @Test
     @DisplayName("should flag a missing or invalid brand, a low view distance, a missing cookie")
     void softSignals() {
       Probe probe = configuration(MODERN);
@@ -384,7 +331,6 @@ class ProbeTest {
       probe.brand(null);
       probe.pong(probe.pingId());
       probe.keepAlive(probe.keepAliveId());
-      probe.knownPacks(List.of(core(MODERN)));
 
       Probe.Outcome.Passed passed =
           assertInstanceOf(Probe.Outcome.Passed.class, probe.cookie(Optional.empty()));
@@ -410,7 +356,7 @@ class ProbeTest {
     }
 
     @Test
-    @DisplayName("should pass a modded client: Forge brand, extra messages, other known packs")
+    @DisplayName("should pass a modded client: Forge brand, extra messages")
     void moddedClient() {
       Probe probe = configuration(MODERN);
       probe.settings(VANILLA_SETTINGS);
@@ -419,12 +365,11 @@ class ProbeTest {
       probe.unknownPacket();
       probe.pong(probe.pingId());
       probe.keepAlive(probe.keepAliveId());
-      probe.knownPacks(List.of(new KnownPacks.Pack("neoforge", "core", "1")));
 
       Probe.Outcome.Passed passed =
           assertInstanceOf(Probe.Outcome.Passed.class, probe.cookie(Optional.of(cookieOf(probe))));
 
-      assertEquals(Set.of(Probe.Flag.KNOWN_PACKS_DIFFER), passed.flags());
+      assertEquals(Set.of(), passed.flags());
       assertTrue(passed.trusted());
     }
   }

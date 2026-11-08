@@ -19,7 +19,6 @@ package dev.warp.proxy.antibot;
 import dev.warp.api.antibot.VerificationFailure;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.packet.config.ClientInformation;
-import dev.warp.protocol.packet.config.KnownPacks;
 import dev.warp.protocol.packet.play.KeepAlive;
 
 import java.time.Duration;
@@ -43,9 +42,11 @@ import org.jspecify.annotations.Nullable;
  *
  * <p><b>Configuration probe</b> (1.20.2+), in the client's first configuration phase, before any
  * backend exists: a {@linkplain #pingId() ping} and a {@linkplain #keepAliveId() keep-alive} with
- * random ids to echo; from 1.20.5 an offer of the {@linkplain #knownPacksOffer() known packs} of
- * the client's version and a {@linkplain #cookiePayload() cookie} stored then asked back. The
- * client also sends, of its own, its brand and its settings on entering the phase.
+ * random ids to echo; from 1.20.5 a {@linkplain #cookiePayload() cookie} stored then asked back.
+ * The client also sends, of its own, its brand and its settings on entering the phase. Nothing is
+ * offered that a server offers too: a Select Known Packs of the proxy's own would spend the one
+ * answer some client libraries give per configuration phase (node-minecraft-protocol answers the
+ * first offer only), and the server's offer after it would wait forever.
  *
  * <p><b>Pre-join probe</b> (1.8 to 1.20.1), after Login Success and before the first Join Game: one
  * keep-alive with a random id to echo, which every client of those versions answers while it waits
@@ -74,11 +75,6 @@ public final class Probe {
   /** The size of the random cookie payload. */
   static final int COOKIE_BYTES = 16;
 
-  /** The namespace and id of the pack every vanilla client has. */
-  static final String CORE_PACK_NAMESPACE = "minecraft";
-
-  static final String CORE_PACK_ID = "core";
-
   /** What a probe asks of a client. */
   public enum Kind {
     /** The configuration-phase probe of 1.20.2 and newer clients. */
@@ -98,10 +94,6 @@ public final class Probe {
     BRAND_INVALID,
     /** A view distance under 2 chunks, which the vanilla client cannot set. */
     VIEW_DISTANCE_LOW,
-    /** The known packs answered differ from the offer: a Via-translated or modded client. */
-    KNOWN_PACKS_DIFFER,
-    /** No answer to the known packs offer before the probe ended. */
-    KNOWN_PACKS_MISSING,
     /** No answer to the cookie request before the probe ended. */
     COOKIE_MISSING,
     /** The answers came in another order than the requests. */
@@ -160,11 +152,9 @@ public final class Probe {
   private final int pingId;
   private final long keepAliveId;
   private final byte @Nullable [] cookiePayload;
-  private final List<KnownPacks.Pack> knownPacksOffer;
 
   private boolean pongAnswered;
   private boolean keepAliveAnswered;
-  private boolean knownPacksAnswered;
   private boolean cookieAnswered;
   private boolean settingsReceived;
   private boolean brandReceived;
@@ -209,26 +199,9 @@ public final class Probe {
       byte[] payload = new byte[COOKIE_BYTES];
       random.nextBytes(payload);
       this.cookiePayload = payload;
-      this.knownPacksOffer = corePacks(version);
     } else {
       this.cookiePayload = null;
-      this.knownPacksOffer = List.of();
     }
-  }
-
-  /**
-   * Returns the known packs offer of a version: {@code minecraft:core} at every version name that
-   * shares its protocol (1.20.5 and 1.20.6, say), since the client answers with the packs it has at
-   * exactly the version named.
-   */
-  static List<KnownPacks.Pack> corePacks(ProtocolVersion version) {
-    List<KnownPacks.Pack> packs = new ArrayList<>(2);
-    for (ProtocolVersion candidate : ProtocolVersion.values()) {
-      if (candidate.protocol() == version.protocol()) {
-        packs.add(new KnownPacks.Pack(CORE_PACK_NAMESPACE, CORE_PACK_ID, candidate.name()));
-      }
-    }
-    return List.copyOf(packs);
   }
 
   // ---------------------------------------------------------------------------
@@ -260,15 +233,6 @@ public final class Probe {
    */
   public long keepAliveId() {
     return keepAliveId;
-  }
-
-  /**
-   * Returns the known packs to offer, if the client's version has them (1.20.5+).
-   *
-   * @return the offer, empty when nothing is to be offered
-   */
-  public List<KnownPacks.Pack> knownPacksOffer() {
-    return knownPacksOffer;
   }
 
   /**
@@ -360,27 +324,6 @@ public final class Probe {
   }
 
   /**
-   * Takes the client's known packs answer (1.20.5+).
-   *
-   * @param packs the packs the client has, of those offered
-   * @return the outcome
-   */
-  public Outcome knownPacks(List<KnownPacks.Pack> packs) {
-    if (done()) {
-      return outcome;
-    }
-    if (knownPacksOffer.isEmpty() || knownPacksAnswered) {
-      return fail(VerificationFailure.ILLEGAL_PACKET, "known packs to no offer");
-    }
-    knownPacksAnswered = true;
-    if (packs.size() != 1 || !knownPacksOffer.contains(packs.getFirst())) {
-      flags.add(Flag.KNOWN_PACKS_DIFFER);
-    }
-    answered(2);
-    return evaluate(false);
-  }
-
-  /**
    * Takes the client's answer to the cookie request (1.20.5+).
    *
    * @param payload the cookie the client has under {@link #COOKIE_KEY}, empty if none
@@ -402,7 +345,7 @@ public final class Probe {
     } else {
       flags.add(Flag.COOKIE_MISSING);
     }
-    answered(3);
+    answered(2);
     return evaluate(false);
   }
 
@@ -504,23 +447,17 @@ public final class Probe {
 
   /**
    * Decides. Every answer the client gives comes in the order the requests were sent, so the last
-   * one asked (the cookie, the known packs, or the keep-alive) closes the probe: what is still
-   * missing then will not come. Before that, the probe waits for the deadline.
+   * one asked (the cookie, or the keep-alive before 1.20.5) closes the probe: what is still missing
+   * then will not come. Before that, the probe waits for the deadline.
    */
   private Outcome evaluate(boolean atDeadline) {
     boolean echoes = keepAliveAnswered && (kind == Kind.PRE_JOIN || pongAnswered);
-    boolean lastAnswered =
-        cookiePayload != null
-            ? cookieAnswered
-            : !knownPacksOffer.isEmpty() ? knownPacksAnswered : keepAliveAnswered;
+    boolean lastAnswered = cookiePayload != null ? cookieAnswered : keepAliveAnswered;
     boolean settings = kind == Kind.PRE_JOIN || settingsReceived;
     if (echoes && settings && (lastAnswered || atDeadline)) {
       if (kind == Kind.CONFIGURATION) {
         if (!brandReceived) {
           flags.add(Flag.BRAND_MISSING);
-        }
-        if (!knownPacksOffer.isEmpty() && !knownPacksAnswered) {
-          flags.add(Flag.KNOWN_PACKS_MISSING);
         }
         if (cookiePayload != null && !cookieAnswered) {
           flags.add(Flag.COOKIE_MISSING);
