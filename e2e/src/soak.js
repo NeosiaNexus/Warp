@@ -59,6 +59,15 @@ export const RESOURCES = [
  */
 const TRACKED_CLASS = /^(?:dev\.warp\.(?!libs\.).*|io\.netty\.channel\..*(?<!Server)SocketChannel)$/;
 
+/**
+ * Tracked classes Warp keeps in a ring or a bounded queue by design, with the most instances the
+ * bound allows. They fill with activity, not with players (the console tail keeps the last 1,000
+ * lines for `/log` and the remote console, and its queue holds 8,192 lines at most, see
+ * ConsoleOutput.TAIL_CAPACITY and CAPACITY), so their growth over the steady phase is not a leak;
+ * more instances than the bound is one.
+ */
+export const BOUNDED_CLASSES = new Map([['dev.warp.proxy.console.ConsoleLine', 1000 + 8192]]);
+
 /** Warm-up: a fifth of the soak, 1 to 5 minutes (at most half of it). The leak checks skip it. */
 export function warmUpMs(durationMs) {
   return Math.min(Math.max(durationMs * 0.2, 60_000), 300_000, durationMs / 2);
@@ -333,13 +342,19 @@ export function checkGrowth(samples, resource, from, to) {
 export function retainedObjects(before, after, players) {
   const grown = [...after]
     .filter(([name]) => TRACKED_CLASS.test(name))
-    .map(([name, count]) => ({ name, before: before.get(name) ?? 0, after: count }))
+    .map(([name, count]) => ({ name, before: before.get(name) ?? 0, after: count, bound: BOUNDED_CLASSES.get(name) }))
     .map((c) => ({ ...c, growth: c.after - c.before }))
+    .map((c) => ({ ...c, leaked: leakedObjects(c, players) }))
     .filter((c) => c.growth > 0)
     .sort((a, b) => b.growth - a.growth || a.name.localeCompare(b.name));
   const total = (histogram) => [...histogram].filter(([name]) => TRACKED_CLASS.test(name)).reduce((sum, [, count]) => sum + count, 0);
-  const leaked = grown.filter((c) => c.growth > players);
+  const leaked = grown.filter((c) => c.leaked);
   return { status: leaked.length ? 'fail' : 'pass', limit: players, before: total(before), after: total(after), leaked: leaked.length, classes: grown.slice(0, 10) };
+}
+
+/** Whether a class kept more than it may: one per player, or its declared bound for a ring. */
+function leakedObjects(c, players) {
+  return c.bound === undefined ? c.growth > players : c.after > c.bound;
 }
 
 /**
@@ -368,7 +383,7 @@ export function summarize({ ctx, samples, crowd, timeline, drains, objects, netw
   }
   const retained = objects.before && objects.after ? retainedObjects(objects.before, objects.after, ctx.bots) : null;
   if (retained?.status === 'fail') {
-    const listed = retained.classes.filter((c) => c.growth > retained.limit).slice(0, 3).map((c) => `${c.name} +${c.growth}`);
+    const listed = retained.classes.filter((c) => c.leaked).slice(0, 3).map((c) => `${c.name} +${c.growth}`);
     const more = retained.leaked > listed.length ? `, and ${retained.leaked - listed.length} more` : '';
     problems.push(`Warp kept objects of ${retained.leaked} class(es) through the steady phase, more than one per player: ${listed.join(', ')}${more}`);
   }
@@ -555,7 +570,7 @@ export function soakMarkdown(result, variant) {
   if (objects?.classes.length) {
     lines.push(`<details${objects.status === 'fail' ? ' open' : ''}><summary>Classes with more objects at the end than after the warm-up</summary>`, '');
     lines.push('| Class | After the warm-up | At the end | |', '|---|--:|--:|:-:|');
-    for (const c of objects.classes) lines.push(`| \`${c.name}\` | ${count(c.before)} | ${count(c.after)} | ${c.growth > objects.limit ? '❌' : '✅'} |`);
+    for (const c of objects.classes) lines.push(`| \`${c.name}\` | ${count(c.before)} | ${count(c.after)} | ${c.leaked ? '❌' : '✅'} |`);
     lines.push('', '</details>', '');
   }
 

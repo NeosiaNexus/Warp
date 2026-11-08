@@ -87,6 +87,20 @@ describe('objects left once every player has left', () => {
     assert.deepEqual(retained.classes.map((c) => c.name), ['io.netty.channel.epoll.EpollSocketChannel', 'dev.warp.proxy.connection.ConnectedPlayer']);
   });
 
+  it('lets a ring Warp bounds by design fill up, and fails once it holds more than its bound', () => {
+    const filling = histogram({ ...Object.fromEntries(before), 'dev.warp.proxy.console.ConsoleLine': 900 });
+    const full = histogram({ ...Object.fromEntries(before), 'dev.warp.proxy.console.ConsoleLine': 9192 });
+    const over = histogram({ ...Object.fromEntries(before), 'dev.warp.proxy.console.ConsoleLine': 9193 });
+    const start = histogram({ ...Object.fromEntries(before), 'dev.warp.proxy.console.ConsoleLine': 600 });
+
+    assert.equal(retainedObjects(start, filling, 20).status, 'pass');
+    assert.equal(retainedObjects(start, full, 20).status, 'pass');
+    assert.deepEqual(retainedObjects(start, filling, 20).classes.map((c) => `${c.name} +${c.growth}`), ['dev.warp.proxy.console.ConsoleLine +300']);
+    const leaked = retainedObjects(start, over, 20);
+    assert.equal(leaked.status, 'fail');
+    assert.equal(leaked.leaked, 1);
+  });
+
   it('only tracks Warp and Netty channels, not the libraries Warp relocates', () => {
     const after = histogram({ ...Object.fromEntries(before), 'dev.warp.libs.caffeine.cache.Node': 500, 'java.lang.String': 90000 });
 
