@@ -91,7 +91,7 @@ class BackendPingerTest {
         closed = info(socket);
       }
 
-      ServerPingException failure = failure(pinger.ping(closed, Duration.ofSeconds(5)));
+      ServerPingException failure = failure(pinger.ping(closed, GENEROUS));
 
       assertEquals(ServerPingException.Reason.UNREACHABLE, failure.reason());
       assertEquals(closed, failure.server());
@@ -111,7 +111,7 @@ class BackendPingerTest {
                   }
                 });
 
-        ServerPingException failure = failure(pinger.ping(info(socket), Duration.ofSeconds(5)));
+        ServerPingException failure = failure(pinger.ping(info(socket), GENEROUS));
 
         assertEquals(ServerPingException.Reason.CLOSED, failure.reason());
       }
@@ -123,7 +123,7 @@ class BackendPingerTest {
       try (ServerSocket socket = listen()) {
         var _ = answerWhenAsked(socket, "not json");
 
-        ServerPingException failure = failure(pinger.ping(info(socket), Duration.ofSeconds(5)));
+        ServerPingException failure = failure(pinger.ping(info(socket), GENEROUS));
 
         assertEquals(ServerPingException.Reason.INVALID_RESPONSE, failure.reason());
       }
@@ -135,7 +135,7 @@ class BackendPingerTest {
       group.shutdownGracefully(0, 0, TimeUnit.SECONDS).awaitUninterruptibly();
       try (ServerSocket socket = listen()) {
 
-        ServerPingException failure = failure(pinger.ping(info(socket), Duration.ofSeconds(5)));
+        ServerPingException failure = failure(pinger.ping(info(socket), GENEROUS));
 
         assertEquals(ServerPingException.Reason.UNREACHABLE, failure.reason());
       }
@@ -159,9 +159,9 @@ class BackendPingerTest {
 
         ServerPing ping =
             pinger
-                .ping(info(socket), Duration.ofSeconds(5))
+                .ping(info(socket), GENEROUS)
                 .whenComplete((p, e) -> onVirtualThread.set(Thread.currentThread().isVirtual()))
-                .get(10, TimeUnit.SECONDS);
+                .get(WAIT_SECONDS, TimeUnit.SECONDS);
 
         assertEquals(769, ping.version().protocol());
         assertEquals(3, ping.playerInfo().orElseThrow().online());
@@ -175,8 +175,7 @@ class BackendPingerTest {
       try (ServerSocket socket = listen()) {
         Thread.ofVirtual().start(() -> answerUnasked(socket, STATUS));
 
-        ServerPing ping =
-            pinger.ping(info(socket), Duration.ofSeconds(5)).get(10, TimeUnit.SECONDS);
+        ServerPing ping = pinger.ping(info(socket), GENEROUS).get(WAIT_SECONDS, TimeUnit.SECONDS);
 
         assertEquals(769, ping.version().protocol());
       }
@@ -189,9 +188,9 @@ class BackendPingerTest {
         CompletableFuture<Integer> announced = answerWhenAsked(socket, STATUS);
 
         ServerPing ping =
-            pinger.ping(info(socket), -1, Duration.ofSeconds(5)).get(10, TimeUnit.SECONDS);
+            pinger.ping(info(socket), -1, GENEROUS).get(WAIT_SECONDS, TimeUnit.SECONDS);
 
-        assertEquals(-1, announced.get(10, TimeUnit.SECONDS));
+        assertEquals(-1, announced.get(WAIT_SECONDS, TimeUnit.SECONDS));
         assertEquals(769, ping.version().protocol());
       }
     }
@@ -202,9 +201,10 @@ class BackendPingerTest {
       try (ServerSocket socket = listen()) {
         CompletableFuture<Integer> announced = answerWhenAsked(socket, STATUS);
 
-        var _ = pinger.ping(info(socket), Duration.ofSeconds(5)).get(10, TimeUnit.SECONDS);
+        var _ = pinger.ping(info(socket), GENEROUS).get(WAIT_SECONDS, TimeUnit.SECONDS);
 
-        assertEquals(ProtocolVersion.latest().protocol(), announced.get(10, TimeUnit.SECONDS));
+        assertEquals(
+            ProtocolVersion.latest().protocol(), announced.get(WAIT_SECONDS, TimeUnit.SECONDS));
       }
     }
   }
@@ -212,6 +212,16 @@ class BackendPingerTest {
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * The deadline of a ping that must not time out: the fake servers answer at once, so the only way
+   * to reach it is a stalled test worker. It is long enough that a loaded CI runner cannot turn an
+   * expected INVALID_RESPONSE or CLOSED into TIMED_OUT (#173 saw it happen at 5 s).
+   */
+  private static final Duration GENEROUS = Duration.ofSeconds(30);
+
+  /** How long a test waits for a ping's future: past GENEROUS, so the deadline fires first. */
+  private static final long WAIT_SECONDS = 60;
 
   /** A server list entry of protocol 769. */
   private static final String STATUS =
@@ -228,7 +238,7 @@ class BackendPingerTest {
 
   private static ServerPingException failure(CompletableFuture<ServerPing> ping) {
     ExecutionException thrown =
-        assertThrows(ExecutionException.class, () -> ping.get(10, TimeUnit.SECONDS));
+        assertThrows(ExecutionException.class, () -> ping.get(WAIT_SECONDS, TimeUnit.SECONDS));
     return assertInstanceOf(ServerPingException.class, thrown.getCause());
   }
 

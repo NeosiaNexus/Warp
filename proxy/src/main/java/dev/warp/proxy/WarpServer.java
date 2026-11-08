@@ -717,7 +717,16 @@ public final class WarpServer implements Warp {
     org.apache.logging.log4j.LogManager.shutdown();
   }
 
-  /** Phase 3 of a drain: stops the proxy, then ends the process with the drain's outcome. */
+  /**
+   * Phase 3 of a drain: stops the proxy, then ends the process with the drain's outcome.
+   *
+   * <p>On a thread of its own that the JVM waits for (a daemon status is inherited: it is set off),
+   * not the drain's, which is a daemon: once {@link #stop} ended the event loops, no other thread
+   * keeps the JVM alive, and it exits on its own, with 0, running the shutdown hooks. On the daemon
+   * thread, that exit raced the last two steps: the hooks stopped the logging before the exit line
+   * was logged (the line was missing now and then at the end of an E2E drain), and would have ended
+   * a timed-out drain with 0 instead of {@link #EXIT_DRAIN_TIMED_OUT}.
+   */
   private void stopAfterDrain(DrainStatus status) {
     stopCause = "drain finished";
     drainSummary =
@@ -729,11 +738,18 @@ public final class WarpServer implements Warp {
             status.transferred(),
             status.kept(),
             status.kicked());
-    if (stop(drain.message())) {
-      int code = status.outcome() == DrainOutcome.TIMED_OUT ? EXIT_DRAIN_TIMED_OUT : EXIT_DRAINED;
-      logger.info("Exiting with code {}", code);
-      exit.accept(code);
-    }
+    int code = status.outcome() == DrainOutcome.TIMED_OUT ? EXIT_DRAIN_TIMED_OUT : EXIT_DRAINED;
+    var _ =
+        Thread.ofPlatform()
+            .name("warp-stop")
+            .daemon(false) // not inherited from the drain's thread
+            .start(
+                () -> {
+                  if (stop(drain.message())) {
+                    logger.info("Exiting with code {}", code);
+                    exit.accept(code);
+                  }
+                });
   }
 
   /** Disconnects every player, telling them the proxy is shutting down; returns how many. */
