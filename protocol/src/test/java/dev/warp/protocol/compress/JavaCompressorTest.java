@@ -27,6 +27,8 @@ import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
+import io.netty.buffer.CompositeByteBuf;
 import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -242,6 +244,98 @@ class JavaCompressorTest {
           }
         }
       }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Buffers of several components
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("composite buffers")
+  class CompositeBuffers {
+
+    @Test
+    @DisplayName("should deflate from and into buffers of several components")
+    void deflatesThroughComposites() throws DataFormatException {
+      byte[] original = repetitive(10_000);
+      CompositeByteBuf source = composite(original);
+      CompositeByteBuf compressed = emptyComposite();
+      ByteBuf decompressed = Unpooled.buffer();
+      try (JavaCompressor compressor = new JavaCompressor(6)) {
+        compressor.deflate(source, compressed);
+
+        compressor.inflate(compressed, decompressed, original.length);
+        assertArrayEquals(original, ByteBufUtil.getBytes(decompressed));
+      } finally {
+        source.release();
+        compressed.release();
+        decompressed.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should inflate from and into buffers of several components")
+    void inflatesThroughComposites() throws DataFormatException {
+      byte[] original = repetitive(10_000);
+      ByteBuf compressed = Unpooled.buffer();
+      try (JavaCompressor compressor = new JavaCompressor(6)) {
+        compressor.deflate(Unpooled.wrappedBuffer(original), compressed);
+        CompositeByteBuf source = composite(ByteBufUtil.getBytes(compressed));
+        CompositeByteBuf decompressed = emptyComposite();
+        try {
+          compressor.inflate(source, decompressed, original.length);
+          assertArrayEquals(original, ByteBufUtil.getBytes(decompressed));
+        } finally {
+          source.release();
+          decompressed.release();
+        }
+      } finally {
+        compressed.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should reject oversized data when inflating into a composite buffer")
+    void rejectsOversizedIntoComposite() throws DataFormatException {
+      byte[] original = repetitive(10_000);
+      ByteBuf compressed = Unpooled.buffer();
+      CompositeByteBuf decompressed = emptyComposite();
+      try (JavaCompressor compressor = new JavaCompressor(6)) {
+        compressor.deflate(Unpooled.wrappedBuffer(original), compressed);
+        assertThrows(
+            DataFormatException.class,
+            () -> compressor.inflate(compressed, decompressed, original.length - 1));
+      } finally {
+        compressed.release();
+        decompressed.release();
+      }
+    }
+
+    private static byte[] repetitive(int size) {
+      byte[] data = new byte[size];
+      for (int i = 0; i < size; i++) {
+        data[i] = (byte) ('a' + i % 7);
+      }
+      return data;
+    }
+
+    /** Two heap components holding {@code bytes}, so that no single NIO buffer covers them. */
+    private static CompositeByteBuf composite(byte[] bytes) {
+      int half = bytes.length / 2;
+      CompositeByteBuf composite = Unpooled.compositeBuffer();
+      composite.addComponent(true, Unpooled.copiedBuffer(bytes, 0, half));
+      composite.addComponent(true, Unpooled.copiedBuffer(bytes, half, bytes.length - half));
+      assertEquals(2, composite.nioBufferCount());
+      return composite;
+    }
+
+    /** Two empty components, so that the first write grows the buffer by a third. */
+    private static CompositeByteBuf emptyComposite() {
+      CompositeByteBuf composite = Unpooled.compositeBuffer();
+      composite.addComponent(true, Unpooled.buffer(0, 0));
+      composite.addComponent(true, Unpooled.buffer(0, 0));
+      return composite;
     }
   }
 
