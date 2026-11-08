@@ -17,6 +17,7 @@
 package dev.warp.proxy;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -43,6 +44,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -107,8 +109,16 @@ class WarpServerDrainTest {
             .formatted(game, http, agent),
         StandardCharsets.UTF_8);
     CompletableFuture<Integer> exited = new CompletableFuture<>();
+    AtomicBoolean exitedOnDaemon = new AtomicBoolean();
     WarpServer server =
-        new WarpServer(WarpConfig.load(directory), directory, exited::complete, QUIET_PERIOD);
+        new WarpServer(
+            WarpConfig.load(directory),
+            directory,
+            code -> {
+              exitedOnDaemon.set(Thread.currentThread().isDaemon());
+              exited.complete(code);
+            },
+            QUIET_PERIOD);
 
     assertThrows(IllegalStateException.class, server::drain, "not started yet");
 
@@ -149,6 +159,9 @@ class WarpServerDrainTest {
       assertEquals(200, drained.statusCode());
       assertTrue(drained.body().contains("\"outcome\":\"drained\""), drained.body());
       assertEquals(WarpServer.EXIT_DRAINED, exited.get(5, TimeUnit.SECONDS));
+      // Once the event loops are gone, only a non-daemon thread keeps the JVM from exiting on its
+      // own, with 0, before the drain's code is set and its exit line logged.
+      assertFalse(exitedOnDaemon.get(), "the exit must run on a thread the JVM waits for");
       Duration drainToExit = Duration.ofNanos(System.nanoTime() - drainStarted);
       // Nobody to drain: the time is the stop's, whose event loops each wait out the quiet period
       // before terminating. Both at once, not one after the other.
