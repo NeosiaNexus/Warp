@@ -26,7 +26,8 @@ mistake, `3` the target exists (pass `--force`).
   keeps Warp's default: start Warp once in an empty directory to read the default `warp.conf`, which
   documents them all.
 - `forwarding.secret`, copied from Velocity's secret file (or the inline `forwarding-secret` of a
-  Velocity 1.x file). BungeeCord has none: Warp generates one on its first start.
+  Velocity 1.x file), readable by its owner only. BungeeCord has none: Warp generates one on its
+  first start.
 
 ## The report
 
@@ -54,7 +55,7 @@ steps**.
 | `forwarding-secret-file`, `forwarding-secret` | | `forwarding.secret` (the file) |
 | `servers.<name>` | `servers.<name>.address` | `servers.<name>.address` |
 | `servers.try` | `listeners[0].priorities` | `default-server` (the first) and `fallback-order` |
-| `forced-hosts` | `listeners[0].forced_hosts` | `routes { "host" = "server" }` |
+| `forced-hosts` | `listeners[0].forced_hosts` | `routes { "host" = "server" }`; a host naming several servers gets a `groups` entry of them (round-robin) and the route points at the group |
 | `kick-existing-players` | | `duplicate-login`: `kick-existing` or `refuse-new` |
 | `sample-players-in-ping = false` | | `status.sample-size = 0` |
 | `accepts-transfers` | | `accepts-transfers` |

@@ -23,7 +23,9 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -181,13 +183,7 @@ public final class MigrateCli {
         Files.writeString(conf, result.warpConf(), StandardCharsets.UTF_8);
         written.add(conf);
         if (result.forwardingSecret() != null) {
-          Files.writeString(
-              secret,
-              result.forwardingSecret(),
-              StandardCharsets.UTF_8,
-              StandardOpenOption.CREATE,
-              StandardOpenOption.TRUNCATE_EXISTING,
-              StandardOpenOption.WRITE);
+          writeSecret(secret, result.forwardingSecret(), err);
           written.add(secret);
         }
       } catch (IOException e) {
@@ -198,6 +194,47 @@ public final class MigrateCli {
     }
     printer.report(result.report(), plugins);
     return OK;
+  }
+
+  /**
+   * Writes a secret to a file only its owner can read: created with mode 0600 in the same
+   * directory, then moved into place, so that the file never exists with wider permissions. Where
+   * the file system has no POSIX permissions (Windows), the file inherits its directory's access
+   * and a warning says so.
+   *
+   * @param file the file to write
+   * @param secret its content
+   * @param err where to warn
+   * @throws IOException if the file cannot be written
+   */
+  static void writeSecret(Path file, String secret, PrintStream err) throws IOException {
+    Path directory = file.toAbsolutePath().getParent();
+    if (directory == null) {
+      throw new IOException(file + " has no parent directory");
+    }
+    boolean posix = directory.getFileSystem().supportedFileAttributeViews().contains("posix");
+    Path temp;
+    if (posix) {
+      temp =
+          Files.createTempFile(
+              directory,
+              "." + file.getFileName(),
+              ".tmp",
+              PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
+    } else {
+      temp = Files.createTempFile(directory, "." + file.getFileName(), ".tmp");
+      err.println(
+          "warp migrate: "
+              + file
+              + " inherits the permissions of its directory, which this file system cannot"
+              + " restrict: keep the directory private");
+    }
+    try {
+      Files.writeString(temp, secret, StandardCharsets.UTF_8, StandardOpenOption.WRITE);
+      Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+    } finally {
+      Files.deleteIfExists(temp);
+    }
   }
 
   /**

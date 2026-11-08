@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import dev.warp.proxy.console.ConsoleMode;
 
@@ -29,6 +30,7 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -154,6 +156,27 @@ class MigrateCliTest {
       assertTrue(report.contains("MyOwnPlugin.jar"), report);
       assertTrue(report.contains("unknown"), report);
       assertTrue(report.contains("Next steps"), report);
+    }
+
+    @Test
+    @DisplayName("should create forwarding.secret readable by its owner only")
+    void secretPermissions() throws Exception {
+      assumeTrue(
+          target.getFileSystem().supportedFileAttributeViews().contains("posix"),
+          "POSIX permissions");
+      Files.writeString(target.resolve("forwarding.secret"), "old", StandardCharsets.UTF_8);
+      Files.setPosixFilePermissions(
+          target.resolve("forwarding.secret"), PosixFilePermissions.fromString("rw-r--r--"));
+
+      assertEquals(MigrateCli.OK, run(velocity.toString(), "--to", target.toString(), "--force"));
+
+      Path secret = target.resolve("forwarding.secret");
+      assertEquals("abc", Files.readString(secret));
+      assertEquals(
+          PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(secret));
+      try (var files = Files.list(target)) {
+        assertTrue(files.noneMatch(f -> f.getFileName().toString().endsWith(".tmp")));
+      }
     }
 
     @Test

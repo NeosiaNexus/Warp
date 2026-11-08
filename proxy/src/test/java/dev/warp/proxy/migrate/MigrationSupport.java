@@ -60,13 +60,16 @@ final class MigrationSupport {
     } catch (ConfigurationException e) {
       List<ConfigurationException.Problem> others =
           e.problems().stream()
-              .filter(p -> p.key() == null || !p.key().startsWith("routes"))
+              .filter(
+                  p ->
+                      p.key() == null
+                          || !p.key().startsWith("routes") && !p.key().startsWith("groups"))
               .toList();
       if (!others.isEmpty()) {
         fail("warp.conf does not load:\n" + e.getMessage() + "\n---\n" + warpConf);
       }
       // Only the routes block is unknown: load the file without it to check everything else.
-      String withoutRoutes = warpConf.replaceAll("(?s)\nroutes \\{.*?\n\\}\n", "\n");
+      String withoutRoutes = warpConf.replaceAll("(?s)\n(routes|groups) \\{.*?\n\\}\n", "\n");
       assertTrue(withoutRoutes.length() < warpConf.length(), "the routes block was expected");
       Files.writeString(directory.resolve("warp.conf"), withoutRoutes, StandardCharsets.UTF_8);
       try {

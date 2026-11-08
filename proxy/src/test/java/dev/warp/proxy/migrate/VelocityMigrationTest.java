@@ -221,6 +221,23 @@ class VelocityMigrationTest {
     }
 
     @Test
+    @DisplayName("should route a forced host with several servers to a group of them")
+    void group() throws Exception {
+      Migration.Result result =
+          migrate(
+              "[servers]\nlobby = \"a:1\"\nlobby2 = \"a:2\"\ntry = [\"lobby\"]\n"
+                  + "[forced-hosts]\n\"Lobby.Example.com\" = [\"lobby\", \"lobby2\"]\n");
+
+      assertLoads(target, result.warpConf());
+      String conf = result.warpConf();
+      assertTrue(conf.contains("groups {\n  lobby-example-com {\n"), conf);
+      assertTrue(conf.contains("servers = [\"lobby\", \"lobby2\"]"), conf);
+      assertTrue(conf.contains("strategy = \"round-robin\""), conf);
+      assertTrue(conf.contains("\"lobby.example.com\" = \"lobby-example-com\""), conf);
+      assertTrue(result.report().warnings().stream().anyMatch(w -> w.contains("round-robin")));
+    }
+
+    @Test
     @DisplayName("should require trusted proxies when the PROXY protocol was on")
     void haproxy() throws Exception {
       Migration.Result result =

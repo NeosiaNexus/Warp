@@ -165,7 +165,8 @@ final class Shared {
   }
 
   /**
-   * Writes the routes block (forced hosts): one server per host name.
+   * Writes the routes block (forced hosts): one target per host name. A host that names several
+   * servers gets a group of them, since a route has one target.
    *
    * @param draft the configuration
    * @param report the report
@@ -184,31 +185,51 @@ final class Shared {
     for (Map.Entry<String, List<String>> entry : hosts.entrySet()) {
       String host = entry.getKey().toLowerCase(Locale.ROOT);
       String sourceKey = key + "." + Source.join(entry.getKey());
-      List<String> targets = entry.getValue();
+      List<String> targets = new ArrayList<>();
+      for (String target : entry.getValue()) {
+        if (servers.contains(target)) {
+          targets.add(target);
+        } else {
+          report.warn(
+              sourceKey
+                  + " sends players to '"
+                  + target
+                  + "', a server that does not exist: left out rather than refused at startup.");
+        }
+      }
       if (targets.isEmpty()) {
-        report.drop(sourceKey, "names no server");
+        report.drop(sourceKey, "names no server that exists");
         continue;
       }
       String target = targets.getFirst();
-      if (!servers.contains(target)) {
-        report.drop(sourceKey, "the server '" + target + "' does not exist");
-        report.warn(
-            sourceKey
-                + " sends players to '"
-                + target
-                + "', a server that does not exist: left out rather than refused at startup.");
-        continue;
-      }
       if (targets.size() > 1) {
+        target = groupName(host, servers);
+        String origin = origin(file, sourceKey, entry.getValue());
+        draft.set(List.of("groups", target, "servers"), targets, origin);
+        draft.set(
+            List.of("groups", target, "strategy"),
+            "round-robin",
+            "Velocity tried these servers in order; Warp balances players across the group");
         report.warn(
             sourceKey
-                + " lists several servers: Warp routes the host to the first, '"
+                + " lists several servers, which Velocity tried in order: Warp routes the host"
+                + " to the group '"
                 + target
-                + "'; a player it refuses follows fallback-order.");
+                + "' of them, balanced round-robin. Change its strategy, or route to one"
+                + " server, if that is not what you want.");
       }
-      draft.set(List.of("routes", host), target, origin(file, sourceKey, targets));
-      report.keep(sourceKey, targets, "routes." + Source.join(host));
+      draft.set(List.of("routes", host), target, origin(file, sourceKey, entry.getValue()));
+      report.keep(sourceKey, entry.getValue(), "routes." + Source.join(host));
     }
+  }
+
+  /** A group name from a host: {@code lobby.example.com} becomes {@code lobby-example-com}. */
+  private static String groupName(String host, Set<String> servers) {
+    String name = host.replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
+    if (name.isEmpty()) {
+      name = "hosts";
+    }
+    return servers.contains(name) ? name + "-group" : name;
   }
 
   /**
