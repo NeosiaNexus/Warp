@@ -101,6 +101,18 @@ describe('objects left once every player has left', () => {
     assert.equal(leaked.leaked, 1);
   });
 
+  it('fails a ring over its bound even when it stopped growing or drained a little', () => {
+    const over = histogram({ ...Object.fromEntries(before), 'dev.warp.proxy.console.ConsoleLine': 9500 });
+    const drained = histogram({ ...Object.fromEntries(before), 'dev.warp.proxy.console.ConsoleLine': 9450 });
+
+    for (const after of [over, drained]) {
+      const retained = retainedObjects(over, after, 20);
+      assert.equal(retained.status, 'fail');
+      assert.equal(retained.leaked, 1);
+      assert.deepEqual(retained.classes.map((c) => [c.name, c.after, c.bound, c.leaked]), [['dev.warp.proxy.console.ConsoleLine', after.get('dev.warp.proxy.console.ConsoleLine'), 9192, true]]);
+    }
+  });
+
   it('only tracks Warp and Netty channels, not the libraries Warp relocates', () => {
     const after = histogram({ ...Object.fromEntries(before), 'dev.warp.libs.caffeine.cache.Node': 500, 'java.lang.String': 90000 });
 
@@ -146,9 +158,19 @@ describe('soak verdict', () => {
 
     assert.equal(report.status, 'fail');
     assert.deepEqual(report.problems, [
-      'Warp kept objects of 2 class(es) through the steady phase, more than one per player: dev.warp.proxy.connection.MinecraftConnection +220, io.netty.channel.epoll.EpollSocketChannel +220',
+      'Warp kept objects of 2 class(es) through the steady phase, more than allowed (one per player, or the bound of a ring): dev.warp.proxy.connection.MinecraftConnection +220, io.netty.channel.epoll.EpollSocketChannel +220',
       'Warp still held 0 client and 3 backend connection(s) 30 s after every player left, at the end',
       '1 bot failure(s), first: switch soak_03: no packet for 31 s',
+    ]);
+  });
+
+  it('tells a ring over its bound by the bound it exceeded, not by the per-player rule', () => {
+    const after = new Map([...idle, ['dev.warp.proxy.console.ConsoleLine', 9300], ['dev.warp.proxy.connection.MinecraftConnection', 220]]);
+    const report = verdict({ objects: { before: new Map([...idle, ['dev.warp.proxy.console.ConsoleLine', 600]]), after } });
+
+    assert.equal(report.status, 'fail');
+    assert.deepEqual(report.problems, [
+      'Warp kept objects of 2 class(es) through the steady phase, more than allowed (one per player, or the bound of a ring): dev.warp.proxy.console.ConsoleLine 9,300 of 9,192 allowed, dev.warp.proxy.connection.MinecraftConnection +220',
     ]);
   });
 
@@ -177,7 +199,17 @@ describe('soak report', () => {
       { clients: 0, backends: 0, seconds: 0.02 },
       { clients: 0, backends: 0, seconds: 0.4 },
     ],
-    objects: { status: 'pass', limit: 20, before: 1669, after: 1672, leaked: 0, classes: [{ name: 'dev.warp.protocol.compress.FrameDecompressor$1', before: 6, after: 8, growth: 2 }] },
+    objects: {
+      status: 'pass',
+      limit: 20,
+      before: 1669,
+      after: 1672,
+      leaked: 0,
+      classes: [
+        { name: 'dev.warp.protocol.compress.FrameDecompressor$1', before: 6, after: 8, growth: 2, leaked: false },
+        { name: 'dev.warp.proxy.console.ConsoleLine', before: 600, after: 900, growth: 300, bound: 9192, leaked: false },
+      ],
+    },
     phases: [
       { name: 'warm-up', from: 0, to: 300, bots: 20, joins: 40, switches: 120, pings: 30, failures: 0, joinMs: { p50: 900, p95: 1500 }, switchMs: { p50: 180, p95: 420 }, rss: { avg: 600, max: 640 }, heapLive: 41, heapUsed: 210, direct: 34, fds: 120, threads: 60, cpu: 35, sendQueue: 96, receiveQueue: 0 },
     ],
@@ -198,8 +230,9 @@ describe('soak report', () => {
     const markdown = soakMarkdown({ version: '1.21.4' }, variant);
 
     assert.match(markdown, /^\| Connections Warp still held \| 0 \| 0 after 0\.4 s \| none \| ✅ \|$/m);
-    assert.match(markdown, /^\| Objects of Warp and Netty channels \| 1,669 \| 1,672 \| \+20 per class \| ✅ \|$/m);
-    assert.match(markdown, /^\| `dev\.warp\.protocol\.compress\.FrameDecompressor\$1` \| 6 \| 8 \| ✅ \|$/m);
+    assert.match(markdown, /^\| Objects of Warp and Netty channels \| 1,669 \| 1,672 \| \+20 per class, or a ring's bound \| ✅ \|$/m);
+    assert.match(markdown, /^\| `dev\.warp\.protocol\.compress\.FrameDecompressor\$1` \| 6 \| 8 \| \+20 \| ✅ \|$/m);
+    assert.match(markdown, /^\| `dev\.warp\.proxy\.console\.ConsoleLine` \| 600 \| 900 \| 9,192 \| ✅ \|$/m);
   });
 
   it('tabulates each resource, each phase and the network', () => {
