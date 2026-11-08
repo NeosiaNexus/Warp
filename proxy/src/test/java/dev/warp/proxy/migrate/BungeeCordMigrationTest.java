@@ -164,6 +164,19 @@ class BungeeCordMigrationTest {
     }
 
     @Test
+    @DisplayName("should drop a timeout of zero, which turned it off, and keep Warp's defaults")
+    void timeoutOff() throws Exception {
+      Migration.Result result =
+          migrate("timeout: 0\nserver_connect_timeout: 0\nservers:\n  hub:\n    address: a:1\n");
+
+      WarpConfig config = assertLoads(target, result.warpConf());
+      assertEquals(30, config.timeouts().backendRead().toSeconds());
+      assertEquals(5, config.timeouts().connect().toSeconds());
+      dropped(result.report(), "timeout");
+      dropped(result.report(), "server_connect_timeout");
+    }
+
+    @Test
     @DisplayName("should mention waterfall.yml and Waterfall's own keys")
     void waterfall() throws Exception {
       Files.writeString(source.resolve("waterfall.yml"), "x: 1\n", StandardCharsets.UTF_8);

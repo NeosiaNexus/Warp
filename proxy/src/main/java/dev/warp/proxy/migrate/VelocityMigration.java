@@ -91,9 +91,11 @@ final class VelocityMigration implements Migration {
   // ---------------------------------------------------------------------------
 
   private void general(Source source, Draft draft, Report report) {
-    source.string("config-version").ifPresent(v -> report.drop("config-version", "Velocity's own"));
+    Optional<String> version = source.string("config-version");
+    version.ifPresent(v -> report.drop("config-version", "Velocity's own"));
+    boolean legacyMotd = legacyMotd(version);
     source.string("bind").ifPresent(v -> set(draft, report, "bind", v, "bind"));
-    source.string("motd").ifPresent(v -> Shared.motd(draft, report, FILE, "motd", v));
+    source.string("motd").ifPresent(v -> Shared.motd(draft, report, FILE, "motd", v, legacyMotd));
     source
         .integer("show-max-players")
         .ifPresent(v -> set(draft, report, "show-max-players", v, "status.max-players"));
@@ -258,14 +260,7 @@ final class VelocityMigration implements Migration {
         .ifPresent(v -> Shared.loginRate(draft, report, FILE, "advanced.login-ratelimit", v));
     integer(source, "connection-timeout")
         .ifPresent(
-            v ->
-                set(
-                    draft,
-                    report,
-                    "advanced.connection-timeout",
-                    v,
-                    "timeouts.connect",
-                    Conversions.duration(v)));
+            v -> Shared.connectTimeout(draft, report, FILE, "advanced.connection-timeout", v));
     integer(source, "read-timeout")
         .ifPresent(v -> Shared.readTimeout(draft, report, FILE, "advanced.read-timeout", v));
     bool(source, "haproxy-protocol")
@@ -390,6 +385,22 @@ final class VelocityMigration implements Migration {
 
   private static Optional<Long> integer(Source source, String key) {
     return source.integer("advanced", key);
+  }
+
+  /**
+   * Whether the file's message of the day is in legacy {@code &} codes. Velocity read it so until
+   * {@code config-version} 2.0, which switched to MiniMessage; a file without a version is from
+   * 1.x.
+   */
+  private static boolean legacyMotd(Optional<String> configVersion) {
+    if (configVersion.isEmpty()) {
+      return true;
+    }
+    try {
+      return Double.parseDouble(configVersion.get().trim()) < 2.0;
+    } catch (NumberFormatException e) {
+      return false;
+    }
   }
 
   private static Optional<Boolean> bool(Source source, String key) {

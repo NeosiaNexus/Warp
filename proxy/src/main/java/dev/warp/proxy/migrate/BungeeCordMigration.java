@@ -149,15 +149,7 @@ final class BungeeCordMigration implements Migration {
     source.integer("timeout").ifPresent(v -> Shared.readTimeout(draft, report, FILE, "timeout", v));
     source
         .integer("server_connect_timeout")
-        .ifPresent(
-            v ->
-                set(
-                    draft,
-                    report,
-                    "server_connect_timeout",
-                    v,
-                    "timeouts.connect",
-                    Conversions.duration(v)));
+        .ifPresent(v -> Shared.connectTimeout(draft, report, FILE, "server_connect_timeout", v));
     source.bool("log_pings").ifPresent(v -> set(draft, report, "log_pings", v, "logging.pings"));
     source
         .bool("log_commands")
@@ -321,7 +313,7 @@ final class BungeeCordMigration implements Migration {
     String prefix = "listeners[0].";
 
     first.string("host").ifPresent(v -> set(draft, report, prefix + "host", v, "bind"));
-    first.string("motd").ifPresent(v -> Shared.motd(draft, report, FILE, prefix + "motd", v));
+    first.string("motd").ifPresent(v -> Shared.motd(draft, report, FILE, prefix + "motd", v, true));
     first
         .integer("max_players")
         .ifPresent(v -> set(draft, report, prefix + "max_players", v, "status.max-players"));

@@ -256,6 +256,78 @@ class VelocityMigrationTest {
     }
 
     @Test
+    @DisplayName("should keep an ampersand in a MiniMessage motd as it is")
+    void miniMessageAmpersand() throws Exception {
+      Migration.Result result =
+          migrate(
+              "config-version = \"2.7\"\nmotd = \"<gold>Rock&Roll Network\"\n"
+                  + "[servers]\nhub = \"a:1\"\ntry = [\"hub\"]\n");
+
+      assertLoads(target, result.warpConf());
+      assertTrue(
+          result.warpConf().contains("motd = \"<gold>Rock&Roll Network\""), result.warpConf());
+    }
+
+    @Test
+    @DisplayName("should convert section signs in a MiniMessage motd only without tags")
+    void miniMessageSection() throws Exception {
+      Migration.Result plain =
+          migrate(
+              "config-version = \"2.7\"\nmotd = \"§6Rock&Roll\"\n"
+                  + "[servers]\nhub = \"a:1\"\ntry = [\"hub\"]\n");
+      Migration.Result tagged =
+          migrate(
+              "config-version = \"2.7\"\nmotd = \"<gold>Rock §cRoll\"\n"
+                  + "[servers]\nhub = \"a:1\"\ntry = [\"hub\"]\n");
+
+      assertTrue(plain.warpConf().contains("motd = \"<gold>Rock&Roll\""), plain.warpConf());
+      assertTrue(tagged.warpConf().contains("motd = \"<gold>Rock §cRoll\""), tagged.warpConf());
+    }
+
+    @Test
+    @DisplayName("should give colliding multi-server forced hosts a group each")
+    void groupCollision() throws Exception {
+      Migration.Result result =
+          migrate(
+              "[servers]\ns1 = \"a:1\"\ns2 = \"a:2\"\ns3 = \"a:3\"\ns4 = \"a:4\"\n"
+                  + "try = [\"s1\"]\n[forced-hosts]\n"
+                  + "\"a-b.example.com\" = [\"s1\", \"s2\"]\n"
+                  + "\"a.b.example.com\" = [\"s3\", \"s4\"]\n");
+
+      assertLoads(target, result.warpConf());
+      String conf = result.warpConf();
+      assertTrue(conf.contains("  a-b-example-com {\n"), conf);
+      assertTrue(conf.contains("servers = [\"s1\", \"s2\"]"), conf);
+      assertTrue(conf.contains("  a-b-example-com-2 {\n"), conf);
+      assertTrue(conf.contains("servers = [\"s3\", \"s4\"]"), conf);
+      assertTrue(conf.contains("\"a-b.example.com\" = \"a-b-example-com\""), conf);
+      assertTrue(conf.contains("\"a.b.example.com\" = \"a-b-example-com-2\""), conf);
+    }
+
+    @Test
+    @DisplayName("should drop timeouts Warp refuses rather than write a file it cannot load")
+    void timeoutsOutOfRange() throws Exception {
+      Migration.Result result =
+          migrate(
+              "[servers]\nhub = \"a:1\"\ntry = [\"hub\"]\n[advanced]\n"
+                  + "connection-timeout = 0\nread-timeout = 500\n");
+      Migration.Result negative =
+          migrate(
+              "[servers]\nhub = \"a:1\"\ntry = [\"hub\"]\n[advanced]\n"
+                  + "connection-timeout = -1\nread-timeout = 0\n");
+
+      WarpConfig config = assertLoads(target, result.warpConf());
+      assertEquals(5, config.timeouts().connect().toSeconds());
+      assertEquals(25, config.timeouts().read().toSeconds());
+      assertFalse(result.warpConf().contains("timeouts"), result.warpConf());
+      dropped(result.report(), "advanced.connection-timeout");
+      dropped(result.report(), "advanced.read-timeout");
+      assertLoads(target, negative.warpConf());
+      dropped(negative.report(), "advanced.connection-timeout");
+      dropped(negative.report(), "advanced.read-timeout");
+    }
+
+    @Test
     @DisplayName("should keep Warp's client read timeout when Velocity's was 30 s or more")
     void readTimeout() throws Exception {
       Migration.Result longer =

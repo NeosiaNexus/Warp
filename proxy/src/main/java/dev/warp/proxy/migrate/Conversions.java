@@ -40,12 +40,14 @@ final class Conversions {
    * MiniMessage is kept as it is. Line breaks split the text into lines.
    *
    * @param text the source text
+   * @param legacy whether the source read {@code &} codes, as BungeeCord and Velocity 1.x did; a
+   *     MiniMessage source keeps its ampersands, since {@code R&B} is a name there, not a colour
    * @return the lines, in MiniMessage
    */
-  static List<String> motd(String text) {
+  static List<String> motd(String text, boolean legacy) {
     List<String> lines = new ArrayList<>();
     for (String line : text.replace("\r\n", "\n").split("\n", -1)) {
-      lines.add(toMiniMessage(line));
+      lines.add(toMiniMessage(line, legacy));
     }
     return List.copyOf(lines);
   }
@@ -53,14 +55,19 @@ final class Conversions {
   /**
    * Converts a text in legacy codes to MiniMessage, leaving a text without any as it is.
    *
+   * <p>A {@code §} code is always a colour, so it is converted unless the text also holds a
+   * MiniMessage tag, which the legacy deserializer would escape. An {@code &} is a colour only
+   * where the source read it as one: in a MiniMessage source it is a plain character.
+   *
    * @param text the source text
+   * @param legacy whether the source read {@code &} codes
    * @return the MiniMessage text
    */
-  static String toMiniMessage(String text) {
-    if (text.indexOf('§') >= 0) {
+  static String toMiniMessage(String text, boolean legacy) {
+    if (text.indexOf('§') >= 0 && (legacy || text.indexOf('<') < 0)) {
       return serialize(SECTION.deserialize(text));
     }
-    if (hasLegacyCodes(text, '&')) {
+    if (legacy && hasLegacyCodes(text, '&')) {
       return serialize(AMPERSAND.deserialize(text));
     }
     return text;

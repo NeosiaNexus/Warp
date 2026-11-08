@@ -21,6 +21,7 @@ import dev.warp.proxy.WarpBuildInfo;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -31,6 +32,9 @@ final class Shared {
 
   /** The client's own read timeout: Warp's {@code timeouts.read} has to stay below it. */
   static final long CLIENT_TIMEOUT_MILLIS = 30_000;
+
+  /** The least read timeout Warp accepts ({@code TimeoutsConfig.MIN_READ}). */
+  static final long MIN_READ_TIMEOUT_MILLIS = 1000;
 
   static final String DOCS = "https://github.com/NeosiaNexus/Warp/blob/main/docs/migration.md";
 
@@ -182,6 +186,7 @@ final class Shared {
       String key,
       Map<String, List<String>> hosts,
       Set<String> servers) {
+    Set<String> groups = new HashSet<>();
     for (Map.Entry<String, List<String>> entry : hosts.entrySet()) {
       String host = entry.getKey().toLowerCase(Locale.ROOT);
       String sourceKey = key + "." + Source.join(entry.getKey());
@@ -203,7 +208,7 @@ final class Shared {
       }
       String target = targets.getFirst();
       if (targets.size() > 1) {
-        target = groupName(host, servers);
+        target = groupName(host, servers, groups);
         String origin = origin(file, sourceKey, entry.getValue());
         draft.set(List.of("groups", target, "servers"), targets, origin);
         draft.set(
@@ -223,13 +228,31 @@ final class Shared {
     }
   }
 
-  /** A group name from a host: {@code lobby.example.com} becomes {@code lobby-example-com}. */
-  private static String groupName(String host, Set<String> servers) {
-    String name = host.replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
-    if (name.isEmpty()) {
-      name = "hosts";
+  /**
+   * A group name from a host: {@code lobby.example.com} becomes {@code lobby-example-com}. The name
+   * steers clear of the servers and of the groups already named, so that two hosts whose names
+   * differ only in punctuation ({@code a-b.example.com} and {@code a.b.example.com}) get a group
+   * each rather than the second host's servers overwriting the first's.
+   *
+   * @param host the host, lowercased
+   * @param servers the server names
+   * @param groups the group names handed out so far; the chosen name is added
+   * @return the group name
+   */
+  private static String groupName(String host, Set<String> servers, Set<String> groups) {
+    String base = host.replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
+    if (base.isEmpty()) {
+      base = "hosts";
     }
-    return servers.contains(name) ? name + "-group" : name;
+    String name = base;
+    if (servers.contains(name)) {
+      name = base + "-group";
+    }
+    for (int n = 2; servers.contains(name) || groups.contains(name); n++) {
+      name = base + "-" + n;
+    }
+    groups.add(name);
+    return name;
   }
 
   /**
@@ -240,9 +263,12 @@ final class Shared {
    * @param file the source file's name
    * @param key the source key
    * @param text the source text, in MiniMessage or legacy codes
+   * @param legacy whether the source read {@code &} codes (BungeeCord, Velocity 1.x) rather than
+   *     MiniMessage
    */
-  static void motd(Draft draft, Report report, String file, String key, String text) {
-    List<String> lines = Conversions.motd(text);
+  static void motd(
+      Draft draft, Report report, String file, String key, String text, boolean legacy) {
+    List<String> lines = Conversions.motd(text, legacy);
     if (lines.size() > 2) {
       report.warn(key + " has " + lines.size() + " lines; clients show two.");
     }
@@ -318,8 +344,33 @@ final class Shared {
   }
 
   /**
+   * Writes the connect timeout to a backend. A source value of zero or less turned the timeout off,
+   * which Warp does not allow: it is dropped, and Warp keeps its default.
+   *
+   * @param draft the configuration
+   * @param report the report
+   * @param file the source file's name
+   * @param key the source key
+   * @param millis the source timeout
+   */
+  static void connectTimeout(Draft draft, Report report, String file, String key, long millis) {
+    if (millis <= 0) {
+      report.drop(
+          key,
+          "a connect timeout of "
+              + millis
+              + " ms means none, which Warp refuses; Warp keeps its default timeouts.connect");
+      return;
+    }
+    draft.set("timeouts.connect", Conversions.duration(millis), origin(file, key, millis));
+    report.keep(key, millis, "timeouts.connect");
+  }
+
+  /**
    * Writes the read timeouts. The source has one for clients and backends alike; Warp keeps the
-   * client's below the client's own 30 seconds, so that the proxy notices a dead client first.
+   * client's below the client's own 30 seconds, so that the proxy notices a dead client first. A
+   * source value below Warp's one-second floor (zero turned the timeout off) is dropped, and Warp
+   * keeps its defaults.
    *
    * @param draft the configuration
    * @param report the report
@@ -328,6 +379,15 @@ final class Shared {
    * @param millis the source timeout
    */
   static void readTimeout(Draft draft, Report report, String file, String key, long millis) {
+    if (millis < MIN_READ_TIMEOUT_MILLIS) {
+      report.drop(
+          key,
+          "a read timeout of "
+              + millis
+              + " ms is below the second Warp requires (0 means none); Warp keeps its default"
+              + " timeouts.read and timeouts.backend-read");
+      return;
+    }
     String origin = origin(file, key, millis);
     draft.set("timeouts.backend-read", Conversions.duration(millis), origin);
     if (millis < CLIENT_TIMEOUT_MILLIS) {
