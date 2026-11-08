@@ -63,7 +63,8 @@ public interface DrainHost<P extends DrainCandidate> {
 
   /**
    * Phase 3: disconnects the players left and stops the proxy. Called once, on the drain's thread,
-   * once the drain's future completed.
+   * once the drain's future completed. The host may hand the work to a thread of its own: the
+   * drain's thread is a daemon, which the JVM does not wait for.
    *
    * @param status the drain's final status
    */
