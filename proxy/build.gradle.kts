@@ -91,6 +91,8 @@ dependencies {
     implementation(libs.gson)
     implementation(libs.adventure.text.serializer.gson)
     implementation(libs.configurate.hocon)
+    // warp migrate reads BungeeCord's config.yml.
+    implementation(libs.configurate.yaml)
     // Read directly too, for the line of each key in configuration errors.
     implementation(libs.typesafe.config)
 

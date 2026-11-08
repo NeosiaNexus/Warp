@@ -25,6 +25,7 @@ import dev.warp.proxy.console.ConsoleOutput;
 import dev.warp.proxy.console.StartupTimings;
 import dev.warp.proxy.console.Summaries;
 import dev.warp.proxy.logging.LogCode;
+import dev.warp.proxy.migrate.MigrateCli;
 import dev.warp.proxy.remote.ConsoleCli;
 
 import java.lang.management.ManagementFactory;
@@ -54,8 +55,9 @@ public final class WarpBootstrap {
   /**
    * Launches the Warp proxy.
    *
-   * @param args command-line arguments: none to run the proxy, or {@code console ...} for the
-   *     remote console's client (see {@link ConsoleCli})
+   * @param args command-line arguments: none to run the proxy, {@code console ...} for the remote
+   *     console's client (see {@link ConsoleCli}), or {@code migrate ...} to convert a Velocity or
+   *     BungeeCord installation (see {@link MigrateCli})
    */
   public static void main(String[] args) {
     long jvmMillis = ManagementFactory.getRuntimeMXBean().getUptime();
@@ -68,6 +70,11 @@ public final class WarpBootstrap {
     // java -jar warp.jar console ...: the remote console's client, which never starts a proxy.
     if (args.length > 0 && args[0].equals("console")) {
       System.exit(ConsoleCli.run(Arrays.copyOfRange(args, 1, args.length)));
+      return;
+    }
+    // java -jar warp.jar migrate ...: converts a Velocity or BungeeCord installation.
+    if (args.length > 0 && args[0].equals("migrate")) {
+      System.exit(MigrateCli.run(Arrays.copyOfRange(args, 1, args.length)));
       return;
     }
     Path directory = Path.of(".");

@@ -99,6 +99,7 @@ disruptor = { group = "com.lmax", name = "disruptor", version.ref = "disruptor" 
 caffeine = { group = "com.github.ben-manes.caffeine", name = "caffeine", version.ref = "caffeine" }
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 configurate-hocon = { group = "org.spongepowered", name = "configurate-hocon", version.ref = "configurate" }
+configurate-yaml = { group = "org.spongepowered", name = "configurate-yaml", version.ref = "configurate" }
 typesafe-config = { group = "com.typesafe", name = "config", version.ref = "typesafe-config" }
 
 # Via plugin
