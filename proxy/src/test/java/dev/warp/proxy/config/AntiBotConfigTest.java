@@ -89,6 +89,15 @@ class AntiBotConfigTest {
                   }
                   blocklist { strikes = 0, duration = 1h }
                   checks { timeout = 500ms }
+                  verification {
+                    offline-mode = attack
+                    online-mode = never
+                    max-concurrent = 64
+                    queue { size = 128, max-wait = 5s }
+                    probe-timeout = 3s
+                    token { lifetime = 2m, rotate-after = 1d, secret-file = "tokens" }
+                    transfer { host = "play.example.org", port = 25566 }
+                  }
                 }
                 """)
             .antiBot();
@@ -104,6 +113,31 @@ class AntiBotConfigTest {
         config.attack());
     assertFalse(config.blocklist().enabled());
     assertEquals(Duration.ofMillis(500), config.checkTimeout());
+    assertEquals(
+        new AntiBotConfig.Verification(
+            AntiBotConfig.Mode.ATTACK,
+            AntiBotConfig.Mode.NEVER,
+            64,
+            128,
+            Duration.ofSeconds(5),
+            Duration.ofSeconds(3),
+            Duration.ofMinutes(2),
+            Duration.ofDays(1),
+            "tokens",
+            "play.example.org",
+            25566),
+        config.verification());
+  }
+
+  @Test
+  @DisplayName("should refuse a verification mode that is not always, attack or never")
+  void verificationMode() {
+    ConfigurationException refused =
+        assertThrows(
+            ConfigurationException.class,
+            () -> load("anti-bot { verification { offline-mode = sometimes } }"));
+
+    assertTrue(String.valueOf(refused.getMessage()).contains("always, attack or never"));
   }
 
   @Test

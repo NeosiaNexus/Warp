@@ -29,5 +29,17 @@ public enum VerificationMethod {
   COMMAND,
 
   /** A plugin marked it verified, with {@link VerifiedIdentities#add(Identity)}. */
-  PLUGIN
+  PLUGIN,
+
+  /**
+   * It passed the proxy's probe: the login and configuration packets a real client answers (a ping
+   * and a keep-alive echoed, its brand and settings sent, its known packs and a cookie returned).
+   */
+  PROBE,
+
+  /**
+   * It came back from a verification before authentication with the signed token the proxy stored
+   * in its client, and then authenticated.
+   */
+  TOKEN
 }

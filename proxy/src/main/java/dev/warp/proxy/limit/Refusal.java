@@ -59,6 +59,14 @@ public enum Refusal {
 
   /** A login a plugin's check failed. */
   CHECK_FAILED("logins refused by plugins' checks"),
+  /** An unknown identity whose verification failed on a protocol impossibility. */
+  VERIFICATION_FAILED("logins that failed verification"),
+  /** An unknown identity that did not answer the verification in time. */
+  VERIFICATION_TIMEOUT("verifications timed out"),
+  /** An unknown identity the proxy had no room to verify. */
+  VERIFICATION_BUSY("logins refused as too many verifying"),
+  /** A player verified before authentication, told to reconnect (before 1.20.5). */
+  VERIFIED_RECONNECT("verified players asked to reconnect"),
 
   // ---------------------------------------------------------------------------
   // Deadlines
@@ -142,6 +150,9 @@ public enum Refusal {
    * @return {@code true} for an invalid frame, handshake or packet
    */
   public boolean strikes() {
-    return this == INVALID_FRAME || this == INVALID_HANDSHAKE || this == UNEXPECTED_PACKET;
+    return this == INVALID_FRAME
+        || this == INVALID_HANDSHAKE
+        || this == UNEXPECTED_PACKET
+        || this == VERIFICATION_FAILED;
   }
 }

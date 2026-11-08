@@ -26,6 +26,7 @@ import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.antibot.AntiBotStatus;
 import dev.warp.proxy.limit.Refusal;
 
+import java.io.IOException;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.time.Duration;
@@ -54,8 +55,10 @@ import org.jspecify.annotations.Nullable;
  * <ul>
  *   <li>{@code /warp antibot}: level, lockdown, the signals of the last second against their
  *       thresholds, connections not logged in, the authentication line, trusted identities,
- *       refusals
+ *       verifications running, waiting and their outcomes, verification tokens, refusals
  *   <li>{@code /warp antibot lockdown on|off}
+ *   <li>{@code /warp antibot token rotate}: a new key for verification tokens, the previous one
+ *       still accepted while the tokens signed under it live
  *   <li>{@code /warp antibot verify|unverify|check <name|uuid> [address]}: a UUID is an account; a
  *       name with an address is that name on that address's network; a name alone is the player of
  *       that name connected now (its account in online mode, and its name and network)
@@ -95,7 +98,30 @@ final class AntiBotCommand {
                         .executes(context -> lockdown(antiBot, context))))
         .then(identityCommand("verify", antiBot, players))
         .then(identityCommand("unverify", antiBot, players))
-        .then(identityCommand("check", antiBot, players));
+        .then(identityCommand("check", antiBot, players))
+        .then(
+            LiteralArgumentBuilder.<CommandSource>literal("token")
+                .then(
+                    LiteralArgumentBuilder.<CommandSource>literal("rotate")
+                        .executes(context -> rotateToken(antiBot, context))));
+  }
+
+  /** Replaces the key verification tokens are signed under; the previous one stays accepted. */
+  private static int rotateToken(AntiBotService antiBot, CommandContext<CommandSource> context) {
+    CommandSource source = context.getSource();
+    String who = source instanceof Player player ? "command by " + player.username() : "command";
+    try {
+      antiBot.rotateTokenKey(who);
+      source.sendMessage(
+          Component.text(
+              "Token key rotated: new tokens are signed under a new key, those already out stay"
+                  + " valid until they expire.",
+              NamedTextColor.GREEN));
+      return Command.SINGLE_SUCCESS;
+    } catch (IllegalStateException | IOException e) {
+      source.sendMessage(Component.text("Cannot rotate: " + e.getMessage(), NamedTextColor.RED));
+      return 0;
+    }
   }
 
   private static LiteralArgumentBuilder<CommandSource> identityCommand(
@@ -328,6 +354,31 @@ final class AntiBotCommand {
             + " waiting");
     lines.add(
         "  trusted identities: " + status.verified() + " of at most " + status.verifiedCapacity());
+    AntiBotStatus.Verifications verifications = status.verifications();
+    lines.add(
+        "  verifying: "
+            + verifications.running()
+            + "/"
+            + verifications.maxRunning()
+            + " running, "
+            + verifications.waiting()
+            + " waiting; since the start: "
+            + verifications.passed()
+            + " passed ("
+            + verifications.escalated()
+            + " not trusted), "
+            + verifications.failedTotal()
+            + " failed, "
+            + verifications.turnedAway()
+            + " turned away as busy");
+    lines.add(
+        "  verification tokens: "
+            + verifications.tokensIssued()
+            + " issued, "
+            + verifications.tokensAccepted()
+            + " accepted, "
+            + verifications.tokensRejected()
+            + " rejected");
     long refused = 0;
     for (Refusal reason : Refusal.values()) {
       refused += status.refusals().getOrDefault(reason, 0L);

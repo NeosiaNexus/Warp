@@ -18,9 +18,11 @@ package dev.warp.proxy.management;
 
 import dev.warp.api.antibot.AttackReport;
 import dev.warp.api.antibot.Signal;
+import dev.warp.api.antibot.VerificationFailure;
 import dev.warp.proxy.antibot.AntiBotStatus;
 import dev.warp.proxy.limit.Refusal;
 
+import java.time.Instant;
 import java.util.Locale;
 import java.util.Map;
 
@@ -86,6 +88,31 @@ final class AntiBotEndpoints {
     verified.addProperty("droppedChanges", status.droppedChanges());
     verified.addProperty("shared", status.sharedStore());
     body.add("verified", verified);
+
+    AntiBotStatus.Verifications verifications = status.verifications();
+    JsonObject verifying = new JsonObject();
+    verifying.addProperty("running", verifications.running());
+    verifying.addProperty("max", verifications.maxRunning());
+    verifying.addProperty("waiting", verifications.waiting());
+    verifying.addProperty("maxWaiting", verifications.maxWaiting());
+    verifying.addProperty("grantedFromLine", verifications.grantedFromLine());
+    verifying.addProperty("turnedAway", verifications.turnedAway());
+    verifying.addProperty("waitedSeconds", verifications.waitedSeconds());
+    verifying.addProperty("passed", verifications.passed());
+    verifying.addProperty("escalated", verifications.escalated());
+    JsonObject failed = new JsonObject();
+    for (VerificationFailure reason : VerificationFailure.values()) {
+      failed.addProperty(lower(reason), verifications.failed().getOrDefault(reason, 0L));
+    }
+    verifying.add("failed", failed);
+    JsonObject tokens = new JsonObject();
+    tokens.addProperty("issued", verifications.tokensIssued());
+    tokens.addProperty("accepted", verifications.tokensAccepted());
+    tokens.addProperty("rejected", verifications.tokensRejected());
+    Instant keySince = verifications.tokenKeySince();
+    tokens.addProperty("keySince", keySince == null ? null : keySince.toString());
+    verifying.add("tokens", tokens);
+    body.add("verification", verifying);
 
     body.addProperty("blocklisted", status.blocklisted() < 0 ? null : status.blocklisted());
     body.addProperty("checks", status.checks());
@@ -222,6 +249,55 @@ final class AntiBotEndpoints {
     if (status.blocklisted() >= 0) {
       gauge(out, "warp_antibot_blocklisted", "Addresses on the blocklist.", status.blocklisted());
     }
+
+    AntiBotStatus.Verifications verifications = status.verifications();
+    gauge(
+        out,
+        "warp_antibot_verifying",
+        "Verifications of unknown identities running.",
+        verifications.running());
+    gauge(
+        out,
+        "warp_antibot_queue_length",
+        "Logins waiting in line for a verification.",
+        verifications.waiting());
+    header(
+        out,
+        "warp_antibot_queue_wait_seconds",
+        "summary",
+        "How long logins granted a verification from the line waited.");
+    out.append("warp_antibot_queue_wait_seconds_sum ")
+        .append(number(verifications.waitedSeconds()))
+        .append('\n');
+    out.append("warp_antibot_queue_wait_seconds_count ")
+        .append(verifications.grantedFromLine())
+        .append('\n');
+    header(
+        out,
+        "warp_antibot_verifications_total",
+        "counter",
+        "Verifications of unknown identities by result: passed, escalated (passed, not"
+            + " trusted), busy (no room), or failed by reason.");
+    sample(out, "warp_antibot_verifications_total", "result", "passed", verifications.passed());
+    sample(
+        out, "warp_antibot_verifications_total", "result", "escalated", verifications.escalated());
+    sample(out, "warp_antibot_verifications_total", "result", "busy", verifications.turnedAway());
+    for (VerificationFailure reason : VerificationFailure.values()) {
+      sample(
+          out,
+          "warp_antibot_verifications_total",
+          "result",
+          "failed_" + lower(reason),
+          verifications.failed().getOrDefault(reason, 0L));
+    }
+    header(
+        out,
+        "warp_antibot_tokens_total",
+        "counter",
+        "Verification tokens issued to transferred clients, and accepted or rejected on return.");
+    sample(out, "warp_antibot_tokens_total", "result", "issued", verifications.tokensIssued());
+    sample(out, "warp_antibot_tokens_total", "result", "accepted", verifications.tokensAccepted());
+    sample(out, "warp_antibot_tokens_total", "result", "rejected", verifications.tokensRejected());
     return out.toString();
   }
 

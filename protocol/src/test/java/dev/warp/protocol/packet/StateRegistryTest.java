@@ -36,8 +36,11 @@ import dev.warp.protocol.packet.config.AcknowledgeFinishConfiguration;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.config.ConfigPacket;
+import dev.warp.protocol.packet.config.ConfigPing;
 import dev.warp.protocol.packet.config.ConfigPluginMessage;
+import dev.warp.protocol.packet.config.ConfigPong;
 import dev.warp.protocol.packet.config.FinishConfiguration;
+import dev.warp.protocol.packet.config.KnownPacks;
 import dev.warp.protocol.packet.cookie.CookiePacket;
 import dev.warp.protocol.packet.cookie.CookieRequest;
 import dev.warp.protocol.packet.cookie.CookieResponse;
@@ -188,6 +191,12 @@ class StateRegistryTest {
                 AcknowledgeFinishConfiguration.class,
                 "minecraft:finish_configuration"),
             new PacketName(CONFIGURATION, SERVERBOUND, KeepAlive.class, "minecraft:keep_alive"),
+            new PacketName(CONFIGURATION, SERVERBOUND, ConfigPong.class, "minecraft:pong"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, ConfigPing.class, "minecraft:ping"),
+            new PacketName(
+                CONFIGURATION, SERVERBOUND, KnownPacks.class, "minecraft:select_known_packs"),
+            new PacketName(
+                CONFIGURATION, CLIENTBOUND, KnownPacks.class, "minecraft:select_known_packs"),
             new PacketName(
                 CONFIGURATION, SERVERBOUND, ConfigPluginMessage.class, "minecraft:custom_payload"),
             new PacketName(
@@ -401,6 +410,10 @@ class StateRegistryTest {
                 AcknowledgeFinishConfiguration.class,
                 "finish_configuration"),
             new PacketName(CONFIGURATION, SERVERBOUND, KeepAlive.class, "keep_alive"),
+            new PacketName(CONFIGURATION, SERVERBOUND, ConfigPong.class, "pong"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, ConfigPing.class, "ping"),
+            new PacketName(CONFIGURATION, SERVERBOUND, KnownPacks.class, "select_known_packs"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, KnownPacks.class, "select_known_packs"),
             new PacketName(CONFIGURATION, SERVERBOUND, ConfigPluginMessage.class, "custom_payload"),
             new PacketName(CONFIGURATION, CLIENTBOUND, ConfigDisconnect.class, "disconnect"),
             new PacketName(

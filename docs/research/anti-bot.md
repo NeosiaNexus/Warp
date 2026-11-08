@@ -1358,6 +1358,46 @@ New codecs: configuration Ping and Keep Alive. Stops: A7 from every bot without 
 machine during attacks, the bulk of cheap join bots (A8 without a protocol state machine). Tests: e2e with `minecraft-protocol` clients that skip the
 echo (must fail) and every supported version of mineflayer (must pass).
 
+**Delivered** (`feat(proxy): verify unknown players with login and configuration probes before
+authentication`):
+
+- The configuration probe (`Probe`, `ProbeSessionHandler`): Ping and Keep Alive echoed, Client
+  Information required, the brand read in place from the client's plugin message (a `PacketWatch`, the
+  frame still forwarded untouched), Select Known Packs offered with `minecraft:core` at every version
+  name of the client's protocol and the answer compared, a random `warp:probe` cookie stored and asked
+  back (1.20.5+). The last answer closes the probe (clients answer in order), the deadline is
+  `probe-timeout` + 4 RTT after the pong, 30 s at most. Hard verdicts only on a wrong echo, a packet
+  illegal in the state, a changed cookie, or no echo and no settings at the deadline; everything else
+  is a flag (`Probe.Flag`), and a pass with two flags or more lets the player in without trusting it.
+- The pre-join probe (`PreJoinProbeSessionHandler`): one Keep Alive before Join Game for 1.8 to 1.20.1;
+  1.7 is not probed. The passive brand and settings check on the backend for these versions is left to
+  phase 3's world, which makes it moot.
+- Verification before authentication during attacks: Login Success under the offline profile, no
+  player registered and no plugin event, the probe, then Store Cookie `warp:verified` and a Transfer
+  back to the handshake's host and port (or `verification.transfer`), or the "verified, please
+  reconnect" disconnect before 1.20.5. The token (`VerificationTokens`) is version, key id, issue
+  time, K2, flags and a 16-byte HMAC-SHA256 tag; valid `token.lifetime` (10 min), bound to the name
+  and network, two keys accepted across a rotation, the key generated into `anti-bot/token.key` and
+  rotated every `rotate-after` or by `/warp antibot token rotate`, or shared by a fleet through
+  `WARP_ANTIBOT_TOKEN_SECRET`. The handshake accepts a transfer intent while verified players are
+  due back even with `accepts-transfers = false`; the login then has to present a valid token. A
+  pass also trusts K2 on the proxy that ran it, so the same proxy needs no cookie.
+- The queue (`VerificationQueue`): `max-concurrent` (2,048) verifications at once, the others in
+  1,024 FIFO buckets keyed by a seeded hash of the network and served round-robin (stochastic fair
+  queueing), `queue.size` (4,096) places with at most a sixteenth per network, `queue.max-wait` (20 s),
+  then "busy, retry in N s". Every operation is O(1); known identities never reach it.
+- Signals `VERIFICATIONS_PASSED` and `VERIFICATIONS_FAILED` in the detector, with the failure-ratio
+  trigger of §9.10 (over half of 20+ verifications in 10 s). `VerificationFailedEvent`,
+  `VerificationMethod.PROBE` and `TOKEN`, `VerificationFailure`. Metrics `warp_antibot_verifying`,
+  `warp_antibot_queue_length`, `warp_antibot_queue_wait_seconds`, `warp_antibot_verifications_total`,
+  `warp_antibot_tokens_total`; the JSON status and `/warp antibot` show the same.
+- Per-prefix budgets during attacks were already phase 1's (`limits.logins.under-attack`). A failed
+  probe strikes the blocklist like any protocol violation; a time-out never does.
+
+**Left for later**: version-share gating (it escalates to a stage that exists from phase 3 on), the
+e2e scenario with `minecraft-protocol` and mineflayer clients (the unit and pipeline tests cover every
+packet of the probe; the headless harness run is the next step), `/warp antibot trace <address>`.
+
 ### Phase 3: the virtual world
 
 - `VirtualWorld` for 1.7.10 to 26.3: the packets of §9.8.1, the generated registry and tag tables, the

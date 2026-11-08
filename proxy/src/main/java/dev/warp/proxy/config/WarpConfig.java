@@ -1828,6 +1828,43 @@ public final class WarpConfig {
           checks {
             timeout = 2s
           }
+
+          # The verification of players the anti-bot does not know: a probe of the packets every
+          # real client answers as it logs in (a ping and a keep-alive to echo, its brand and
+          # settings, its known packs and a cookie from 1.20.5). Nothing is verified twice: once
+          # known, a player goes straight through. In offline mode it runs after Login Success; in
+          # online mode after authentication, and before it during an attack, when the client is
+          # then transferred back (1.20.5+) or asked to reconnect, so that bots never reach the
+          # session server. Modes: always, attack (during attacks only), never.
+          verification {
+            offline-mode = always
+            online-mode = always
+            # The most verifications at once; the others wait in line, fairly between networks,
+            # at most `size` of them and for at most `max-wait`, then are told to retry.
+            max-concurrent = 2048
+            queue {
+              size = 4096
+              max-wait = 20s
+            }
+            # The base deadline of each step of the probe; four round trips are added once the
+            # ping is answered, so a slow connection is never failed for its latency.
+            probe-timeout = 5s
+            # A player verified before authentication carries a signed token in a cookie to its
+            # next login, here or on another proxy of a fleet sharing the key (or
+            # WARP_ANTIBOT_TOKEN_SECRET). The proxy generates the key, and replaces it every
+            # `rotate-after` (0 = never), accepting the previous one meanwhile.
+            token {
+              lifetime = 10m
+              rotate-after = 7d
+              secret-file = "anti-bot/token.key"
+            }
+            # Where that player is transferred back to: by default the host and port its
+            # handshake named. Set them when players reach Warp through an address it cannot see.
+            transfer {
+              host = ""
+              port = 0
+            }
+          }
         }
 
         # BungeeCord's plugin messaging channel ("BungeeCord" before 1.13, "bungeecord:main"

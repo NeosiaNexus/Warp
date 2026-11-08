@@ -76,6 +76,8 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-BOT-008](#w-bot-008) | warning | Trusted identities cannot be saved |
 | [W-BOT-009](#w-bot-009) | warning | The anti-bot snapshot is corrupt |
 | [W-BOT-010](#w-bot-010) | warning | The anti-bot journal was cut short |
+| [W-BOT-011](#w-bot-011) | warning | The anti-bot token key cannot be rotated |
+| [W-BOT-012](#w-bot-012) | warning | A verified player could not be transferred back |
 | [W-LOG-001](#w-log-001) | warning | Log sinks receive nothing |
 | [W-MGMT-001](#w-mgmt-001) | warning | A management request was refused |
 | [W-MGMT-002](#w-mgmt-002) | warning | A renewed management certificate could not be read |
@@ -678,6 +680,22 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** The journal ended mid-write (a crash); the incomplete change was dropped.
 
 **Fix.** Nothing to do.
+
+### W-BOT-011
+
+**The anti-bot token key cannot be rotated** (warning)
+
+**Cause.** The key verification tokens are signed under is due for rotation, but its file (anti-bot.verification.token.secret-file) cannot be written. The current key stays in use.
+
+**Fix.** Check the directory's permissions and free space, or set WARP_ANTIBOT_TOKEN_SECRET to manage the key yourself.
+
+### W-BOT-012
+
+**A verified player could not be transferred back** (warning)
+
+**Cause.** A player verified before authentication during an attack must be transferred back to the proxy, but its handshake named no usable host and anti-bot.verification.transfer is not set. The player was asked to reconnect instead.
+
+**Fix.** Set anti-bot.verification.transfer.host and port to the address players connect to.
 
 ## Logging
 

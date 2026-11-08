@@ -588,6 +588,25 @@ public enum LogCode {
       "The anti-bot journal was cut short",
       "The journal ended mid-write (a crash); the incomplete change was dropped.",
       "Nothing to do."),
+  /** The token key file cannot be written. */
+  ANTIBOT_TOKEN_KEY_UNWRITABLE(
+      "W-BOT-011",
+      false,
+      "The anti-bot token key cannot be rotated",
+      "The key verification tokens are signed under is due for rotation, but its file"
+          + " (anti-bot.verification.token.secret-file) cannot be written. The current key stays"
+          + " in use.",
+      "Check the directory's permissions and free space, or set WARP_ANTIBOT_TOKEN_SECRET to"
+          + " manage the key yourself."),
+  /** A verified player cannot be transferred back. */
+  ANTIBOT_TRANSFER_TARGET_UNKNOWN(
+      "W-BOT-012",
+      false,
+      "A verified player could not be transferred back",
+      "A player verified before authentication during an attack must be transferred back to the"
+          + " proxy, but its handshake named no usable host and anti-bot.verification.transfer"
+          + " is not set. The player was asked to reconnect instead.",
+      "Set anti-bot.verification.transfer.host and port to the address players connect to."),
 
   // ---------------------------------------------------------------------------
   // Logging and management

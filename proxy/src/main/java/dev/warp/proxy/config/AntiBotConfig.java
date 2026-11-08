@@ -19,6 +19,7 @@ package dev.warp.proxy.config;
 import dev.warp.proxy.network.CidrRanges;
 
 import java.time.Duration;
+import java.util.Locale;
 
 import org.spongepowered.configurate.CommentedConfigurationNode;
 
@@ -35,6 +36,7 @@ import org.spongepowered.configurate.CommentedConfigurationNode;
  * @param attack the attack detector
  * @param blocklist the addresses refused at accept after repeated protocol violations
  * @param checkTimeout how long the proxy waits for plugins' checks of an unknown login
+ * @param verification the verification of unknown identities: the probe, its queue, the tokens
  */
 public record AntiBotConfig(
     boolean enabled,
@@ -42,7 +44,8 @@ public record AntiBotConfig(
     Verified verified,
     Attack attack,
     Blocklist blocklist,
-    Duration checkTimeout) {
+    Duration checkTimeout,
+    Verification verification) {
 
   /** The defaults: everything on (decision D18 of the anti-bot research). */
   public static final AntiBotConfig DEFAULTS =
@@ -52,7 +55,8 @@ public record AntiBotConfig(
           Verified.DEFAULTS,
           Attack.DEFAULTS,
           Blocklist.DEFAULTS,
-          Duration.ofSeconds(2));
+          Duration.ofSeconds(2),
+          Verification.DEFAULTS);
 
   /** The anti-bot off: the detector, the store and lockdown do not run. */
   public static final AntiBotConfig DISABLED =
@@ -62,10 +66,17 @@ public record AntiBotConfig(
           Verified.DEFAULTS,
           Attack.DEFAULTS,
           new Blocklist(0, Duration.ofMinutes(10)),
-          Duration.ofSeconds(2));
+          Duration.ofSeconds(2),
+          Verification.DEFAULTS);
 
   /** The environment variable that holds the secret, ahead of {@code secret-file}. */
   public static final String ENV_SECRET = "WARP_ANTIBOT_SECRET";
+
+  /**
+   * The environment variable that holds the secret verification tokens are signed under, ahead of
+   * {@code verification.token.secret-file}: shared by the proxies of a fleet.
+   */
+  public static final String ENV_TOKEN_SECRET = "WARP_ANTIBOT_TOKEN_SECRET";
 
   /**
    * Checks the values.
@@ -232,6 +243,146 @@ public record AntiBotConfig(
     }
   }
 
+  /**
+   * When unknown identities are verified: never, during attacks only, or always.
+   *
+   * <p>Decision D18 of the anti-bot research: {@link #ALWAYS} in both modes. In offline mode bots
+   * are free, so the first wave of an attack would get in before the detector saw it; in online
+   * mode the verification runs after authentication, where it costs the player nothing visible.
+   */
+  public enum Mode {
+    /** Every unknown identity is verified. */
+    ALWAYS,
+    /** Unknown identities are verified while the detector reports an attack. */
+    ATTACK,
+    /** Nobody is verified: the limits, the detector and lockdown still run. */
+    NEVER;
+
+    /**
+     * Parses a mode as written in the configuration.
+     *
+     * @param value {@code always}, {@code attack} or {@code never}, in any case
+     * @return the mode
+     * @throws IllegalArgumentException if it is none of them
+     */
+    public static Mode parse(String value) {
+      return switch (value.strip().toLowerCase(Locale.ROOT)) {
+        case "always" -> ALWAYS;
+        case "attack" -> ATTACK;
+        case "never" -> NEVER;
+        default ->
+            throw new IllegalArgumentException(
+                "expected always, attack or never, got \"" + value + "\"");
+      };
+    }
+  }
+
+  /**
+   * The verification of unknown identities (phase 2 of the anti-bot research): the probe of the
+   * login and configuration packets, how many run at once and how the others wait, the signed
+   * tokens that carry a verification across the transfer of a player verified before it
+   * authenticated, and where that transfer sends the client.
+   *
+   * @param offlineMode when unknown identities are verified in offline mode (after Login Success)
+   * @param onlineMode when unknown identities are verified in online mode: after authentication in
+   *     normal times, before it during an attack, so that fake authentications never reach the
+   *     session server
+   * @param maxConcurrent the most verifications running at once
+   * @param queueSize the most logins waiting for a verification to end; beyond it, a newcomer is
+   *     told the server is busy
+   * @param queueMaxWait how long a login may wait in line before it is told the same
+   * @param probeTimeout the base deadline of each stage of the probe; 4 times the measured round
+   *     trip is added once the ping is answered
+   * @param tokenLifetime how long a verification token stays valid: the time a client has to come
+   *     back from its transfer
+   * @param tokenRotateAfter how often the proxy replaces the key tokens are signed under, keeping
+   *     the previous one for the tokens still out; zero never rotates, and a key set in {@link
+   *     #ENV_TOKEN_SECRET} is never rotated by the proxy
+   * @param tokenSecretFile the file, relative to the proxy's directory, of the current and previous
+   *     keys; generated when absent
+   * @param transferHost the host a client verified before authentication is transferred back to;
+   *     empty for the one its handshake named
+   * @param transferPort the port of that transfer; zero for the one its handshake named
+   */
+  public record Verification(
+      Mode offlineMode,
+      Mode onlineMode,
+      int maxConcurrent,
+      int queueSize,
+      Duration queueMaxWait,
+      Duration probeTimeout,
+      Duration tokenLifetime,
+      Duration tokenRotateAfter,
+      String tokenSecretFile,
+      String transferHost,
+      int transferPort) {
+
+    /** Always, 2,048 at once, 4,096 in line for 20 s, 5 s per stage, tokens of 10 minutes. */
+    public static final Verification DEFAULTS =
+        new Verification(
+            Mode.ALWAYS,
+            Mode.ALWAYS,
+            2_048,
+            4_096,
+            Duration.ofSeconds(20),
+            Duration.ofSeconds(5),
+            Duration.ofMinutes(10),
+            Duration.ofDays(7),
+            "anti-bot/token.key",
+            "",
+            0);
+
+    /**
+     * Checks the values.
+     *
+     * @throws IllegalArgumentException if a value is out of range
+     */
+    public Verification {
+      if (maxConcurrent < 1) {
+        throw new IllegalArgumentException(
+            "maxConcurrent must be at least 1, got " + maxConcurrent);
+      }
+      if (queueSize < 0) {
+        throw new IllegalArgumentException("queueSize must not be negative, got " + queueSize);
+      }
+      if (queueMaxWait.compareTo(Duration.ofSeconds(1)) < 0) {
+        throw new IllegalArgumentException(
+            "queueMaxWait must be at least 1 second, got " + queueMaxWait);
+      }
+      if (probeTimeout.compareTo(Duration.ofSeconds(1)) < 0
+          || probeTimeout.compareTo(Duration.ofSeconds(30)) > 0) {
+        throw new IllegalArgumentException(
+            "probeTimeout must be 1 to 30 seconds, got " + probeTimeout);
+      }
+      if (tokenLifetime.compareTo(Duration.ofSeconds(10)) < 0
+          || tokenLifetime.compareTo(Duration.ofDays(1)) > 0) {
+        throw new IllegalArgumentException(
+            "tokenLifetime must be 10 seconds to 1 day, got " + tokenLifetime);
+      }
+      if (tokenRotateAfter.isNegative()
+          || (!tokenRotateAfter.isZero() && tokenRotateAfter.compareTo(tokenLifetime) < 0)) {
+        throw new IllegalArgumentException(
+            "tokenRotateAfter must be zero or at least the token lifetime, got "
+                + tokenRotateAfter);
+      }
+      if (tokenSecretFile.isBlank()) {
+        throw new IllegalArgumentException("tokenSecretFile must not be blank");
+      }
+      if (transferPort < 0 || transferPort > 65_535) {
+        throw new IllegalArgumentException("transferPort must be 0 to 65535, got " + transferPort);
+      }
+    }
+
+    /**
+     * Returns whether a mode verifies anything at all.
+     *
+     * @return {@code false} when both modes are {@link Mode#NEVER}
+     */
+    public boolean verifiesAnyone() {
+      return offlineMode != Mode.NEVER || onlineMode != Mode.NEVER;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Parsing
   // ---------------------------------------------------------------------------
@@ -249,6 +400,7 @@ public record AntiBotConfig(
     CommentedConfigurationNode verifiedNode = node.node("verified");
     CommentedConfigurationNode attackNode = node.node("attack");
     CommentedConfigurationNode blocklistNode = node.node("blocklist");
+    CommentedConfigurationNode verificationNode = node.node("verification");
     try {
       boolean enabled = WarpConfig.booleanValue(node.node("enabled"), d.enabled());
       CommentedConfigurationNode exemptNode = node.node("exempt");
@@ -320,7 +472,49 @@ public record AntiBotConfig(
       Duration checkTimeout =
           WarpConfig.parseDuration(
               node.node("checks", "timeout"), "anti-bot.checks.timeout", d.checkTimeout());
-      return new AntiBotConfig(enabled, exempt, verified, attack, blocklist, checkTimeout);
+
+      Verification dn = d.verification();
+      Verification verification =
+          new Verification(
+              Mode.parse(
+                  WarpConfig.stringValue(
+                      verificationNode.node("offline-mode"), dn.offlineMode().name())),
+              Mode.parse(
+                  WarpConfig.stringValue(
+                      verificationNode.node("online-mode"), dn.onlineMode().name())),
+              WarpConfig.parseCount(
+                  verificationNode.node("max-concurrent"),
+                  "anti-bot.verification.max-concurrent",
+                  dn.maxConcurrent()),
+              WarpConfig.parseCount(
+                  verificationNode.node("queue", "size"),
+                  "anti-bot.verification.queue.size",
+                  dn.queueSize()),
+              WarpConfig.parseDuration(
+                  verificationNode.node("queue", "max-wait"),
+                  "anti-bot.verification.queue.max-wait",
+                  dn.queueMaxWait()),
+              WarpConfig.parseDuration(
+                  verificationNode.node("probe-timeout"),
+                  "anti-bot.verification.probe-timeout",
+                  dn.probeTimeout()),
+              WarpConfig.parseDuration(
+                  verificationNode.node("token", "lifetime"),
+                  "anti-bot.verification.token.lifetime",
+                  dn.tokenLifetime()),
+              WarpConfig.parseDuration(
+                  verificationNode.node("token", "rotate-after"),
+                  "anti-bot.verification.token.rotate-after",
+                  dn.tokenRotateAfter()),
+              WarpConfig.stringValue(
+                  verificationNode.node("token", "secret-file"), dn.tokenSecretFile()),
+              WarpConfig.stringValue(verificationNode.node("transfer", "host"), dn.transferHost()),
+              WarpConfig.parseCount(
+                  verificationNode.node("transfer", "port"),
+                  "anti-bot.verification.transfer.port",
+                  dn.transferPort()));
+      return new AntiBotConfig(
+          enabled, exempt, verified, attack, blocklist, checkTimeout, verification);
     } catch (IllegalArgumentException e) {
       throw new ConfigurationException("anti-bot: " + e.getMessage(), e);
     }
@@ -354,6 +548,13 @@ public record AntiBotConfig(
                 + " violations in "
                 + LimitsConfig.format(blocklist.duration())
             : "off")
+        + "; verification "
+        + verification.offlineMode().name().toLowerCase(Locale.ROOT)
+        + " offline, "
+        + verification.onlineMode().name().toLowerCase(Locale.ROOT)
+        + " online, "
+        + verification.maxConcurrent()
+        + " at once"
         + "; exempt "
         + exempt;
   }

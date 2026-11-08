@@ -142,6 +142,7 @@ final class HandshakeSessionHandler implements SessionHandler {
     }
 
     connection.setVirtualHost(handshake.serverAddress());
+    connection.setVirtualPort(handshake.serverPort());
 
     HandshakeIntent intent = HandshakeIntent.byId(handshake.nextState());
     if (intent == null) {
@@ -226,7 +227,12 @@ final class HandshakeSessionHandler implements SessionHandler {
       refuse(Refusal.INVALID_HANDSHAKE, "a transfer from " + version + ", before transfers");
       return;
     }
-    if (version == null || loginContext.acceptsTransfers()) {
+    // The anti-bot transfers the clients it verified before authentication back to the proxy:
+    // while such clients may be coming back, their transfer intent is accepted whatever
+    // accepts-transfers says, and the login then has to present its verification token.
+    if (version == null
+        || loginContext.acceptsTransfers()
+        || loginContext.antiBot().acceptsVerificationTransfers()) {
       login(handshake, version);
       return;
     }
