@@ -17,6 +17,7 @@
 package dev.warp.proxy.connection;
 
 import dev.warp.api.player.InboundConnection;
+import dev.warp.api.server.Route;
 
 import java.net.InetSocketAddress;
 import java.util.Optional;
@@ -65,6 +66,11 @@ final class WarpInboundConnection implements InboundConnection {
   @Override
   public Optional<String> virtualHost() {
     return Optional.ofNullable(connection.virtualHost());
+  }
+
+  @Override
+  public Optional<Route> route() {
+    return Optional.ofNullable(connection.route());
   }
 
   @Override

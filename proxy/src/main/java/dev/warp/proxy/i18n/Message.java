@@ -252,6 +252,32 @@ public enum Message {
   WARP_STARTUP_PHASE("warp.command.warp.startup.phase", Kind.CHAT, "phase", "time", "share"),
   /** The startup is not over. */
   WARP_STARTUP_PENDING("warp.command.warp.startup.pending", Kind.CHAT),
+  /** No group is registered. */
+  WARP_GROUPS_NONE("warp.command.warp.groups.none", Kind.CHAT),
+  /** A group: its name, strategy and member count. */
+  WARP_GROUP("warp.command.warp.groups.group", Kind.CHAT, "group", "strategy", "count", "n"),
+  /** A member server of a group, with the balancer's view of it. */
+  WARP_GROUP_SERVER(
+      "warp.command.warp.groups.server", Kind.CHAT, "server", "players", "rtt", "state"),
+  /** A member server that is not registered. */
+  WARP_GROUP_SERVER_UNREGISTERED(
+      "warp.command.warp.groups.server.unregistered", Kind.CHAT, "server"),
+  /** The round trip of a server's last ping. */
+  WARP_GROUP_RTT("warp.command.warp.groups.rtt", Kind.PART, "millis"),
+  /** A server never answered a ping. */
+  WARP_GROUP_RTT_NONE("warp.command.warp.groups.rtt.none", Kind.PART),
+  /** A server's breaker is closed: it takes players. */
+  WARP_GROUP_STATE_CLOSED("warp.command.warp.groups.state.closed", Kind.PART),
+  /** A server's breaker is open: it is skipped. */
+  WARP_GROUP_STATE_OPEN("warp.command.warp.groups.state.open", Kind.PART, "failures"),
+  /** A server's breaker is half-open: one player probes it. */
+  WARP_GROUP_STATE_HALF_OPEN("warp.command.warp.groups.state.half-open", Kind.PART),
+  /** The routes, as a header. */
+  WARP_ROUTES("warp.command.warp.routes", Kind.CHAT, "count"),
+  /** No route is configured. */
+  WARP_ROUTES_NONE("warp.command.warp.routes.none", Kind.CHAT),
+  /** One route. */
+  WARP_ROUTE("warp.command.warp.routes.route", Kind.CHAT, "host", "target"),
 
   // ---------------------------------------------------------------------------
   // /log (console only)

@@ -105,6 +105,15 @@ public enum LogCode {
       "WARP_COLOR, WARP_CONSOLE, WARP_THEME, WARP_HYPERLINKS or console.theme has a value Warp does"
           + " not know; it uses auto instead.",
       "Use one of the values the message lists, or remove the setting."),
+  /** A route's target resolves to nothing. */
+  ROUTE_TARGET_UNKNOWN(
+      "W-CFG-009",
+      false,
+      "A route points to an unknown server",
+      "A routes entry of warp.conf sends players to a name that is neither a registered server nor"
+          + " a group: a capture such as $1 named something that does not exist, or the server was"
+          + " unregistered. Those players go to the default server instead.",
+      "Add the server or group, fix the entry, or point the host at an existing one."),
 
   // ---------------------------------------------------------------------------
   // Startup
@@ -860,6 +869,24 @@ public enum LogCode {
       "A held packet was dropped",
       "A packet waiting for a protocol phase that the connection never reached was dropped.",
       "Report it with the client's and the backend's versions if it repeats."),
+  /** A group had no server for a player. */
+  GROUP_EXHAUSTED(
+      "W-BACK-010",
+      false,
+      "A server group has no server available",
+      "Every server of the group is unregistered, excluded for the player (the one it is leaving,"
+          + " or one that failed it already), or its balancer declined to pick one. The player"
+          + " goes to the next fallback, or is disconnected if there is none.",
+      "Start or register the group's servers, or add a fallback outside the group."),
+  /** A server's circuit breaker opened. */
+  SERVER_BREAKER_OPENED(
+      "W-BACK-011",
+      false,
+      "A server is skipped by the balancers",
+      "The server did not answer its last ping, or a player could not connect to it. Groups and"
+          + " fallbacks skip it for a cool-down, then let one player through to find out whether it"
+          + " is back; a successful ping brings it back at once.",
+      "Check that the server runs and is reachable from Warp. Nothing to do if it was restarting."),
 
   // ---------------------------------------------------------------------------
   // Authentication and login

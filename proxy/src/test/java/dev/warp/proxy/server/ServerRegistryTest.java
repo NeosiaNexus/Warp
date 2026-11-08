@@ -165,11 +165,21 @@ class ServerRegistryTest {
     }
 
     @Test
-    @DisplayName("should reject a default server that is not among the static servers")
-    void rejectsUnknownDefault() {
-      assertThrows(
-          IllegalArgumentException.class,
-          () -> new ServerRegistry(Map.of("lobby", ADDR_1), "hub", List.of()));
+    @DisplayName("should accept a default that is a group registered after the servers")
+    void acceptsGroupDefault() {
+      ServerRegistry registry = new ServerRegistry(Map.of("lobby", ADDR_1), "hub", List.of());
+
+      assertNull(registry.initialServer(), "no server nor group named hub yet");
+      var _ =
+          registry
+              .groups()
+              .register(
+                  "hub",
+                  List.of(dev.warp.api.server.ServerGroup.Member.of("lobby")),
+                  Balancers.roundRobin());
+      BackendServer initial = registry.initialServer();
+      assertNotNull(initial);
+      assertEquals("lobby", initial.name());
     }
 
     @Test

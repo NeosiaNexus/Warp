@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import com.typesafe.config.ConfigException;
 import com.typesafe.config.ConfigFactory;
@@ -58,10 +59,13 @@ final class ConfigFile {
    * {@link #normalize}.
    */
   private static final List<String> NAMED_BLOCKS =
-      List.of("servers", "bungeecord-channel.allow", "logging.levels");
+      List.of("servers", "bungeecord-channel.allow", "groups", "groups.*.weights");
 
-  /** Named blocks whose names may hold dots: a logger name such as dev.warp.proxy.antibot. */
-  private static final String DOTTED_NAMES = "logging.levels";
+  /**
+   * Named blocks whose names may hold dots: a logger name such as dev.warp.proxy.antibot, or a host
+   * such as play.example.com. Everything under them is one name.
+   */
+  private static final List<String> DOTTED_NAMES = List.of("logging.levels", "routes");
 
   private final Map<String, Entry> entries;
 
@@ -186,17 +190,28 @@ final class ConfigFile {
    * @return the key as the default file would have it
    */
   static String normalize(String key) {
-    for (String block : NAMED_BLOCKS) {
+    for (String block : DOTTED_NAMES) {
       if (key.startsWith(block + ".")) {
-        if (block.equals(DOTTED_NAMES)) {
-          return block + ".*";
-        }
-        String rest = key.substring(block.length() + 1);
-        int dot = rest.indexOf('.');
-        return block + ".*" + (dot < 0 ? "" : rest.substring(dot));
+        return block + ".*";
       }
     }
-    return key;
+    String[] parts = key.split("\\.");
+    for (String block : NAMED_BLOCKS) {
+      String[] pattern = block.split("\\.");
+      if (parts.length > pattern.length && matches(parts, pattern)) {
+        parts[pattern.length] = "*";
+      }
+    }
+    return String.join(".", parts);
+  }
+
+  private static boolean matches(String[] parts, String[] pattern) {
+    for (int i = 0; i < pattern.length; i++) {
+      if (!pattern[i].equals("*") && !pattern[i].equals(parts[i])) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /**
@@ -228,7 +243,8 @@ final class ConfigFile {
           continue;
         }
         reportedBlocks.add(key);
-        problems.add(new Problem(file, line, key, unknown(key, normalized, schema, moved)));
+        problems.add(
+            new Problem(file, line, key, unknown(key, normalized, schema, optional, moved)));
         continue;
       }
       Shape found = each.getValue().shape();
@@ -250,7 +266,11 @@ final class ConfigFile {
   }
 
   private static String unknown(
-      String key, String normalized, ConfigFile schema, Map<String, String> moved) {
+      String key,
+      String normalized,
+      ConfigFile schema,
+      Set<String> optional,
+      Map<String, String> moved) {
     String replacement = moved.get(normalized);
     if (replacement != null) {
       return key + " is no longer a setting: " + replacement;
@@ -259,7 +279,7 @@ final class ConfigFile {
     String parent = dot < 0 ? "" : normalized.substring(0, dot);
     String name = normalized.substring(dot + 1);
     List<String> siblings =
-        schema.entries.keySet().stream()
+        Stream.concat(schema.entries.keySet().stream(), optional.stream())
             .filter(
                 k ->
                     parent.equals(k.lastIndexOf('.') < 0 ? "" : k.substring(0, k.lastIndexOf('.'))))

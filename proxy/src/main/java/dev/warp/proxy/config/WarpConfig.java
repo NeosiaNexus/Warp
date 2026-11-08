@@ -35,6 +35,7 @@ import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -117,6 +118,8 @@ public final class WarpConfig {
   private final Map<String, InetSocketAddress> servers;
   private final @Nullable String defaultServer;
   private final List<String> fallbackOrder;
+  private final Map<String, GroupConfig> groups;
+  private final Map<String, String> routes;
   private final DuplicateLoginPolicy duplicateLoginPolicy;
   private final ForwardingMode forwardingMode;
   private final byte[] forwardingSecret;
@@ -151,7 +154,17 @@ public final class WarpConfig {
 
   /** Settings that exist without being in the default file: their absence means something. */
   private static final Set<String> OPTIONAL_KEYS =
-      Set.of("status.max-players", "status.version-name", "logging.levels.*");
+      Set.of(
+          "status.max-players",
+          "status.version-name",
+          "logging.levels.*",
+          "groups.*",
+          "groups.*.servers",
+          "groups.*.strategy",
+          "groups.*.weights",
+          "groups.*.weights.*",
+          "groups.*.capacity",
+          "routes.*");
 
   /** Settings of earlier layouts, with what replaced them. */
   private static final Map<String, String> MOVED_KEYS =
@@ -173,6 +186,8 @@ public final class WarpConfig {
       Map<String, InetSocketAddress> servers,
       @Nullable String defaultServer,
       List<String> fallbackOrder,
+      Map<String, GroupConfig> groups,
+      Map<String, String> routes,
       DuplicateLoginPolicy duplicateLoginPolicy,
       ForwardingMode forwardingMode,
       byte[] forwardingSecret,
@@ -197,6 +212,8 @@ public final class WarpConfig {
     this.servers = Map.copyOf(servers);
     this.defaultServer = defaultServer;
     this.fallbackOrder = List.copyOf(fallbackOrder);
+    this.groups = Collections.unmodifiableMap(new LinkedHashMap<>(groups));
+    this.routes = Collections.unmodifiableMap(new LinkedHashMap<>(routes));
     this.duplicateLoginPolicy = duplicateLoginPolicy;
     this.forwardingMode = forwardingMode;
     this.forwardingSecret = forwardingSecret;
@@ -339,8 +356,10 @@ public final class WarpConfig {
 
     // Parse server list.
     Map<String, InetSocketAddress> servers = parseServers(root);
-    @Nullable String defaultServer = parseDefaultServer(root, servers);
-    List<String> fallbackOrder = parseFallbackOrder(root, servers, defaultServer);
+    Map<String, GroupConfig> groups = RoutingConfig.parseGroups(root, servers);
+    @Nullable String defaultServer = parseDefaultServer(root, servers, groups);
+    List<String> fallbackOrder = parseFallbackOrder(root, servers, groups, defaultServer);
+    Map<String, String> routes = RoutingConfig.parseRoutes(root, servers, groups);
 
     DuplicateLoginPolicy duplicateLoginPolicy =
         parseDuplicateLoginPolicy(
@@ -404,6 +423,8 @@ public final class WarpConfig {
         servers,
         defaultServer,
         fallbackOrder,
+        groups,
+        routes,
         duplicateLoginPolicy,
         forwardingMode,
         forwardingSecret,
@@ -495,6 +516,25 @@ public final class WarpConfig {
    */
   public List<String> fallbackOrder() {
     return fallbackOrder;
+  }
+
+  /**
+   * Returns the server groups of the {@code groups} block.
+   *
+   * @return the groups by lowercase name, in the order of the file, unmodifiable
+   */
+  public Map<String, GroupConfig> groups() {
+    return groups;
+  }
+
+  /**
+   * Returns the routes of the {@code routes} block: which server or group a client connecting with
+   * a host name goes to.
+   *
+   * @return normalized host keys to lowercase targets, in the order of the file, unmodifiable
+   */
+  public Map<String, String> routes() {
+    return routes;
   }
 
   /**
@@ -722,41 +762,53 @@ public final class WarpConfig {
   }
 
   private static @Nullable String parseDefaultServer(
-      CommentedConfigurationNode root, Map<String, InetSocketAddress> servers)
+      CommentedConfigurationNode root,
+      Map<String, InetSocketAddress> servers,
+      Map<String, GroupConfig> groups)
       throws ConfigurationException {
     CommentedConfigurationNode node = root.node("default-server");
     if (servers.isEmpty()) {
-      String configured = stringValue(node, "");
-      if (!configured.isBlank()) {
-        throw ConfigurationException.at(
-            "default-server",
-            "'"
-                + configured
-                + "' is set but no server is configured: remove default-server, or add the server"
-                + " to the servers block");
+      String configured = stringValue(node, "").toLowerCase(Locale.ROOT);
+      if (configured.isBlank()) {
+        return null;
       }
-      return null;
+      if (groups.containsKey(configured)) {
+        return configured;
+      }
+      throw ConfigurationException.at(
+          "default-server",
+          "'"
+              + configured
+              + "' is set but no server is configured: remove default-server, or add the server"
+              + " to the servers block");
     }
     String defaultServer = stringValue(node, DEFAULT_SERVER_NAME).toLowerCase(Locale.ROOT);
-    if (!servers.containsKey(defaultServer)) {
-      throw unknownServer("default-server", defaultServer, servers);
+    if (!servers.containsKey(defaultServer) && !groups.containsKey(defaultServer)) {
+      throw unknownServer("default-server", defaultServer, servers, groups);
     }
     return defaultServer;
   }
 
-  /** A server name that is not in the servers block, with the closest one if it is a typo. */
+  /** A name that is neither a server nor a group, with the closest one if it is a typo. */
   private static ConfigurationException unknownServer(
-      String key, String name, Map<String, InetSocketAddress> servers) {
-    String suggestion = Suggestions.closest(name, servers.keySet());
+      String key,
+      String name,
+      Map<String, InetSocketAddress> servers,
+      Map<String, GroupConfig> groups) {
+    List<String> known = new ArrayList<>(servers.keySet());
+    known.addAll(groups.keySet());
+    String suggestion = Suggestions.closest(name, known);
     return ConfigurationException.invalid(
         key,
-        "one of the servers block: " + String.join(", ", servers.keySet()),
+        (groups.isEmpty() ? "one of the servers block: " : "a server or group: ")
+            + String.join(", ", known),
         "'" + name + "'" + (suggestion != null ? ". Did you mean '" + suggestion + "'?" : ""));
   }
 
   private static List<String> parseFallbackOrder(
       CommentedConfigurationNode root,
       Map<String, InetSocketAddress> servers,
+      Map<String, GroupConfig> groups,
       @Nullable String defaultServer)
       throws ConfigurationException {
     CommentedConfigurationNode fallbackNode = root.node("fallback-order");
@@ -784,8 +836,8 @@ public final class WarpConfig {
     for (var child : fallbackNode.childrenList()) {
       String name = stringValue(child, "");
       String key = name.toLowerCase(Locale.ROOT);
-      if (!servers.containsKey(key)) {
-        throw unknownServer("fallback-order", name, servers);
+      if (!servers.containsKey(key) && !groups.containsKey(key)) {
+        throw unknownServer("fallback-order", name, servers, groups);
       }
       result.add(key);
     }
@@ -1444,8 +1496,34 @@ public final class WarpConfig {
 
         # Servers tried in order when a player is kicked from their current server.
         # The failed server is skipped. If all fail, the player is disconnected.
-        # Defaults to [default-server] if omitted.
+        # Defaults to [default-server] if omitted. Entries may be groups.
         fallback-order = ["lobby"]
+
+        # Server groups: several servers a strategy spreads players over. A group stands wherever
+        # a server name does: default-server, fallback-order, or the target of a route.
+        # Strategies: round-robin, least-connections (default), lowest-latency, random,
+        # weighted (with weights { lobby1 = 3, lobby2 = 1 }), fill (with capacity = 100).
+        # A server that failed its last ping or a player's connection is skipped for 10 seconds,
+        # then one player is let through to find out whether it is back.
+        #   groups {
+        #     lobbies {
+        #       servers = ["lobby1", "lobby2"]
+        #       strategy = "least-connections"
+        #     }
+        #   }
+        groups {}
+
+        # Routes: the server or group a player goes to for the host name they connected with.
+        # Hosts are case-insensitive; a port (":25566") restricts an entry to that port.
+        # "*.example.com" matches every subdomain, and "$1" in the target stands for the part
+        # the * matched: "*.play.example.com" = "$1" sends kitpvp.play.example.com to kitpvp.
+        # The most specific entry wins; a host with no entry goes to default-server.
+        #   routes {
+        #     "play.example.com" = "lobbies"
+        #     "survival.example.com" = "survival"
+        #     "*.mini.example.com" = "$1"
+        #   }
+        routes {}
 
         # A player who logs in while a session with the same UUID is still connected:
         #   auto           online mode kicks the existing session (the newcomer proved it owns the
@@ -1890,6 +1968,17 @@ public final class WarpConfig {
             ConsoleMarkers.FILE_ONLY, "  server '{}': {}", entry.getKey(), entry.getValue());
       }
       logger.info(ConsoleMarkers.FILE_ONLY, "  fallback-order: {}", config.fallbackOrder);
+    }
+    for (GroupConfig group : config.groups.values()) {
+      logger.info(
+          ConsoleMarkers.FILE_ONLY,
+          "  group '{}': {} {}",
+          group.name(),
+          group.strategy(),
+          group.servers());
+    }
+    for (var route : config.routes.entrySet()) {
+      logger.info(ConsoleMarkers.FILE_ONLY, "  route '{}' -> {}", route.getKey(), route.getValue());
     }
     logger.info(
         ConsoleMarkers.FILE_ONLY,

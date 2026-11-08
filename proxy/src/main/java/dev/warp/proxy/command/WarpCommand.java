@@ -22,16 +22,22 @@ import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginDescription;
 import dev.warp.api.plugin.PluginState;
+import dev.warp.api.server.RegisteredServer;
+import dev.warp.api.server.ServerGroup;
 import dev.warp.proxy.WarpBuildInfo;
 import dev.warp.proxy.console.StartupTimings;
 import dev.warp.proxy.i18n.Message;
+import dev.warp.proxy.server.HostRoutes;
+import dev.warp.proxy.server.ServerHealth;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
@@ -106,10 +112,105 @@ final class WarpCommand {
                           context.getSource().sendMessage(startup(control.startup()));
                           return Command.SINGLE_SUCCESS;
                         }));
+    warp.then(
+        LiteralArgumentBuilder.<CommandSource>literal("groups")
+            .requires(source -> source.hasPermission(PERMISSION))
+            .executes(
+                context -> {
+                  context.getSource().sendMessage(groups(proxy, control.health()));
+                  return Command.SINGLE_SUCCESS;
+                }));
+    warp.then(
+        LiteralArgumentBuilder.<CommandSource>literal("routes")
+            .requires(source -> source.hasPermission(PERMISSION))
+            .executes(
+                context -> {
+                  context.getSource().sendMessage(routes(control.routes()));
+                  return Command.SINGLE_SUCCESS;
+                }));
     if (antiBot != null) {
       warp.then(antiBot);
     }
     return warp;
+  }
+
+  // ---------------------------------------------------------------------------
+  // /warp groups, /warp routes
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The answer to {@code /warp groups}: each group with its strategy, and under it each member
+   * server as the balancer sees it (players, last ping round trip, circuit breaker).
+   *
+   * @param proxy the proxy
+   * @param health the servers' health, or {@code null} when not tracked
+   * @return the message
+   */
+  static Component groups(Warp proxy, @Nullable ServerHealth health) {
+    Collection<ServerGroup> groups = proxy.groups().groups();
+    if (groups.isEmpty()) {
+      return Message.WARP_GROUPS_NONE.of();
+    }
+    List<Component> lines = new ArrayList<>();
+    for (ServerGroup group : groups) {
+      lines.add(
+          Message.WARP_GROUP.with(
+              Message.text("group", group.name()),
+              Message.text("strategy", group.strategy()),
+              Message.count(group.members().size())));
+      for (ServerGroup.Member member : group.members()) {
+        Optional<RegisteredServer> server = proxy.servers().server(member.server());
+        if (server.isEmpty()) {
+          lines.add(
+              Message.WARP_GROUP_SERVER_UNREGISTERED.with(Message.text("server", member.server())));
+          continue;
+        }
+        ServerHealth.Status status =
+            health != null
+                ? health.status(member.server())
+                : new ServerHealth.Status(ServerHealth.State.CLOSED, 0, null, 0, false);
+        Component rtt =
+            status
+                .rtt()
+                .map(d -> Message.WARP_GROUP_RTT.with(Message.number("millis", d.toMillis())))
+                .orElseGet(Message.WARP_GROUP_RTT_NONE::of);
+        Component state =
+            switch (status.state()) {
+              case CLOSED -> Message.WARP_GROUP_STATE_CLOSED.of();
+              case OPEN ->
+                  Message.WARP_GROUP_STATE_OPEN.with(Message.number("failures", status.failures()));
+              case HALF_OPEN -> Message.WARP_GROUP_STATE_HALF_OPEN.of();
+            };
+        lines.add(
+            Message.WARP_GROUP_SERVER.with(
+                Message.component("server", GlistCommand.serverLink(member.server())),
+                Message.number("players", server.get().playerCount()),
+                Message.component("rtt", rtt),
+                Message.component("state", state)));
+      }
+    }
+    return Component.join(JoinConfiguration.newlines(), lines);
+  }
+
+  /**
+   * The answer to {@code /warp routes}: the routes of the configuration, most specific first.
+   *
+   * @param hostRoutes the routes
+   * @return the message
+   */
+  static Component routes(HostRoutes hostRoutes) {
+    if (hostRoutes.isEmpty()) {
+      return Message.WARP_ROUTES_NONE.of();
+    }
+    var routes = hostRoutes.entries();
+    List<Component> lines = new ArrayList<>();
+    lines.add(Message.WARP_ROUTES.with(Message.number("count", routes.size())));
+    for (var route : routes) {
+      lines.add(
+          Message.WARP_ROUTE.with(
+              Message.text("host", route.getKey()), Message.text("target", route.getValue())));
+    }
+    return Component.join(JoinConfiguration.newlines(), lines);
   }
 
   // ---------------------------------------------------------------------------
@@ -219,6 +320,8 @@ final class WarpCommand {
     if (source.hasPermission(PERMISSION)) {
       links.add(subcommand("/warp plugins"));
       links.add(subcommand("/warp startup"));
+      links.add(subcommand("/warp groups"));
+      links.add(subcommand("/warp routes"));
     }
     if (antiBot && source.hasPermission(AntiBotCommand.PERMISSION)) {
       links.add(subcommand("/warp antibot"));

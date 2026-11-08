@@ -22,6 +22,7 @@ import dev.warp.api.lifecycle.DrainPhase;
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.player.Player;
 import dev.warp.api.plugin.PluginManager;
+import dev.warp.api.server.ServerGroupRegistry;
 import dev.warp.api.server.ServerRegistry;
 
 import java.util.Collection;
@@ -89,6 +90,13 @@ public interface Warp {
    * @return the server registry
    */
   ServerRegistry servers();
+
+  /**
+   * Returns the server groups players are balanced over, and the built-in balancing strategies.
+   *
+   * @return the group registry
+   */
+  ServerGroupRegistry groups();
 
   /**
    * Returns the proxy's built-in anti-bot: whether it is under attack, lockdown, the identities it

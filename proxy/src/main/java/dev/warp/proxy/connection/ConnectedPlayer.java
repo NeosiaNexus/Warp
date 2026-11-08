@@ -706,7 +706,7 @@ public final class ConnectedPlayer {
     if (clientConnection.decoder().state() == ProtocolState.CONFIGURATION) {
       clientConnection.setSessionHandler(new SwitchWaitSessionHandler(this));
     }
-    BackendServer proposed = loginContext.serverRegistry().initialServer();
+    BackendServer proposed = loginContext.serverRegistry().initialServer(clientConnection.route());
     WarpEventBus events = loginContext.events();
     if (!events.hasHandlers(PlayerChooseInitialServerEventImpl.class)) {
       joinServer(proposed);
@@ -1022,9 +1022,11 @@ public final class ConnectedPlayer {
           username,
           target.name(),
           ex != null ? ex.getMessage() : "no connection");
+      loginContext.serverRegistry().health().connectFailed(target.name());
       serverSwitch.connectFailed(target);
       return;
     }
+    loginContext.serverRegistry().health().connectSucceeded(target.name());
     serverSwitch.connected(backend);
   }
 

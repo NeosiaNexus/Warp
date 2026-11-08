@@ -142,6 +142,11 @@ final class HandshakeSessionHandler implements SessionHandler {
     }
 
     connection.setVirtualHost(handshake.serverAddress());
+    String host = connection.virtualHost();
+    connection.setRoute(
+        host == null
+            ? null
+            : loginContext.serverRegistry().routes().match(host, handshake.serverPort()));
 
     HandshakeIntent intent = HandshakeIntent.byId(handshake.nextState());
     if (intent == null) {
