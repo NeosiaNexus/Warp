@@ -24,6 +24,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.when;
 
+import dev.warp.api.event.Subscribe;
+import dev.warp.api.event.player.PlayerChooseInitialServerEvent;
+import dev.warp.api.player.ConnectionResult;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.VarInt;
@@ -39,6 +42,8 @@ import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.config.AntiBotConfig;
 import dev.warp.proxy.config.LoggingConfig;
+import dev.warp.proxy.event.PluginEventBus;
+import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.network.CidrRanges;
 import dev.warp.proxy.server.BackendServer;
@@ -49,9 +54,12 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.embedded.EmbeddedChannel;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -195,6 +203,55 @@ class WorldHoldTest {
         rejoin.contains(JoinGame.class) && rejoin.contains(Respawn.class), rejoin.toString());
     assertEquals(1, bots().world().status().holdsReleased());
     assertFalse(harness.player.clientConnection().decoder().usesOwnRegistry());
+  }
+
+  @Test
+  @DisplayName("should open one backend login when a release and the hold's retry overlap")
+  void releaseStopsTheRetry() throws Exception {
+    ProtocolVersion version = ProtocolVersion.MINECRAFT_1_16_4;
+    SwitchHarness harness = join(version, ProtocolState.PLAY);
+    harness.sentToClient();
+    assertTrue(harness.player.isInWorld(), "held in the world");
+    AtomicInteger logins = new AtomicInteger();
+    harness.player.setConnector(
+        target -> {
+          logins.incrementAndGet();
+          MinecraftConnection fresh = harness.backend(ProtocolState.LOGIN);
+          this.backend = fresh;
+          return CompletableFuture.completedFuture(new BackendConnection(fresh, target));
+        });
+    // A plugin takes its time choosing the first server.
+    CompletableFuture<Void> choosing = new CompletableFuture<>();
+    WarpEventBus bus = new WarpEventBus(Runnable::run);
+    try {
+      new PluginEventBus(bus, "test", null, _ -> {})
+          .subscribeAsync(
+              PlayerChooseInitialServerEvent.class, Subscribe.NORMAL, 45, _ -> choosing);
+      when(harness.player.loginContext().events()).thenReturn(bus);
+
+      CompletableFuture<ConnectionResult> released = bots().world().release(harness.player.api());
+      harness.runPendingTasks();
+      assertFalse(released.isDone(), "waits for the plugin's choice");
+
+      // The hold's retry interval passes while the plugin chooses.
+      EmbeddedChannel client = (EmbeddedChannel) harness.client.channel();
+      client.advanceTimeBy(6, TimeUnit.SECONDS);
+      client.runScheduledPendingTasks();
+      harness.runPendingTasks();
+      assertEquals(0, logins.get(), "the retry stopped with the release");
+
+      choosing.complete(null);
+      harness.runPendingTasks();
+      assertEquals(1, logins.get(), "one backend login for the player");
+      MinecraftConnection lobby = Objects.requireNonNull(backend, "connected to the lobby");
+      harness.player.serverSwitch().loggedIn(lobby);
+      harness.joinGame(lobby);
+      assertTrue(released.isDone(), "the release's result follows the one connection");
+      assertEquals("lobby", harness.player.currentServerName());
+      assertEquals(1, bots().world().status().holdsReleased());
+    } finally {
+      bus.close();
+    }
   }
 
   /** The client's Select Known Packs answer: read by the world's configuration registry only. */

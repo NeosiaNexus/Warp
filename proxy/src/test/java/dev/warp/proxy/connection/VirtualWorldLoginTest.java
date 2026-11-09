@@ -18,6 +18,7 @@ package dev.warp.proxy.connection;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -83,6 +84,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
@@ -226,6 +228,66 @@ class VirtualWorldLoginTest {
       assertEquals(1, bots().status().world().checksPassed());
     }
 
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("dev.warp.proxy.connection.VirtualWorldLoginTest#families")
+    @DisplayName("should hold the verification slot until the world check ends")
+    void slotHeldThroughTheWorld(ProtocolVersion version) throws Exception {
+      start(true, false);
+      EmbeddedChannel channel = login("Steve", "203.0.113.9", version);
+      probe(channel, version);
+
+      World world = enterWorld(channel, version);
+      assertEquals(1, bots().status().verifications().running(), "still verifying in the world");
+
+      fallAsVanilla(channel, version, world);
+      channel.runPendingTasks();
+      assertEquals(0, bots().status().verifications().running(), "given back with the pass");
+    }
+
+    @Test
+    @DisplayName("should leave a pre-1.20.2 client's switch spawned: its first server is a rejoin")
+    void respawnSwitchSpawned() throws Exception {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_16_4;
+      start(true, true);
+      EmbeddedChannel channel = login("Steve", "203.0.113.9", version);
+      probe(channel, version);
+      World world = enterWorld(channel, version);
+
+      RespawnSwitch respawn = assertInstanceOf(RespawnSwitch.class, player("Steve").serverSwitch());
+      assertTrue(respawn.isSpawned(), "the world's Join Game gave the client a level");
+
+      fallAsVanilla(channel, version, world);
+      channel.runPendingTasks();
+      assertTrue(respawn.isSpawned(), "still spawned once the check passed");
+    }
+
+    @Test
+    @DisplayName("should keep a player a plugin holds during the check in the world after the pass")
+    void pluginHoldSurvivesThePass() throws Exception {
+      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_21_4;
+      start(true, false);
+      EmbeddedChannel channel = login("Steve", "203.0.113.9", version);
+      probe(channel, version);
+      World world = enterWorld(channel, version);
+      ConnectedPlayer steve = player("Steve");
+      CompletableFuture<Void> held = steve.holdInWorld();
+      channel.runPendingTasks();
+      assertTrue(held.isDone() && !held.isCompletedExceptionally(), "parked in the world");
+
+      fallAsVanilla(channel, version, world);
+      channel.runPendingTasks();
+
+      assertEquals(1, bots().status().world().checksPassed());
+      assertTrue(channel.isActive(), "not sent to a server: the plugin has not released it");
+      assertTrue(steve.isInWorld());
+      assertNull(channel.readOutbound(), "nothing sent since the pass");
+
+      // The release goes to the first server, which cannot be reached, and the hold is off.
+      steve.releaseFromWorld();
+      channel.runPendingTasks();
+      assertDisconnected(channel, version);
+    }
+
     @Test
     @DisplayName("should disconnect a client that confirms a teleport it was never sent")
     void wrongTeleportId() throws Exception {
@@ -365,6 +427,11 @@ class VirtualWorldLoginTest {
 
   private AntiBotService bots() {
     return Objects.requireNonNull(antiBot, "start() first");
+  }
+
+  private ConnectedPlayer player(String name) {
+    ServerLoginContext context = Objects.requireNonNull(lastContext, "login() first");
+    return Objects.requireNonNull(context.playerRegistry().get(name), name + " is registered");
   }
 
   private void advance(EmbeddedChannel channel, Duration duration) {

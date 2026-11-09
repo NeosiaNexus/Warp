@@ -903,11 +903,23 @@ public final class ConnectedPlayer {
       @Nullable CompletableFuture<ConnectionResult> result,
       boolean tell) {
     if (initial) {
+      if (inWorld && switching) {
+        // A first server is already on its way from the world (the hold's retry, or a release
+        // whose choice a plugin held): one backend login per player.
+        BackendServer underWay = connectingTo;
+        if (result != null) {
+          result.complete(new ConnectionResult.InProgress(underWay != null ? underWay : target));
+        }
+        return;
+      }
       connectingTo = target;
       if (inWorld) {
         // From the virtual world the first server is a switch: the client leaves one world for
-        // another, through the configuration phase or a respawn.
-        pendingResult = result;
+        // another, through the configuration phase or a respawn. A release's result, set before
+        // the server was chosen, waits for this connection.
+        if (result != null) {
+          pendingResult = result;
+        }
         beginSwitch(target.info());
         logConnection("Connecting {} from the world to server '{}'", username, target.name());
         serverSwitch.start(target.info());
@@ -2543,6 +2555,15 @@ public final class ConnectedPlayer {
   // --- The plugin API
 
   /**
+   * Returns whether a plugin holds the player in the world. Client event loop.
+   *
+   * @return {@code true} between {@link #holdInWorld()} and {@link #releaseFromWorld()}
+   */
+  boolean isPluginHeld() {
+    return pluginHeld;
+  }
+
+  /**
    * Puts the player in the virtual world at a plugin's request, and keeps it there: the proxy's own
    * retries for a server stop. Thread-safe.
    *
@@ -2596,6 +2617,9 @@ public final class ConnectedPlayer {
                     : new ConnectionResult.Disconnected());
             return;
           }
+          // The proxy's own retries stop: this attempt is the one under way, and a retry landing
+          // while a plugin chooses the server would open a second backend login.
+          cancelHoldTasks();
           pendingResult = result;
           chooseInitialServer();
         });

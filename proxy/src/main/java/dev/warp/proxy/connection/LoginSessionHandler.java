@@ -1568,7 +1568,6 @@ final class LoginSessionHandler implements SessionHandler {
     @Override
     public void passed(
         Probe.Outcome.Passed outcome, @Nullable ClientInformation settings, List<ByteBuf> held) {
-      release();
       ConnectedPlayer joined = player;
       AntiBotService antiBot = loginContext.antiBot();
       boolean worldCheck = antiBot.worldChecks(clientVersion(), connection.clientPlatform());
@@ -1576,8 +1575,10 @@ final class LoginSessionHandler implements SessionHandler {
         // Never admitted from this path: nothing it sent is for a server.
         held.forEach(ByteBuf::release);
         if (worldCheck) {
-          startWorldCheck(null, outcome);
+          // The world check is the verification's last stage: the slot is held until it ends.
+          startWorldCheck(null, outcome, slot);
         } else {
+          release();
           verifiedBeforeAuthentication(outcome.trusted());
         }
         return;
@@ -1590,9 +1591,10 @@ final class LoginSessionHandler implements SessionHandler {
         // its brand and settings again when it reaches that server.
         held.forEach(ByteBuf::release);
         joined.beginSession();
-        startWorldCheck(joined, outcome);
+        startWorldCheck(joined, outcome, slot);
         return;
       }
+      release();
       antiBot.verificationPassed(recognition(), onlineMode ? joined.uuid() : null, outcome);
       PreJoinProbeSessionHandler waiting = preJoin;
       if (waiting != null) {
@@ -1658,10 +1660,18 @@ final class LoginSessionHandler implements SessionHandler {
    * the research): a 1.20.2+ client gets the world's registries in its configuration phase first.
    * The player's first server, or the transfer back, waits for the pass.
    *
+   * <p>The verification slot stays held until the check ends, so that {@code
+   * anti-bot.verification.max-concurrent} bounds the world sessions too: the world check is the
+   * verification's longest stage.
+   *
    * @param joined the player, or {@code null} before authentication
    * @param probe the probe's pass, whose round trip sets the deadlines
+   * @param slot the verification slot the probe held, if any, given back when the check ends
    */
-  private void startWorldCheck(@Nullable ConnectedPlayer joined, Probe.Outcome.Passed probe) {
+  private void startWorldCheck(
+      @Nullable ConnectedPlayer joined,
+      Probe.Outcome.Passed probe,
+      VerificationQueue.@Nullable Slot slot) {
     AntiBotService antiBot = loginContext.antiBot();
     ProxyWorld world = antiBot.world();
     ProtocolVersion version = clientVersion();
@@ -1674,19 +1684,24 @@ final class LoginSessionHandler implements SessionHandler {
             probe.roundTripNanos(),
             clock.getAsLong());
     world.checkStarted();
-    WorldOutcome outcome = new WorldOutcome(joined, probe);
+    WorldOutcome outcome = new WorldOutcome(joined, probe, slot);
     Runnable play =
-        () ->
-            connection.setSessionHandler(
-                new WorldSessionHandler(
-                    connection,
-                    version,
-                    world,
-                    joined,
-                    check,
-                    outcome,
-                    clock,
-                    WorldSessionHandler.Entry.FRESH));
+        () -> {
+          if (joined != null && joined.serverSwitch() instanceof RespawnSwitch respawn) {
+            // The world's Join Game gives the client a level: its first server is a rejoin.
+            respawn.spawnedInWorld();
+          }
+          connection.setSessionHandler(
+              new WorldSessionHandler(
+                  connection,
+                  version,
+                  world,
+                  joined,
+                  check,
+                  outcome,
+                  clock,
+                  WorldSessionHandler.Entry.FRESH));
+        };
     if (!version.supportsConfigurationState()) {
       play.run();
       return;
@@ -1727,14 +1742,28 @@ final class LoginSessionHandler implements SessionHandler {
 
     private final @Nullable ConnectedPlayer joined;
     private final Probe.Outcome.Passed probe;
+    private final VerificationQueue.@Nullable Slot slot;
 
-    WorldOutcome(@Nullable ConnectedPlayer joined, Probe.Outcome.Passed probe) {
+    WorldOutcome(
+        @Nullable ConnectedPlayer joined,
+        Probe.Outcome.Passed probe,
+        VerificationQueue.@Nullable Slot slot) {
       this.joined = joined;
       this.probe = probe;
+      this.slot = slot;
+    }
+
+    /** Gives the verification slot back: the check ended, however it did. Idempotent. */
+    private void release() {
+      VerificationQueue.Slot held = slot;
+      if (held != null) {
+        held.release();
+      }
     }
 
     @Override
     public void passed(Set<WorldCheck.Flag> flags) {
+      release();
       loginContext.antiBot().world().checkPassed();
       // Two flags or more across the probe and the world: let in, not trusted.
       boolean trusted = probe.trusted() && probe.flags().size() + flags.size() < 2;
@@ -1744,6 +1773,7 @@ final class LoginSessionHandler implements SessionHandler {
 
     /** The world could not be given to this client (no known pack in common): the probe stands. */
     void skipped(String detail) {
+      release();
       logger.debug(
           "World check skipped for {} from {}: {}", username, connection.remoteAddress(), detail);
       verified(false);
@@ -1758,11 +1788,17 @@ final class LoginSessionHandler implements SessionHandler {
       loginContext
           .antiBot()
           .verificationPassed(recognition(), onlineMode ? player.uuid() : null, trusted);
+      if (player.isPluginHeld()) {
+        // A plugin held the player while it was checked: it stays in the world until released.
+        logger.debug("World check passed for {}: held in the world by a plugin", username);
+        return;
+      }
       player.chooseInitialServer();
     }
 
     @Override
     public void failed(VerificationFailure reason, String detail) {
+      release();
       loginContext.antiBot().world().checkFailed();
       Refusal counted =
           switch (reason) {
@@ -1795,6 +1831,7 @@ final class LoginSessionHandler implements SessionHandler {
 
     @Override
     public void left() {
+      release();
       ConnectedPlayer player = joined;
       if (player != null) {
         player.disconnect();
