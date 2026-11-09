@@ -90,6 +90,14 @@ public enum Message {
   LOGIN_BUSY("warp.login.busy", Kind.DISCONNECT, "seconds"),
   /** An unknown player during the anti-bot's lockdown. */
   LOCKDOWN("warp.login.lockdown", Kind.DISCONNECT),
+  /** An unknown player the proxy had no room to verify. */
+  VERIFICATION_BUSY("warp.login.verification-busy", Kind.DISCONNECT, "seconds"),
+  /** An unknown player whose client did what no real client does during the probe. */
+  VERIFICATION_FAILED("warp.login.verification-failed", Kind.DISCONNECT),
+  /** An unknown player whose client did not answer the probe in time. */
+  VERIFICATION_TIMED_OUT("warp.login.verification-timed-out", Kind.DISCONNECT),
+  /** A player verified before authentication, on a version without transfers. */
+  VERIFIED_RECONNECT("warp.login.verified-reconnect", Kind.DISCONNECT),
   /** A username no vanilla client sends. */
   INVALID_USERNAME("warp.login.invalid-username", Kind.DISCONNECT),
   /** A login packet sent out of order: a broken or modified client. */

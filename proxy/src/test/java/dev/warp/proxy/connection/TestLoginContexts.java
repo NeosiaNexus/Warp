@@ -442,13 +442,35 @@ final class TestLoginContexts {
       MojangSessionService sessionService,
       ClientLimits limits,
       AntiBotService antiBot) {
+    return withAntiBot(onlineMode, -1, sessionService, EVENTS, limits, antiBot);
+  }
+
+  /**
+   * A context whose anti-bot is {@code antiBot}, built on {@code limits}, compressing from {@code
+   * compressionThreshold} bytes and firing its events on {@code events}.
+   *
+   * @param onlineMode whether players authenticate
+   * @param compressionThreshold the configured threshold, or {@code -1} for no compression
+   * @param sessionService the session server
+   * @param events the event bus
+   * @param limits the limits the anti-bot listens to
+   * @param antiBot the anti-bot
+   * @return the context
+   */
+  static ServerLoginContext withAntiBot(
+      boolean onlineMode,
+      int compressionThreshold,
+      MojangSessionService sessionService,
+      WarpEventBus events,
+      ClientLimits limits,
+      AntiBotService antiBot) {
     return context(
         onlineMode,
-        -1,
+        compressionThreshold,
         sessionService,
         ProfileKeys.mojang(),
         DuplicateLoginPolicy.AUTO,
-        EVENTS,
+        events,
         false,
         StatusSettings.defaults(),
         limits,

@@ -60,6 +60,9 @@ public final class IdentityKeys {
   private final int ipv6Prefix;
   private final ThreadLocal<Mac> macs;
 
+  /** Seeds {@link #networkHash}: the first bytes of the secret. */
+  private final int seed;
+
   /**
    * Creates the keys of a secret.
    *
@@ -80,6 +83,7 @@ public final class IdentityKeys {
     this.ipv4Prefix = ipv4Prefix;
     this.ipv6Prefix = ipv6Prefix;
     this.macs = ThreadLocal.withInitial(this::newMac);
+    this.seed = ByteBuffer.wrap(secret).getInt();
     newMac(); // fails now rather than on a login if the platform lacks HMAC-SHA256
   }
 
@@ -119,6 +123,27 @@ public final class IdentityKeys {
    */
   public VerifiedKey nameAt(String name, InetAddress address) {
     return hash("name:" + name.toLowerCase(Locale.ROOT) + "@" + network(address));
+  }
+
+  /**
+   * Returns a hash of the network an address counts as, for structures that spread sources over
+   * buckets (the verification queue's fairness): the same for every address of a network, and
+   * seeded by the secret, so that an attacker cannot aim at one bucket.
+   *
+   * @param address the address
+   * @return the hash of its network
+   */
+  public int networkHash(InetAddress address) {
+    byte[] bytes = ipv4(address.getAddress());
+    int prefix = bytes.length == 4 ? ipv4Prefix : ipv6Prefix;
+    byte[] masked = mask(bytes, prefix);
+    int hash = seed;
+    for (byte b : masked) {
+      hash = (hash ^ (b & 0xFF)) * 0x01000193; // FNV-1a
+    }
+    hash ^= hash >>> 16;
+    hash *= 0x85EBCA6B;
+    return hash ^ (hash >>> 13);
   }
 
   /**

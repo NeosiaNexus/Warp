@@ -85,6 +85,13 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 
 **Performance**
 
+- **Built-in anti-bot**, on by default: an attack detector on the logins of unknown identities, a
+  store of the identities that played here (hashed, on disk, surviving restarts), lockdown, and a
+  verification of unknown players from the packets every real client answers as it logs in: a ping
+  and a keep-alive to echo, its settings and brand, and a cookie. Verified players
+  never pay again; during an attack in online mode, unknown players are verified before the proxy
+  asks Mojang about them, so fake authentications never reach the session server. Nothing stays in
+  the pipeline after verification, and the PLAY path is untouched.
 - **Blind forwarding**: frames Warp does not inspect are never deserialized; they go from one
   connection to the other as raw bytes.
 - **Compression passthrough**: Warp reads the packet id of a compressed frame without inflating it.

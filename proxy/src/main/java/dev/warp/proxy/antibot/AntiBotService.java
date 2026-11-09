@@ -25,6 +25,7 @@ import dev.warp.api.antibot.Signal;
 import dev.warp.api.antibot.Verdict;
 import dev.warp.api.antibot.Verification;
 import dev.warp.api.antibot.VerificationCheck;
+import dev.warp.api.antibot.VerificationFailure;
 import dev.warp.api.antibot.VerificationMethod;
 import dev.warp.api.antibot.VerifiedIdentities;
 import dev.warp.api.antibot.VerifiedKey;
@@ -33,6 +34,8 @@ import dev.warp.api.event.Subscription;
 import dev.warp.api.event.antibot.AttackEndedEvent;
 import dev.warp.api.event.antibot.AttackStartedEvent;
 import dev.warp.api.event.antibot.LockdownChangedEvent;
+import dev.warp.api.event.antibot.VerificationFailedEvent;
+import dev.warp.protocol.ProtocolVersion;
 import dev.warp.proxy.config.AntiBotConfig;
 import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.event.WarpEventBus;
@@ -66,6 +69,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.LongSupplier;
@@ -76,9 +80,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * The built-in anti-bot (phase 1 of the anti-bot research): the attack detector, the store of
- * trusted identities, lockdown, plugins' checks and shared stores, and what the login flow asks of
- * them. It implements the {@link AntiBot} plugins see.
+ * The built-in anti-bot (phases 1 and 2 of the anti-bot research): the attack detector, the store
+ * of trusted identities, lockdown, plugins' checks and shared stores, the verification of unknown
+ * identities (the {@linkplain Probe probe}, its {@linkplain VerificationQueue fair queue} and the
+ * {@linkplain VerificationTokens tokens} of verifications before authentication), and what the
+ * login flow asks of them. It implements the {@link AntiBot} plugins see.
  *
  * <p>What it does per login, all on the login's event loop and without blocking:
  *
@@ -90,8 +96,15 @@ import org.slf4j.LoggerFactory;
  *   <li>During a lockdown, an unknown identity is refused: at its Login Start in offline mode,
  *       after authentication in online mode (an account trusted from another network still gets
  *       in).
+ *   <li>{@link #plan}: whether, and when, an unknown identity is verified (section 9.6 of the
+ *       research): after Login Success in offline mode, after authentication in online mode, and
+ *       before it during an attack, when a client that passes is transferred back with a {@link
+ *       #issueToken token} or asked to reconnect. The {@link #queue} bounds how many verify at
+ *       once; {@link #newProbe} starts one; {@link #verificationPassed} and {@link
+ *       #verificationFailed} take its outcome.
  *   <li>{@link #joined}: a player that logged in refreshes what is known of it; an unknown one is
- *       learned, unless the proxy is under attack, in lockdown, or a check escalated it.
+ *       learned, unless the proxy is under attack, in lockdown, or a check escalated it. A player
+ *       that passed a verification is trusted whatever the attack.
  * </ol>
  *
  * <p>Logging follows decision D11: one WARN line when an attack starts, one INFO summary per
@@ -117,7 +130,17 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
   private final @Nullable IdentityStore store;
   private final AttackDetector detector;
   private final List<VerificationCheck> checks = new CopyOnWriteArrayList<>();
+  private final LongSupplier nanoClock;
+  private final VerificationQueue queue;
+  private final @Nullable VerificationTokens tokens;
   private volatile boolean lockdown;
+
+  /** When a token was last issued: transfers back are expected for a token's lifetime after. */
+  private final LongAdder verificationsPassed = new LongAdder();
+
+  private final LongAdder verificationsEscalated = new LongAdder();
+  private final EnumMap<VerificationFailure, LongAdder> verificationsFailed =
+      new EnumMap<>(VerificationFailure.class);
 
   /** Refusals at the start of the attack and at its last summary, for the summaries' deltas. */
   private EnumMap<Refusal, Long> refusalsAtStart = new EnumMap<>(Refusal.class);
@@ -156,6 +179,25 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
     public String description() {
       return description;
     }
+  }
+
+  /**
+   * Whether, and when, a login is verified (section 9.6 of the research).
+   *
+   * <p>In offline mode, where identities are free, an unknown identity is verified after Login
+   * Success. In online mode the account is the identity: an unknown one is verified after it
+   * authenticated, which costs the player nothing visible; during an attack, when fake
+   * authentications are the weapon, it is verified before, and never admitted from that path: the
+   * client is transferred back with a token (1.20.5+) or asked to reconnect, and its next login
+   * authenticates as a known identity.
+   */
+  public enum Plan {
+    /** Known, exempt, or not verified in this mode: straight through. */
+    NONE,
+    /** Verified after Login Success (offline) or after authentication (online, calm). */
+    AFTER_LOGIN,
+    /** Verified before authentication (online, under attack), then transferred or reconnected. */
+    BEFORE_AUTHENTICATION
   }
 
   /**
@@ -207,7 +249,47 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
       UnaryOperator<@Nullable String> env,
       LongSupplier millisClock)
       throws IOException {
+    this(
+        config, onlineMode, limits, events, logging, directory, env, millisClock, System::nanoTime);
+  }
+
+  /**
+   * Creates the anti-bot of a proxy on a monotonic clock of the caller's, for tests of deadlines.
+   *
+   * @param config the {@code anti-bot} section
+   * @param onlineMode whether the proxy authenticates players
+   * @param limits the proxy's limits, whose refusals and connections the detector counts
+   * @param events the event bus
+   * @param logging the {@code logging} section, whose routine lines attacks hold back
+   * @param directory the proxy's working directory
+   * @param env reads an environment variable, {@code null} when unset
+   * @param millisClock the wall clock
+   * @param nanoClock the monotonic clock of the probes' deadlines and the queue's waits
+   * @throws IOException if the store's secret or files cannot be read or written
+   */
+  public AntiBotService(
+      AntiBotConfig config,
+      boolean onlineMode,
+      ClientLimits limits,
+      WarpEventBus events,
+      LoggingConfig logging,
+      Path directory,
+      UnaryOperator<@Nullable String> env,
+      LongSupplier millisClock,
+      LongSupplier nanoClock)
+      throws IOException {
     this.config = config;
+    this.nanoClock = nanoClock;
+    for (VerificationFailure reason : VerificationFailure.values()) {
+      verificationsFailed.put(reason, new LongAdder());
+    }
+    AntiBotConfig.Verification verification = config.verification();
+    this.queue =
+        new VerificationQueue(
+            verification.maxConcurrent(),
+            verification.queueSize(),
+            verification.queueMaxWait(),
+            nanoClock);
     this.onlineMode = onlineMode;
     this.limits = limits;
     this.events = events;
@@ -229,10 +311,21 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
     if (!config.enabled()) {
       this.keys = new IdentityKeys(randomSecret(), verified.ipv4Prefix(), verified.ipv6Prefix());
       this.store = null;
+      this.tokens = null;
       return;
     }
     byte[] secret = secret(verified, directory, env);
     this.keys = new IdentityKeys(secret, verified.ipv4Prefix(), verified.ipv6Prefix());
+    this.tokens =
+        new VerificationTokens(
+            verification.tokenLifetime(),
+            verification.tokenRotateAfter(),
+            verified.persist() ? directory.resolve(verification.tokenSecretFile()) : null,
+            env.apply(AntiBotConfig.ENV_TOKEN_SECRET),
+            millisClock);
+    if (tokens.generated()) {
+      logger.info("Anti-bot: generated the key that signs verification tokens, in {}", directory);
+    }
     this.store =
         new IdentityStore(
             verified,
@@ -289,6 +382,10 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
   public void tick() {
     try {
       detector.tick();
+      VerificationTokens signing = tokens;
+      if (signing != null) {
+        signing.tick();
+      }
     } catch (RuntimeException e) {
       logger.error(
           LogCode.ANTIBOT_DETECTOR_FAILED.marker(), "Anti-bot: the attack detector failed", e);
@@ -446,6 +543,24 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
    * @param escalated whether a plugin's check escalated the login
    */
   public void joined(Recognition recognition, @Nullable UUID account, boolean escalated) {
+    joined(recognition, account, escalated, null);
+  }
+
+  /**
+   * Records that a player logged in, as {@link #joined(Recognition, UUID, boolean)} does, after a
+   * verification: an identity that passed one is trusted under its method whatever the attack
+   * level, and a token-verified account is stored so that it never pays the transfer hop again.
+   *
+   * @param recognition what was known before authentication
+   * @param account the account in online mode, or {@code null} in offline mode
+   * @param escalated whether a plugin's check escalated the login
+   * @param verified how the login was verified, or {@code null} if it was not
+   */
+  public void joined(
+      Recognition recognition,
+      @Nullable UUID account,
+      boolean escalated,
+      @Nullable VerificationMethod verified) {
     IdentityStore open = store;
     if (open == null) {
       return;
@@ -453,10 +568,10 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
     VerifiedKey accountKey = account == null ? null : keys.account(account);
     boolean accountTrusted = accountKey != null && open.knows(accountKey);
     boolean known = recognition.trusted() || accountTrusted;
-    if (!known && !learns(escalated)) {
+    if (!known && verified == null && !learns(escalated)) {
       return;
     }
-    VerificationMethod method = VerificationMethod.JOINED;
+    VerificationMethod method = verified != null ? verified : VerificationMethod.JOINED;
     if (accountKey != null) {
       if (accountTrusted) {
         open.seen(accountKey);
@@ -486,6 +601,247 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
   private boolean isExempt(InetAddress address) {
     CidrRanges exempt = config.exempt();
     return !exempt.isEmpty() && exempt.contains(address);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Verification
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Decides whether, and when, a login is verified.
+   *
+   * @param recognition what is known of the login
+   * @param onlineMode whether this login authenticates
+   * @param version the client's version: 1.7 clients are never probed (their keep-alive answer is
+   *     not reliable before Join Game, as Sonar found), and no version is verified before
+   *     authentication without a way back (every version has one: transfer or reconnect)
+   * @return the plan
+   */
+  public Plan plan(Recognition recognition, boolean onlineMode, ProtocolVersion version) {
+    if (!config.enabled()
+        || recognition.known()
+        || version.isOlderThan(ProtocolVersion.MINECRAFT_1_8)) {
+      return Plan.NONE;
+    }
+    AntiBotConfig.Verification verification = config.verification();
+    AntiBotConfig.Mode mode = onlineMode ? verification.onlineMode() : verification.offlineMode();
+    boolean attack = detector.level() == AttackLevel.ATTACK;
+    if (mode == AntiBotConfig.Mode.NEVER || (mode == AntiBotConfig.Mode.ATTACK && !attack)) {
+      return Plan.NONE;
+    }
+    return onlineMode && attack ? Plan.BEFORE_AUTHENTICATION : Plan.AFTER_LOGIN;
+  }
+
+  /**
+   * Returns whether an account that just authenticated, planned for verification after
+   * authentication, still needs it: not if the account is trusted from another network.
+   *
+   * @param account the authenticated account
+   * @return {@code true} to verify it
+   */
+  public boolean verifiesAccount(UUID account) {
+    IdentityStore open = store;
+    return open == null || !open.knows(keys.account(account));
+  }
+
+  /**
+   * Returns whether a login that arrived by a transfer must present a verification token: when it
+   * would otherwise be verified before authentication (the token is what spares it), and when the
+   * proxy accepts no transfers but its own (the token is what proves the transfer is one of the
+   * proxy's). A client older than 1.20.5 has no cookies and no transfers.
+   *
+   * @param recognition what is known of the login
+   * @param onlineMode whether this login authenticates
+   * @param version the client's version
+   * @param acceptsTransfers the proxy's {@code accepts-transfers}
+   * @return {@code true} to ask the client for its {@value VerificationTokens#COOKIE_KEY} cookie
+   */
+  public boolean checksToken(
+      Recognition recognition,
+      boolean onlineMode,
+      ProtocolVersion version,
+      boolean acceptsTransfers) {
+    if (tokens == null || !version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5)) {
+      return false;
+    }
+    return !acceptsTransfers
+        || plan(recognition, onlineMode, version) == Plan.BEFORE_AUTHENTICATION;
+  }
+
+  /**
+   * Checks the token a transferred client returned.
+   *
+   * @param token the cookie's payload
+   * @param recognition the login that returned it
+   * @return what the token says, or {@code null} if it is not a valid token for this login
+   */
+  public VerificationTokens.@Nullable Claim acceptToken(byte[] token, Recognition recognition) {
+    VerificationTokens signing = tokens;
+    return signing == null ? null : signing.verify(token, recognition.key());
+  }
+
+  /**
+   * Issues the token of a login verified before authentication, to store in its client before the
+   * transfer back.
+   *
+   * @param recognition the login verified
+   * @param trusted whether the verification trusts it
+   * @return the token
+   * @throws IllegalStateException if the anti-bot does not run
+   */
+  public byte[] issueToken(Recognition recognition, boolean trusted) {
+    VerificationTokens signing = tokens;
+    if (signing == null) {
+      throw new IllegalStateException("the anti-bot is off (anti-bot.enabled = false)");
+    }
+    return signing.issue(recognition.key(), trusted);
+  }
+
+  /**
+   * Returns whether transfers back from a verification may arrive: whenever tokens are issued,
+   * since the proxy that verified the client and the one its transfer lands on need not be the same
+   * (the fleet shares the signing key, and a load balancer the address). The handshake handler
+   * accepts a transfer intent then even when {@code accepts-transfers} is off; the login then has
+   * to present a valid token, or it is refused as any other transfer.
+   *
+   * @return {@code true} while verified clients may be coming back, here or from another proxy
+   */
+  public boolean acceptsVerificationTransfers() {
+    return tokens != null;
+  }
+
+  /**
+   * Returns where a client verified before authentication is transferred back to: the configured
+   * host and port, or the ones its handshake named.
+   *
+   * @param handshakeHost the host of the client's handshake, or {@code null}
+   * @param handshakePort the port of the client's handshake
+   * @return the host and port, or {@code null} if neither the configuration nor the handshake gives
+   *     a usable host
+   */
+  public @Nullable InetSocketAddress transferTarget(
+      @Nullable String handshakeHost, int handshakePort) {
+    AntiBotConfig.Verification verification = config.verification();
+    String host =
+        verification.transferHost().isEmpty() ? handshakeHost : verification.transferHost();
+    int port = verification.transferPort() == 0 ? handshakePort : verification.transferPort();
+    if (host == null || host.isEmpty() || port <= 0 || port > 65_535) {
+      return null;
+    }
+    return InetSocketAddress.createUnresolved(host, port);
+  }
+
+  /**
+   * Returns the admission of logins to verification.
+   *
+   * @return the queue
+   */
+  public VerificationQueue queue() {
+    return queue;
+  }
+
+  /**
+   * Returns the monotonic clock the probes' deadlines run on: the one their session handlers must
+   * schedule with.
+   *
+   * @return the clock, in nanoseconds
+   */
+  public LongSupplier nanoClock() {
+    return nanoClock;
+  }
+
+  /**
+   * Starts a probe of a client.
+   *
+   * @param kind what to ask
+   * @param version the client's version
+   * @return the probe, with its ids drawn
+   */
+  public Probe newProbe(Probe.Kind kind, ProtocolVersion version) {
+    return new Probe(
+        kind,
+        version,
+        config.verification().probeTimeout(),
+        ThreadLocalRandom.current(),
+        nanoClock);
+  }
+
+  /**
+   * Takes a passed verification: counted, and the identity trusted under {@link
+   * VerificationMethod#PROBE} unless the pass raised two flags or more, in which case the player
+   * gets in but is probed again next time. In online mode the account is trusted too, and the name
+   * and network with it, so that the player is recognized before authentication next time.
+   *
+   * @param recognition the login verified
+   * @param account the account, if it authenticated before the verification
+   * @param passed the outcome
+   */
+  public void verificationPassed(
+      Recognition recognition, @Nullable UUID account, Probe.Outcome.Passed passed) {
+    detector.record(Signal.VERIFICATIONS_PASSED);
+    verificationsPassed.increment();
+    if (!passed.trusted()) {
+      verificationsEscalated.increment();
+      return;
+    }
+    IdentityStore open = store;
+    if (open == null) {
+      return;
+    }
+    if (account != null) {
+      var _ =
+          open.trust(
+              keys.account(account), VerificationMethod.PROBE, new Identity.Account(account));
+    }
+    if (!recognition.trusted()) {
+      Identity announced =
+          account == null
+              ? new Identity.NameAtAddress(recognition.name(), recognition.address())
+              : null;
+      var _ = open.trust(recognition.key(), VerificationMethod.PROBE, announced);
+    }
+  }
+
+  /**
+   * Takes a failed verification: counted by reason, the detector told (a wave of failures is an
+   * attack signal), and plugins told through {@link VerificationFailedEvent}.
+   *
+   * @param attempt the login that failed
+   * @param reason why
+   */
+  public void verificationFailed(LoginAttempt attempt, VerificationFailure reason) {
+    detector.record(Signal.VERIFICATIONS_FAILED, attempt.address().getAddress());
+    LongAdder counter = verificationsFailed.get(reason);
+    if (counter == null) {
+      throw new AssertionError("every reason has a counter: " + reason);
+    }
+    counter.increment();
+    var _ = events.fire(new VerificationFailedEvent(attempt, reason));
+  }
+
+  /**
+   * Rotates the key verification tokens are signed under, on staff's word.
+   *
+   * @param source who asks
+   * @throws IOException if the key file cannot be written
+   * @throws IllegalStateException if the anti-bot does not run, or the key is the environment's
+   */
+  public void rotateTokenKey(String source) throws IOException {
+    VerificationTokens signing = tokens;
+    if (signing == null) {
+      throw new IllegalStateException("the anti-bot is off (anti-bot.enabled = false)");
+    }
+    signing.rotate(source);
+  }
+
+  /**
+   * Returns the hash of a login's network, for the queue's fairness.
+   *
+   * @param address the login's address
+   * @return the hash
+   */
+  public int networkHash(InetAddress address) {
+    return keys.networkHash(address);
   }
 
   // ---------------------------------------------------------------------------
@@ -559,6 +915,12 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
       refusals.put(reason, limits.refusals(reason));
     }
     var lane = limits.lane();
+    EnumMap<VerificationFailure, Long> failed = new EnumMap<>(VerificationFailure.class);
+    for (VerificationFailure reason : VerificationFailure.values()) {
+      LongAdder counter = verificationsFailed.get(reason);
+      failed.put(reason, counter == null ? 0L : counter.sum());
+    }
+    VerificationTokens signing = tokens;
     return new AntiBotStatus(
         config.enabled(),
         detector.level(),
@@ -579,6 +941,21 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
         refusals,
         checks.size(),
         open != null && open.isShared(),
+        new AntiBotStatus.Verifications(
+            queue.inFlight(),
+            queue.max(),
+            queue.waiting(),
+            queue.capacity(),
+            queue.grantedFromLine(),
+            queue.expired() + queue.refused(),
+            queue.waitedSeconds(),
+            verificationsPassed.sum(),
+            verificationsEscalated.sum(),
+            failed,
+            signing == null ? 0 : signing.issued(),
+            signing == null ? 0 : signing.accepted(),
+            signing == null ? 0 : signing.rejected(),
+            signing == null ? null : signing.keySince()),
         Instant.ofEpochMilli(millisClock.getAsLong()));
   }
 
@@ -894,6 +1271,8 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
       case PENDING_CONNECTIONS -> "connections not logged in";
       case CONNECTIONS -> "connections";
       case REFUSALS -> "refusals";
+      case VERIFICATIONS_PASSED -> "verifications passed";
+      case VERIFICATIONS_FAILED -> "verifications failed";
     };
   }
 

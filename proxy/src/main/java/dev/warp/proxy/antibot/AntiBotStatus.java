@@ -18,6 +18,7 @@ package dev.warp.proxy.antibot;
 
 import dev.warp.api.antibot.AttackLevel;
 import dev.warp.api.antibot.AttackReport;
+import dev.warp.api.antibot.VerificationFailure;
 import dev.warp.proxy.limit.Refusal;
 
 import java.time.Instant;
@@ -49,6 +50,7 @@ import org.jspecify.annotations.Nullable;
  * @param refusals connections refused before login since the start, by reason
  * @param checks how many plugin checks are registered
  * @param sharedStore whether a plugin shares the trusted identities
+ * @param verifications the verification of unknown identities
  * @param now when the snapshot was taken
  */
 public record AntiBotStatus(
@@ -71,7 +73,63 @@ public record AntiBotStatus(
     Map<Refusal, Long> refusals,
     int checks,
     boolean sharedStore,
+    Verifications verifications,
     Instant now) {
+
+  /**
+   * The verification of unknown identities: the probes running and waiting, their outcomes since
+   * the start, and the tokens of verifications before authentication.
+   *
+   * @param running the verifications in progress
+   * @param maxRunning the most at once
+   * @param waiting the logins in line for one
+   * @param maxWaiting the most in line
+   * @param grantedFromLine the logins that got a verification from the line since the start
+   * @param turnedAway the logins told the proxy was busy: the line full, or waited too long
+   * @param waitedSeconds the time logins spent in line, in all
+   * @param passed the verifications passed
+   * @param escalated the verifications passed with two flags or more, which trusted nobody
+   * @param failed the verifications failed, by reason
+   * @param tokensIssued the tokens stored in transferred clients
+   * @param tokensAccepted the tokens that came back valid
+   * @param tokensRejected the tokens that came back invalid, expired or forged
+   * @param tokenKeySince when the current token key started signing; {@code null} when the anti-bot
+   *     is off
+   */
+  public record Verifications(
+      int running,
+      int maxRunning,
+      int waiting,
+      int maxWaiting,
+      long grantedFromLine,
+      long turnedAway,
+      double waitedSeconds,
+      long passed,
+      long escalated,
+      Map<VerificationFailure, Long> failed,
+      long tokensIssued,
+      long tokensAccepted,
+      long tokensRejected,
+      @Nullable Instant tokenKeySince) {
+
+    /** Makes the failures an unmodifiable copy. */
+    public Verifications {
+      failed = Map.copyOf(failed);
+    }
+
+    /**
+     * Returns the verifications failed for every reason.
+     *
+     * @return the sum
+     */
+    public long failedTotal() {
+      long total = 0;
+      for (long count : failed.values()) {
+        total += count;
+      }
+      return total;
+    }
+  }
 
   /** Makes the refusals an unmodifiable copy. */
   public AntiBotStatus {

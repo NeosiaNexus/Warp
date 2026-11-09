@@ -56,6 +56,8 @@ import dev.warp.protocol.packet.StateRegistry;
 import dev.warp.protocol.packet.config.AcknowledgeFinishConfiguration;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
+import dev.warp.protocol.packet.config.ConfigPluginMessage;
+import dev.warp.protocol.packet.config.ConfigPong;
 import dev.warp.protocol.packet.config.FinishConfiguration;
 import dev.warp.protocol.packet.cookie.CookieRequest;
 import dev.warp.protocol.packet.cookie.CookieResponse;
@@ -661,6 +663,15 @@ class MinecraftDecoderFuzzTest {
           sample(
               ResourcePackResponse.CODEC,
               v -> new ResourcePackResponse(ALICE, "0123456789abcdef0123456789abcdef01234567", 3)),
+          Map.entry(ConfigPong.WATCH, v -> encode(ConfigPong.CODEC, new ConfigPong(7), v)),
+          Map.entry(
+              ConfigPluginMessage.BRAND_WATCH,
+              v ->
+                  encode(
+                      ConfigPluginMessage.CODEC,
+                      new ConfigPluginMessage(
+                          "minecraft:brand", new byte[] {7, 'v', 'a', 'n', 'i', 'l', 'l', 'a'}),
+                      v)),
           Map.entry(
               PlayPluginMessage.WATCH,
               v ->

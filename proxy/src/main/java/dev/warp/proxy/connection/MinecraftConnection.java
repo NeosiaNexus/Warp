@@ -127,6 +127,9 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
 
   private volatile @Nullable Route route;
 
+  /** The port the client's handshake named; 0 before it. */
+  private volatile int virtualPort;
+
   private @Nullable MinecraftDecoder decoder;
   private @Nullable MinecraftEncoder encoder;
 
@@ -660,6 +663,16 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
       guard = null;
       watching.end();
     }
+    liftFrameLimits();
+  }
+
+  /**
+   * Lifts the frame limits of the login for good, while the connection stays among those not logged
+   * in, under their deadlines and guard: for a client told its login succeeded without being logged
+   * in (verified before authentication), which answers in compressed frames from then on, as {@link
+   * #loggedIn} describes.
+   */
+  void liftFrameLimits() {
     frameLimitsLifted = true;
     FrameDecoder frames = frameDecoder();
     if (frames != null) {
@@ -941,6 +954,25 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
    */
   public @Nullable String virtualHost() {
     return virtualHost;
+  }
+
+  /**
+   * Returns the port the client's handshake named: where the client believes it connected, which a
+   * transfer back to this proxy uses.
+   *
+   * @return the port, or 0 before the handshake
+   */
+  public int virtualPort() {
+    return virtualPort;
+  }
+
+  /**
+   * Records the port the client's handshake named.
+   *
+   * @param port the handshake's port
+   */
+  public void setVirtualPort(int port) {
+    this.virtualPort = port;
   }
 
   /**
