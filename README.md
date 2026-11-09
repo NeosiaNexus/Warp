@@ -181,6 +181,10 @@ Java 25 or newer (the JDK that runs Gradle can be older). Without the scripts:
 java --sun-misc-unsafe-memory-access=allow -jar /path/to/warp-<version>.jar
 ```
 
+Coming from Velocity or BungeeCord? `java -jar warp.jar migrate /path/to/proxy --to .` converts its
+configuration and reports what became of every setting and plugin: see
+[docs/migration.md](docs/migration.md).
+
 ### Configure
 
 `warp.conf` (HOCON) is commented; the essentials:
