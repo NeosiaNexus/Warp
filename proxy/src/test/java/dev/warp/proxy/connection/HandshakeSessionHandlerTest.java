@@ -289,7 +289,7 @@ class HandshakeSessionHandlerTest {
             "Play.PrimeMC.net\0FML2\0",
             LOGIN);
         MinecraftConnection connection = connection(channel);
-        assertEquals("Play.PrimeMC.net", connection.virtualHost());
+        assertEquals("play.primemc.net", connection.virtualHost());
         assertEquals(new Forge(ForgeEra.FML2, 2), connection.clientPlatform());
         assertEquals("\0FML2\0", connection.handshakeMarker());
       } finally {
