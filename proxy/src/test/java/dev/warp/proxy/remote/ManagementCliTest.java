@@ -68,6 +68,11 @@ class ManagementCliTest {
     return ManagementCli.parse(command, List.of(args), name -> null, directory);
   }
 
+  private String refusal(String command, String... args) {
+    return String.valueOf(
+        assertThrows(ManagementCli.UsageException.class, () -> parse(command, args)).getMessage());
+  }
+
   @Nested
   @DisplayName("health arguments")
   class HealthArguments {
@@ -110,11 +115,21 @@ class ManagementCliTest {
     @Test
     @DisplayName("should refuse drain options, bad URLs and bad time-outs")
     void refusals() {
-      assertThrows(ManagementCli.UsageException.class, () -> parse("health", "--wait"));
-      assertThrows(ManagementCli.UsageException.class, () -> parse("health", "--token-file", "x"));
-      assertThrows(ManagementCli.UsageException.class, () -> parse("health", "--url", "warp:9901"));
-      assertThrows(
-          ManagementCli.UsageException.class, () -> parse("health", "--url", "ftp://warp/"));
+      assertEquals("--wait is for drain", refusal("health", "--wait"));
+      assertEquals("--token-file is for drain", refusal("health", "--token-file", "x"));
+      assertEquals(
+          "--url must start with http:// or https://: warp:9901",
+          refusal("health", "--url", "warp:9901"));
+      assertEquals(
+          "--url must start with http:// or https://: ftp://warp/",
+          refusal("health", "--url", "ftp://warp/"));
+      assertEquals(
+          "--url has no host: http:///readyz", refusal("health", "--url", "http:///readyz"));
+      assertEquals(
+          "--url is not a URL: http://warp:9901/a b",
+          refusal("health", "--url", "http://warp:9901/a b"));
+      assertEquals("unknown option --port", refusal("health", "--port", "9901"));
+      assertEquals("--url needs a value", refusal("health", "--url"));
       assertThrows(ManagementCli.UsageException.class, () -> parse("health", "--timeout", "0"));
       assertThrows(ManagementCli.UsageException.class, () -> parse("health", "--timeout", "x"));
       assertThrows(ManagementCli.UsageException.class, () -> parse("health", "--timeout"));
@@ -147,6 +162,23 @@ class ManagementCliTest {
     }
 
     @Test
+    @DisplayName("should POST /drain under the base given, and not double it")
+    void drainPath() throws Exception {
+      assertEquals(
+          URI.create("http://warp:9901/drain"), parse("drain", "--url", "http://warp:9901").uri());
+      assertEquals(
+          URI.create("http://warp:9901/drain"),
+          parse("drain", "--url", "http://warp:9901/drain").uri());
+      assertEquals(
+          URI.create("http://warp:9901/drain"),
+          parse("drain", "--url", "http://warp:9901/drain/").uri());
+      assertEquals(
+          URI.create("https://warp:9901/management/drain"),
+          parse("drain", "--url", "https://warp:9901/management/").uri());
+      assertEquals(Duration.ofSeconds(10), parse("drain").timeout());
+    }
+
+    @Test
     @DisplayName("should read the token from a file, over the environment")
     void tokenFile() throws Exception {
       Files.writeString(directory.resolve("drain.token"), "file-token\n", StandardCharsets.UTF_8);
@@ -159,8 +191,17 @@ class ManagementCliTest {
     void tokenRefusals() throws Exception {
       Files.writeString(directory.resolve("empty.token"), "\n", StandardCharsets.UTF_8);
 
-      assertThrows(ManagementCli.UsageException.class, () -> parse("drain", "--token", "x"));
-      assertThrows(ManagementCli.UsageException.class, () -> parseWithoutEnv("drain"));
+      assertTrue(refusal("drain", "--token", "x").contains("--token-file"));
+      assertTrue(
+          String.valueOf(
+                  assertThrows(ManagementCli.UsageException.class, () -> parseWithoutEnv("drain"))
+                      .getMessage())
+              .contains("--token-file"));
+      assertThrows(
+          ManagementCli.UsageException.class,
+          () ->
+              ManagementCli.parse(
+                  "drain", List.of(), Map.of(ManagementCli.ENV_TOKEN, " ")::get, directory));
       assertThrows(
           ManagementCli.UsageException.class, () -> parse("drain", "--token-file", "missing"));
       assertThrows(
@@ -184,8 +225,9 @@ class ManagementCliTest {
       server.createContext(
           "/readyz",
           exchange -> {
+            boolean get = exchange.getRequestMethod().equals("GET");
             byte[] body = "{\"status\":\"ok\"}".getBytes(StandardCharsets.UTF_8);
-            exchange.sendResponseHeaders(200, body.length);
+            exchange.sendResponseHeaders(get ? 200 : 405, body.length);
             exchange.getResponseBody().write(body);
             exchange.close();
           });
@@ -236,8 +278,41 @@ class ManagementCliTest {
     @DisplayName("should exit 1 with the reason when the probe says no")
     void unhealthy() throws Exception {
       assertEquals(ManagementCli.FAILED, execute("health", "--url", base + "/livez"));
-      assertTrue(err.toString(StandardCharsets.UTF_8).contains("503"));
+      assertTrue(err.toString(StandardCharsets.UTF_8).contains("/livez: 503"));
       assertTrue(err.toString(StandardCharsets.UTF_8).contains("draining"));
+      assertFalse(err.toString(StandardCharsets.UTF_8).contains("token was refused"));
+      assertEquals("", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    @DisplayName("should exit 2 and name the command when the CA file cannot be read")
+    void unreadableCaFile() throws Exception {
+      assertEquals(
+          ManagementCli.USAGE, execute("drain", "--url", base, "--ca-file", "missing.pem"));
+      assertTrue(err.toString(StandardCharsets.UTF_8).startsWith("warp drain: cannot read "));
+    }
+
+    @Test
+    @DisplayName("should run from the command line with the process's streams")
+    void run() throws Exception {
+      PrintStream stdout = System.out;
+      PrintStream stderr = System.err;
+      System.setOut(new PrintStream(out, true, StandardCharsets.UTF_8));
+      System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
+      try {
+        assertEquals(ManagementCli.OK, ManagementCli.run("health", new String[] {"--url", base}));
+        assertEquals(ManagementCli.OK, ManagementCli.run("health", new String[] {"--help"}));
+        assertEquals(ManagementCli.USAGE, ManagementCli.run("drain", new String[] {"--port", "1"}));
+      } finally {
+        System.setOut(stdout);
+        System.setErr(stderr);
+      }
+      String printed = out.toString(StandardCharsets.UTF_8);
+      String errors = err.toString(StandardCharsets.UTF_8);
+      assertTrue(printed.contains("/readyz: 200"), printed);
+      assertTrue(printed.contains(ManagementCli.USAGE_TEXT), printed);
+      assertTrue(errors.startsWith("warp drain: unknown option --port"), errors);
+      assertTrue(errors.contains(ManagementCli.USAGE_TEXT), errors);
     }
 
     @Test
@@ -246,7 +321,10 @@ class ManagementCliTest {
       server.stop(0);
 
       assertEquals(ManagementCli.UNREACHABLE, execute("health", "--url", base));
-      assertTrue(err.toString(StandardCharsets.UTF_8).contains("cannot be reached"));
+      assertTrue(
+          err.toString(StandardCharsets.UTF_8)
+              .startsWith("warp health: " + base + " cannot be reached: "),
+          err.toString(StandardCharsets.UTF_8));
     }
 
     @Test
