@@ -122,7 +122,7 @@ class VerificationTokensTest {
     }
 
     @Test
-    @DisplayName("should refuse a token past its lifetime, or from the future")
+    @DisplayName("should refuse a token past its lifetime")
     void expiry() throws IOException {
       VerificationTokens tokens = inMemory();
       byte[] token = tokens.issue(STEVE, true);
@@ -131,10 +131,20 @@ class VerificationTokensTest {
       assertNotNull(tokens.verify(token, STEVE), "at the lifetime: still valid");
       millis.addAndGet(1);
       assertNull(tokens.verify(token, STEVE), "past it");
+    }
 
-      byte[] later = tokens.issue(STEVE, true);
-      millis.addAndGet(-5_000);
-      assertNull(tokens.verify(later, STEVE), "issued in the future: a clock skew or a forgery");
+    @Test
+    @DisplayName(
+        "should accept a token issued by a fleet member whose clock is slightly ahead, not one"
+            + " from further in the future")
+    void clockSkew() throws IOException {
+      VerificationTokens tokens = inMemory();
+      byte[] token = tokens.issue(STEVE, true);
+
+      millis.addAndGet(-VerificationTokens.MAX_CLOCK_SKEW.toMillis());
+      assertNotNull(tokens.verify(token, STEVE), "within the skew tolerated between proxies");
+      millis.addAndGet(-1);
+      assertNull(tokens.verify(token, STEVE), "beyond it: a forgery, or clocks badly adrift");
     }
   }
 

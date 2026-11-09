@@ -83,6 +83,12 @@ public final class VerificationTokens {
   /** The length of a token. */
   public static final int LENGTH = 1 + KEY_ID_LENGTH + 8 + 16 + 1 + TAG_LENGTH;
 
+  /**
+   * How far ahead of this proxy's clock a token may have been issued and still be accepted: the
+   * clock skew tolerated between the proxies of a fleet sharing a key.
+   */
+  public static final Duration MAX_CLOCK_SKEW = Duration.ofSeconds(5);
+
   static final int KEY_LENGTH = 32;
   static final byte VERSION = 1;
   static final int FLAG_TRUSTED = 1;
@@ -230,8 +236,10 @@ public final class VerificationTokens {
     if (high != identity.high() || low != identity.low()) {
       return null;
     }
+    // The token may come from another proxy of the fleet, whose clock is not this one's: a token
+    // from the near future is a clock skew, not a forgery (the tag already rules that out).
     long age = millisClock.getAsLong() - issuedAt;
-    if (age < 0 || age > lifetime.toMillis()) {
+    if (age < -MAX_CLOCK_SKEW.toMillis() || age > lifetime.toMillis()) {
       return null;
     }
     return new Claim(Instant.ofEpochMilli(issuedAt), (flags & FLAG_TRUSTED) != 0);
