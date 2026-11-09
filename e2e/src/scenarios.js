@@ -1220,7 +1220,12 @@ function agentCheck(port) {
   });
 }
 
-/** Waits for warp-drain to stop by itself with 0, having logged `summary`. */
+/**
+ * Waits for warp-drain to stop by itself with 0, having logged `summary` and its exit line. The exit
+ * line is the proof that Warp chose the code: a JVM whose last non-daemon thread ended also exits
+ * with 0, by itself, without it (once the case at the end of a drain, when the exit still ran on
+ * the drain's daemon thread).
+ */
 async function expectExit(instance, summary) {
   const exit = await instance.exitedWithin(30_000);
   if (exit.code !== 0) throw new Error(`warp-drain exited with ${exit.code ?? exit.signal}, expected 0 once empty`);
