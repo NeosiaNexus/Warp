@@ -179,9 +179,6 @@ public final class WarpServer implements Warp {
   /** Why the proxy stops when nothing says otherwise: a call to {@link #stop()}. */
   private static final String DEFAULT_STOP_CAUSE = "stop requested";
 
-  /** How long the startup's status pings of the backend servers may take, at most. */
-  private static final Duration STARTUP_PING_TIMEOUT = Duration.ofSeconds(2);
-
   /** How often the backend servers are pinged while the console's status line shows them. */
   private static final long STATUS_PING_SECONDS = 10;
 
@@ -479,11 +476,9 @@ public final class WarpServer implements Warp {
     }
 
     serverRegistry.setPinger(new BackendPinger(workerGroup, transport.clientChannelClass()));
-    // Answered while plugins load; the summary waits for what is left once the port is bound.
-    Duration pingTimeout =
-        config.timeouts().ping().compareTo(STARTUP_PING_TIMEOUT) < 0
-            ? config.timeouts().ping()
-            : STARTUP_PING_TIMEOUT;
+    // Answered while plugins load; the summary waits for what is left once the port is bound. The
+    // pings feed the servers' health, so they get the configured deadline, not a shorter one.
+    Duration pingTimeout = config.timeouts().ping();
     CompletableFuture<List<Summaries.Server>> checks =
         serverChecks.check(serverRegistry.servers(), pingTimeout);
 
@@ -592,12 +587,13 @@ public final class WarpServer implements Warp {
     ConsoleOutput output = ConsoleOutput.get();
     MultiThreadIoEventLoopGroup workers = workerGroup;
     if (workers != null) {
-      // The pings feed the servers' health (the balancers skip a server that does not answer)
-      // and, on an interactive console, the status line.
+      // The pings feed the servers' health (the balancers skip a server that does not answer
+      // within timeouts.ping) and, on an interactive console, the status line.
+      Duration pingTimeout = config.timeouts().ping();
       var _ =
           workers.scheduleAtFixedRate(
               () -> {
-                var _ = serverChecks.check(serverRegistry.servers(), STARTUP_PING_TIMEOUT);
+                var _ = serverChecks.check(serverRegistry.servers(), pingTimeout);
               },
               STATUS_PING_SECONDS,
               STATUS_PING_SECONDS,

@@ -1615,8 +1615,10 @@ public final class WarpConfig {
           # may exceed the client's 30s, for backends slow to prepare a new player.
           backend-read = 30s
 
-          # A plugin's RegisteredServer.ping() without a time-out of its own: connection, handshake
-          # and answer. A server that does not answer in time fails the ping with TIMED_OUT.
+          # A plugin's RegisteredServer.ping() without a time-out of its own, and the proxy's own
+          # pings of the servers every 10s: connection, handshake and answer. A server that does not
+          # answer in time fails the ping with TIMED_OUT, and the groups and fallbacks skip it until
+          # it answers again.
           ping = 5s
         }
 
