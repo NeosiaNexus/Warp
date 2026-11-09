@@ -81,7 +81,9 @@ public interface Metrics {
   /**
    * Registers a gauge without labels that is read when scraped, for a value that exists already: a
    * collection's size, a queue's depth. The supplier runs on the scraping thread and must be cheap
-   * and safe to call from any thread.
+   * and safe to call from any thread. One that throws is skipped for that scrape, counted in {@code
+   * warp_metrics_collector_errors_total} under the gauge's name and logged once, like a {@link
+   * Collector}: it never fails the whole scrape.
    *
    * @param name the name; a plugin's is prefixed with its id
    * @param help one sentence on what it measures

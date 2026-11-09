@@ -305,5 +305,112 @@ class MetricRegistryTest {
       assertFalse(out.hasFamily("warp_fake"));
       assertEquals(1, out.value("warp_metrics_collector_errors_total{collector=demo_c}"));
     }
+
+    @Test
+    @DisplayName("should skip a plugin collector whose sample spoofs a series outside its family")
+    void collectorSampleOutsideFamily() {
+      ScopedMetrics plugin = registry.scoped("demo");
+      Gauge online = registry.gauge("warp_players_online", "P.");
+      online.labels().set(3);
+      plugin.collector(
+          "spoof", out -> out.sample("warp_players_online", List.of(), List.of(), 9999));
+      plugin.collector(
+          "stray",
+          out -> {
+            out.family("demo_x", MetricType.GAUGE, "X.");
+            out.sample("demo_y", List.of(), List.of(), 1);
+          });
+
+      RecordingVisitor out = RecordingVisitor.of(registry);
+
+      assertEquals(3, out.value("warp_players_online"));
+      assertFalse(out.samples().containsKey("demo_y"));
+      assertEquals(1, out.value("warp_metrics_collector_errors_total{collector=demo_spoof}"));
+      assertEquals(1, out.value("warp_metrics_collector_errors_total{collector=demo_stray}"));
+    }
+
+    @Test
+    @DisplayName("should skip a plugin collector whose label names are invalid or unpaired")
+    void collectorLabels() {
+      ScopedMetrics plugin = registry.scoped("demo");
+      plugin.collector(
+          "inject",
+          out -> {
+            out.family("demo_x", MetricType.GAUGE, "X.");
+            out.sample("demo_x", List.of("a\"} 1\nwarp_up 0 #"), List.of("v"), 1);
+          });
+      plugin.collector(
+          "reserved",
+          out -> {
+            out.family("demo_y", MetricType.GAUGE, "Y.");
+            out.sample("demo_y", List.of("player"), List.of("Steve"), 1);
+          });
+      plugin.collector(
+          "unpaired",
+          out -> {
+            out.family("demo_z", MetricType.GAUGE, "Z.");
+            out.sample("demo_z", List.of("a", "b"), List.of("v"), 1);
+          });
+
+      RecordingVisitor out = RecordingVisitor.of(registry);
+
+      assertTrue(out.allSamples().stream().noneMatch(s -> s.name().startsWith("demo_")));
+      assertEquals(1, out.value("warp_metrics_collector_errors_total{collector=demo_inject}"));
+      assertEquals(1, out.value("warp_metrics_collector_errors_total{collector=demo_reserved}"));
+      assertEquals(1, out.value("warp_metrics_collector_errors_total{collector=demo_unpaired}"));
+    }
+
+    @Test
+    @DisplayName(
+        "should accept a plugin collector's histogram and summary with their le and quantile")
+    void collectorHistogram() {
+      ScopedMetrics plugin = registry.scoped("demo");
+      plugin.collector(
+          "h",
+          out -> {
+            out.family("demo_wait_seconds", MetricType.HISTOGRAM, "W.");
+            out.sample("demo_wait_seconds_bucket", List.of("le"), List.of("0.1"), 2);
+            out.sample("demo_wait_seconds_bucket", List.of("le"), List.of("+Inf"), 3);
+            out.sample("demo_wait_seconds_sum", List.of(), List.of(), 0.5);
+            out.sample("demo_wait_seconds_count", List.of(), List.of(), 3);
+          });
+
+      plugin.collector(
+          "s",
+          out -> {
+            out.family("demo_pause_seconds", MetricType.SUMMARY, "P.");
+            out.sample("demo_pause_seconds", List.of("quantile"), List.of("0.5"), 0.1);
+            out.sample("demo_pause_seconds_count", List.of(), List.of(), 1);
+          });
+
+      RecordingVisitor out = RecordingVisitor.of(registry);
+
+      assertEquals(0.1, out.value("demo_pause_seconds{quantile=0.5}"), 1e-9);
+      assertEquals(3, out.value("demo_wait_seconds_bucket{le=+Inf}"));
+      assertEquals(3, out.value("demo_wait_seconds_count"));
+      assertFalse(
+          out.samples().containsKey("warp_metrics_collector_errors_total{collector=demo_h}"));
+    }
+
+    @Test
+    @DisplayName("should skip a pull gauge whose supplier throws, and serve the other metrics")
+    void pullGaugeThrows() {
+      ScopedMetrics plugin = registry.scoped("demo");
+      plugin.gauge(
+          "broken",
+          "B.",
+          () -> {
+            throw new IllegalStateException("queue is gone");
+          });
+      plugin.gauge("fine", "F.", () -> 7);
+      registry.gauge("warp_ok", "O.").labels().set(1);
+
+      RecordingVisitor out = RecordingVisitor.of(registry);
+
+      assertFalse(out.hasFamily("demo_broken"));
+      assertEquals(7, out.value("demo_fine"));
+      assertEquals(1, out.value("warp_ok"));
+      assertEquals(1, out.value("warp_metrics_collector_errors_total{collector=demo_broken}"));
+    }
   }
 }

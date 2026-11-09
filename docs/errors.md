@@ -733,7 +733,7 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 
 **A metrics collector failed** (warning)
 
-**Cause.** A collector threw while GET /metrics was answered. It is skipped for that scrape and counted in warp_metrics_collector_errors_total; the other metrics are served. Logged once per collector.
+**Cause.** A collector, or the supplier of a pull gauge, threw while GET /metrics was answered. It is skipped for that scrape and counted in warp_metrics_collector_errors_total; the other metrics are served. Logged once per collector.
 
 **Fix.** If a plugin's collector is named, report it with the stack trace to its author.
 

@@ -42,8 +42,10 @@ scrape_configs:
 - One label has at most 32 distinct values for a plugin's metric (256 for Warp's own); further
   values are recorded as `other`, counted in `warp_metrics_label_overflow_total`, and logged once
   (`W-MET-001`). A plugin has at most 2 000 series, the registry 10 000.
-- Each collector is isolated: one that throws is skipped for that scrape, counted in
+- Each collector and pull gauge is isolated: one that throws is skipped for that scrape, counted in
   `warp_metrics_collector_errors_total` and logged once (`W-MET-002`); the other metrics are served.
+  A plugin collector's samples must belong to the family it started, with valid label names:
+  anything else fails the collector, never the scrape.
 - Names are stable: a metric that goes away is removed in a major version, never renamed in place.
 
 Histogram buckets are fixed per metric. Durations use one of three sets: `fast` (1 ms to 2.5 s),

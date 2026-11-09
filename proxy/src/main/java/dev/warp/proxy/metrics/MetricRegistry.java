@@ -40,6 +40,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.DoubleSupplier;
 
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -293,8 +294,25 @@ public final class MetricRegistry implements Metrics {
     }
   }
 
-  /** Refuses a plugin collector's family outside the plugin's prefix. */
-  private record PrefixCheck(SampleVisitor delegate, String prefix) implements SampleVisitor {
+  /**
+   * Checks what a plugin collector writes: a family must be a valid name under the plugin's prefix,
+   * and every sample must belong to the current family, with valid label names. A sample before any
+   * family, under another name or with a forged label name would otherwise reach the exposition
+   * verbatim, and could spoof the proxy's series or inject lines into a scrape.
+   */
+  private static final class PrefixCheck implements SampleVisitor {
+    private static final String QUANTILE = "quantile";
+
+    private final SampleVisitor delegate;
+    private final String prefix;
+    private @Nullable String family;
+    private @Nullable MetricType familyType;
+
+    PrefixCheck(SampleVisitor delegate, String prefix) {
+      this.delegate = delegate;
+      this.prefix = prefix;
+    }
+
     @Override
     public void family(String name, MetricType type, String help) {
       MetricNames.validate(name, type);
@@ -302,12 +320,48 @@ public final class MetricRegistry implements Metrics {
         throw new IllegalArgumentException(
             "collector family '" + name + "' must start with the plugin's prefix " + prefix);
       }
+      family = name;
+      familyType = type;
       delegate.family(name, type, help);
     }
 
     @Override
     public void sample(
         String name, List<String> labelNames, List<String> labelValues, double value) {
+      if (family == null) {
+        throw new IllegalStateException(
+            "collector sample '" + name + "' was written before any family");
+      }
+      // The label a histogram's bucket or a summary's quantile may carry, reserved otherwise.
+      String allowedLabel = null;
+      if (name.equals(family)) {
+        if (familyType == MetricType.SUMMARY) {
+          allowedLabel = QUANTILE;
+        }
+      } else if (familyType == MetricType.HISTOGRAM
+          && name.equals(family + HistogramFamily.BUCKET)) {
+        allowedLabel = HistogramFamily.LE;
+      } else if (!((familyType == MetricType.HISTOGRAM || familyType == MetricType.SUMMARY)
+          && (name.equals(family + HistogramFamily.SUM)
+              || name.equals(family + HistogramFamily.COUNT)))) {
+        throw new IllegalArgumentException(
+            "collector sample '" + name + "' does not belong to the family " + family);
+      }
+      if (labelNames.size() != labelValues.size()) {
+        throw new IllegalArgumentException(
+            "collector sample '"
+                + name
+                + "' has "
+                + labelNames.size()
+                + " label names and "
+                + labelValues.size()
+                + " values");
+      }
+      for (String label : labelNames) {
+        if (!label.equals(allowedLabel)) {
+          MetricNames.validateLabel(label);
+        }
+      }
       delegate.sample(name, labelNames, labelValues, value);
     }
   }
@@ -627,8 +681,24 @@ public final class MetricRegistry implements Metrics {
 
     @Override
     void collect(SampleVisitor visitor) {
+      double current;
+      try {
+        current = value.getAsDouble();
+      } catch (RuntimeException e) {
+        // A plugin's supplier is as untrusted as its collector: skip the gauge, not the scrape.
+        collectorErrors.labels(name).inc();
+        if (warned.add("gauge:" + name)) {
+          logger.warn(
+              LogCode.METRICS_COLLECTOR_FAILED.marker(),
+              "Gauge {} failed to read its value and is skipped from scrapes; counted in {}",
+              name,
+              COLLECTOR_ERRORS_METRIC,
+              e);
+        }
+        return;
+      }
       visitor.family(name, type, help);
-      visitor.sample(name, labelNames, labelNames, value.getAsDouble());
+      visitor.sample(name, labelNames, labelNames, current);
     }
   }
 
@@ -636,6 +706,7 @@ public final class MetricRegistry implements Metrics {
     private static final String BUCKET = "_bucket";
     private static final String SUM = "_sum";
     private static final String COUNT = "_count";
+    private static final String LE = "le";
 
     private final Buckets buckets;
     private final List<String> bucketLabelNames;
@@ -645,7 +716,7 @@ public final class MetricRegistry implements Metrics {
       super(owner, name, help, MetricType.HISTOGRAM, labelNames);
       this.buckets = buckets;
       List<String> withLe = new ArrayList<>(this.labelNames);
-      withLe.add("le");
+      withLe.add(LE);
       this.bucketLabelNames = List.copyOf(withLe);
       this.bounds = new String[buckets.size() + 1];
       for (int i = 0; i < buckets.size(); i++) {

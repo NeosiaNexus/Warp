@@ -650,9 +650,9 @@ public enum LogCode {
       "W-MET-002",
       false,
       "A metrics collector failed",
-      "A collector threw while GET /metrics was answered. It is skipped for that scrape and"
-          + " counted in warp_metrics_collector_errors_total; the other metrics are served."
-          + " Logged once per collector.",
+      "A collector, or the supplier of a pull gauge, threw while GET /metrics was answered. It is"
+          + " skipped for that scrape and counted in warp_metrics_collector_errors_total; the"
+          + " other metrics are served. Logged once per collector.",
       "If a plugin's collector is named, report it with the stack trace to its author."),
   /** Answering GET /metrics failed. */
   METRICS_SCRAPE_FAILED(
