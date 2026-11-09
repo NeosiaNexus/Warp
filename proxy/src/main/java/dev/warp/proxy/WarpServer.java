@@ -684,8 +684,9 @@ public final class WarpServer implements Warp {
   }
 
   /**
-   * Shuts down: closes the listener, disconnects the players, lets plugins finish, then stops the
-   * event bus, the drain, the event loops and, last, the management server.
+   * Shuts down: closes the listener, disconnects the players, lets plugins finish, waits for the
+   * connections that carry plugin handlers to close, disables the plugins, then stops the event
+   * bus, the drain, the event loops and, last, the management server. A drain ends the same way.
    *
    * @param reason shown to the players disconnected, or {@code null} for the default
    * @return whether this call shut the proxy down, rather than a call before it
@@ -719,6 +720,9 @@ public final class WarpServer implements Warp {
       }
       int disconnected = disconnectPlayers(reason);
       awaitShutdownHandlers();
+      // Before the plugins: a disconnect is asynchronous, and a backend still decoding through a
+      // plugin's handlers once its class loader closed fails with a NoClassDefFoundError.
+      awaitConnectionsClosed();
       pluginManager.disableAll();
       logSinks.close();
       sinkAppender.uninstall();
@@ -944,6 +948,21 @@ public final class WarpServer implements Warp {
           LogCode.SHUTDOWN_HANDLERS_SLOW.marker(),
           "Shutdown handlers did not finish within {} s",
           SHUTDOWN_EVENT_TIMEOUT_SECONDS);
+    }
+  }
+
+  /**
+   * Closes the connections that carry plugin handlers, the clients' and the backends', and waits
+   * for them, {@value #SHUTDOWN_TIMEOUT_MILLIS} ms at most: a plugin's handler must not run once
+   * the plugin is disabled and its class loader closed.
+   */
+  private void awaitConnectionsClosed() {
+    if (!pipelines.closeConnections(Duration.ofMillis(SHUTDOWN_TIMEOUT_MILLIS))) {
+      logger.warn(
+          LogCode.SHUTDOWN_STUCK.marker(),
+          "{} connections with plugin handlers did not close within {} ms",
+          pipelines.connectionCount(),
+          SHUTDOWN_TIMEOUT_MILLIS);
     }
   }
 
