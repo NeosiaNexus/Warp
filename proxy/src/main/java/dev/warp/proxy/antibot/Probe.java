@@ -78,6 +78,12 @@ public final class Probe {
   public static final String COOKIE_KEY = "warp:probe";
 
   /**
+   * The channel of the login query the login-query probe sends: one no client knows, so that every
+   * client answers it "not understood", which is the echo asked for.
+   */
+  public static final String QUERY_CHANNEL = "warp:probe";
+
+  /**
    * How long the probe waits for the cookie answer after the keep-alive echo, at least: a client
    * that answers cookies does so right after the keep-alive, so a longer wait only delays the
    * clients that have none, flagged {@link Flag#COOKIE_MISSING} and let in.
@@ -92,7 +98,14 @@ public final class Probe {
     /** The configuration-phase probe of 1.20.2 and newer clients. */
     CONFIGURATION,
     /** The keep-alive probe of 1.8 to 1.20.1 clients, before their first Join Game. */
-    PRE_JOIN
+    PRE_JOIN,
+    /**
+     * The login-query probe of a 1.13 to 1.20.1 client held in its login state for its first
+     * server's login queries (Forge): one Login Plugin Request of the proxy's own, on a channel no
+     * client knows, must be answered before any server hears of the client. The client is still in
+     * the login state on its side, where a keep-alive cannot reach it.
+     */
+    LOGIN_QUERY
   }
 
   /**
@@ -163,10 +176,12 @@ public final class Probe {
 
   private final int pingId;
   private final long keepAliveId;
+  private final int queryId;
   private final byte @Nullable [] cookiePayload;
 
   private boolean pongAnswered;
   private boolean keepAliveAnswered;
+  private boolean queryAnswered;
   private boolean cookieAnswered;
   private boolean settingsReceived;
   private boolean brandReceived;
@@ -195,6 +210,9 @@ public final class Probe {
     if (kind == Kind.CONFIGURATION && !version.supportsConfigurationState()) {
       throw new IllegalArgumentException(version + " has no configuration state");
     }
+    if (kind == Kind.LOGIN_QUERY && version.isOlderThan(ProtocolVersion.MINECRAFT_1_13)) {
+      throw new IllegalArgumentException(version + " has no login queries");
+    }
     this.kind = kind;
     this.version = version;
     this.nanoClock = nanoClock;
@@ -205,6 +223,8 @@ public final class Probe {
     // The id of a keep-alive is a long from 1.12.2 and a non-negative int before.
     this.keepAliveId =
         KeepAlive.hasLongId(version) ? random.nextLong() : random.nextInt() & Integer.MAX_VALUE;
+    // A login query's message id is a VarInt; vanilla servers count theirs up from zero.
+    this.queryId = random.nextInt() & Integer.MAX_VALUE;
     boolean cookies =
         kind == Kind.CONFIGURATION && version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5);
     if (cookies) {
@@ -245,6 +265,16 @@ public final class Probe {
    */
   public long keepAliveId() {
     return keepAliveId;
+  }
+
+  /**
+   * Returns the message id of the login query the login-query probe sends, which the client's
+   * answer must carry.
+   *
+   * @return the message id
+   */
+  public int queryId() {
+    return queryId;
   }
 
   /**
@@ -338,6 +368,30 @@ public final class Probe {
       long grace = Math.max(COOKIE_GRACE.toNanos(), 4 * roundTripNanos);
       deadlineNanos = Math.min(deadlineNanos, nanoClock.getAsLong() + grace);
     }
+    return evaluate(false);
+  }
+
+  /**
+   * Takes the client's answer to the login query of a {@link Kind#LOGIN_QUERY} probe: understood or
+   * not, the answer is the echo asked for, and only its message id is judged.
+   *
+   * @param messageId the message id the answer carries
+   * @return where the probe stands
+   */
+  public Outcome loginQuery(int messageId) {
+    if (done()) {
+      return outcome;
+    }
+    if (kind != Kind.LOGIN_QUERY || queryAnswered) {
+      return fail(VerificationFailure.ILLEGAL_PACKET, "an answer to no login query");
+    }
+    if (messageId != queryId) {
+      return fail(
+          VerificationFailure.WRONG_ECHO, "login query answer " + messageId + " to " + queryId);
+    }
+    queryAnswered = true;
+    measureRoundTrip();
+    answered(0);
     return evaluate(false);
   }
 
@@ -469,9 +523,14 @@ public final class Probe {
    * then will not come. Before that, the probe waits for the deadline.
    */
   private Outcome evaluate(boolean atDeadline) {
-    boolean echoes = keepAliveAnswered && (kind == Kind.PRE_JOIN || pongAnswered);
-    boolean lastAnswered = cookiePayload != null ? cookieAnswered : keepAliveAnswered;
-    boolean settings = kind == Kind.PRE_JOIN || settingsReceived;
+    boolean echoes =
+        switch (kind) {
+          case CONFIGURATION -> pongAnswered && keepAliveAnswered;
+          case PRE_JOIN -> keepAliveAnswered;
+          case LOGIN_QUERY -> queryAnswered;
+        };
+    boolean lastAnswered = cookiePayload != null ? cookieAnswered : echoes;
+    boolean settings = kind != Kind.CONFIGURATION || settingsReceived;
     if (echoes && settings && (lastAnswered || atDeadline)) {
       if (kind == Kind.CONFIGURATION) {
         if (!brandReceived) {
@@ -489,7 +548,10 @@ public final class Probe {
       if (kind == Kind.CONFIGURATION && !pongAnswered) {
         missing.add("the pong");
       }
-      if (!keepAliveAnswered) {
+      if (kind == Kind.LOGIN_QUERY && !queryAnswered) {
+        missing.add("the login query answer");
+      }
+      if (kind != Kind.LOGIN_QUERY && !keepAliveAnswered) {
         missing.add("the keep-alive");
       }
       if (!settings) {

@@ -53,6 +53,8 @@ import dev.warp.protocol.packet.cookie.StoreCookie;
 import dev.warp.protocol.packet.login.EncryptionRequest;
 import dev.warp.protocol.packet.login.LoginAcknowledged;
 import dev.warp.protocol.packet.login.LoginDisconnect;
+import dev.warp.protocol.packet.login.LoginPluginRequest;
+import dev.warp.protocol.packet.login.LoginPluginResponse;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.login.SetCompression;
 import dev.warp.protocol.packet.play.KeepAlive;
@@ -128,6 +130,9 @@ class VerificationLoginTest {
 
   /** Another proxy of the fleet, which the client connects to instead when set. */
   private @Nullable AntiBotService peer;
+
+  /** The context of the last connection opened, with the players it registers. */
+  private @Nullable ServerLoginContext lastContext;
 
   private UnaryOperator<@Nullable String> env = _ -> null;
   private boolean onlineMode;
@@ -436,6 +441,98 @@ class VerificationLoginTest {
 
       nextPacket(channel, ProtocolState.PLAY, PlayDisconnect.class, LEGACY);
       assertEquals(1, limits.refusals(Refusal.VERIFICATION_TIMEOUT));
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // The login-query probe (Forge 1.13 to 1.20.1, held for its first server)
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("the login-query probe")
+  class LoginQueryProbe {
+
+    @Test
+    @DisplayName(
+        "should probe a Forge client with a login query before any server, and hold it once passed")
+    void answerPassesAndStaysHeld() throws Exception {
+      start(false, AntiBotConfig.Verification.DEFAULTS);
+      holdInitialServerChoice();
+      EmbeddedChannel channel = forgeLogin("Steve", "203.0.113.9", LEGACY);
+
+      LoginPluginRequest query =
+          nextPacket(channel, ProtocolState.LOGIN, LoginPluginRequest.class, LEGACY);
+      assertEquals(Probe.QUERY_CHANNEL, query.channel());
+      assertNull(channel.readOutbound(), "Login Success held, nothing else asked");
+      send(
+          channel,
+          ProtocolState.LOGIN,
+          new LoginPluginResponse(query.messageId(), false, null),
+          LEGACY);
+
+      Identity steve = new Identity.NameAtAddress("Steve", address("203.0.113.9"));
+      assertTrue(waitFor(() -> bots().verified().check(steve).isPresent()));
+      assertEquals(VerificationMethod.PROBE, bots().verified().check(steve).orElseThrow().method());
+      channel.runPendingTasks();
+      assertNull(channel.readOutbound(), "still held for its first server's login queries");
+      assertTrue(registered("Steve").loginQueries().isHeld(), "the hold is in place");
+      assertNotRefused();
+    }
+
+    @Test
+    @DisplayName("should disconnect a Forge client that never answers, before any server")
+    void timesOut() throws Exception {
+      start(false, AntiBotConfig.Verification.DEFAULTS);
+      EmbeddedChannel channel = forgeLogin("Steve", "203.0.113.9", LEGACY);
+      nextPacket(channel, ProtocolState.LOGIN, LoginPluginRequest.class, LEGACY);
+
+      advance(channel, AntiBotConfig.Verification.DEFAULTS.probeTimeout());
+
+      nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, LEGACY);
+      assertEquals(1, limits.refusals(Refusal.VERIFICATION_TIMEOUT));
+      assertNull(lastContextPlayer("Steve"), "never admitted");
+    }
+
+    @Test
+    @DisplayName("should disconnect a Forge client that answers another query")
+    void wrongEcho() throws Exception {
+      start(false, AntiBotConfig.Verification.DEFAULTS);
+      EmbeddedChannel channel = forgeLogin("Steve", "203.0.113.9", LEGACY);
+      LoginPluginRequest query =
+          nextPacket(channel, ProtocolState.LOGIN, LoginPluginRequest.class, LEGACY);
+
+      send(
+          channel,
+          ProtocolState.LOGIN,
+          new LoginPluginResponse(query.messageId() ^ 1, false, null),
+          LEGACY);
+
+      nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, LEGACY);
+      assertEquals(1, limits.refusals(Refusal.VERIFICATION_FAILED));
+    }
+
+    @Test
+    @DisplayName("should hold a Forge client for its server without a query when nothing verifies")
+    void heldWithoutPlan() throws Exception {
+      AntiBotConfig.Verification d = AntiBotConfig.Verification.DEFAULTS;
+      start(false, withModes(d, AntiBotConfig.Mode.NEVER, AntiBotConfig.Mode.NEVER));
+      holdInitialServerChoice();
+
+      EmbeddedChannel channel = forgeLogin("Steve", "203.0.113.9", LEGACY);
+
+      channel.runPendingTasks();
+      assertNull(channel.readOutbound(), "held for its first server, nothing asked");
+      assertTrue(registered("Steve").loginQueries().isHeld());
+    }
+
+    @Test
+    @DisplayName("should keep probing a vanilla client of the same version after Login Success")
+    void vanillaUnchanged() throws Exception {
+      start(false, AntiBotConfig.Verification.DEFAULTS);
+      EmbeddedChannel channel = login("Steve", "203.0.113.9", LEGACY);
+
+      nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, LEGACY);
+      nextPacket(channel, ProtocolState.PLAY, KeepAlive.class, LEGACY);
     }
   }
 
@@ -832,7 +929,38 @@ class VerificationLoginTest {
     EmbeddedChannel channel =
         new ProxyProtocolTest.PeerChannel(new InetSocketAddress(address(address), 40000));
     channel.pipeline().addLast(new ServerChannelInitializer(context));
+    this.lastContext = context;
     return channel;
+  }
+
+  /** A login declaring a Forge (FML2) client in its handshake, held for its server's queries. */
+  private EmbeddedChannel forgeLogin(String name, String address, ProtocolVersion version) {
+    EmbeddedChannel channel = connect(address);
+    channel.writeInbound(
+        handshake(version, HandshakeIntent.LOGIN.id(), HOST + "\0FML2\0"),
+        loginStart(name, version));
+    channel.runPendingTasks();
+    return channel;
+  }
+
+  /** The player {@code name} the last connection's context registered. */
+  private ConnectedPlayer registered(String name) {
+    return Objects.requireNonNull(lastContextPlayer(name), name + " registered");
+  }
+
+  private @Nullable ConnectedPlayer lastContextPlayer(String name) {
+    ServerLoginContext context = Objects.requireNonNull(lastContext, "connect() first");
+    return context.playerRegistry().get(name);
+  }
+
+  /** Plugins never settle the first server: the client stays where its login left it. */
+  private void holdInitialServerChoice() {
+    new PluginEventBus(events, "test", null, _ -> {})
+        .subscribeAsync(
+            PlayerChooseInitialServerEvent.class,
+            Subscribe.NORMAL,
+            30,
+            _ -> new CompletableFuture<>());
   }
 
   /** What the probe asked, read from the frames the proxy sent on entering configuration. */
@@ -985,10 +1113,14 @@ class VerificationLoginTest {
   }
 
   private ByteBuf handshake(ProtocolVersion version, int nextState) {
+    return handshake(version, nextState, HOST);
+  }
+
+  private ByteBuf handshake(ProtocolVersion version, int nextState, String serverAddress) {
     ByteBuf body = Unpooled.buffer();
     VarInt.write(body, 0x00);
     VarInt.write(body, version.protocol());
-    McString.write(body, HOST);
+    McString.write(body, serverAddress);
     body.writeShort(PORT);
     VarInt.write(body, nextState);
     return frame(body);

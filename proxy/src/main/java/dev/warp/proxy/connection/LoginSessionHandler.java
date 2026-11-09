@@ -177,6 +177,12 @@ final class LoginSessionHandler implements SessionHandler {
     AUTHENTICATING,
     AWAITING_LOGIN_ACKNOWLEDGED,
     /**
+     * Logged in, Login Success held, and probed with a login query of the proxy's own before any
+     * server hears of the client: a Forge client (1.13 to 1.20.1) under a verification plan. Its
+     * answer, in time, leads to {@link #HELD_FOR_SERVER}.
+     */
+    HELD_FOR_PROBE,
+    /**
      * Logged in, Login Success held: the client negotiates with its first server through login
      * queries, which the proxy relays, until that server's Login Success (Forge 1.13 to 1.20.1).
      */
@@ -269,6 +275,15 @@ final class LoginSessionHandler implements SessionHandler {
 
   /** The login's place in the verification line, while it waits. */
   private VerificationQueue.@Nullable Waiter verificationWaiter;
+
+  /** The login-query probe of a held client, while it runs ({@link LoginState#HELD_FOR_PROBE}). */
+  private @Nullable Probe loginQueryProbe;
+
+  /** What follows the login-query probe. */
+  private @Nullable VerificationOutcome loginQueryOutcome;
+
+  /** The login-query probe's deadline. */
+  private @Nullable ScheduledFuture<?> loginQueryDeadline;
 
   /** The warnings about a missing transfer target, once a minute at most. */
   private static final LogThrottle TRANSFER_TARGET_WARNINGS =
@@ -857,6 +872,13 @@ final class LoginSessionHandler implements SessionHandler {
    * backend's query relayed to a client held in its login state, and answers nothing otherwise.
    */
   private void handleLoginPluginResponse(LoginPluginResponse response) {
+    if (state == LoginState.HELD_FOR_PROBE) {
+      Probe probe = loginQueryProbe;
+      if (probe != null) {
+        judgeLoginQueryProbe(probe.loginQuery(response.messageId()));
+      }
+      return;
+    }
     ConnectedPlayer held = this.player;
     if (state != LoginState.HELD_FOR_SERVER || held == null) {
       logger.debug("Dropped a login query answer from {} that answers nothing", username);
@@ -888,6 +910,7 @@ final class LoginSessionHandler implements SessionHandler {
   public void deactivated() {
     logger.debug("LoginSessionHandler replaced for: {} (state={})", username, state);
     endOfLogin();
+    cancelLoginQueryDeadline();
     // A probe that took over holds its slot itself; anything else gives it back.
     endOfVerification();
   }
@@ -896,6 +919,14 @@ final class LoginSessionHandler implements SessionHandler {
   public void disconnected() {
     endOfLogin();
     endOfVerification();
+    cancelLoginQueryDeadline();
+    VerificationOutcome probed = loginQueryOutcome;
+    if (probed != null && state == LoginState.HELD_FOR_PROBE) {
+      // Left during the login-query probe: its slot goes back with the probe's end.
+      loginQueryOutcome = null;
+      loginQueryProbe = null;
+      probed.left();
+    }
     ended(LoginOutcome.DISCONNECTED);
     if (state == LoginState.REFUSED) {
       return; // Counted by the limits: a flood must not write a line per connection.
@@ -1206,7 +1237,13 @@ final class LoginSessionHandler implements SessionHandler {
     }
 
     if (held) {
-      // Still in the login state, on both sides: the backend's login queries go through here.
+      // Still in the login state, on both sides: the backend's login queries go through here. The
+      // verification plan comes first, whatever the client declared itself in its handshake: a
+      // probe in the login state, and the first server only once it passed.
+      if (plan != Plan.NONE) {
+        startLoginQueryProbe();
+        return;
+      }
       state = LoginState.HELD_FOR_SERVER;
       initiateBackendConnection();
     } else if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
@@ -1438,6 +1475,78 @@ final class LoginSessionHandler implements SessionHandler {
             connection, probe, outcome, loginContext.antiBot().nanoClock());
     outcome.preJoin = handler;
     connection.setSessionHandler(handler);
+  }
+
+  /**
+   * Probes a client held in its login state (Forge 1.13 to 1.20.1) with one login query of the
+   * proxy's own: the client answers it "not understood", as every client does for a channel it does
+   * not know, and its first server is connected only once it did, with the hold still in place for
+   * that server's login queries. A keep-alive cannot probe it: on its side, the client is in the
+   * login state until its Login Success, which waits for the server.
+   */
+  private void startLoginQueryProbe() {
+    state = LoginState.HELD_FOR_PROBE;
+    Probe probe = loginContext.antiBot().newProbe(Probe.Kind.LOGIN_QUERY, clientVersion());
+    this.loginQueryProbe = probe;
+    this.loginQueryOutcome = new VerificationOutcome(handOverVerificationSlot());
+    connection.writeAndFlush(
+        new LoginPluginRequest(probe.queryId(), Probe.QUERY_CHANNEL, new byte[0]));
+    long delay =
+        Math.max(0, probe.deadlineNanos() - loginContext.antiBot().nanoClock().getAsLong());
+    loginQueryDeadline =
+        connection
+            .channel()
+            .eventLoop()
+            .schedule(
+                () -> {
+                  loginQueryDeadline = null;
+                  Probe running = loginQueryProbe;
+                  if (running != null && state == LoginState.HELD_FOR_PROBE) {
+                    judgeLoginQueryProbe(running.deadline());
+                  }
+                },
+                delay,
+                TimeUnit.NANOSECONDS);
+  }
+
+  /** Ends the login-query probe on a verdict: the first server after a pass, else a disconnect. */
+  private void judgeLoginQueryProbe(Probe.Outcome outcome) {
+    VerificationOutcome probed = loginQueryOutcome;
+    if (probed == null || state != LoginState.HELD_FOR_PROBE) {
+      return;
+    }
+    switch (outcome) {
+      case Probe.Outcome.Pending _ -> {
+        // Waiting for the answer.
+      }
+      case Probe.Outcome.Passed passed -> {
+        endLoginQueryProbe();
+        // Held for its first server from here: the pass connects it, and its login queries, if
+        // any, come through this handler.
+        state = LoginState.HELD_FOR_SERVER;
+        probed.passed(passed, null, List.of());
+      }
+      case Probe.Outcome.Failed failed -> {
+        endLoginQueryProbe();
+        logger.debug(
+            "Login-query probe failed for {}: {}", connection.remoteAddress(), failed.detail());
+        probed.failed(failed);
+      }
+    }
+  }
+
+  private void endLoginQueryProbe() {
+    cancelLoginQueryDeadline();
+    loginQueryProbe = null;
+    loginQueryOutcome = null;
+  }
+
+  private void cancelLoginQueryDeadline() {
+    ScheduledFuture<?> pending = loginQueryDeadline;
+    if (pending != null) {
+      pending.cancel(false);
+      loginQueryDeadline = null;
+    }
   }
 
   /** What follows a probe: the player's first server, a transfer back, or a disconnect. */
