@@ -152,6 +152,22 @@ Validations shared by the templates.
 {{- if and .Values.podDisruptionBudget.enabled .Values.podDisruptionBudget.minAvailable .Values.podDisruptionBudget.maxUnavailable }}
 {{- fail "podDisruptionBudget: set minAvailable or maxUnavailable, not both" }}
 {{- end }}
+{{- if eq (include "warp.durationSeconds" .Values.drain.timeout) "0" }}
+{{- fail "drain.timeout must be more than zero (Warp refuses 0); to kick the players that cannot be transferred, set drain.cannotTransfer: kick" }}
+{{- end }}
+{{- if not .Values.secrets.existingSecret }}
+{{- range .Values.management.console.tokens }}
+{{- if not .generate }}
+{{- fail (printf "management.console.tokens[%s]: the Deployment reads key %s from the chart's Secret, which only holds it with generate: true; set generate: true or secrets.existingSecret" .name .secretKey) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $monitor := .Values.management.metrics.serviceMonitor }}
+{{- if and $monitor.enabled $monitor.namespace (ne $monitor.namespace .Release.Namespace) }}
+{{- if or .Values.management.metrics.requireToken (and .Values.management.tls.enabled (not $monitor.insecureSkipVerify)) }}
+{{- fail (printf "management.metrics.serviceMonitor.namespace: Prometheus Operator reads a ServiceMonitor's Secrets (the TLS Secret's ca.crt, the management token) from the ServiceMonitor's own namespace, and the chart creates them in %s only; leave namespace empty and let Prometheus select the ServiceMonitor by namespace (serviceMonitorNamespaceSelector), or turn requireToken off and insecureSkipVerify on" .Release.Namespace) }}
+{{- end }}
+{{- end }}
 {{- end }}
 
 {{/*

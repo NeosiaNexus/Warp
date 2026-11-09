@@ -134,7 +134,11 @@ Keys left out keep the defaults of Warp's reference configuration, which documen
 `proxy/src/main/java/dev/warp/proxy/config/WarpConfig.java`. `config.raw` replaces the generated
 file with yours, except for the `management` and `drain` blocks, which the chart's probes and
 hooks rely on. A configuration change rolls the Pods (a checksum annotation), each draining in
-turn.
+turn. So does a change to the chart's Secret (`helm upgrade --set secrets.forwardingSecret=...`
+after rotating it on the backends, a new management token): the proxies read their secrets from
+the environment at start, and a Pod that is not rolled would keep the old ones. Rotating a key of
+`secrets.existingSecret` is outside the chart: roll the Deployment yourself (`kubectl rollout
+restart`).
 
 Backends must accept Velocity modern forwarding with the chart's forwarding secret:
 
@@ -194,7 +198,11 @@ java -jar warp.jar console attach --url http://localhost:9901 --token-file ops.t
 
 Port-forwarding arrives on the Pod's loopback, which Warp trusts for commands without TLS. To reach
 the console across the cluster, give the management server a certificate
-(`management.tls.secretName`, a cert-manager Secret) or list the trusted networks.
+(`management.tls.secretName`, a cert-manager Secret) or list the trusted networks. Issue the
+certificate for `<management service>.<namespace>.svc` (`warp-management.minecraft.svc` here): the
+ServiceMonitor and the helm test verify that name. Clients that connect over loopback (the preStop
+drain hook, a port-forwarded console with `--ca-file`) verify the certificate against the CA only,
+not its name, since the peer can only be the local proxy; the certificate needs no IP address.
 
 ## Security
 

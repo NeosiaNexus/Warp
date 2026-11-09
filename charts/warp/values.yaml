@@ -120,7 +120,9 @@ management:
   # -- Ready only once at least one backend is registered.
   readyRequiresServer: true
   # -- TLS on the management port, from a Secret with tls.crt and tls.key (cert-manager). Probes
-  # then use HTTPS.
+  # then use HTTPS. Issue the certificate for <management service>.<namespace>.svc (the name the
+  # ServiceMonitor and the helm test verify); the preStop drain reaches the Pod's own proxy over
+  # loopback and verifies the certificate against tls.crt without its name, so no IP address SAN.
   tls:
     enabled: false
     secretName: ''
@@ -137,6 +139,10 @@ management:
       scrapeTimeout: 10s
       # -- Labels the Prometheus instance selects ServiceMonitors by.
       labels: {}
+      # -- Namespace of the ServiceMonitor, when the Prometheus Operator only watches its own. The
+      # operator reads the ServiceMonitor's Secrets (the TLS Secret's ca.crt, the management token)
+      # from that namespace, where the chart does not create them: another namespace is refused
+      # with tls (unless insecureSkipVerify) or requireToken.
       namespace: ''
       relabelings: []
       metricRelabelings: []
@@ -152,7 +158,8 @@ management:
     # http://localhost:9901` through `kubectl port-forward`.
     enabled: false
     # -- Tokens: a name, scopes (logs, commands) and the Secret key holding the token (created in
-    # the chart's Secret when `generate: true`, else from existingSecret).
+    # the chart's Secret when `generate: true`, else read from existingSecret, which is required
+    # for a token without `generate`).
     tokens: []
     #  - name: ops
     #    scopes: [logs, commands]

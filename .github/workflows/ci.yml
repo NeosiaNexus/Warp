@@ -229,8 +229,35 @@ jobs:
           ! helm template warp charts/warp --set typo=1 > /dev/null 2>&1 || { echo "::error::an unknown value was accepted"; exit 1; }
           ! helm template warp charts/warp --set drain.timeout=soon > /dev/null 2>&1 || { echo "::error::a bad duration was accepted"; exit 1; }
           ! helm template warp charts/warp --set config.proxyProtocol.enabled=true > /dev/null 2>&1 || { echo "::error::the PROXY protocol without trusted proxies was accepted"; exit 1; }
+          ! helm template warp charts/warp --set drain.timeout=0 > /dev/null 2>&1 || { echo "::error::drain.timeout=0, which Warp refuses, was accepted"; exit 1; }
+          ! helm template warp charts/warp --set 'management.console.tokens[0].name=ops' --set 'management.console.tokens[0].scopes[0]=commands' \
+              --set 'management.console.tokens[0].secretKey=ops-token' > /dev/null 2>&1 \
+            || { echo "::error::a console token neither generated nor from existingSecret was accepted"; exit 1; }
+          helm template warp charts/warp --set 'management.console.tokens[0].name=ops' --set 'management.console.tokens[0].scopes[0]=commands' \
+              --set 'management.console.tokens[0].secretKey=ops-token' --set secrets.existingSecret=warp-secrets > /dev/null \
+            || { echo "::error::a console token from existingSecret was refused"; exit 1; }
+          ! helm template warp charts/warp --namespace minecraft --set management.metrics.serviceMonitor.enabled=true \
+              --set management.metrics.serviceMonitor.namespace=monitoring --set management.metrics.requireToken=true > /dev/null 2>&1 \
+            || { echo "::error::a ServiceMonitor in another namespace with the bearer token was accepted"; exit 1; }
+          helm template warp charts/warp --namespace minecraft --set management.metrics.serviceMonitor.enabled=true \
+              --set management.metrics.serviceMonitor.namespace=monitoring > /dev/null \
+            || { echo "::error::a ServiceMonitor in another namespace without Secrets was refused"; exit 1; }
           helm template warp charts/warp --set drain.timeout=10m --set drain.propagationDelay=5s --set drain.gracePeriodMargin=30 \
             | grep -q 'terminationGracePeriodSeconds: 635' || { echo "::error::the grace period is not derived from the drain settings"; exit 1; }
+
+      # The Pods roll when the configuration or the Secret changes, and TLS clients inside the
+      # cluster meet the certificate by the name it is issued for.
+      - name: Rollouts and names
+        run: |
+          rendered=$(helm template warp charts/warp --namespace minecraft --set secrets.forwardingSecret=one)
+          grep -q 'checksum/secret: ' <<< "$rendered" || { echo "::error::the Secret is not hashed into the Pod template"; exit 1; }
+          one=$(grep 'checksum/secret: ' <<< "$rendered")
+          two=$(helm template warp charts/warp --namespace minecraft --set secrets.forwardingSecret=two | grep 'checksum/secret: ')
+          [ "$one" != "$two" ] || { echo "::error::a changed forwarding secret does not roll the Pods"; exit 1; }
+          rendered=$(helm template warp charts/warp --namespace minecraft --set drain.mode=preStop \
+            --set management.tls.enabled=true --set management.tls.secretName=warp-tls)
+          grep -q 'https://127.0.0.1:9901' <<< "$rendered" || { echo "::error::the preStop drain does not go over loopback"; exit 1; }
+          grep -q 'https://warp-management.minecraft.svc:9901/readyz' <<< "$rendered" || { echo "::error::the helm test does not use the certificate's name"; exit 1; }
 
       # The ServiceMonitor verifies the management server's certificate against the TLS Secret's
       # CA by default; skipping the verification is an opt-in, refused with the bearer token.

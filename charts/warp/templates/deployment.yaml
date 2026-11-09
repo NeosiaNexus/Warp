@@ -28,8 +28,10 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        # A changed configuration rolls the Pods (each one drains before it stops).
+        # A changed configuration or Secret rolls the Pods (each one drains before it stops): the
+        # secrets reach the container as environment variables, read once at start.
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
         kubectl.kubernetes.io/default-container: warp
         {{- if $v.management.metrics.podAnnotations }}
         prometheus.io/scrape: "true"
@@ -147,7 +149,9 @@ spec:
           lifecycle:
             preStop:
               # Starts the drain through the management API and returns once every player left
-              # (or the drain timed out); SIGTERM then finds a proxy that is exiting.
+              # (or the drain timed out); SIGTERM then finds a proxy that is exiting. Over TLS, the
+              # certificate is verified against the mounted tls.crt but not for the name: on
+              # loopback the peer is this Pod's proxy, so no IP address in the certificate is needed.
               exec:
                 command:
                   - /opt/warp/entrypoint.sh
