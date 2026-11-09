@@ -28,6 +28,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.time.Duration;
+import java.util.Iterator;
 import java.util.List;
 import java.util.function.UnaryOperator;
 
@@ -229,8 +230,9 @@ public final class ManagementCli {
     @Nullable Path caFile = null;
     boolean wait = false;
     Duration timeout = DEFAULT_TIMEOUT;
-    for (int i = 0; i < args.size(); i++) {
-      String name = args.get(i);
+    Iterator<String> remaining = args.iterator();
+    while (remaining.hasNext()) {
+      String name = remaining.next();
       if (name.equals("--wait")) {
         if (!drain) {
           throw new UsageException("--wait is for drain");
@@ -247,10 +249,10 @@ public final class ManagementCli {
       if (!name.startsWith("--")) {
         throw new UsageException("unexpected argument " + name);
       }
-      if (i + 1 >= args.size()) {
+      if (!remaining.hasNext()) {
         throw new UsageException(name + " needs a value");
       }
-      String value = args.get(++i);
+      String value = remaining.next();
       switch (name) {
         case "--url" -> url = value;
         case "--token-file" -> tokenFile = directory.resolve(value);

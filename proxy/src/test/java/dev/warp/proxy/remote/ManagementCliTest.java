@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.io.PrintStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -30,13 +31,21 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.KeyStore;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+
 import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpsConfigurator;
+import com.sun.net.httpserver.HttpsServer;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -260,6 +269,120 @@ class ManagementCliTest {
       assertEquals(
           ManagementCli.FAILED, execute("drain", "--url", base, "--token-file", "wrong.token"));
       assertTrue(err.toString(StandardCharsets.UTF_8).contains("token was refused"));
+    }
+  }
+
+  @Nested
+  @DisplayName("over TLS on loopback")
+  class OverTls {
+
+    private static final char[] PASSWORD = "changeit".toCharArray();
+
+    private HttpsServer server;
+    private String base;
+    private final ByteArrayOutputStream out = new ByteArrayOutputStream();
+    private final ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+    /**
+     * A certificate as the chart's cert-manager one: issued for the management Service's name, with
+     * no IP address, as the preStop hook (127.0.0.1) and a port-forwarded console then meet it.
+     */
+    @BeforeEach
+    void start() throws Exception {
+      Path keytool = Path.of(System.getProperty("java.home"), "bin", "keytool");
+      Assumptions.assumeTrue(Files.isExecutable(keytool), "no keytool in " + keytool);
+      Path keystore = directory.resolve("server.p12");
+      run(
+          keytool.toString(),
+          "-genkeypair",
+          "-alias",
+          "warp",
+          "-keyalg",
+          "EC",
+          "-groupname",
+          "secp256r1",
+          "-dname",
+          "CN=warp-management",
+          "-ext",
+          "SAN=dns:warp-management.minecraft.svc",
+          "-validity",
+          "2",
+          "-keystore",
+          keystore.toString(),
+          "-storetype",
+          "PKCS12",
+          "-storepass",
+          new String(PASSWORD));
+      run(
+          keytool.toString(),
+          "-exportcert",
+          "-rfc",
+          "-alias",
+          "warp",
+          "-keystore",
+          keystore.toString(),
+          "-storepass",
+          new String(PASSWORD),
+          "-file",
+          directory.resolve("tls.crt").toString());
+
+      KeyStore keys = KeyStore.getInstance("PKCS12");
+      try (InputStream in = Files.newInputStream(keystore)) {
+        keys.load(in, PASSWORD);
+      }
+      KeyManagerFactory managers =
+          KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+      managers.init(keys, PASSWORD);
+      SSLContext ssl = SSLContext.getInstance("TLS");
+      ssl.init(managers.getKeyManagers(), null, null);
+
+      server = HttpsServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+      server.setHttpsConfigurator(new HttpsConfigurator(ssl));
+      server.createContext(
+          "/readyz",
+          exchange -> {
+            byte[] body = "{\"status\":\"ok\"}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+          });
+      server.start();
+      base = "https://127.0.0.1:" + server.getAddress().getPort();
+    }
+
+    @AfterEach
+    void stop() {
+      if (server != null) {
+        server.stop(0);
+      }
+    }
+
+    private static void run(String... command) throws Exception {
+      Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
+      String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+      assertTrue(process.waitFor(30, TimeUnit.SECONDS), "keytool hangs");
+      assertEquals(0, process.exitValue(), output);
+    }
+
+    private int execute(String command, String... args) throws Exception {
+      ManagementCli.Options options = parse(command, args);
+      return ManagementCli.execute(options, new PrintStream(out), new PrintStream(err));
+    }
+
+    @Test
+    @DisplayName("should accept the Service's certificate on 127.0.0.1 with its CA pinned")
+    void loopbackNameExempt() throws Exception {
+      int exit = execute("health", "--url", base, "--ca-file", "tls.crt");
+
+      assertEquals(ManagementCli.OK, exit, err.toString(StandardCharsets.UTF_8));
+      assertTrue(out.toString(StandardCharsets.UTF_8).contains("/readyz: 200"));
+    }
+
+    @Test
+    @DisplayName("should still refuse a certificate no trusted authority signed")
+    void untrusted() throws Exception {
+      assertEquals(ManagementCli.UNREACHABLE, execute("health", "--url", base));
+      assertTrue(err.toString(StandardCharsets.UTF_8).contains("cannot be reached"));
     }
   }
 }
