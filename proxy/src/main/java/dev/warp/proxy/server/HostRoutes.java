@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.server;
 
+import dev.warp.api.player.ClientPlatform;
 import dev.warp.api.server.Route;
 
 import java.util.ArrayList;
@@ -31,16 +32,18 @@ import org.jspecify.annotations.Nullable;
  * host name it connected with.
  *
  * <p>An entry's key is a host, in any case, with or without a trailing dot, optionally followed by
- * {@code :port} to match only clients that connected to that port. Its first label may be {@code
- * *}, which stands for one or more labels: {@code *.example.com} matches {@code a.example.com} and
- * {@code a.b.example.com}, and {@code *} alone matches every host. The labels the star stood for
- * are the capture, which a target of {@code $1} is replaced with.
+ * {@code :port} to match only clients that connected to that port, and by {@code @platform} to
+ * match only clients of that platform: {@code @bedrock} for Bedrock players Floodgate's data
+ * vouched for, {@code @forge}, {@code @neoforge}, {@code @java} for the rest. Its first label may
+ * be {@code *}, which stands for one or more labels: {@code *.example.com} matches {@code
+ * a.example.com} and {@code a.b.example.com}, and {@code *} alone matches every host. The labels
+ * the star stood for are the capture, which a target of {@code $1} is replaced with.
  *
  * <p>Matching is deterministic: an exact host wins over a wildcard, a wildcard with more literal
- * labels over one with fewer, an entry with a port over the same entry without, and two entries
- * that still tie are taken in the order of their keys. Entries are matched against the {@link
- * #clean cleaned} host, so the Forge and BungeeCord suffixes, the case, a trailing dot or a port
- * the client typed never make an entry miss.
+ * labels over one with fewer, an entry with a platform over the same entry without, an entry with a
+ * port over the same entry without, and two entries that still tie are taken in the order of their
+ * keys. Entries are matched against the {@link #clean cleaned} host, so the Forge and BungeeCord
+ * suffixes, the case, a trailing dot or a port the client typed never make an entry miss.
  */
 public final class HostRoutes {
 
@@ -96,6 +99,7 @@ public final class HostRoutes {
     entries.sort(
         Comparator.comparing((Entry e) -> e.key.wildcard())
             .thenComparing(e -> -e.key.literalLabels())
+            .thenComparing(e -> e.key.platform() == null)
             .thenComparing(e -> e.key.port() == NO_PORT)
             .thenComparing(e -> e.key.pattern()));
     return new HostRoutes(List.copyOf(entries));
@@ -111,6 +115,22 @@ public final class HostRoutes {
    */
   public static Key parseKey(String written) {
     String host = written.trim().toLowerCase(Locale.ROOT);
+    Condition platform = null;
+    int at = host.indexOf('@');
+    if (at >= 0) {
+      String condition = host.substring(at + 1).trim();
+      platform = Condition.parse(condition);
+      if (platform == null) {
+        throw new IllegalArgumentException(
+            "'"
+                + written
+                + "' ends with '@"
+                + condition
+                + "', which is not a platform: "
+                + Condition.names());
+      }
+      host = host.substring(0, at).trim();
+    }
     int port = NO_PORT;
     int colon = host.lastIndexOf(':');
     if (colon >= 0 && host.indexOf(':') == colon) {
@@ -154,7 +174,7 @@ public final class HostRoutes {
         throw new IllegalArgumentException("'" + written + "' contains whitespace");
       }
     }
-    return new Key(host, suffix, wildcard, port);
+    return new Key(host, suffix, wildcard, port, platform);
   }
 
   /**
@@ -195,20 +215,36 @@ public final class HostRoutes {
   }
 
   /**
+   * Finds the route for a Java connection: {@link #match(String, int, ClientPlatform)} with {@link
+   * ClientPlatform#JAVA}.
+   *
+   * @param host the cleaned host, see {@link #clean}
+   * @param port the port the client connected to, from its handshake
+   * @return the most specific matching route, or {@code null} if no entry matches
+   */
+  public @Nullable Route match(String host, int port) {
+    return match(host, port, ClientPlatform.JAVA);
+  }
+
+  /**
    * Finds the route for a connection.
    *
    * @param host the cleaned host, see {@link #clean}
    * @param port the port the client connected to, from its handshake
+   * @param platform the client's platform, as decided at the handshake
    * @return the most specific matching route, with its capture substituted, or {@code null} if no
    *     entry matches
    */
-  public @Nullable Route match(String host, int port) {
+  public @Nullable Route match(String host, int port, ClientPlatform platform) {
     if (host.isEmpty()) {
       return null;
     }
     for (Entry entry : entries) {
       Key key = entry.key;
       if (key.port() != NO_PORT && key.port() != port) {
+        continue;
+      }
+      if (key.platform() != null && !key.platform().matches(platform)) {
         continue;
       }
       String capture;
@@ -227,7 +263,7 @@ public final class HostRoutes {
         continue;
       }
       String target = entry.target.replace(CAPTURE, capture);
-      return new Route(key.pattern() + (key.port() == NO_PORT ? "" : ":" + key.port()), target);
+      return new Route(key.text(), target);
     }
     return null;
   }
@@ -238,13 +274,7 @@ public final class HostRoutes {
    * @return the routes, unmodifiable
    */
   public List<Map.Entry<String, String>> entries() {
-    return entries.stream()
-        .map(
-            e ->
-                Map.entry(
-                    e.key.pattern() + (e.key.port() == NO_PORT ? "" : ":" + e.key.port()),
-                    e.target))
-        .toList();
+    return entries.stream().map(e -> Map.entry(e.key.text(), e.target)).toList();
   }
 
   /**
@@ -263,8 +293,22 @@ public final class HostRoutes {
    * @param suffix the literal labels after the star (the whole pattern when not a wildcard)
    * @param wildcard whether the first label is a star
    * @param port the port to match, or {@code -1} for any
+   * @param platform the platform to match, or {@code null} for any
    */
-  public record Key(String pattern, String suffix, boolean wildcard, int port) {
+  public record Key(
+      String pattern, String suffix, boolean wildcard, int port, @Nullable Condition platform) {
+
+    /**
+     * Returns the key in its normal form: {@code pattern[:port][@platform]}, the host of the {@link
+     * Route} it gives.
+     *
+     * @return the text
+     */
+    public String text() {
+      return pattern
+          + (port == NO_PORT ? "" : ":" + port)
+          + (platform == null ? "" : "@" + platform.name().toLowerCase(Locale.ROOT));
+    }
 
     /**
      * Returns how many literal labels the key has: its specificity among wildcards.
@@ -273,6 +317,52 @@ public final class HostRoutes {
      */
     int literalLabels() {
       return suffix.isEmpty() ? 0 : suffix.split("\\.").length;
+    }
+  }
+
+  /** The platform condition of a key. */
+  public enum Condition {
+    /** A vanilla Java client, or one the proxy cannot tell from it. */
+    JAVA,
+    /** A Forge client of any era. */
+    FORGE,
+    /** A NeoForge client. */
+    NEOFORGE,
+    /** A Bedrock player Floodgate's data vouched for. */
+    BEDROCK;
+
+    /**
+     * Parses a condition as written after the {@code @}.
+     *
+     * @param text the condition, in any case
+     * @return the condition, or {@code null} if it is not one
+     */
+    static @Nullable Condition parse(String text) {
+      for (Condition condition : values()) {
+        if (condition.name().equalsIgnoreCase(text)) {
+          return condition;
+        }
+      }
+      return null;
+    }
+
+    /**
+     * Returns whether a platform satisfies this condition.
+     *
+     * @param platform the client's platform
+     * @return {@code true} if it does
+     */
+    boolean matches(ClientPlatform platform) {
+      return switch (this) {
+        case JAVA -> platform instanceof ClientPlatform.Java;
+        case FORGE -> platform instanceof ClientPlatform.Forge;
+        case NEOFORGE -> platform instanceof ClientPlatform.NeoForge;
+        case BEDROCK -> platform instanceof ClientPlatform.Bedrock;
+      };
+    }
+
+    static String names() {
+      return "@java, @forge, @neoforge or @bedrock";
     }
   }
 

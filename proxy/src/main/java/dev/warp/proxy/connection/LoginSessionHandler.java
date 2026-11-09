@@ -58,6 +58,7 @@ import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.Pkcs1Decryption;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.auth.ServerHash;
+import dev.warp.proxy.bedrock.BedrockIdentity;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.event.player.GameProfileRequestEventImpl;
 import dev.warp.proxy.event.player.LoginEventImpl;
@@ -430,8 +431,23 @@ final class LoginSessionHandler implements SessionHandler {
     }
 
     String name = packet.name();
-    if (!USERNAME_PATTERN.matcher(name).matches()) {
+    BedrockIdentity bedrock = connection.bedrock();
+    if (bedrock != null) {
+      // Geyser sends the gamertag, spaces and all; the player logs in under the name Floodgate's
+      // data derives, verified at the handshake. Xbox Live authenticated the player to Geyser, and
+      // the key proves Geyser wrote the data: there is nothing to ask Mojang.
+      name = bedrock.javaName();
+      onlineMode = false;
+    } else if (!USERNAME_PATTERN.matcher(name).matches()) {
       deny(Refusal.INVALID_LOGIN, Message.INVALID_USERNAME.of(), "Invalid username");
+      return;
+    } else if (!loginContext.onlineMode() && loginContext.floodgate().reservesName(name)) {
+      // A Java client under the Bedrock prefix, without Floodgate's data: in offline mode, where
+      // names are free, it would be taken for a Bedrock player.
+      deny(
+          Refusal.INVALID_LOGIN,
+          Message.INVALID_USERNAME.of(),
+          "Bedrock name prefix without Floodgate data");
       return;
     }
 
@@ -445,7 +461,8 @@ final class LoginSessionHandler implements SessionHandler {
         antiBot.recognizeEverywhere(name, address),
         recognized -> {
           this.recognition = recognized;
-          if (!loginContext.onlineMode() && antiBot.lockdownRefuses(recognized)) {
+          if (!onlineMode && bedrock == null && antiBot.lockdownRefuses(recognized)) {
+            // Not a verified Bedrock player: its identity is as proven as an account's.
             deny(Refusal.LOCKDOWN, LOCKDOWN_REASON);
             return;
           }
@@ -508,7 +525,8 @@ final class LoginSessionHandler implements SessionHandler {
   private void verifyOrCheck(LoginStart packet, AntiBotService.Recognition recognized) {
     AntiBotService antiBot = loginContext.antiBot();
     if (tokenClaim == null
-        && antiBot.plan(recognized, loginContext.onlineMode(), clientVersion())
+        && antiBot.plan(
+                recognized, loginContext.onlineMode(), clientVersion(), connection.clientPlatform())
             == Plan.BEFORE_AUTHENTICATION) {
       plan = Plan.BEFORE_AUTHENTICATION;
       state = LoginState.AWAITING_LOGIN_START;
@@ -602,7 +620,13 @@ final class LoginSessionHandler implements SessionHandler {
   /** Goes on with a login the pre-login handlers let through. */
   private void continueLogin(LoginStart packet) {
     AntiBotService.Recognition recognized = recognition();
-    if (!onlineMode && loginContext.antiBot().lockdownRefuses(recognized)) {
+    BedrockIdentity bedrock = connection.bedrock();
+    if (bedrock != null) {
+      // Whatever a pre-login handler asked: Geyser cannot authenticate with Mojang for a Bedrock
+      // player, and the Floodgate key already proved the identity.
+      onlineMode = false;
+    }
+    if (!onlineMode && bedrock == null && loginContext.antiBot().lockdownRefuses(recognized)) {
       // An online proxy a plugin made offline for this login: lockdown has no account to check.
       deny(Refusal.LOCKDOWN, LOCKDOWN_REASON);
       return;
@@ -633,7 +657,9 @@ final class LoginSessionHandler implements SessionHandler {
     plan =
         tokenClaim != null
             ? Plan.NONE
-            : loginContext.antiBot().plan(recognized, onlineMode, clientVersion());
+            : loginContext
+                .antiBot()
+                .plan(recognized, onlineMode, clientVersion(), connection.clientPlatform());
     if (plan == Plan.BEFORE_AUTHENTICATION) {
       acquireVerification(this::beginUnauthenticatedVerification);
       return;
@@ -971,6 +997,13 @@ final class LoginSessionHandler implements SessionHandler {
       internalError("offline login without a username");
       return;
     }
+    BedrockIdentity bedrock = connection.bedrock();
+    if (bedrock != null) {
+      // Floodgate's identity: the linked Java account's UUID and name, else 0000...0009-<xuid>
+      // and the prefixed gamertag. No properties yet: the skin comes with a later milestone.
+      completeLogin(new GameProfile(bedrock.javaId(), bedrock.javaName(), List.of()));
+      return;
+    }
     UUID offlineUuid =
         UUID.nameUUIDFromBytes(("OfflinePlayer:" + name).getBytes(StandardCharsets.UTF_8));
     GameProfile profile = new GameProfile(offlineUuid, name, List.of());
@@ -1212,10 +1245,11 @@ final class LoginSessionHandler implements SessionHandler {
         && loginContext.logging().connections()
         && loginContext.antiBot().logs(RoutineLine.CONNECTION)) {
       joined.log(logger, Level.INFO).log(
-          "Player {} ({}) logged in from {}{}",
+          "Player {} ({}) logged in from {}{}{}",
           profile.name(),
           profile.uuid(),
           connection.remoteAddress(),
+          Platforms.describe(connection.clientPlatform()),
           connection.handshakeIntent() == HandshakeIntent.TRANSFER ? ", transferred" : "");
     }
     // No longer among the connections not logged in, nor under their deadlines and frame limits:
@@ -1456,7 +1490,10 @@ final class LoginSessionHandler implements SessionHandler {
 
   /** Probes a 1.20.2+ client in its first configuration phase, in place of its first server. */
   private void startConfigurationProbe() {
-    Probe probe = loginContext.antiBot().newProbe(Probe.Kind.CONFIGURATION, clientVersion());
+    Probe probe =
+        loginContext
+            .antiBot()
+            .newProbe(Probe.Kind.CONFIGURATION, clientVersion(), connection.clientPlatform());
     connection.setSessionHandler(
         new ProbeSessionHandler(
             connection,
@@ -1468,7 +1505,10 @@ final class LoginSessionHandler implements SessionHandler {
 
   /** Probes a 1.8 to 1.20.1 client with a keep-alive before its first Join Game. */
   private void startPreJoinProbe() {
-    Probe probe = loginContext.antiBot().newProbe(Probe.Kind.PRE_JOIN, clientVersion());
+    Probe probe =
+        loginContext
+            .antiBot()
+            .newProbe(Probe.Kind.PRE_JOIN, clientVersion(), connection.clientPlatform());
     VerificationOutcome outcome = new VerificationOutcome(handOverVerificationSlot());
     PreJoinProbeSessionHandler handler =
         new PreJoinProbeSessionHandler(
@@ -1486,7 +1526,10 @@ final class LoginSessionHandler implements SessionHandler {
    */
   private void startLoginQueryProbe() {
     state = LoginState.HELD_FOR_PROBE;
-    Probe probe = loginContext.antiBot().newProbe(Probe.Kind.LOGIN_QUERY, clientVersion());
+    Probe probe =
+        loginContext
+            .antiBot()
+            .newProbe(Probe.Kind.LOGIN_QUERY, clientVersion(), connection.clientPlatform());
     this.loginQueryProbe = probe;
     this.loginQueryOutcome = new VerificationOutcome(handOverVerificationSlot());
     connection.writeAndFlush(
