@@ -430,7 +430,7 @@ final class ValkeyConnection {
       }
       CompletableFuture<RespValue> waiting = pending.poll();
       if (waiting == null) {
-        logger.debug("{}: unexpected reply {}", name, value);
+        logger.debug("{}: unexpected {} reply", name, value.getClass().getSimpleName());
         return;
       }
       if (value instanceof RespValue.Err(String message)) {

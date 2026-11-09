@@ -139,6 +139,7 @@ class ValkeyConnectionTest {
 
       assertTrue(server.received("PING"), "pinged while idle");
       assertEquals(List.of(true), states, "never dropped");
+      assertEquals(List.of(), failures, "never failed");
       assertTrue(connection.isReady());
       assertEquals("PONG", connection.command("PING").join().text());
     }

@@ -126,6 +126,22 @@ class RespCodecTest {
     }
 
     @Test
+    @DisplayName("should reject an aggregate whose count would overflow once doubled for pairs")
+    void oversizedAggregate() {
+      // 2^62 pairs: doubled, the count wraps negative and would slip past an unbounded check.
+      assertThrows(IllegalStateException.class, () -> read("%4611686018427387904\r\n"));
+      assertThrows(IllegalStateException.class, () -> read("*9223372036854775807\r\n"));
+      assertThrows(IllegalStateException.class, () -> read("$9223372036854775807\r\n"));
+    }
+
+    @Test
+    @DisplayName("should reject a malformed integer as a protocol error")
+    void malformedInteger() {
+      assertThrows(IllegalStateException.class, () -> read(":abc\r\n"));
+      assertThrows(IllegalStateException.class, () -> read("*1x\r\n"));
+    }
+
+    @Test
     @DisplayName("should reject bytes that are not RESP")
     void garbage() {
       assertThrows(IllegalStateException.class, () -> read("hello\r\n"));

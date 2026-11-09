@@ -107,7 +107,7 @@ public final class RespCodec {
       }
       case ':' -> {
         String line = readLine(in);
-        return line == null ? null : new RespValue.Int(Long.parseLong(line));
+        return line == null ? null : new RespValue.Int(parseLong(line));
       }
       case ',' -> {
         String line = readLine(in);
@@ -136,9 +136,13 @@ public final class RespCodec {
         if (line == null) {
           return null;
         }
-        long count = Long.parseLong(line);
+        long count = parseLong(line);
         if (count < 0) {
           return new RespValue.Null(); // RESP2 null array
+        }
+        // Bounded before the doubling, so that a huge count cannot overflow past the check.
+        if (count > MAX_LENGTH) {
+          throw new IllegalStateException("aggregate of " + count + " elements");
         }
         boolean pairs = type == '%' || type == '|';
         long elements = pairs ? count * 2 : count;
@@ -169,7 +173,7 @@ public final class RespCodec {
     if (line == null) {
       return null;
     }
-    long length = Long.parseLong(line);
+    long length = parseLong(line);
     if (length < 0) {
       return new RespValue.Null(); // RESP2 null blob
     }
@@ -201,6 +205,15 @@ public final class RespCodec {
     String line = in.toString(in.readerIndex(), length, StandardCharsets.US_ASCII);
     in.readerIndex(end + 1);
     return line;
+  }
+
+  /** Parses a RESP integer line; a malformed one is a protocol error, not a Java one. */
+  private static long parseLong(String text) {
+    try {
+      return Long.parseLong(text);
+    } catch (NumberFormatException e) {
+      throw new IllegalStateException("not a RESP integer: " + text, e);
+    }
   }
 
   private static double parseDouble(String text) {

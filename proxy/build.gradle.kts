@@ -105,6 +105,11 @@ dependencies {
     "integrationTestImplementation"(libs.bundles.netty)
     "integrationTestImplementation"(libs.testcontainers.junit)
     "integrationTestImplementation"(libs.bundles.testing)
+    constraints {
+        "integrationTestImplementation"(libs.commons.compress) {
+            because("Testcontainers 1.21 asks for 1.24.0: GHSA-4265-ccf5-phj5, GHSA-4g9r-vxhx-9pgx")
+        }
+    }
 
     // Native crypto
     implementation(libs.netty.tcnative.boringssl)
