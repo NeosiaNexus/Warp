@@ -59,6 +59,15 @@ export const RESOURCES = [
  */
 const TRACKED_CLASS = /^(?:dev\.warp\.(?!libs\.).*|io\.netty\.channel\..*(?<!Server)SocketChannel)$/;
 
+/**
+ * Tracked classes Warp keeps in a ring or a bounded queue by design, with the most instances the
+ * bound allows. They fill with activity, not with players (the console tail keeps the last 1,000
+ * lines for `/log` and the remote console, and its queue holds 8,192 lines at most, see
+ * ConsoleOutput.TAIL_CAPACITY and CAPACITY), so their growth over the steady phase is not a leak;
+ * more instances than the bound is one.
+ */
+export const BOUNDED_CLASSES = new Map([['dev.warp.proxy.console.ConsoleLine', 1000 + 8192]]);
+
 /** Warm-up: a fifth of the soak, 1 to 5 minutes (at most half of it). The leak checks skip it. */
 export function warmUpMs(durationMs) {
   return Math.min(Math.max(durationMs * 0.2, 60_000), 300_000, durationMs / 2);
@@ -328,18 +337,31 @@ export function checkGrowth(samples, resource, from, to) {
 /**
  * Objects of the tracked classes that outlived the players: instances once every player has left,
  * against before the first one joined. A class may keep up to one more per player (a cache keyed
- * by player), not more: that is an object per connection or per switch, kept.
+ * by player), not more: that is an object per connection or per switch, kept. A class bounded by
+ * design ({@link BOUNDED_CLASSES}) may grow freely but never hold more than its bound, whether its
+ * count still grows or not.
  */
 export function retainedObjects(before, after, players) {
   const grown = [...after]
     .filter(([name]) => TRACKED_CLASS.test(name))
-    .map(([name, count]) => ({ name, before: before.get(name) ?? 0, after: count }))
+    .map(([name, count]) => ({ name, before: before.get(name) ?? 0, after: count, bound: BOUNDED_CLASSES.get(name) }))
     .map((c) => ({ ...c, growth: c.after - c.before }))
-    .filter((c) => c.growth > 0)
+    .map((c) => ({ ...c, leaked: leakedObjects(c, players) }))
+    .filter((c) => c.growth > 0 || c.leaked)
     .sort((a, b) => b.growth - a.growth || a.name.localeCompare(b.name));
   const total = (histogram) => [...histogram].filter(([name]) => TRACKED_CLASS.test(name)).reduce((sum, [, count]) => sum + count, 0);
-  const leaked = grown.filter((c) => c.growth > players);
+  const leaked = grown.filter((c) => c.leaked);
   return { status: leaked.length ? 'fail' : 'pass', limit: players, before: total(before), after: total(after), leaked: leaked.length, classes: grown.slice(0, 10) };
+}
+
+/** Whether a class kept more than it may: one per player, or its declared bound for a ring. */
+function leakedObjects(c, players) {
+  return c.bound === undefined ? c.growth > players : c.after > c.bound;
+}
+
+/** A leaked class and the rule it broke: its growth against one per player, or its count against its bound. */
+function describeLeak(c) {
+  return c.bound === undefined ? `${c.name} +${c.growth}` : `${c.name} ${count(c.after)} of ${count(c.bound)} allowed`;
 }
 
 /**
@@ -368,9 +390,9 @@ export function summarize({ ctx, samples, crowd, timeline, drains, objects, netw
   }
   const retained = objects.before && objects.after ? retainedObjects(objects.before, objects.after, ctx.bots) : null;
   if (retained?.status === 'fail') {
-    const listed = retained.classes.filter((c) => c.growth > retained.limit).slice(0, 3).map((c) => `${c.name} +${c.growth}`);
+    const listed = retained.classes.filter((c) => c.leaked).slice(0, 3).map(describeLeak);
     const more = retained.leaked > listed.length ? `, and ${retained.leaked - listed.length} more` : '';
-    problems.push(`Warp kept objects of ${retained.leaked} class(es) through the steady phase, more than one per player: ${listed.join(', ')}${more}`);
+    problems.push(`Warp kept objects of ${retained.leaked} class(es) through the steady phase, more than allowed (one per player, or the bound of a ring): ${listed.join(', ')}${more}`);
   }
   drains.forEach((drain, i) => {
     if (drain.seconds !== null) return;
@@ -497,7 +519,7 @@ export function consoleSummary(report) {
   if (report.objects) {
     const [top] = report.objects.classes;
     const largest = top ? `, largest growth ${top.name} +${top.growth}` : '';
-    lines.push(`  ${report.objects.status === 'fail' ? '✗' : '✓'} ${'Objects, all left'.padEnd(26)} ${report.objects.before} after the warm-up, ${report.objects.after} at the end${largest} (limit +${report.objects.limit} per class)`);
+    lines.push(`  ${report.objects.status === 'fail' ? '✗' : '✓'} ${'Objects, all left'.padEnd(26)} ${report.objects.before} after the warm-up, ${report.objects.after} at the end${largest} (limit +${report.objects.limit} per class, or a ring's bound)`);
   }
   for (const p of report.phases) {
     lines.push(`  ${p.name.padEnd(8)} ${clock(p.from)}-${clock(p.to)}  ${p.joins} joins, ${p.switches} switches, ${p.pings} pings, ${p.failures} failures`);
@@ -549,13 +571,13 @@ export function soakMarkdown(result, variant) {
   lines.push('| Once every player had left | After the warm-up | At the end | Allowed | |', '|---|--:|--:|--:|:-:|');
   lines.push(`| Connections Warp still held | ${held(intermission)} | ${held(last)} | none | ${kept || !soak.drains.length ? '❌' : '✅'} |`);
   if (objects) {
-    lines.push(`| Objects of Warp and Netty channels | ${count(objects.before)} | ${count(objects.after)} | +${objects.limit} per class | ${objects.status === 'pass' ? '✅' : '❌'} |`);
+    lines.push(`| Objects of Warp and Netty channels | ${count(objects.before)} | ${count(objects.after)} | +${objects.limit} per class, or a ring's bound | ${objects.status === 'pass' ? '✅' : '❌'} |`);
   }
   lines.push('');
   if (objects?.classes.length) {
-    lines.push(`<details${objects.status === 'fail' ? ' open' : ''}><summary>Classes with more objects at the end than after the warm-up</summary>`, '');
-    lines.push('| Class | After the warm-up | At the end | |', '|---|--:|--:|:-:|');
-    for (const c of objects.classes) lines.push(`| \`${c.name}\` | ${count(c.before)} | ${count(c.after)} | ${c.growth > objects.limit ? '❌' : '✅'} |`);
+    lines.push(`<details${objects.status === 'fail' ? ' open' : ''}><summary>Classes with more objects at the end than after the warm-up, or more than allowed</summary>`, '');
+    lines.push('| Class | After the warm-up | At the end | Allowed | |', '|---|--:|--:|--:|:-:|');
+    for (const c of objects.classes) lines.push(`| \`${c.name}\` | ${count(c.before)} | ${count(c.after)} | ${c.bound === undefined ? `+${count(objects.limit)}` : count(c.bound)} | ${c.leaked ? '❌' : '✅'} |`);
     lines.push('', '</details>', '');
   }
 

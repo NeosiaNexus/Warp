@@ -149,9 +149,11 @@ final class StatusSessionHandler implements SessionHandler {
     }
     ServerList serverList = context.serverList();
     if (!context.events().hasHandlers(ProxyPingEventImpl.class)) {
+      context.metrics().statusPing(true);
       answer(serverList.json(clientProtocol));
       return;
     }
+    context.metrics().statusPing(false);
     resolve(
         connection,
         context.events(),

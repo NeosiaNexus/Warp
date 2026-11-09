@@ -33,4 +33,6 @@ public sealed interface ConfigPacket extends Packet
         ClientInformation,
         RegistryData,
         KnownPacks,
-        ServerData {}
+        ServerData,
+        ConfigPing,
+        ConfigPong {}

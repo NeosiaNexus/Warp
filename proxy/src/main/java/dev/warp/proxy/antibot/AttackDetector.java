@@ -71,8 +71,16 @@ public final class AttackDetector {
 
   /** The signals that can start an attack. */
   private static final Signal[] TRIGGERS = {
-    Signal.UNKNOWN_LOGINS, Signal.AUTHENTICATION_FAILURES, Signal.PENDING_CONNECTIONS
+    Signal.UNKNOWN_LOGINS,
+    Signal.AUTHENTICATION_FAILURES,
+    Signal.PENDING_CONNECTIONS,
+    Signal.VERIFICATIONS_FAILED
   };
+
+  /** The window of the failure ratio, in seconds, and the fewest verifications it judges. */
+  static final int RATIO_WINDOW = 10;
+
+  static final int RATIO_MIN_VERIFICATIONS = 20;
 
   private final AntiBotConfig.Attack config;
   private final IntSupplier pending;
@@ -243,7 +251,9 @@ public final class AttackDetector {
       if (threshold == Long.MAX_VALUE) {
         continue;
       }
-      long value = now[signal.ordinal()];
+      // The failure ratio is judged over its window, the rates over the last second.
+      long value =
+          signal == Signal.VERIFICATIONS_FAILED ? sum(signal, RATIO_WINDOW) : now[signal.ordinal()];
       if (value > threshold && (double) value / threshold > worst) {
         worst = (double) value / threshold;
         over = signal;
@@ -363,8 +373,23 @@ public final class AttackDetector {
           pendingCap > 0 && config.pendingShare() > 0
               ? Math.max(1, (long) pendingCap * config.pendingShare() / 100)
               : Long.MAX_VALUE;
-      case CONNECTIONS, REFUSALS -> Long.MAX_VALUE;
+      case VERIFICATIONS_FAILED -> {
+        // Over half of twenty or more verifications in ten seconds (section 9.10): the threshold
+        // is half of the verifications of the window, once there are enough to judge.
+        long total = sum(Signal.VERIFICATIONS_PASSED, RATIO_WINDOW) + sum(signal, RATIO_WINDOW);
+        yield total >= RATIO_MIN_VERIFICATIONS ? total / 2 : Long.MAX_VALUE;
+      }
+      case CONNECTIONS, REFUSALS, VERIFICATIONS_PASSED -> Long.MAX_VALUE;
     };
+  }
+
+  /** Sums a signal over the last {@code seconds} slots of the ring, the current one included. */
+  private long sum(Signal signal, int seconds) {
+    long sum = 0;
+    for (int back = 0; back < seconds; back++) {
+      sum += ring[signal.ordinal()][Math.floorMod(head - back, RING)];
+    }
+    return sum;
   }
 
   private long learned(Signal signal, int floor) {

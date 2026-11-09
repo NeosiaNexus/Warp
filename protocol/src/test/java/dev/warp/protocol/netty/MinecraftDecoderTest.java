@@ -459,6 +459,44 @@ class MinecraftDecoderTest {
     }
 
     @Test
+    @DisplayName(
+        "should forward a peeked frame of an unknown packet without inflating or keeping it")
+    void forwardsPeekedUnknownFrameWithoutInflating() {
+      EmbeddedChannel ch =
+          compressedChannel(PacketDirection.CLIENTBOUND, new RefusingCompressor(), true);
+      MinecraftDecoder decoder = ch.pipeline().get(MinecraftDecoder.class);
+      ByteBuf frame = Frames.compressed(Frames.packet(UNREGISTERED_ID, new byte[300]), 6);
+      byte[] wire = ByteBufUtil.getBytes(frame);
+
+      assertTrue(ch.writeInbound(frame));
+
+      ByteBuf forwarded = ch.readInbound();
+      assertNull(decoder.takeInflatedPacket(forwarded), "never inflated");
+      assertArrayEquals(wire, Frames.drain(forwarded));
+      assertFalse(ch.finish());
+    }
+
+    @Test
+    @DisplayName("should release the kept packet when switching to packet input")
+    void releasesKeptPacketOnPacketInput() {
+      EmbeddedChannel ch =
+          compressedChannel(PacketDirection.SERVERBOUND, new CountingCompressor(), false);
+      MinecraftDecoder decoder = ch.pipeline().get(MinecraftDecoder.class);
+      RecordingAllocator alloc = new RecordingAllocator();
+      ch.config().setAllocator(alloc);
+      assertTrue(
+          ch.writeInbound(Frames.compressed(Frames.packet(UNREGISTERED_ID, new byte[500]), 6)));
+      ByteBuf frame = ch.readInbound();
+
+      decoder.usePacketInput();
+
+      assertEquals(0, alloc.only().refCnt());
+      assertNull(decoder.takeInflatedPacket(frame), "released, not handed over");
+      frame.release();
+      assertFalse(ch.finish());
+    }
+
+    @Test
     @DisplayName("should release an inflated packet nobody took once the next frame arrives")
     void releasesUntakenPacketOnNextFrame() {
       EmbeddedChannel ch =

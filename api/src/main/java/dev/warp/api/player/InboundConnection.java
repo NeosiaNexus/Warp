@@ -16,6 +16,8 @@
  */
 package dev.warp.api.player;
 
+import dev.warp.api.server.Route;
+
 import java.net.InetSocketAddress;
 import java.util.Optional;
 
@@ -36,12 +38,23 @@ public interface InboundConnection {
   InetSocketAddress remoteAddress();
 
   /**
-   * Returns the host name the client typed to connect, as sent in its handshake, without the
-   * suffixes some platforms append (Forge's {@code \0FML\0}, trailing dots).
+   * Returns the host name the client typed to connect, cleaned: lowercase, without a trailing dot,
+   * without a {@code :port}, and without the suffixes some platforms append (Forge's {@code
+   * \0FML\0}, {@code \0FML2\0} and {@code \0FML3\0} markers, a BungeeCord forwarding payload). The
+   * one the {@code routes} of {@code warp.conf} are matched against.
    *
    * @return the host name, or empty if the client sent none
    */
   Optional<String> virtualHost();
+
+  /**
+   * Returns the route the connection matched, if the {@code routes} of {@code warp.conf} have an
+   * entry for its {@link #virtualHost() virtual host}. Known from the handshake on, so from the
+   * first login event.
+   *
+   * @return the route, or empty when no entry matches and the connection goes to the default
+   */
+  Optional<Route> route();
 
   /**
    * Returns the protocol version the client speaks, as its handshake announced it: during a server
@@ -51,6 +64,16 @@ public interface InboundConnection {
    *     legacy server list ping of Minecraft 1.6 and older, which predates these numbers
    */
   int protocolVersion();
+
+  /**
+   * Returns what kind of client this is, as the markers of its handshake declared: a Forge client
+   * of one of its three eras, otherwise {@link ClientPlatform#JAVA} until a later phase says more
+   * (NeoForge is recognized in the configuration phase, Bedrock from Floodgate's data). A platform
+   * is a claim, not a proof: anything can send a Forge marker.
+   *
+   * @return the platform, {@link ClientPlatform#JAVA} when nothing marks the client
+   */
+  ClientPlatform platform();
 
   /**
    * Returns whether the client is still connected.

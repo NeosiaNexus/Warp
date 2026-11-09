@@ -73,6 +73,8 @@ import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.messaging.BungeeCordChannel;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.messaging.PluginMessageEventImpl;
+import dev.warp.proxy.metrics.ProxyMetrics;
+import dev.warp.proxy.metrics.ServerConnectOutcome;
 import dev.warp.proxy.server.BackendServer;
 
 import java.net.InetSocketAddress;
@@ -186,6 +188,12 @@ public final class ConnectedPlayer {
   /** Guards against concurrent or duplicate {@link #disconnect()} calls. */
   private final AtomicBoolean disconnected = new AtomicBoolean();
 
+  /** Whether the player counts in {@code warp_client_protocol_version}. */
+  private final AtomicBoolean versionCounted = new AtomicBoolean();
+
+  /** When the current connection attempt to a backend began. */
+  private long connectStartNanos;
+
   // ---------------------------------------------------------------------------
   // Immutable identity
   // ---------------------------------------------------------------------------
@@ -247,6 +255,9 @@ public final class ConnectedPlayer {
 
   /** The client's cookie traffic, begun during its login (1.20.5+). */
   private final ClientCookies cookies;
+
+  /** The backend's login queries relayed to a client held in its login state for them. */
+  private final LoginQueryRelay loginQueries;
 
   // ---------------------------------------------------------------------------
   // Mutable state
@@ -362,6 +373,7 @@ public final class ConnectedPlayer {
     this.resourcePacks = new ResourcePacks(this);
     this.transferred = clientConnection.handshakeIntent() == HandshakeIntent.TRANSFER;
     this.cookies = cookies;
+    this.loginQueries = new LoginQueryRelay(this);
   }
 
   // ---------------------------------------------------------------------------
@@ -702,11 +714,15 @@ public final class ConnectedPlayer {
    */
   void join() {
     startSession();
-    startKeepAliveTask();
+    if (!loginQueries.isHeld()) {
+      // A client held in its login state for a backend's login queries reads no keep-alive: the
+      // release of its Login Success starts them.
+      startKeepAliveTask();
+    }
     if (clientConnection.decoder().state() == ProtocolState.CONFIGURATION) {
       clientConnection.setSessionHandler(new SwitchWaitSessionHandler(this));
     }
-    BackendServer proposed = loginContext.serverRegistry().initialServer();
+    BackendServer proposed = loginContext.serverRegistry().initialServer(clientConnection.route());
     WarpEventBus events = loginContext.events();
     if (!events.hasHandlers(PlayerChooseInitialServerEventImpl.class)) {
       joinServer(proposed);
@@ -823,6 +839,7 @@ public final class ConnectedPlayer {
           disconnectFor(
               DisconnectEvent.Cause.DISCONNECTED_BY_PROXY, Message.INITIAL_SERVER_DENIED.of());
         } else {
+          loginContext.metrics().serverSwitch(ProxyMetrics.SwitchOutcome.CANCELLED);
           complete(result, new ConnectionResult.Denied(target));
           if (tell) {
             sendMessage(Message.CONNECT_DENIED.of(target.name()));
@@ -882,14 +899,22 @@ public final class ConnectedPlayer {
   }
 
   /**
-   * Fires {@link ServerConnectedEvent} once a backend accepted the player. Called by the backend's
-   * login handler, on the client event loop.
+   * Fires {@link ServerConnectedEvent} once a backend accepted the player, and closes the server's
+   * circuit breaker: a login accepted is what proves a server takes players. Called by the
+   * backend's login handler, on the client event loop.
    *
-   * @param backend the backend that logged the player in
+   * @param server the server whose backend logged the player in
    */
-  void backendAccepted(MinecraftConnection backend) {
+  void backendAccepted(ServerInfo server) {
+    loginContext.serverRegistry().health().connectSucceeded(server.name());
     BackendServer target = connectingTo;
     if (target != null) {
+      loginContext
+          .metrics()
+          .serverConnect(
+              target.name(),
+              ServerConnectOutcome.SUCCESS,
+              connectStartNanos == 0 ? -1 : System.nanoTime() - connectStartNanos);
       notify(new ServerConnectedEvent(api, target, currentServer));
     }
   }
@@ -938,6 +963,7 @@ public final class ConnectedPlayer {
    * @param target the server to connect to
    */
   void connect(ServerInfo target) {
+    connectStartNanos = System.nanoTime();
     var _ =
         connector
             .connect(target)
@@ -981,6 +1007,42 @@ public final class ConnectedPlayer {
     this.connector = connector;
   }
 
+  /** The {@code outcome} of a connection attempt that got no backend connection. */
+  static ServerConnectOutcome connectFailure(@Nullable Throwable ex) {
+    Throwable cause = ex;
+    while (cause != null) {
+      // Netty's ConnectTimeoutException extends ConnectException: timeouts come first.
+      if (cause instanceof io.netty.channel.ConnectTimeoutException
+          || cause instanceof java.util.concurrent.TimeoutException
+          || cause instanceof io.netty.handler.timeout.TimeoutException) {
+        return ServerConnectOutcome.TIMEOUT;
+      }
+      if (cause instanceof java.net.ConnectException) {
+        return ServerConnectOutcome.REFUSED;
+      }
+      if (cause instanceof java.nio.channels.ClosedChannelException
+          || cause instanceof java.io.IOException) {
+        return ServerConnectOutcome.RESET;
+      }
+      cause = cause.getCause();
+    }
+    return ServerConnectOutcome.OTHER;
+  }
+
+  /** Counts the player in {@code warp_client_protocol_version}, once registered. */
+  void countVersion() {
+    if (versionCounted.compareAndSet(false, true)) {
+      loginContext.metrics().playerVersion(protocolVersion(), 1);
+    }
+  }
+
+  /** Undoes {@link #countVersion()} for a player refused after registration, or disconnected. */
+  void uncountVersion() {
+    if (versionCounted.compareAndSet(true, false)) {
+      loginContext.metrics().playerVersion(protocolVersion(), -1);
+    }
+  }
+
   /**
    * Ends a switch whose new server could not be reached or refused the player, which still plays on
    * its current server.
@@ -989,6 +1051,7 @@ public final class ConnectedPlayer {
    */
   void switchFailed(
       ServerInfo target, @Nullable MinecraftConnection backend, KickedFromServerEvent.Cause cause) {
+    loginContext.metrics().serverSwitch(ProxyMetrics.SwitchOutcome.FAILED);
     logger.info(
         "Could not switch {} to '{}' ({}), staying on '{}'",
         username,
@@ -1016,15 +1079,18 @@ public final class ConnectedPlayer {
       return;
     }
     if (backend == null) {
+      loginContext.metrics().serverConnect(target.name(), connectFailure(ex), -1);
       logger.warn(
           LogCode.BACKEND_CONNECT_FAILED.marker(),
           "Could not connect {} to server '{}': {}",
           username,
           target.name(),
           ex != null ? ex.getMessage() : "no connection");
+      loginContext.serverRegistry().health().connectFailed(target.name());
       serverSwitch.connectFailed(target);
       return;
     }
+    // The connection alone proves nothing: the server's breaker closes once it logs the player in.
     serverSwitch.connected(backend);
   }
 
@@ -1050,6 +1116,7 @@ public final class ConnectedPlayer {
    */
   void switchComplete() {
     if (switching) {
+      loginContext.metrics().serverSwitch(ProxyMetrics.SwitchOutcome.SUCCESS);
       cancelSwitchTimeout();
       ServerInfo target = pendingSwitchTarget;
       if (target != null) {
@@ -1919,6 +1986,26 @@ public final class ConnectedPlayer {
   }
 
   /**
+   * Reports a backend that refused the player's login, or closed before the login was over: the
+   * refusal counts against the server's circuit breaker (a few in a row open it, one is taken as
+   * aimed at the player) and the player falls back as after any backend failure.
+   *
+   * <p>Safe to call from any thread, as {@link #scheduleBackendFailure}.
+   *
+   * @param backend the backend connection
+   * @param server the server it belongs to
+   * @param reason the reason the server gave, or {@code null} if it just closed
+   */
+  void backendRefusedLogin(
+      MinecraftConnection backend, ServerInfo server, @Nullable Component reason) {
+    if (reason != null) {
+      recordKick(backend, reason);
+    }
+    loginContext.serverRegistry().health().loginRefused(server.name());
+    scheduleBackendFailure(backend);
+  }
+
+  /**
    * Decides, through {@link KickedFromServerEvent}, what happens to a player that lost a server.
    *
    * <p>The proxy proposes: stay and be told, when the player was being moved and still has its
@@ -1932,6 +2019,18 @@ public final class ConnectedPlayer {
       KickedFromServerEvent.Cause baseCause,
       boolean duringConnect,
       boolean stillOnCurrent) {
+    if (duringConnect && backend != null) {
+      loginContext
+          .metrics()
+          .serverConnect(
+              lostName,
+              switch (baseCause) {
+                case KICKED -> ServerConnectOutcome.KICKED;
+                case CONNECTION_LOST -> ServerConnectOutcome.RESET;
+                default -> ServerConnectOutcome.OTHER;
+              },
+              -1);
+    }
     Component reason = backend == null ? null : backend.channel().attr(KICK_REASON).get();
     if (failedFallbackServers == null) {
       // The first loss of a chain of fallbacks: its reason is the one the player is told, even
@@ -2469,6 +2568,15 @@ public final class ConnectedPlayer {
     return cookies;
   }
 
+  /**
+   * Returns the relay of backend login queries to the client.
+   *
+   * @return the relay
+   */
+  LoginQueryRelay loginQueries() {
+    return loginQueries;
+  }
+
   // ---------------------------------------------------------------------------
   // Disconnect
   // ---------------------------------------------------------------------------
@@ -2506,6 +2614,7 @@ public final class ConnectedPlayer {
     if (!disconnected.compareAndSet(false, true)) {
       return;
     }
+    uncountVersion();
     loginContext.playerRegistry().unregister(this);
     if (sessionStarted) {
       logConnection(
@@ -2535,6 +2644,7 @@ public final class ConnectedPlayer {
     onEventLoop(
         () -> {
           serverSwitch.close();
+          loginQueries.close();
           bossBars.clear();
           resourcePacks.close();
           leaveServer();
@@ -2588,6 +2698,7 @@ public final class ConnectedPlayer {
    */
   public void disconnectDuplicate() {
     setDisconnectCause(DisconnectEvent.Cause.CONFLICTING_LOGIN);
+    uncountVersion();
     loginContext.playerRegistry().unregister(this);
     endSession();
     logger.info("Disconnecting {}: the same account logged in again", username);

@@ -18,6 +18,7 @@ package dev.warp.proxy.management;
 
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
+import dev.warp.api.metrics.Metrics;
 import dev.warp.proxy.antibot.AntiBotService;
 
 import java.util.List;
@@ -58,6 +59,13 @@ public interface ProxyHealth {
    * @return the reasons, empty when none holds it
    */
   List<String> readinessHolds();
+
+  /**
+   * Returns the metric registry {@code GET /metrics} exposes.
+   *
+   * @return the registry
+   */
+  Metrics metrics();
 
   /**
    * Returns whether the proxy drains.

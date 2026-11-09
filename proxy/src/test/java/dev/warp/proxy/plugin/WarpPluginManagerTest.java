@@ -43,6 +43,7 @@ import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.logging.LogSinkRegistry;
 import dev.warp.proxy.management.ReadinessHolds;
 import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.metrics.MetricRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.pipeline.PipelineHost;
 import dev.warp.proxy.pipeline.PipelineRegistry;
@@ -101,6 +102,7 @@ class WarpPluginManagerTest {
             readinessHolds,
             pipelines,
             logSinks,
+            new MetricRegistry(0),
             plugins);
   }
 

@@ -26,14 +26,20 @@ import dev.warp.api.lifecycle.DrainOutcome;
 import dev.warp.api.lifecycle.DrainPhase;
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
+import dev.warp.api.metrics.Metrics;
 import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.config.AntiBotConfig;
 import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.config.ManagementConfig;
+import dev.warp.proxy.config.MetricsConfig;
+import dev.warp.proxy.config.RemoteConsoleConfig;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.limit.ClientLimits;
+import dev.warp.proxy.metrics.AntiBotCollector;
+import dev.warp.proxy.metrics.MetricRegistry;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -55,6 +61,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.zip.GZIPInputStream;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -92,16 +99,39 @@ class ManagementServerTest {
   }
 
   private ManagementServer start(@Nullable String token, boolean requireServer) {
-    ManagementServer started =
-        new ManagementServer(
-            new ManagementConfig(true, ANY_PORT, ANY_PORT, token, requireServer), health);
+    return start(new ManagementConfig(true, ANY_PORT, ANY_PORT, token, requireServer));
+  }
+
+  private ManagementServer start(ManagementConfig config) {
+    ManagementServer started = new ManagementServer(config, health);
     started.start();
     server = started;
     return started;
   }
 
+  private ManagementServer start(MetricsConfig metrics) {
+    return start(
+        new ManagementConfig(
+            true, ANY_PORT, ANY_PORT, TOKEN, true, null, RemoteConsoleConfig.DISABLED, metrics));
+  }
+
   private ManagementServer start() {
     return start(TOKEN, true);
+  }
+
+  private HttpResponse<byte[]> getBytes(String path, String... headers)
+      throws IOException, InterruptedException {
+    ManagementServer running = server;
+    assertNotNull(running);
+    InetSocketAddress address = running.httpAddress();
+    HttpRequest.Builder request =
+        HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + address.getPort() + path))
+            .timeout(ANSWER_TIMEOUT)
+            .GET();
+    for (int i = 0; i + 1 < headers.length; i += 2) {
+      request.header(headers[i], headers[i + 1]);
+    }
+    return client.send(request.build(), HttpResponse.BodyHandlers.ofByteArray());
   }
 
   private HttpResponse<String> send(String method, String path, @Nullable String token)
@@ -588,7 +618,8 @@ class ManagementServerTest {
                   v.sharedStoreTimeout()),
               d.attack(),
               d.blocklist(),
-              d.checkTimeout()),
+              d.checkTimeout(),
+              d.verification()),
           false,
           ClientLimits.unlimited(),
           new WarpEventBus(Runnable::run),
@@ -599,10 +630,117 @@ class ManagementServerTest {
     }
   }
 
+  @Nested
+  @DisplayName("GET /metrics")
+  class MetricsEndpoint {
+
+    @Test
+    @DisplayName("should answer the Prometheus text format by default, with the proxy's registry")
+    void prometheusText() throws Exception {
+      health.metrics.counter("warp_test_total", "A test counter.", "kind").labels("a").add(3);
+      start();
+
+      HttpResponse<String> metrics = get("/metrics");
+
+      assertEquals(200, metrics.statusCode());
+      assertEquals(
+          "text/plain; version=0.0.4; charset=utf-8",
+          metrics.headers().firstValue("content-type").orElse(""));
+      assertTrue(metrics.body().contains("# TYPE warp_test_total counter\n"), metrics.body());
+      assertTrue(metrics.body().contains("warp_test_total{kind=\"a\"} 3\n"), metrics.body());
+      assertFalse(metrics.body().contains("# EOF"), metrics.body());
+    }
+
+    @Test
+    @DisplayName("should answer OpenMetrics when Accept asks for it, filtered by prefix")
+    void openMetricsAndFilter() throws Exception {
+      health.metrics.counter("warp_test_total", "A test counter.").labels().inc();
+      health.metrics.gauge("warp_other", "Another.", () -> 7);
+      start();
+
+      HttpResponse<byte[]> metrics =
+          getBytes(
+              "/metrics?filter=warp_test_",
+              "Accept",
+              "application/openmetrics-text; version=1.0.0; charset=utf-8,text/plain;q=0.5");
+
+      assertEquals(200, metrics.statusCode());
+      assertEquals(
+          "application/openmetrics-text; version=1.0.0; charset=utf-8",
+          metrics.headers().firstValue("content-type").orElse(""));
+      String body = new String(metrics.body(), StandardCharsets.UTF_8);
+      assertTrue(body.contains("# TYPE warp_test counter\nwarp_test_total 1\n"), body);
+      assertFalse(body.contains("warp_other"), body);
+      assertTrue(body.endsWith("# EOF\n"), body);
+    }
+
+    @Test
+    @DisplayName("should gzip the answer when Accept-Encoding allows")
+    void gzip() throws Exception {
+      start();
+
+      HttpResponse<byte[]> metrics = getBytes("/metrics", "Accept-Encoding", "gzip, deflate");
+
+      assertEquals(200, metrics.statusCode());
+      assertEquals("gzip", metrics.headers().firstValue("content-encoding").orElse(""));
+      try (GZIPInputStream in = new GZIPInputStream(new ByteArrayInputStream(metrics.body()))) {
+        String body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        assertTrue(body.contains("warp_metrics_collector_errors_total"), body);
+      }
+    }
+
+    @Test
+    @DisplayName("should require the bearer token when management.metrics.require-token is on")
+    void requireToken() throws Exception {
+      start(new MetricsConfig(true, true, Duration.ZERO));
+
+      HttpResponse<String> refused = get("/metrics");
+      HttpResponse<String> accepted = send("GET", "/metrics", TOKEN);
+
+      assertEquals(401, refused.statusCode());
+      assertEquals(200, accepted.statusCode());
+      assertTrue(accepted.body().contains("# TYPE"), accepted.body());
+    }
+
+    @Test
+    @DisplayName("should answer 404 when metrics are off, and HEAD without a body")
+    void disabledAndHead() throws Exception {
+      start(new MetricsConfig(false, false, Duration.ZERO));
+      HttpResponse<String> off = get("/metrics");
+      ManagementServer first = server;
+      assertNotNull(first);
+      first.stop();
+
+      start();
+      HttpResponse<String> head = send("HEAD", "/metrics", null);
+
+      assertEquals(404, off.statusCode());
+      assertEquals(200, head.statusCode());
+      assertEquals("", head.body());
+    }
+  }
+
   private static final class FakeHealth implements ProxyHealth {
 
     private volatile boolean started = true;
     private volatile @Nullable AntiBotService antiBot;
+    private final MetricRegistry metrics = new MetricRegistry(0);
+
+    FakeHealth() {
+      metrics.collector(
+          "warp_antibot",
+          new AntiBotCollector(
+              () -> {
+                AntiBotService bots = antiBot;
+                return bots == null ? null : bots.status();
+              }));
+    }
+
+    @Override
+    public Metrics metrics() {
+      return metrics;
+    }
+
     private volatile boolean stopping;
     private volatile int servers = 1;
     private final List<String> holds = new CopyOnWriteArrayList<>();

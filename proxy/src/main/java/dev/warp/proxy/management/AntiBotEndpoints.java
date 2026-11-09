@@ -18,9 +18,11 @@ package dev.warp.proxy.management;
 
 import dev.warp.api.antibot.AttackReport;
 import dev.warp.api.antibot.Signal;
+import dev.warp.api.antibot.VerificationFailure;
 import dev.warp.proxy.antibot.AntiBotStatus;
 import dev.warp.proxy.limit.Refusal;
 
+import java.time.Instant;
 import java.util.Locale;
 import java.util.Map;
 
@@ -87,6 +89,31 @@ final class AntiBotEndpoints {
     verified.addProperty("shared", status.sharedStore());
     body.add("verified", verified);
 
+    AntiBotStatus.Verifications verifications = status.verifications();
+    JsonObject verifying = new JsonObject();
+    verifying.addProperty("running", verifications.running());
+    verifying.addProperty("max", verifications.maxRunning());
+    verifying.addProperty("waiting", verifications.waiting());
+    verifying.addProperty("maxWaiting", verifications.maxWaiting());
+    verifying.addProperty("grantedFromLine", verifications.grantedFromLine());
+    verifying.addProperty("turnedAway", verifications.turnedAway());
+    verifying.addProperty("waitedSeconds", verifications.waitedSeconds());
+    verifying.addProperty("passed", verifications.passed());
+    verifying.addProperty("escalated", verifications.escalated());
+    JsonObject failed = new JsonObject();
+    for (VerificationFailure reason : VerificationFailure.values()) {
+      failed.addProperty(lower(reason), verifications.failed().getOrDefault(reason, 0L));
+    }
+    verifying.add("failed", failed);
+    JsonObject tokens = new JsonObject();
+    tokens.addProperty("issued", verifications.tokensIssued());
+    tokens.addProperty("accepted", verifications.tokensAccepted());
+    tokens.addProperty("rejected", verifications.tokensRejected());
+    Instant keySince = verifications.tokenKeySince();
+    tokens.addProperty("keySince", keySince == null ? null : keySince.toString());
+    verifying.add("tokens", tokens);
+    body.add("verification", verifying);
+
     body.addProperty("blocklisted", status.blocklisted() < 0 ? null : status.blocklisted());
     body.addProperty("checks", status.checks());
 
@@ -128,131 +155,6 @@ final class AntiBotEndpoints {
   // ---------------------------------------------------------------------------
   // Prometheus
   // ---------------------------------------------------------------------------
-
-  /**
-   * Writes the anti-bot's and the limits' metrics in the Prometheus text format, version 0.0.4.
-   *
-   * @param status the snapshot
-   * @return the text of {@code GET /metrics}
-   */
-  static String metrics(AntiBotStatus status) {
-    StringBuilder out = new StringBuilder(4096);
-    gauge(out, "warp_antibot_level", "Attack level: 0 normal, 1 attack.", status.level().ordinal());
-    gauge(out, "warp_antibot_lockdown", "1 while lockdown is on.", status.lockdown() ? 1 : 0);
-    gauge(
-        out,
-        "warp_antibot_verified_identities",
-        "Identities the anti-bot trusts.",
-        status.verified());
-    gauge(
-        out,
-        "warp_antibot_verified_capacity",
-        "The most identities the anti-bot remembers.",
-        status.verifiedCapacity());
-
-    header(out, "warp_antibot_signal_per_second", "gauge", "Each signal over the last second.");
-    for (Signal signal : Signal.values()) {
-      sample(
-          out,
-          "warp_antibot_signal_per_second",
-          "signal",
-          lower(signal),
-          status.signals().lastSecond().getOrDefault(signal, 0L));
-    }
-    header(
-        out,
-        "warp_antibot_signal_baseline",
-        "gauge",
-        "Each signal's learned baseline, per second.");
-    for (Signal signal : Signal.values()) {
-      sample(
-          out,
-          "warp_antibot_signal_baseline",
-          "signal",
-          lower(signal),
-          status.signals().baselines().getOrDefault(signal, 0.0));
-    }
-
-    gauge(
-        out,
-        "warp_connections_pending",
-        "Connections not logged in yet.",
-        status.pendingConnections());
-    gauge(
-        out,
-        "warp_connections_pending_max",
-        "The cap on connections not logged in; 0 for none.",
-        status.maxPendingConnections());
-
-    header(
-        out,
-        "warp_connections_refused_total",
-        "counter",
-        "Connections refused or closed before login, by reason.");
-    for (Refusal reason : Refusal.values()) {
-      sample(
-          out,
-          "warp_connections_refused_total",
-          "reason",
-          reason.label(),
-          status.refusals().getOrDefault(reason, 0L));
-    }
-
-    gauge(
-        out,
-        "warp_auth_in_flight",
-        "Online-mode authentications running.",
-        status.authenticationsInFlight());
-    gauge(
-        out,
-        "warp_auth_lane_waiting",
-        "Online logins waiting in line for an authentication.",
-        status.authenticationQueue());
-    header(
-        out,
-        "warp_auth_lane_wait_seconds",
-        "summary",
-        "How long logins granted an authentication from the line waited.");
-    out.append("warp_auth_lane_wait_seconds_sum ")
-        .append(number(status.authenticationWaitSeconds()))
-        .append('\n');
-    out.append("warp_auth_lane_wait_seconds_count ")
-        .append(status.authenticationsQueued())
-        .append('\n');
-    if (status.blocklisted() >= 0) {
-      gauge(out, "warp_antibot_blocklisted", "Addresses on the blocklist.", status.blocklisted());
-    }
-    return out.toString();
-  }
-
-  private static void gauge(StringBuilder out, String name, String help, double value) {
-    header(out, name, "gauge", help);
-    out.append(name).append(' ').append(number(value)).append('\n');
-  }
-
-  private static void header(StringBuilder out, String name, String type, String help) {
-    out.append("# HELP ").append(name).append(' ').append(help).append('\n');
-    out.append("# TYPE ").append(name).append(' ').append(type).append('\n');
-  }
-
-  private static void sample(
-      StringBuilder out, String name, String label, String value, double sample) {
-    out.append(name)
-        .append('{')
-        .append(label)
-        .append("=\"")
-        .append(value)
-        .append("\"} ")
-        .append(number(sample))
-        .append('\n');
-  }
-
-  private static String number(double value) {
-    if (value == Math.rint(value) && Math.abs(value) < 1e15) {
-      return Long.toString((long) value);
-    }
-    return String.format(Locale.ROOT, "%.6f", value);
-  }
 
   private static String lower(Enum<?> value) {
     return value.name().toLowerCase(Locale.ROOT);

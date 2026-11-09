@@ -1,5 +1,7 @@
 # Architecture d'observabilite pour Warp Proxy
 
+> Statut (2026-11-09) : la section 1 (metriques), la section 9 (comparaison) et la section 10 (plan) sont remplacees par [observability-and-fleet.md](observability-and-fleet.md), qui abandonne Micrometer au profit d'un registre maison sans allocation et ajoute GS4 Query et le support multi-proxy. Les sections 2 a 8 restent valables comme reference.
+
 **Date** : 31 mars 2026
 **Objectif** : Concevoir le systeme d'observabilite le plus complet de l'ecosysteme MC proxy, en s'inspirant d'Envoy (gold standard), HAProxy, et des pratiques cloud-native modernes.
 **Sources** : Documentation Envoy, Prometheus, OpenTelemetry, Micrometer, HAProxy Runtime API, JFR, Google SRE Book

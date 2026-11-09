@@ -18,6 +18,8 @@ package dev.warp.proxy.connection;
 
 import dev.warp.api.antibot.LoginAttempt;
 import dev.warp.api.antibot.Verdict;
+import dev.warp.api.antibot.VerificationFailure;
+import dev.warp.api.antibot.VerificationMethod;
 import dev.warp.api.event.player.LoginEvent;
 import dev.warp.api.event.player.PreLoginEvent;
 import dev.warp.protocol.ProtocolState;
@@ -26,6 +28,7 @@ import dev.warp.protocol.netty.CipherDecoder;
 import dev.warp.protocol.netty.CipherEncoder;
 import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
+import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigDisconnect;
 import dev.warp.protocol.packet.cookie.CookieResponse;
 import dev.warp.protocol.packet.login.EncryptionRequest;
@@ -43,8 +46,13 @@ import dev.warp.protocol.packet.login.SetCompression;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
+import dev.warp.protocol.packet.play.Transfer;
 import dev.warp.proxy.antibot.AntiBotService;
+import dev.warp.proxy.antibot.AntiBotService.Plan;
 import dev.warp.proxy.antibot.AntiBotService.RoutineLine;
+import dev.warp.proxy.antibot.Probe;
+import dev.warp.proxy.antibot.VerificationQueue;
+import dev.warp.proxy.antibot.VerificationTokens;
 import dev.warp.proxy.auth.AuthenticationException;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.Pkcs1Decryption;
@@ -62,6 +70,7 @@ import dev.warp.proxy.limit.LoginAdmission;
 import dev.warp.proxy.limit.LoginSlot;
 import dev.warp.proxy.limit.Refusal;
 import dev.warp.proxy.logging.LogCode;
+import dev.warp.proxy.metrics.LoginOutcome;
 import dev.warp.proxy.player.PlayerRegistry;
 
 import java.net.InetSocketAddress;
@@ -71,6 +80,7 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
@@ -81,6 +91,7 @@ import java.util.regex.Pattern;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelPipeline;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import io.netty.util.concurrent.ScheduledFuture;
@@ -160,9 +171,16 @@ final class LoginSessionHandler implements SessionHandler {
     PRE_LOGIN,
     /** Waiting in line for an authentication slot, before the encryption request. */
     QUEUED,
+    /** Waiting in line for a verification to end, before this login's own starts. */
+    VERIFICATION_QUEUED,
     AWAITING_ENCRYPTION_RESPONSE,
     AUTHENTICATING,
     AWAITING_LOGIN_ACKNOWLEDGED,
+    /**
+     * Logged in, Login Success held: the client negotiates with its first server through login
+     * queries, which the proxy relays, until that server's Login Success (Forge 1.13 to 1.20.1).
+     */
+    HELD_FOR_SERVER,
     COMPLETE,
     /**
      * Refused by the limits, or timed out: closing, and whatever the client still sends is dropped.
@@ -191,6 +209,12 @@ final class LoginSessionHandler implements SessionHandler {
 
   /** Closes the login if it takes longer than the login timeout. */
   private @Nullable ScheduledFuture<?> timeoutTask;
+
+  /** When the login began, for {@code warp_login_duration_seconds}. */
+  private final long startNanos;
+
+  /** Whether the login's outcome was counted: once per login, whatever ends it. */
+  private boolean outcomeCounted;
 
   /** The player once authenticated and registered, until the client enters its first server. */
   private @Nullable ConnectedPlayer player;
@@ -231,11 +255,31 @@ final class LoginSessionHandler implements SessionHandler {
   /** Gives back a slot granted from the line if the encryption response does not come in time. */
   private @Nullable ScheduledFuture<?> slotDeadline;
 
+  /** Whether, and when, the anti-bot verifies this login (section 9.6 of the research). */
+  private Plan plan = Plan.NONE;
+
+  /**
+   * What the verification token this client came back with says, if it presented a valid one: it
+   * was verified before authentication, here or on another proxy of the fleet, and is spared it.
+   */
+  private VerificationTokens.@Nullable Claim tokenClaim;
+
+  /** This login's place among the verifications running, from its admission to the probe's end. */
+  private VerificationQueue.@Nullable Slot verificationSlot;
+
+  /** The login's place in the verification line, while it waits. */
+  private VerificationQueue.@Nullable Waiter verificationWaiter;
+
+  /** The warnings about a missing transfer target, once a minute at most. */
+  private static final LogThrottle TRANSFER_TARGET_WARNINGS =
+      new LogThrottle(Duration.ofMinutes(1));
+
   // ---------------------------------------------------------------------------
   // Constructor
   // ---------------------------------------------------------------------------
 
   LoginSessionHandler(MinecraftConnection connection, ServerLoginContext loginContext) {
+    this.startNanos = System.nanoTime();
     this.connection = connection;
     this.loginContext = loginContext;
     this.onlineMode = loginContext.onlineMode();
@@ -266,10 +310,12 @@ final class LoginSessionHandler implements SessionHandler {
     switch (limits.admitLogin(connection.remoteAddress())) {
       case LoginAdmission.Admitted(LoginSlot admitted) -> this.slot = admitted;
       case LoginAdmission.TooFast(Duration retryAfter) -> {
+        ended(LoginOutcome.REFUSED_ANTIBOT);
         refuse(tooFastReason(retryAfter));
         return;
       }
       case LoginAdmission.TooManyInProgress() -> {
+        ended(LoginOutcome.REFUSED_ANTIBOT);
         refuse(TOO_MANY_LOGINS_REASON);
         return;
       }
@@ -327,8 +373,7 @@ final class LoginSessionHandler implements SessionHandler {
       case LoginStart start -> handleLoginStart(start);
       case EncryptionResponse response -> handleEncryptionResponse(response);
       case LoginAcknowledged _ -> handleLoginAcknowledged();
-      // Warp sends the client no login plugin request (yet), so a response answers nothing.
-      case LoginPluginResponse _ -> {}
+      case LoginPluginResponse response -> handleLoginPluginResponse(response);
       // Clientbound packets must never arrive from a client.
       case EncryptionRequest _,
           LoginSuccess _,
@@ -389,33 +434,101 @@ final class LoginSessionHandler implements SessionHandler {
             deny(Refusal.LOCKDOWN, LOCKDOWN_REASON);
             return;
           }
-          if (recognized.known() || !antiBot.hasChecks()) {
-            preLogin(packet);
+          if (connection.handshakeIntent() == HandshakeIntent.TRANSFER
+              && antiBot.checksToken(
+                  recognized,
+                  loginContext.onlineMode(),
+                  clientVersion(),
+                  loginContext.acceptsTransfers())) {
+            checkToken(packet, recognized);
             return;
           }
-          LoginAttempt attempt =
-              new LoginAttempt(
-                  name,
-                  address,
-                  clientVersion().protocol(),
-                  connection.virtualHost(),
-                  loginContext.onlineMode());
-          whenOnLoop(
-              antiBot.check(attempt),
-              verdict -> {
-                switch (verdict) {
-                  case Verdict.Fail(Component reason) -> {
-                    deny(Refusal.CHECK_FAILED, reason);
-                    return;
-                  }
-                  case Verdict.Escalate() -> escalated = true;
-                  case Verdict.Pass(), Verdict.Abstain() -> {
-                    // No objection.
-                  }
-                }
-                preLogin(packet);
-              });
+          verifyOrCheck(packet, recognized);
         });
+  }
+
+  /**
+   * Asks a transferred client for the verification token the proxy (or another of its fleet) stored
+   * in it: a valid one spares the login the verification before authentication it would otherwise
+   * get during an attack, and proves the transfer is the proxy's own when {@code accepts-transfers}
+   * is off.
+   */
+  private void checkToken(LoginStart packet, AntiBotService.Recognition recognized) {
+    AntiBotService antiBot = loginContext.antiBot();
+    CompletableFuture<Optional<byte[]>> cookie =
+        cookies
+            .request(VerificationTokens.COOKIE_KEY, ClientCookies.DEFAULT_TIMEOUT)
+            .handle((payload, failure) -> failure != null ? Optional.<byte[]>empty() : payload);
+    whenOnLoop(
+        cookie,
+        payload -> {
+          VerificationTokens.Claim claim =
+              payload.isPresent() ? antiBot.acceptToken(payload.get(), recognized) : null;
+          if (claim != null) {
+            this.tokenClaim = claim;
+            logger.debug(
+                "{} from {} came back from its verification with a valid token",
+                recognized.name(),
+                connection.remoteAddress());
+          } else if (!loginContext.acceptsTransfers()) {
+            // The transfer was accepted for the anti-bot's sake only: without its token, it is
+            // somebody else's transfer, which the proxy does not accept.
+            deny(
+                Refusal.TRANSFER_REFUSED,
+                Message.TRANSFERS_DISABLED.of(),
+                "a transfer without a valid verification token");
+            return;
+          }
+          verifyOrCheck(packet, recognized);
+        });
+  }
+
+  /**
+   * Sends an unknown login to its verification before authentication when the anti-bot asks for it
+   * (online mode under attack), and every other login through the plugins' checks and the pre-login
+   * handlers. No plugin hears of a login verified before authentication: that path ends in a
+   * transfer or a reconnect, and the next login, known by then, goes through the plugins (decision
+   * D15 of the research).
+   */
+  private void verifyOrCheck(LoginStart packet, AntiBotService.Recognition recognized) {
+    AntiBotService antiBot = loginContext.antiBot();
+    if (tokenClaim == null
+        && antiBot.plan(recognized, loginContext.onlineMode(), clientVersion())
+            == Plan.BEFORE_AUTHENTICATION) {
+      plan = Plan.BEFORE_AUTHENTICATION;
+      state = LoginState.AWAITING_LOGIN_START;
+      acquireVerification(this::beginUnauthenticatedVerification);
+      return;
+    }
+    if (recognized.known() || !antiBot.hasChecks()) {
+      preLogin(packet);
+      return;
+    }
+    whenOnLoop(
+        antiBot.check(loginAttempt()),
+        verdict -> {
+          switch (verdict) {
+            case Verdict.Fail(Component reason) -> {
+              deny(Refusal.CHECK_FAILED, reason);
+              return;
+            }
+            case Verdict.Escalate() -> escalated = true;
+            case Verdict.Pass(), Verdict.Abstain() -> {
+              // No objection.
+            }
+          }
+          preLogin(packet);
+        });
+  }
+
+  /** This login as plugins' checks and the anti-bot's events see it. */
+  private LoginAttempt loginAttempt() {
+    return new LoginAttempt(
+        username != null ? username : "",
+        (InetSocketAddress) connection.remoteAddress(),
+        clientVersion().protocol(),
+        connection.virtualHost(),
+        onlineMode);
   }
 
   /** Lets the pre-login handlers decide on a login the anti-bot let through. */
@@ -500,6 +613,16 @@ final class LoginSessionHandler implements SessionHandler {
       }
     }
 
+    // The verification plan, now that plugins settled the mode of this login. A valid token
+    // spares it: the client was verified before authentication and came back.
+    plan =
+        tokenClaim != null
+            ? Plan.NONE
+            : loginContext.antiBot().plan(recognized, onlineMode, clientVersion());
+    if (plan == Plan.BEFORE_AUTHENTICATION) {
+      acquireVerification(this::beginUnauthenticatedVerification);
+      return;
+    }
     if (onlineMode) {
       AuthenticationLane lane = loginContext.limits().lane();
       if (lane.mustWait()) {
@@ -507,6 +630,8 @@ final class LoginSessionHandler implements SessionHandler {
         return;
       }
       beginOnlineMode();
+    } else if (plan == Plan.AFTER_LOGIN) {
+      acquireVerification(this::beginOfflineMode);
     } else {
       beginOfflineMode();
     }
@@ -554,6 +679,7 @@ final class LoginSessionHandler implements SessionHandler {
 
   private void refuseBusy(AuthenticationLane lane) {
     loginContext.limits().refused(Refusal.AUTHENTICATION_BUSY, connection.remoteAddress());
+    ended(LoginOutcome.REFUSED_ANTIBOT);
     refuse(busyReason(lane.maxWait()));
   }
 
@@ -562,6 +688,7 @@ final class LoginSessionHandler implements SessionHandler {
     slotDeadline = null;
     if (connection.channel().isActive() && state == LoginState.AWAITING_ENCRYPTION_RESPONSE) {
       loginContext.limits().refused(Refusal.LOGIN_TIMEOUT, connection.remoteAddress());
+      ended(LoginOutcome.AUTH_TIMEOUT);
       refuse(TIMED_OUT_REASON);
     }
   }
@@ -725,6 +852,19 @@ final class LoginSessionHandler implements SessionHandler {
     }
   }
 
+  /**
+   * Routes the client's answer to a login query. The proxy asks none of its own: an answer is for a
+   * backend's query relayed to a client held in its login state, and answers nothing otherwise.
+   */
+  private void handleLoginPluginResponse(LoginPluginResponse response) {
+    ConnectedPlayer held = this.player;
+    if (state != LoginState.HELD_FOR_SERVER || held == null) {
+      logger.debug("Dropped a login query answer from {} that answers nothing", username);
+      return;
+    }
+    var _ = held.loginQueries().answered(response);
+  }
+
   private void handleLoginAcknowledged() {
     logger.debug("LoginAcknowledged received from {}, state={}", username, state);
     if (state != LoginState.AWAITING_LOGIN_ACKNOWLEDGED) {
@@ -737,6 +877,10 @@ final class LoginSessionHandler implements SessionHandler {
 
     state = LoginState.COMPLETE;
     connection.setState(ProtocolState.CONFIGURATION);
+    if (plan != Plan.NONE) {
+      startConfigurationProbe();
+      return;
+    }
     initiateBackendConnection();
   }
 
@@ -744,11 +888,15 @@ final class LoginSessionHandler implements SessionHandler {
   public void deactivated() {
     logger.debug("LoginSessionHandler replaced for: {} (state={})", username, state);
     endOfLogin();
+    // A probe that took over holds its slot itself; anything else gives it back.
+    endOfVerification();
   }
 
   @Override
   public void disconnected() {
     endOfLogin();
+    endOfVerification();
+    ended(LoginOutcome.DISCONNECTED);
     if (state == LoginState.REFUSED) {
       return; // Counted by the limits: a flood must not write a line per connection.
     }
@@ -850,6 +998,14 @@ final class LoginSessionHandler implements SessionHandler {
                             deny(Refusal.LOCKDOWN, LOCKDOWN_REASON);
                             return;
                           }
+                          // An unknown account is verified after it authenticated; one trusted
+                          // from another network is not.
+                          if (plan == Plan.AFTER_LOGIN
+                              && loginContext.antiBot().verifiesAccount(profile.uuid())) {
+                            acquireVerification(() -> completeLogin(profile));
+                            return;
+                          }
+                          plan = Plan.NONE;
                           completeLogin(profile);
                         });
 
@@ -936,6 +1092,7 @@ final class LoginSessionHandler implements SessionHandler {
       return;
     }
     this.player = joining;
+    joining.countVersion();
 
     // The place is taken atomically at registration: of two logins racing for the last place,
     // exactly one gets it. A session replacing a duplicate takes the place it frees.
@@ -967,6 +1124,7 @@ final class LoginSessionHandler implements SessionHandler {
                     // No session started: no disconnect event for this player.
                     this.player = null;
                     loginContext.playerRegistry().unregister(joining);
+                    joining.uncountVersion();
                     deny(
                         proposed instanceof LoginEvent.Denied
                             ? Refusal.SERVER_FULL
@@ -983,6 +1141,7 @@ final class LoginSessionHandler implements SessionHandler {
   private void refuseFull(ConnectedPlayer joining) {
     this.player = null;
     loginContext.playerRegistry().unregister(joining);
+    joining.uncountVersion();
     deny(Refusal.SERVER_FULL, SERVER_FULL);
   }
 
@@ -999,15 +1158,25 @@ final class LoginSessionHandler implements SessionHandler {
             profile.properties(),
             strictErrorHandling,
             joinPlaySession());
-    if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
+    ConnectedPlayer joined = this.player;
+    boolean held =
+        joined != null
+            && HandshakeMarkers.hasLoginQueries(connection.clientPlatform(), clientVersion());
+    if (joined != null && held) {
+      // A Forge client of 1.13 to 1.20.1 negotiates its mods with its server through login
+      // queries before Login Success. The proxy is its server: Login Success waits until the first
+      // backend has logged the player in, with the queries relayed in between.
+      ConnectedPlayer holding = joined;
+      holding.loginQueries().hold(() -> releaseLogin(holding, loginSuccess));
+    } else if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
       // The client reads what follows in the configuration state, before it acknowledges: what the
       // proxy sends of its own (a cookie request) waits for the acknowledgement.
       connection.writeTerminal(loginSuccess);
     } else {
       connection.writeAndFlush(loginSuccess);
     }
+    ended(LoginOutcome.SUCCESS);
 
-    ConnectedPlayer joined = this.player;
     if (joined != null
         && loginContext.logging().connections()
         && loginContext.antiBot().logs(RoutineLine.CONNECTION)) {
@@ -1022,10 +1191,25 @@ final class LoginSessionHandler implements SessionHandler {
     // from now on it is read under the read timeout of logged-in connections.
     connection.loggedIn();
     useLoggedInReadTimeout();
-    // Refreshes what the anti-bot knows of the player, or learns it outside attacks.
-    loginContext.antiBot().joined(recognition(), onlineMode ? profile.uuid() : null, escalated);
+    // Refreshes what the anti-bot knows of the player, or learns it outside attacks; a player
+    // verified before authentication, back with its token, is stored whatever the attack level.
+    // A player about to be probed is stored by the probe's pass, not here.
+    VerificationTokens.Claim claim = this.tokenClaim;
+    if (plan == Plan.NONE) {
+      loginContext
+          .antiBot()
+          .joined(
+              recognition(),
+              onlineMode ? profile.uuid() : null,
+              escalated,
+              claim != null && claim.trusted() ? VerificationMethod.TOKEN : null);
+    }
 
-    if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
+    if (held) {
+      // Still in the login state, on both sides: the backend's login queries go through here.
+      state = LoginState.HELD_FOR_SERVER;
+      initiateBackendConnection();
+    } else if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
       // The client reads configuration packets from Login Success on, though it is still read in
       // the login state until it acknowledges: anything sent to it from now on, a disconnect above
       // all, is a configuration packet (BungeeCord #3525).
@@ -1036,8 +1220,26 @@ final class LoginSessionHandler implements SessionHandler {
       // Pre-1.20.2: transition directly to PLAY.
       state = LoginState.COMPLETE;
       connection.setState(ProtocolState.PLAY);
+      if (plan != Plan.NONE) {
+        startPreJoinProbe();
+        return;
+      }
       initiateBackendConnection();
     }
+  }
+
+  /**
+   * Sends a held Login Success: the first backend has logged the player in, and the client, done
+   * with its login queries, moves to the play state, where that backend's Join Game follows.
+   */
+  private void releaseLogin(ConnectedPlayer joined, LoginSuccess loginSuccess) {
+    if (state != LoginState.HELD_FOR_SERVER || !connection.channel().isActive()) {
+      return;
+    }
+    connection.writeAndFlush(loginSuccess);
+    state = LoginState.COMPLETE;
+    connection.setState(ProtocolState.PLAY);
+    joined.startKeepAliveTask();
   }
 
   /**
@@ -1103,6 +1305,291 @@ final class LoginSessionHandler implements SessionHandler {
   }
 
   // ---------------------------------------------------------------------------
+  // Verification (anti-bot, phase 2)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Takes a place among the verifications running, at once or from the line, then runs {@code
+   * next}. A login that waits too long, or finds the line full, is told the proxy is busy; the line
+   * is fair between networks ({@link VerificationQueue}).
+   */
+  private void acquireVerification(Runnable next) {
+    VerificationQueue queue = loginContext.antiBot().queue();
+    VerificationQueue.Slot free = queue.tryAcquire();
+    if (free != null) {
+      this.verificationSlot = free;
+      next.run();
+      return;
+    }
+    LoginState before = state;
+    state = LoginState.VERIFICATION_QUEUED;
+    int network = loginContext.antiBot().networkHash(recognition().address());
+    VerificationQueue.Waiter placed =
+        queue.enqueue(
+            network,
+            connection.channel().eventLoop(),
+            granted -> {
+              this.verificationWaiter = null;
+              if (!connection.channel().isActive() || state != LoginState.VERIFICATION_QUEUED) {
+                granted.release();
+                return;
+              }
+              this.verificationSlot = granted;
+              state = before;
+              next.run();
+            },
+            () -> {
+              this.verificationWaiter = null;
+              if (connection.channel().isActive() && state == LoginState.VERIFICATION_QUEUED) {
+                refuseVerificationBusy(queue);
+              }
+            });
+    if (placed == null) {
+      refuseVerificationBusy(queue);
+      return;
+    }
+    this.verificationWaiter = placed;
+  }
+
+  private void refuseVerificationBusy(VerificationQueue queue) {
+    loginContext.limits().refused(Refusal.VERIFICATION_BUSY, connection.remoteAddress());
+    refuse(Message.VERIFICATION_BUSY.of(Math.max(1, queue.maxWait().toSeconds())));
+  }
+
+  /** Leaves the verification line and gives back the slot held, if any. */
+  private void endOfVerification() {
+    VerificationQueue.Waiter waiting = this.verificationWaiter;
+    if (waiting != null) {
+      this.verificationWaiter = null;
+      waiting.cancel();
+    }
+    VerificationQueue.Slot held = this.verificationSlot;
+    if (held != null) {
+      this.verificationSlot = null;
+      held.release();
+    }
+  }
+
+  /**
+   * Hands the slot to a probe: the probe's listener gives it back when the probe ends, and this
+   * handler's replacement no longer does.
+   */
+  private VerificationQueue.@Nullable Slot handOverVerificationSlot() {
+    VerificationQueue.Slot held = this.verificationSlot;
+    this.verificationSlot = null;
+    return held;
+  }
+
+  /**
+   * Starts a verification before authentication (online mode under attack): the client gets a Login
+   * Success under its offline profile, without a player being registered or any plugin hearing of
+   * it, and is probed in the configuration state (1.20.2+) or the play state. A pass ends in a
+   * transfer back with a signed token, or a disconnect asking to reconnect; never in a backend. The
+   * login's deadlines and guard stay on the connection: it is not logged in. Its frame limits go,
+   * as the client answers in compressed frames from now on.
+   */
+  private void beginUnauthenticatedVerification() {
+    String name = this.username;
+    if (name == null) {
+      internalError("verification without a username");
+      return;
+    }
+    enableCompression();
+    connection.liftFrameLimits();
+    UUID offlineUuid =
+        UUID.nameUUIDFromBytes(("OfflinePlayer:" + name).getBytes(StandardCharsets.UTF_8));
+    LoginSuccess loginSuccess =
+        new LoginSuccess(
+            offlineUuid,
+            name,
+            List.of(),
+            clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_5),
+            joinPlaySession());
+    if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
+      connection.writeTerminal(loginSuccess);
+      connection.encoder().setState(ProtocolState.CONFIGURATION);
+      state = LoginState.AWAITING_LOGIN_ACKNOWLEDGED;
+    } else {
+      connection.writeAndFlush(loginSuccess);
+      state = LoginState.COMPLETE;
+      connection.setState(ProtocolState.PLAY);
+      startPreJoinProbe();
+    }
+  }
+
+  /** Probes a 1.20.2+ client in its first configuration phase, in place of its first server. */
+  private void startConfigurationProbe() {
+    Probe probe = loginContext.antiBot().newProbe(Probe.Kind.CONFIGURATION, clientVersion());
+    connection.setSessionHandler(
+        new ProbeSessionHandler(
+            connection,
+            cookies,
+            probe,
+            new VerificationOutcome(handOverVerificationSlot()),
+            loginContext.antiBot().nanoClock()));
+  }
+
+  /** Probes a 1.8 to 1.20.1 client with a keep-alive before its first Join Game. */
+  private void startPreJoinProbe() {
+    Probe probe = loginContext.antiBot().newProbe(Probe.Kind.PRE_JOIN, clientVersion());
+    VerificationOutcome outcome = new VerificationOutcome(handOverVerificationSlot());
+    PreJoinProbeSessionHandler handler =
+        new PreJoinProbeSessionHandler(
+            connection, probe, outcome, loginContext.antiBot().nanoClock());
+    outcome.preJoin = handler;
+    connection.setSessionHandler(handler);
+  }
+
+  /** What follows a probe: the player's first server, a transfer back, or a disconnect. */
+  private final class VerificationOutcome implements ProbeSessionHandler.Listener {
+
+    private final VerificationQueue.@Nullable Slot slot;
+
+    /** The pre-join handler, which keeps the player until its first server after a pass. */
+    private @Nullable PreJoinProbeSessionHandler preJoin;
+
+    VerificationOutcome(VerificationQueue.@Nullable Slot slot) {
+      this.slot = slot;
+    }
+
+    @Override
+    public void passed(
+        Probe.Outcome.Passed outcome, @Nullable ClientInformation settings, List<ByteBuf> held) {
+      release();
+      ConnectedPlayer joined = player;
+      if (plan == Plan.BEFORE_AUTHENTICATION || joined == null) {
+        // Never admitted from this path: nothing it sent is for a server.
+        held.forEach(ByteBuf::release);
+        verifiedBeforeAuthentication(outcome);
+        return;
+      }
+      loginContext
+          .antiBot()
+          .verificationPassed(recognition(), onlineMode ? joined.uuid() : null, outcome);
+      if (settings != null) {
+        joined.cacheClientSettings(settings);
+      }
+      PreJoinProbeSessionHandler waiting = preJoin;
+      if (waiting != null) {
+        waiting.waitFor(joined);
+      }
+      joined.join();
+      // What the client sent while probed (its brand, a mod's channels) now waits for its first
+      // server with the rest, as it would have without the probe.
+      if (connection.sessionHandler() instanceof SwitchWaitSessionHandler waitingForServer) {
+        held.forEach(waitingForServer::hold);
+      } else {
+        held.forEach(ByteBuf::release);
+      }
+    }
+
+    @Override
+    public void failed(Probe.Outcome.Failed outcome) {
+      release();
+      Refusal counted =
+          outcome.reason() == VerificationFailure.TIMED_OUT
+              ? Refusal.VERIFICATION_TIMEOUT
+              : Refusal.VERIFICATION_FAILED;
+      loginContext.limits().refused(counted, connection.remoteAddress());
+      loginContext.antiBot().verificationFailed(loginAttempt(), outcome.reason());
+      Message message =
+          outcome.reason() == VerificationFailure.TIMED_OUT
+              ? Message.VERIFICATION_TIMED_OUT
+              : Message.VERIFICATION_FAILED;
+      logger.debug(
+          "Disconnecting {} from {} ({}): {}",
+          username,
+          connection.remoteAddress(),
+          counted.label(),
+          outcome.detail());
+      ConnectedPlayer joined = player;
+      if (joined != null) {
+        player = null;
+        joined.disconnect(message.of());
+      } else {
+        connection.writeAndClose(disconnectPacket(render(message.of())));
+      }
+    }
+
+    @Override
+    public void left() {
+      release();
+      ConnectedPlayer joined = player;
+      if (joined != null) {
+        joined.disconnect();
+      }
+    }
+
+    private void release() {
+      VerificationQueue.Slot held = slot;
+      if (held != null) {
+        held.release();
+      }
+    }
+  }
+
+  /**
+   * Ends a verification before authentication that passed: the identity is trusted here (so this
+   * proxy recognizes its next login before authentication), plugins' checks run now that the client
+   * proved itself, and the client is sent back with a signed token (1.20.5+), or asked to
+   * reconnect. It is never admitted from this path.
+   */
+  private void verifiedBeforeAuthentication(Probe.Outcome.Passed outcome) {
+    AntiBotService antiBot = loginContext.antiBot();
+    antiBot.verificationPassed(recognition(), null, outcome);
+    if (!antiBot.hasChecks()) {
+      sendBack(outcome.trusted());
+      return;
+    }
+    var _ =
+        antiBot
+            .check(loginAttempt())
+            .whenCompleteAsync(
+                (verdict, failure) -> {
+                  if (!connection.channel().isActive()) {
+                    return;
+                  }
+                  if (verdict instanceof Verdict.Fail(Component reason)) {
+                    loginContext.limits().refused(Refusal.CHECK_FAILED, connection.remoteAddress());
+                    connection.writeAndClose(disconnectPacket(render(reason)));
+                    return;
+                  }
+                  sendBack(outcome.trusted() && !(verdict instanceof Verdict.Escalate));
+                },
+                connection.channel().eventLoop());
+  }
+
+  /** Transfers the verified client back with its token, or asks it to reconnect. */
+  private void sendBack(boolean trusted) {
+    AntiBotService antiBot = loginContext.antiBot();
+    if (cookies.supported()) {
+      InetSocketAddress target =
+          antiBot.transferTarget(connection.virtualHost(), connection.virtualPort());
+      if (target != null) {
+        cookies.store(VerificationTokens.COOKIE_KEY, antiBot.issueToken(recognition(), trusted));
+        logger.debug(
+            "{} from {} verified before authentication: transferred back to {}",
+            username,
+            connection.remoteAddress(),
+            target);
+        connection.writeAndClose(new Transfer(target.getHostString(), target.getPort()));
+        return;
+      }
+      long more = TRANSFER_TARGET_WARNINGS.tryAcquire();
+      if (more >= 0) {
+        logger.warn(
+            LogCode.ANTIBOT_TRANSFER_TARGET_UNKNOWN.marker(),
+            "Cannot transfer {} back after its verification: its handshake named no usable host"
+                + " and anti-bot.verification.transfer is not set; asked to reconnect instead{}",
+            username,
+            LogThrottle.suffix(more, "players"));
+      }
+    }
+    loginContext.limits().refused(Refusal.VERIFIED_RECONNECT, connection.remoteAddress());
+    connection.writeAndClose(disconnectPacket(render(Message.VERIFIED_RECONNECT.of())));
+  }
+
+  // ---------------------------------------------------------------------------
   // Backend connection
   // ---------------------------------------------------------------------------
 
@@ -1159,6 +1646,7 @@ final class LoginSessionHandler implements SessionHandler {
       return;
     }
     loginContext.limits().refused(Refusal.LOGIN_TIMEOUT, connection.remoteAddress());
+    ended(LoginOutcome.AUTH_TIMEOUT);
     logger.debug("Login of {} from {} timed out", username, connection.remoteAddress());
     refuse(TIMED_OUT_REASON);
   }
@@ -1169,10 +1657,20 @@ final class LoginSessionHandler implements SessionHandler {
    * once it is logged in. Counted by the limits, not logged one by one, so that a flood cannot fill
    * the logs.
    */
+  /** Counts the login's outcome and duration, the first time only: later calls are no-ops. */
+  private void ended(LoginOutcome outcome) {
+    if (outcomeCounted) {
+      return;
+    }
+    outcomeCounted = true;
+    loginContext.metrics().loginEnded(outcome, System.nanoTime() - startNanos);
+  }
+
   private void refuse(Component reason) {
     state = LoginState.REFUSED;
     endOfLogin();
-    connection.writeAndClose(LoginDisconnect.of(render(reason), clientVersion()));
+    endOfVerification();
+    connection.writeAndClose(disconnectPacket(render(reason)));
   }
 
   /** The reason shown to a player who tries to log in too often, with how long to wait. */
@@ -1194,6 +1692,7 @@ final class LoginSessionHandler implements SessionHandler {
    */
   private void refuseProfileKey(ProfileKeys.Problem problem) {
     loginContext.limits().refused(Refusal.INVALID_LOGIN, connection.remoteAddress());
+    ended(LoginOutcome.OTHER);
     logger.debug(
         "Disconnecting {} from {}: invalid profile public key, {}",
         username != null ? username : "unknown",
@@ -1233,6 +1732,7 @@ final class LoginSessionHandler implements SessionHandler {
 
   private void countDenial(Refusal reason, String message) {
     loginContext.limits().refused(reason, connection.remoteAddress());
+    ended(LoginOutcome.of(reason));
     logger.debug(
         "Disconnecting {} from {} ({}): {}",
         username != null ? username : "unknown",
@@ -1241,6 +1741,7 @@ final class LoginSessionHandler implements SessionHandler {
         message);
     state = LoginState.REFUSED;
     endOfLogin();
+    endOfVerification();
   }
 
   /**

@@ -126,6 +126,14 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
   private boolean framedInput = true;
 
   /**
+   * What happens to each frame, for metrics; {@link TrafficObserver#NONE} until the proxy sets one.
+   */
+  private TrafficObserver observer = TrafficObserver.NONE;
+
+  /** The size of the frame being decoded, for the observer. */
+  private int wireBytes;
+
+  /**
    * The last frame forwarded after being inflated anyway, and its inflated packet bytes — kept
    * until the next frame so a relay that must re-encode it does not inflate it a second time.
    */
@@ -167,6 +175,7 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
     }
 
     int start = frame.readerIndex();
+    wireBytes = frame.readableBytes();
     if (!framedInput) {
       decodeUncompressed(frame, start, out); // a bare packet: unframed and inflated upstream
       return;
@@ -199,6 +208,7 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
       int packetId = readPacketId(packet);
       switch (registry.lookup(version, packetId)) {
         case PacketCodec<?> codec -> {
+          observer.decoded(wireBytes);
           out.add(decodePacket(codec, packetId, packet));
           return;
         }
@@ -218,6 +228,15 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
         packet.release();
       }
     }
+  }
+
+  /**
+   * Sets who counts the frames this decoder emits and the packets it reads.
+   *
+   * @param observer the observer; {@link TrafficObserver#NONE} to count nothing
+   */
+  public void observer(TrafficObserver observer) {
+    this.observer = observer;
   }
 
   /**
@@ -265,7 +284,10 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
       return;
     }
     switch (reader) {
-      case PacketCodec<?> codec -> out.add(decodePacket(codec, packetId, frame));
+      case PacketCodec<?> codec -> {
+        observer.decoded(wireBytes);
+        out.add(decodePacket(codec, packetId, frame));
+      }
       case PacketWatch<?> watch -> {
         watchPacket(watch, packetId, frame, out);
         forward(frame, start, out);
@@ -277,7 +299,8 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
    * Emits the complete original message (the frame, length prefix included, or the bare packet in
    * packet input) for forwarding.
    */
-  private static void forward(ByteBuf frame, int start, List<Object> out) {
+  private void forward(ByteBuf frame, int start, List<Object> out) {
+    observer.blind(wireBytes);
     frame.readerIndex(start);
     // The base class releases the input after decode(); the retain hands ownership downstream.
     out.add(frame.retain());

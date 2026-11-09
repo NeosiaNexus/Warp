@@ -233,7 +233,9 @@ A trend only shows a leak big enough to stand out of the noise. The objects chec
 on one: a class histogram of Warp (`jcmd GC.class_histogram`, after a full GC) is taken at the
 intermission and at the end, both times with every bot gone. A cache with an entry per player may
 keep one object per bot; an object kept per connection or per switch outnumbers them within
-minutes. Both histograms come after the same code paths: Warp builds its protocol tables and some
+minutes. A ring Warp bounds by design (the console tail kept for `/log` and the remote console)
+fills with activity rather than with players: the harness knows its bound (`BOUNDED_CLASSES` in
+`soak.js`) and fails only if Warp ever holds more than it. Both histograms come after the same code paths: Warp builds its protocol tables and some
 per-thread state on its first players (about 1,700 objects of its own), which a histogram taken
 before the first player would mistake for a leak. A Warp patched to keep a reference to every
 player that ever joined passes every trend check (the 65 players of a 5-minute soak add 0.3 MiB of

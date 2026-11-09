@@ -24,7 +24,7 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 | **Decompression bombs** | Impossible compression ratios are refused before inflating, sizes are capped, and each connection has an inflate budget | Available |
 | **No graceful drain** | Multi-phase drain with Transfer packet support, designed for rolling deployments and Kubernetes | Planned |
 | **Shallow plugin DI** | Full dependency-injection graph via Guice with lifecycle hooks (provision, validate, start, ready, drain, stop) | Planned |
-| **No health probes** | Built-in `/livez`, `/readyz`, `/startupz` endpoints, Prometheus metrics and OpenTelemetry tracing | Planned |
+| **No health probes, no metrics** | Built-in `/livez`, `/readyz`, `/startupz` endpoints and Prometheus metrics with an allocation-free registry ([docs/metrics.md](docs/metrics.md)); OpenTelemetry tracing planned | Available |
 | **Undefined event ordering** | Deterministic, priority-based event dispatch, with no race between handlers | Planned |
 
 ## Status
@@ -57,6 +57,24 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 - **Fallback**: when the server a player joins or switches to is unreachable or refuses the
   login, or kicks them during play, Warp tries the servers of `fallback-order` in turn before
   disconnecting the player.
+- **Hostname routing**: `routes` sends a player to a server or group by the host they connected
+  with. Exact hosts and wildcards (`*.example.com`), case-insensitive, with an optional port, and
+  `"*.play.example.com" = "$1"` to name the server after the subdomain. Forge's `\0FML\0` markers,
+  a BungeeCord payload and a trailing dot never make a route miss; the most specific entry wins.
+- **Server groups and load balancing**: `groups` spreads players over several servers with
+  `round-robin`, `least-connections`, `lowest-latency`, `random`, `weighted` or `fill`. A group
+  stands wherever a server name does (default, fallback, route). A server that failed its last
+  ping or a player's connection is skipped for a cool-down, then probed with one player (circuit
+  breaker); the player's current server is never picked. `/warp groups` shows the balancer's
+  view, and plugins supply their own `Balancer` or register groups at runtime.
+- **Forge and NeoForge clients, joining**: the handshake marker of every Forge era (`\0FML\0`,
+  `\0FML2\0`, `\0FML3\0`, `\0FORGE[n]`) reaches the backend, and a Forge 1.13 to 1.20.1 client
+  negotiates its mods with its first server through the proxy: the server's login queries are
+  relayed to the client and answered back, and the proxy's Login Success waits for the server's.
+  NeoForge and Forge 1.20.2+ negotiate in the configuration phase, which Warp relays untouched.
+  Plugins read the platform with `InboundConnection.platform()`. Switching between modded servers
+  before 1.20.2 and a `modded = false` option for vanilla backends in a mixed network are the
+  next milestones of [the modded clients design](docs/research/modded-and-bedrock.md).
 - **BungeeCord plugin messaging channel** (`BungeeCord`, `bungeecord:main`): all 18 sub-channels
   Paper and Spigot plugins use to move players and query the network, answered byte for byte as
   BungeeCord and Velocity answer them. Connect goes through Warp's own switch and events; each
@@ -75,6 +93,13 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 
 **Performance**
 
+- **Built-in anti-bot**, on by default: an attack detector on the logins of unknown identities, a
+  store of the identities that played here (hashed, on disk, surviving restarts), lockdown, and a
+  verification of unknown players from the packets every real client answers as it logs in: a ping
+  and a keep-alive to echo, its settings and brand, and a cookie. Verified players
+  never pay again; during an attack in online mode, unknown players are verified before the proxy
+  asks Mojang about them, so fake authentications never reach the session server. Nothing stays in
+  the pipeline after verification, and the PLAY path is untouched.
 - **Blind forwarding**: frames Warp does not inspect are never deserialized; they go from one
   connection to the other as raw bytes.
 - **Compression passthrough**: Warp reads the packet id of a compressed frame without inflating it.
@@ -109,8 +134,8 @@ Planned, not implemented yet:
 - **Plugin system**: plugin loading, Guice dependency injection, lifecycle hooks, a deterministic
   event bus, commands and a scheduler. Today the API exposes the proxy version and `ServerInfo`.
 - **Graceful drain** with Transfer packets, for rolling deployments and Kubernetes.
-- **Observability**: `/livez`, `/readyz` and `/startupz` health probes, Prometheus metrics,
-  OpenTelemetry tracing.
+- **Observability**: OpenTelemetry tracing, OTLP metrics push and Grafana dashboards (the probes
+  and the Prometheus metrics are available today).
 - **Configurable server list ping** (MOTD, player counts).
 - **Native compression and cryptography** (libdeflate, AES): `jni/` is a placeholder today.
 - **Plugin API on Maven Central.**
@@ -181,6 +206,10 @@ Java 25 or newer (the JDK that runs Gradle can be older). Without the scripts:
 java --sun-misc-unsafe-memory-access=allow -jar /path/to/warp-<version>.jar
 ```
 
+Coming from Velocity or BungeeCord? `java -jar warp.jar migrate /path/to/proxy --to .` converts its
+configuration and reports what became of every setting and plugin: see
+[docs/migration.md](docs/migration.md).
+
 ### Configure
 
 `warp.conf` (HOCON) is commented; the essentials:
@@ -195,6 +224,18 @@ servers {
 }
 default-server = "lobby"
 fallback-order = ["lobby", "survival"]
+
+groups {
+  lobbies {
+    servers = ["lobby", "lobby2"]   # a group stands wherever a server name does
+    strategy = "least-connections"  # round-robin, lowest-latency, random, weighted, fill
+  }
+}
+
+routes {
+  "play.example.com" = "lobbies"    # the host the client typed decides where they go
+  "*.mini.example.com" = "$1"       # kitpvp.mini.example.com goes to the server kitpvp
+}
 
 forwarding {
   mode = "velocity"                # or "none"
@@ -377,6 +418,31 @@ The endpoints are plain HTTP for other tools: `GET /console/logs` (Server-Sent E
 `?tags=`, `?grep=`, `?replay=N`, `Last-Event-ID` to resume), `POST /console/command` (the command as
 the body, or `{"command": ...}`; answers its output as JSON), `POST /console/suggest` and
 `GET /console/commands`, each with `Authorization: Bearer <token>`.
+
+### Metrics
+
+`GET /metrics` on the management server answers in the Prometheus text format, or in OpenMetrics
+when the `Accept` header asks for it, with the proxy's metrics, every plugin's and the JVM's.
+Connections by state, logins by outcome, blind versus decoded packets and bytes, compression
+passthrough, each backend's connects, round trip, health and bytes, event loop lag, the drain and
+plugin handler time: the catalogue, with the cardinality rules, is in
+[docs/metrics.md](docs/metrics.md).
+
+```hocon
+management {
+  enabled = true
+  metrics {
+    enabled = true
+    require-token = false        # Authorization: Bearer <management token> to read them
+    server-ping-interval = 15s   # backend pings for warp_server_rtt_seconds and warp_server_health
+  }
+}
+```
+
+The registry is Warp's own, with no dependency: a counter resolved once by a handler is a slot per
+event loop, so an increment on the forwarding path allocates nothing and contends with nothing.
+Plugins register their metrics through `PluginContext.metrics()`, under their id as a prefix, and a
+label per player or address is refused at registration.
 
 ## Project Structure
 

@@ -29,6 +29,7 @@ import dev.warp.protocol.packet.login.LoginDisconnect;
 import dev.warp.proxy.i18n.Message;
 import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.limit.Refusal;
+import dev.warp.proxy.metrics.LoginOutcome;
 
 import io.netty.channel.ChannelFutureListener;
 import net.kyori.adventure.text.Component;
@@ -142,6 +143,15 @@ final class HandshakeSessionHandler implements SessionHandler {
     }
 
     connection.setVirtualHost(handshake.serverAddress());
+    String host = connection.virtualHost();
+    connection.setRoute(
+        host == null
+            ? null
+            : loginContext.serverRegistry().routes().match(host, handshake.serverPort()));
+    connection.setVirtualPort(handshake.serverPort());
+    // The marker a modded client appends is kept apart from the host: routes match the host, the
+    // marker goes to the backend.
+    connection.setHandshakeMarker(HandshakeMarkers.detect(handshake.serverAddress(), version));
 
     HandshakeIntent intent = HandshakeIntent.byId(handshake.nextState());
     if (intent == null) {
@@ -149,6 +159,7 @@ final class HandshakeSessionHandler implements SessionHandler {
       return;
     }
     connection.setHandshakeIntent(intent);
+    loginContext.metrics().connectionAccepted(intent);
 
     ConnectionGuard guard = connection.guard();
     switch (intent) {
@@ -191,6 +202,7 @@ final class HandshakeSessionHandler implements SessionHandler {
    */
   private void refuseVersion(int protocol) {
     loginContext.limits().refused(Refusal.UNSUPPORTED_VERSION, connection.remoteAddress());
+    loginContext.metrics().loginEnded(LoginOutcome.PROTOCOL_UNSUPPORTED, -1);
     logger.debug("Refusing protocol {} from {}", protocol, connection.remoteAddress());
     boolean older = protocol < ProtocolVersion.oldest().protocol();
     Component reason =
@@ -226,7 +238,12 @@ final class HandshakeSessionHandler implements SessionHandler {
       refuse(Refusal.INVALID_HANDSHAKE, "a transfer from " + version + ", before transfers");
       return;
     }
-    if (version == null || loginContext.acceptsTransfers()) {
+    // The anti-bot transfers the clients it verified before authentication back to the proxy:
+    // while such clients may be coming back, their transfer intent is accepted whatever
+    // accepts-transfers says, and the login then has to present its verification token.
+    if (version == null
+        || loginContext.acceptsTransfers()
+        || loginContext.antiBot().acceptsVerificationTransfers()) {
       login(handshake, version);
       return;
     }

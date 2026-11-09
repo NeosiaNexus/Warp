@@ -19,8 +19,11 @@ package dev.warp.protocol.packet.config;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McString;
 import dev.warp.protocol.packet.PacketCodec;
+import dev.warp.protocol.packet.PacketWatch;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Plugin message in the configuration state ({@code bidirectional}).
@@ -33,7 +36,16 @@ import io.netty.buffer.ByteBuf;
  */
 public record ConfigPluginMessage(String channel, byte[] data) implements ConfigPacket {
 
-  /** Codec for reading and writing configuration plugin message packets. */
+  /** The channel a client declares its brand on, as it enters the configuration state. */
+  public static final String BRAND_CHANNEL = "minecraft:brand";
+
+  /**
+   * The most bytes a brand may take (rule 8 of the anti-bot research's false-positive rules: no
+   * allow-list, printable text of at most 128 bytes).
+   */
+  public static final int MAX_BRAND_BYTES = 128;
+
+  /** Codec for reading and writing configuration plugin messages. */
   public static final PacketCodec<ConfigPluginMessage> CODEC =
       new PacketCodec<>() {
         @Override
@@ -50,4 +62,55 @@ public record ConfigPluginMessage(String channel, byte[] data) implements Config
           buf.writeBytes(packet.data());
         }
       };
+
+  /**
+   * Watch of the client's configuration plugin messages: reports the brand message only, with at
+   * most {@value #MAX_BRAND_BYTES} + 2 bytes of its data (a longer one is not a brand, see {@link
+   * #brand()}); every message, the brand's included, is forwarded untouched. A message no client
+   * sends (an unreadable channel) reports nothing: the anti-bot judges the client on what it does
+   * not send, never on a frame it cannot read.
+   */
+  public static final PacketWatch<ConfigPluginMessage> BRAND_WATCH =
+      (buf, version) -> {
+        try {
+          String channel = McString.read(buf);
+          if (!BRAND_CHANNEL.equals(channel)) {
+            return null;
+          }
+          byte[] data = new byte[Math.min(buf.readableBytes(), MAX_BRAND_BYTES + 3)];
+          buf.readBytes(data);
+          return new ConfigPluginMessage(channel, data);
+        } catch (RuntimeException malformed) {
+          return null;
+        }
+      };
+
+  /**
+   * Returns the brand this message declares, if it is a well-formed brand message: on {@link
+   * #BRAND_CHANNEL}, one string of 1 to {@value #MAX_BRAND_BYTES} bytes without control characters
+   * and nothing after it. Every known client's brand ({@code vanilla}, {@code fabric}, {@code
+   * forge}, {@code Geyser}, launchers' names) reads this way.
+   *
+   * @return the brand, or {@code null} if the message is not a valid brand message
+   */
+  public @Nullable String brand() {
+    if (!BRAND_CHANNEL.equals(channel) || data.length > MAX_BRAND_BYTES + 2) {
+      return null;
+    }
+    ByteBuf buf = Unpooled.wrappedBuffer(data);
+    try {
+      String brand = McString.read(buf, MAX_BRAND_BYTES);
+      if (buf.isReadable() || brand.isEmpty()) {
+        return null;
+      }
+      for (int i = 0; i < brand.length(); i++) {
+        if (Character.isISOControl(brand.charAt(i))) {
+          return null;
+        }
+      }
+      return brand;
+    } catch (RuntimeException malformed) {
+      return null;
+    }
+  }
 }

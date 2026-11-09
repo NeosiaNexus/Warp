@@ -39,6 +39,7 @@ import dev.warp.proxy.logging.LogSinkRegistry;
 import dev.warp.proxy.logging.Plural;
 import dev.warp.proxy.management.ReadinessHolds;
 import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.metrics.MetricRegistry;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.pipeline.PipelineRegistry;
 
@@ -78,6 +79,7 @@ public final class WarpPluginManager implements PluginManager {
   private final ReadinessHolds readinessHolds;
   private final PipelineRegistry pipelines;
   private final LogSinkRegistry logSinks;
+  private final MetricRegistry metrics;
   private final Path directory;
   private final ApiClassLoader apiLoader;
 
@@ -101,6 +103,7 @@ public final class WarpPluginManager implements PluginManager {
    * @param readinessHolds the holds plugins keep on the proxy's readiness
    * @param pipelines the proxy's pipeline initializers
    * @param logSinks the proxy's log sinks
+   * @param metrics the metric registry, scoped to each plugin
    * @param directory the plugins directory, created if missing
    */
   public WarpPluginManager(
@@ -112,6 +115,7 @@ public final class WarpPluginManager implements PluginManager {
       ReadinessHolds readinessHolds,
       PipelineRegistry pipelines,
       LogSinkRegistry logSinks,
+      MetricRegistry metrics,
       Path directory) {
     this.proxy = proxy;
     this.events = events;
@@ -121,6 +125,7 @@ public final class WarpPluginManager implements PluginManager {
     this.readinessHolds = readinessHolds;
     this.pipelines = pipelines;
     this.logSinks = logSinks;
+    this.metrics = metrics;
     this.directory = directory;
     this.apiLoader = new ApiClassLoader(WarpPluginManager.class.getClassLoader());
     this.networkApiLoader = new ApiClassLoader(WarpPluginManager.class.getClassLoader(), true);
@@ -305,7 +310,8 @@ public final class WarpPluginManager implements PluginManager {
             permissions,
             readinessHolds,
             pipelines,
-            logSinks);
+            logSinks,
+            metrics);
     container.setContext(context);
 
     try {

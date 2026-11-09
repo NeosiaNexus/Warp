@@ -17,23 +17,29 @@
 package dev.warp.proxy.connection;
 
 import dev.warp.api.network.PipelinePosition;
+import dev.warp.api.player.ClientPlatform;
+import dev.warp.api.server.Route;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.compress.FrameDecompressor;
 import dev.warp.protocol.netty.CompressionEncoder;
 import dev.warp.protocol.netty.FrameDecoder;
 import dev.warp.protocol.netty.FrameForwarder;
+import dev.warp.protocol.netty.FrameLimitException;
 import dev.warp.protocol.netty.FrameLimits;
 import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.netty.PacketDecompressor;
 import dev.warp.protocol.netty.SessionHandler;
+import dev.warp.protocol.netty.TrafficObserver;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.proxy.compression.Compression;
 import dev.warp.proxy.limit.Refusal;
 import dev.warp.proxy.logging.LogCode;
+import dev.warp.proxy.metrics.ProxyMetrics;
 import dev.warp.proxy.pipeline.PipelineHost;
+import dev.warp.proxy.server.HostRoutes;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -54,6 +60,7 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelOutboundBuffer;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.ChannelPromise;
+import io.netty.handler.codec.DecoderException;
 import io.netty.handler.timeout.IdleStateHandler;
 import io.netty.handler.timeout.ReadTimeoutException;
 import io.netty.util.ReferenceCountUtil;
@@ -123,11 +130,22 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
   /** The host name the client connected to, from its handshake; {@code null} until known. */
   private volatile @Nullable String virtualHost;
 
+  private volatile @Nullable Route route;
+
+  /** The port the client's handshake named; 0 before it. */
+  private volatile int virtualPort;
+
   private @Nullable MinecraftDecoder decoder;
   private @Nullable MinecraftEncoder encoder;
 
   /** Why the client connected, once its handshake is read; always {@code null} for a backend. */
   private @Nullable HandshakeIntent handshakeIntent;
+
+  /** What the markers of the client's handshake said it is; {@link ClientPlatform#JAVA} until. */
+  private volatile ClientPlatform clientPlatform = ClientPlatform.JAVA;
+
+  /** The marker of the client's handshake to forward to a backend, normalized; empty without. */
+  private volatile String handshakeMarker = "";
 
   /**
    * Whether a packet that moves the peer to another state was written ({@link #writeTerminal}) and
@@ -149,6 +167,9 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
    * backend connection.
    */
   private @Nullable ConnectionGuard guard;
+
+  /** Counts the connection's states and refused frames, or {@code null} on backend connections. */
+  private @Nullable ProxyMetrics states;
 
   /** The frame decoder of a client connection, whose limits follow the state; looked up once. */
   private @Nullable FrameDecoder frameDecoder;
@@ -188,6 +209,28 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
   public MinecraftConnection(Channel channel) {
     this.channel = channel;
     this.forwarder = new FrameForwarder(channel);
+  }
+
+  /**
+   * Counts this connection in {@code warp_connections_active} by state, from its current state
+   * until it closes, and its refused frames in {@code warp_packet_drops_total}. For client
+   * connections.
+   *
+   * @param metrics the proxy's metrics
+   */
+  public void trackStates(ProxyMetrics metrics) {
+    this.states = metrics;
+    metrics.connectionMoved(null, decoder().state());
+  }
+
+  /**
+   * Sets who counts this connection's frames: its decoder's and its forwarder's.
+   *
+   * @param observer the observer
+   */
+  public void observeTraffic(TrafficObserver observer) {
+    decoder().observer(observer);
+    forwarder.observer(observer);
   }
 
   // ---------------------------------------------------------------------------
@@ -234,6 +277,11 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
 
   @Override
   public void channelInactive(ChannelHandlerContext ctx) {
+    ProxyMetrics counting = states;
+    if (counting != null) {
+      states = null;
+      counting.connectionMoved(decoder().state(), null);
+    }
     ConnectionGuard watching = guard;
     if (watching != null) {
       guard = null;
@@ -265,6 +313,18 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
 
   @Override
   public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+    ProxyMetrics counting = states;
+    if (counting != null) {
+      if (cause instanceof FrameLimitException limit) {
+        if (limit.reason() == FrameLimitException.Reason.PACKET_NOT_ALLOWED) {
+          counting.frameRefusedByState();
+        } else {
+          counting.frameOversized();
+        }
+      } else if (cause instanceof DecoderException) {
+        counting.frameInvalid();
+      }
+    }
     ConnectionGuard watching = guard;
     Refusal refusal = watching == null ? null : watching.failed(cause);
     if (refusal != null) {
@@ -656,6 +716,16 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
       guard = null;
       watching.end();
     }
+    liftFrameLimits();
+  }
+
+  /**
+   * Lifts the frame limits of the login for good, while the connection stays among those not logged
+   * in, under their deadlines and guard: for a client told its login succeeded without being logged
+   * in (verified before authentication), which answers in compressed frames from then on, as {@link
+   * #loggedIn} describes.
+   */
+  void liftFrameLimits() {
     frameLimitsLifted = true;
     FrameDecoder frames = frameDecoder();
     if (frames != null) {
@@ -737,6 +807,10 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
    * @param state the new protocol state
    */
   public void setState(ProtocolState state) {
+    ProxyMetrics counting = states;
+    if (counting != null) {
+      counting.connectionMoved(decoder().state(), state);
+    }
     decoder().setState(state);
     encoder().setState(state);
     updateFrameLimits();
@@ -925,13 +999,41 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
     this.handshakeIntent = intent;
   }
 
+  /**
+   * Returns what kind of client this is, as the markers of its handshake declared.
+   *
+   * @return the platform, {@link ClientPlatform#JAVA} without a marker or before the handshake
+   */
+  public ClientPlatform clientPlatform() {
+    return clientPlatform;
+  }
+
+  /**
+   * Returns the handshake marker to append to a backend's host name on this client's behalf.
+   *
+   * @return the marker, normalized as {@link HandshakeMarkers} writes it, or an empty string
+   */
+  public String handshakeMarker() {
+    return handshakeMarker;
+  }
+
+  /**
+   * Records what the client's handshake said of its platform. Called once, by the handshake.
+   *
+   * @param detected the platform and the marker to forward
+   */
+  void setHandshakeMarker(HandshakeMarkers.Detected detected) {
+    this.clientPlatform = detected.platform();
+    this.handshakeMarker = detected.marker();
+  }
+
   // ---------------------------------------------------------------------------
   // Pipeline accessors
   // ---------------------------------------------------------------------------
 
   /**
-   * Returns the host name the client typed to connect, cleaned of the suffixes some platforms
-   * append (Forge's {@code \0FML\0} markers, a trailing dot).
+   * Returns the host name the client typed to connect, cleaned as {@link HostRoutes#clean}: in
+   * lowercase, without the Forge markers or a BungeeCord payload, a trailing dot or a port.
    *
    * @return the host name, or {@code null} before the handshake or if it was empty
    */
@@ -940,20 +1042,50 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
   }
 
   /**
+   * Returns the port the client's handshake named: where the client believes it connected, which a
+   * transfer back to this proxy uses.
+   *
+   * @return the port, or 0 before the handshake
+   */
+  public int virtualPort() {
+    return virtualPort;
+  }
+
+  /**
+   * Records the port the client's handshake named.
+   *
+   * @param port the handshake's port
+   */
+  public void setVirtualPort(int port) {
+    this.virtualPort = port;
+  }
+
+  /**
    * Records the host name of the client's handshake.
    *
    * @param serverAddress the address field of the handshake, as sent
    */
   public void setVirtualHost(String serverAddress) {
-    String host = serverAddress;
-    int nul = host.indexOf('\0');
-    if (nul >= 0) {
-      host = host.substring(0, nul);
-    }
-    while (host.endsWith(".")) {
-      host = host.substring(0, host.length() - 1);
-    }
+    String host = HostRoutes.clean(serverAddress);
     this.virtualHost = host.isEmpty() ? null : host;
+  }
+
+  /**
+   * Returns the route the client's host matched.
+   *
+   * @return the route, or {@code null} when none matched or before the handshake
+   */
+  public @Nullable Route route() {
+    return route;
+  }
+
+  /**
+   * Records the route the client's host matched.
+   *
+   * @param route the route, or {@code null} for none
+   */
+  public void setRoute(@Nullable Route route) {
+    this.route = route;
   }
 
   /**

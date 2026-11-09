@@ -105,6 +105,15 @@ public enum LogCode {
       "WARP_COLOR, WARP_CONSOLE, WARP_THEME, WARP_HYPERLINKS or console.theme has a value Warp does"
           + " not know; it uses auto instead.",
       "Use one of the values the message lists, or remove the setting."),
+  /** A route's target resolves to nothing. */
+  ROUTE_TARGET_UNKNOWN(
+      "W-CFG-009",
+      false,
+      "A route points to an unknown server",
+      "A routes entry of warp.conf sends players to a name that is neither a registered server nor"
+          + " a group: a capture such as $1 named something that does not exist, or the server was"
+          + " unregistered. Those players go to the default server instead.",
+      "Add the server or group, fix the entry, or point the host at an existing one."),
 
   // ---------------------------------------------------------------------------
   // Startup
@@ -588,6 +597,25 @@ public enum LogCode {
       "The anti-bot journal was cut short",
       "The journal ended mid-write (a crash); the incomplete change was dropped.",
       "Nothing to do."),
+  /** The token key file cannot be written. */
+  ANTIBOT_TOKEN_KEY_UNWRITABLE(
+      "W-BOT-011",
+      false,
+      "The anti-bot token key cannot be rotated",
+      "The key verification tokens are signed under is due for rotation, but its file"
+          + " (anti-bot.verification.token.secret-file) cannot be written. The current key stays"
+          + " in use.",
+      "Check the directory's permissions and free space, or set WARP_ANTIBOT_TOKEN_SECRET to"
+          + " manage the key yourself."),
+  /** A verified player cannot be transferred back. */
+  ANTIBOT_TRANSFER_TARGET_UNKNOWN(
+      "W-BOT-012",
+      false,
+      "A verified player could not be transferred back",
+      "A player verified before authentication during an attack must be transferred back to the"
+          + " proxy, but its handshake named no usable host and anti-bot.verification.transfer"
+          + " is not set. The player was asked to reconnect instead.",
+      "Set anti-bot.verification.transfer.host and port to the address players connect to."),
 
   // ---------------------------------------------------------------------------
   // Logging and management
@@ -619,6 +647,49 @@ public enum LogCode {
       "Check the files the message names: PEM, the key in PKCS#8 (openssl pkcs8 -topk8 -nocrypt,"
           + " or privateKey.encoding: PKCS8 in cert-manager). Warp reads them again when they"
           + " next change."),
+  /** The metrics are reachable from other machines without a token or TLS. */
+  METRICS_EXPOSED(
+      "W-MGMT-003",
+      false,
+      "GET /metrics is open to other machines",
+      "management.bind is not a loopback address, and neither management.tls nor"
+          + " management.metrics.require-token is on: anyone who reaches the port reads the"
+          + " metrics (players online, servers, versions).",
+      "Bind the management server to loopback or a private network, enable management.tls, or set"
+          + " management.metrics.require-token = true and give Prometheus the token."),
+
+  // ---------------------------------------------------------------------------
+  // Metrics
+  // ---------------------------------------------------------------------------
+
+  /** A metric has more label values or series than allowed. */
+  METRICS_CARDINALITY_CAPPED(
+      "W-MET-001",
+      false,
+      "A metric reached a cardinality cap",
+      "A label of the metric had its 33rd distinct value (256th for the proxy's own metrics), or a"
+          + " plugin reached 2000 series, or the registry 10000. Further values are recorded as"
+          + " 'other' and counted in warp_metrics_label_overflow_total, so the series stay"
+          + " bounded; the metric loses detail, not correctness. Logged once per metric.",
+      "If a plugin's metric is named, report it to its author: a label must take values from a"
+          + " closed set (an outcome, a state), never a player, address or item name."),
+  /** A metrics collector threw during a scrape. */
+  METRICS_COLLECTOR_FAILED(
+      "W-MET-002",
+      false,
+      "A metrics collector failed",
+      "A collector, or the supplier of a pull gauge, threw while GET /metrics was answered. It is"
+          + " skipped for that scrape and counted in warp_metrics_collector_errors_total; the"
+          + " other metrics are served. Logged once per collector.",
+      "If a plugin's collector is named, report it with the stack trace to its author."),
+  /** Answering GET /metrics failed. */
+  METRICS_SCRAPE_FAILED(
+      "W-MET-003",
+      false,
+      "GET /metrics could not be answered",
+      "Writing the metrics failed with an exception, so the scraper got a 500. The metrics are"
+          + " still collected; the next scrape is tried afresh.",
+      "Report it with the stack trace."),
 
   // ---------------------------------------------------------------------------
   // Remote console (the management server's /console, and its client)
@@ -860,6 +931,47 @@ public enum LogCode {
       "A held packet was dropped",
       "A packet waiting for a protocol phase that the connection never reached was dropped.",
       "Report it with the client's and the backend's versions if it repeats."),
+  /** A group had no server for a player. */
+  GROUP_EXHAUSTED(
+      "W-BACK-010",
+      false,
+      "A server group has no server available",
+      "Every server of the group is unregistered, excluded for the player (the one it is leaving,"
+          + " or one that failed it already), or its balancer declined to pick one. The player"
+          + " goes to the next fallback, or is disconnected if there is none.",
+      "Start or register the group's servers, or add a fallback outside the group."),
+  /** A server's circuit breaker opened. */
+  SERVER_BREAKER_OPENED(
+      "W-BACK-011",
+      false,
+      "A server is skipped by the balancers",
+      "The server did not answer its last ping within timeouts.ping, a player could not connect to"
+          + " it, or it refused the logins of three players in a row (a single refusal is taken as"
+          + " aimed at that player: a ban, a whitelist). Groups and fallbacks skip it for a"
+          + " cool-down, then let one player through to find out whether it is back; a successful"
+          + " ping brings it back at once.",
+      "Check that the server runs, is reachable from Warp and accepts logins from it (forwarding"
+          + " secret, whitelist). Raise timeouts.ping if it answers pings slowly under load. Nothing"
+          + " to do if it was restarting."),
+
+  /** A backend's login query was too large for a client. */
+  LOGIN_QUERY_TOO_LARGE(
+      "W-BACK-012",
+      false,
+      "A backend's login query was too large for a client",
+      "A backend sent a login plugin request over 1 MiB, the most a client accepts; Warp answered"
+          + " it as not understood instead of relaying it to the client, which would have dropped"
+          + " the connection.",
+      "Check the mods of that backend: Forge splits its registries into messages under the limit."),
+
+  /** A backend left too many login queries unanswered. */
+  LOGIN_QUERIES_UNANSWERED(
+      "W-BACK-013",
+      false,
+      "A backend left too many login queries unanswered",
+      "A backend sent more than 256 login plugin requests before the client answered any; Warp"
+          + " dropped the connection to that backend, and the player falls back or is kicked.",
+      "Check the mods of that backend: a login-phase mod that floods queries is misbehaving."),
 
   // ---------------------------------------------------------------------------
   // Authentication and login

@@ -27,10 +27,13 @@ import dev.warp.api.lifecycle.DrainOutcome;
 import dev.warp.api.lifecycle.DrainPhase;
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
+import dev.warp.api.metrics.Metrics;
 import dev.warp.api.player.Player;
 import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginManager;
 import dev.warp.api.plugin.PluginState;
+import dev.warp.api.server.Balancer;
+import dev.warp.api.server.ServerGroup;
 import dev.warp.jni.NativeStatus;
 import dev.warp.jni.Natives;
 import dev.warp.proxy.antibot.AntiBotService;
@@ -42,6 +45,7 @@ import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.compression.Compression;
 import dev.warp.proxy.config.AntiBotConfig;
 import dev.warp.proxy.config.DrainConfig;
+import dev.warp.proxy.config.GroupConfig;
 import dev.warp.proxy.config.WarpConfig;
 import dev.warp.proxy.connection.BackendPinger;
 import dev.warp.proxy.connection.ConnectedPlayer;
@@ -72,11 +76,23 @@ import dev.warp.proxy.management.ReadinessHolds;
 import dev.warp.proxy.management.console.RemoteConsole;
 import dev.warp.proxy.messaging.BungeeCordChannel;
 import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.metrics.AntiBotCollector;
+import dev.warp.proxy.metrics.BackendHealthProbe;
+import dev.warp.proxy.metrics.EventLoopLagProbe;
+import dev.warp.proxy.metrics.JvmCollector;
+import dev.warp.proxy.metrics.LoopIndex;
+import dev.warp.proxy.metrics.MetricRegistry;
+import dev.warp.proxy.metrics.ProxyCollector;
+import dev.warp.proxy.metrics.ProxyMetrics;
 import dev.warp.proxy.network.CidrRanges;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.pipeline.PipelineRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.plugin.WarpPluginManager;
+import dev.warp.proxy.server.Balancers;
+import dev.warp.proxy.server.HostRoutes;
+import dev.warp.proxy.server.ServerGroupRegistry;
+import dev.warp.proxy.server.ServerHealth;
 import dev.warp.proxy.server.ServerRegistry;
 import dev.warp.proxy.status.ServerList;
 
@@ -94,6 +110,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -115,7 +132,9 @@ import io.netty.channel.socket.ServerSocketChannel;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.util.NettyRuntime;
 import io.netty.util.concurrent.Future;
+import io.netty.util.internal.SystemPropertyUtil;
 import net.kyori.adventure.text.Component;
 import org.apache.logging.log4j.LogManager;
 import org.jspecify.annotations.Nullable;
@@ -171,9 +190,6 @@ public final class WarpServer implements Warp {
   /** Why the proxy stops when nothing says otherwise: a call to {@link #stop()}. */
   private static final String DEFAULT_STOP_CAUSE = "stop requested";
 
-  /** How long the startup's status pings of the backend servers may take, at most. */
-  private static final Duration STARTUP_PING_TIMEOUT = Duration.ofSeconds(2);
-
   /** How often the backend servers are pinged while the console's status line shows them. */
   private static final long STATUS_PING_SECONDS = 10;
 
@@ -222,6 +238,13 @@ public final class WarpServer implements Warp {
   /** The event bus plugins subscribe to. */
   private final WarpEventBus events = new WarpEventBus();
 
+  /** The metric registry, striped for as many loops as Netty's default worker group has. */
+  private final MetricRegistry metrics = new MetricRegistry(defaultEventLoopThreads());
+
+  private final ProxyMetrics proxyMetrics = new ProxyMetrics(metrics);
+  private final EventLoopLagProbe lagProbe = new EventLoopLagProbe(proxyMetrics);
+  private final BackendHealthProbe healthProbe;
+
   /** The plugin message channels plugins own. */
   private final ChannelRegistry channels;
 
@@ -238,7 +261,7 @@ public final class WarpServer implements Warp {
   private final LogLevels logLevels = new LogLevels();
 
   /** Pings the backend servers for the startup summary and the status line. */
-  private final ServerChecks serverChecks = new ServerChecks();
+  private final ServerChecks serverChecks;
 
   private @Nullable WarpConsole console;
 
@@ -360,6 +383,11 @@ public final class WarpServer implements Warp {
         new ServerRegistry(config.servers(), config.defaultServer(), config.fallbackOrder());
     serverRegistry.setEventBus(events);
     serverRegistry.setPingTimeout(config.timeouts().ping());
+    serverRegistry.setRoutes(HostRoutes.compile(config.routes()));
+    for (GroupConfig group : config.groups().values()) {
+      registerGroup(serverRegistry.groups(), group);
+    }
+    this.serverChecks = new ServerChecks(serverRegistry.health());
     this.channels =
         new ChannelRegistry(
             new BungeeCordChannel(config.bungeeCord(), playerRegistry, serverRegistry));
@@ -384,10 +412,55 @@ public final class WarpServer implements Warp {
             readinessHolds,
             pipelines,
             logSinks,
+            metrics,
             directory.resolve("plugins"));
     this.drain =
         new ProxyDrain(
             config.drain(), playerRegistry, events, drainScheduler, this::stopAfterDrain);
+    drain.onTransfer(proxyMetrics::drainTransfer);
+    events.observe(
+        new dev.warp.proxy.event.HandlerObserver() {
+          @Override
+          public void handled(Object event, long nanos) {
+            proxyMetrics.eventHandled(event, nanos);
+          }
+
+          @Override
+          public void failed(String owner) {
+            proxyMetrics.handlerFailed(owner);
+          }
+        });
+    metrics.collector(
+        "warp_proxy",
+        new ProxyCollector(this::playerCount, serverRegistry, drain::status, () -> workerGroup));
+    metrics.collector(
+        "warp_antibot",
+        new AntiBotCollector(
+            () -> {
+              AntiBotService bots = antiBot;
+              return bots == null ? null : bots.status();
+            }));
+    JvmCollector.install(metrics);
+    this.healthProbe =
+        new BackendHealthProbe(
+            proxyMetrics, serverRegistry, config.management().metrics().serverPingInterval());
+  }
+
+  /** Netty's default worker count, as {@code MultiThreadIoEventLoopGroup} sizes itself. */
+  private static int defaultEventLoopThreads() {
+    return Math.max(
+        1,
+        SystemPropertyUtil.getInt(
+            "io.netty.eventLoopThreads", NettyRuntime.availableProcessors() * 2));
+  }
+
+  /**
+   * Returns the metric registry: the proxy's metrics, and the plugins'.
+   *
+   * @return the registry
+   */
+  public Metrics metrics() {
+    return metrics;
   }
 
   // ---------------------------------------------------------------------------
@@ -449,6 +522,9 @@ public final class WarpServer implements Warp {
     mark = lap("anti-bot", mark);
     this.bossGroup = new MultiThreadIoEventLoopGroup(1, transport.ioFactory());
     this.workerGroup = new MultiThreadIoEventLoopGroup(transport.ioFactory());
+    var _ = LoopIndex.assignAll(workerGroup);
+    lagProbe.start(workerGroup);
+    healthProbe.start(workerGroup);
     long reportMillis = limits.reportInterval().toMillis();
     var _ =
         workerGroup.scheduleAtFixedRate(
@@ -466,11 +542,9 @@ public final class WarpServer implements Warp {
     }
 
     serverRegistry.setPinger(new BackendPinger(workerGroup, transport.clientChannelClass()));
-    // Answered while plugins load; the summary waits for what is left once the port is bound.
-    Duration pingTimeout =
-        config.timeouts().ping().compareTo(STARTUP_PING_TIMEOUT) < 0
-            ? config.timeouts().ping()
-            : STARTUP_PING_TIMEOUT;
+    // Answered while plugins load; the summary waits for what is left once the port is bound. The
+    // pings feed the servers' health, so they get the configured deadline, not a shorter one.
+    Duration pingTimeout = config.timeouts().ping();
     CompletableFuture<List<Summaries.Server>> checks =
         serverChecks.check(serverRegistry.servers(), pingTimeout);
 
@@ -578,15 +652,20 @@ public final class WarpServer implements Warp {
     reader.start();
     ConsoleOutput output = ConsoleOutput.get();
     MultiThreadIoEventLoopGroup workers = workerGroup;
-    if (output != null && output.mode().interactive() && workers != null) {
+    if (workers != null) {
+      // The pings feed the servers' health (the balancers skip a server that does not answer
+      // within timeouts.ping) and, on an interactive console, the status line.
+      Duration pingTimeout = config.timeouts().ping();
       var _ =
           workers.scheduleAtFixedRate(
               () -> {
-                var _ = serverChecks.check(serverRegistry.servers(), STARTUP_PING_TIMEOUT);
+                var _ = serverChecks.check(serverRegistry.servers(), pingTimeout);
               },
               STATUS_PING_SECONDS,
               STATUS_PING_SECONDS,
               TimeUnit.SECONDS);
+    }
+    if (output != null && output.mode().interactive()) {
       output.status(() -> StatusLine.render(statusSnapshot(), output.mode()));
     }
   }
@@ -605,8 +684,9 @@ public final class WarpServer implements Warp {
   }
 
   /**
-   * Shuts down: closes the listener, disconnects the players, lets plugins finish, then stops the
-   * event bus, the drain, the event loops and, last, the management server.
+   * Shuts down: closes the listener, disconnects the players, lets plugins finish, waits for the
+   * connections that carry plugin handlers to close, disables the plugins, then stops the event
+   * bus, the drain, the event loops and, last, the management server. A drain ends the same way.
    *
    * @param reason shown to the players disconnected, or {@code null} for the default
    * @return whether this call shut the proxy down, rather than a call before it
@@ -640,6 +720,9 @@ public final class WarpServer implements Warp {
       }
       int disconnected = disconnectPlayers(reason);
       awaitShutdownHandlers();
+      // Before the plugins: a disconnect is asynchronous, and a backend still decoding through a
+      // plugin's handlers once its class loader closed fails with a NoClassDefFoundError.
+      awaitConnectionsClosed();
       pluginManager.disableAll();
       logSinks.close();
       sinkAppender.uninstall();
@@ -779,6 +862,13 @@ public final class WarpServer implements Warp {
     if (remote != null) {
       remote.start();
     }
+    if (config.management().metricsExposed()) {
+      logger.warn(
+          LogCode.METRICS_EXPOSED.marker(),
+          "GET /metrics on {} can be read without a token or TLS: set"
+              + " management.metrics.require-token or management.tls, or bind to loopback",
+          config.management().bind());
+    }
     ManagementServer server = new ManagementServer(config.management(), new Health(), remote);
     try {
       server.start();
@@ -862,11 +952,28 @@ public final class WarpServer implements Warp {
   }
 
   /**
+   * Closes the connections that carry plugin handlers, the clients' and the backends', and waits
+   * for them, {@value #SHUTDOWN_TIMEOUT_MILLIS} ms at most: a plugin's handler must not run once
+   * the plugin is disabled and its class loader closed.
+   */
+  private void awaitConnectionsClosed() {
+    if (!pipelines.closeConnections(Duration.ofMillis(SHUTDOWN_TIMEOUT_MILLIS))) {
+      logger.warn(
+          LogCode.SHUTDOWN_STUCK.marker(),
+          "{} connections with plugin handlers did not close within {} ms",
+          pipelines.connectionCount(),
+          SHUTDOWN_TIMEOUT_MILLIS);
+    }
+  }
+
+  /**
    * Shuts down boss and worker event loops, both at once: each waits out its quiet period before it
    * terminates, so shutting them down one after the other made every stop, a drain's exit included,
    * wait twice as long. Safe to call multiple times.
    */
   private void shutdownEventLoops() {
+    lagProbe.stop();
+    healthProbe.stop();
     MultiThreadIoEventLoopGroup bosses = bossGroup;
     MultiThreadIoEventLoopGroup workers = workerGroup;
     long quiet = shutdownQuietPeriod.toMillis();
@@ -923,6 +1030,24 @@ public final class WarpServer implements Warp {
   @Override
   public dev.warp.api.server.ServerRegistry servers() {
     return serverRegistry;
+  }
+
+  @Override
+  public dev.warp.api.server.ServerGroupRegistry groups() {
+    return serverRegistry.groups();
+  }
+
+  /** Registers a group of the configuration, whose settings were validated when it was read. */
+  private static void registerGroup(ServerGroupRegistry groups, GroupConfig group) {
+    List<ServerGroup.Member> members = new ArrayList<>(group.servers().size());
+    for (String server : group.servers()) {
+      members.add(new ServerGroup.Member(server, group.weight(server)));
+    }
+    Balancer balancer =
+        group.strategy().equals(Balancers.FILL)
+            ? Balancers.fill(group.capacity())
+            : Objects.requireNonNull(Balancers.of(group.strategy()), group.strategy());
+    var _ = groups.register(group.name(), members, balancer, group.strategy());
   }
 
   /**
@@ -1013,6 +1138,16 @@ public final class WarpServer implements Warp {
     }
 
     @Override
+    public ServerHealth health() {
+      return serverRegistry.health();
+    }
+
+    @Override
+    public HostRoutes routes() {
+      return serverRegistry.routes();
+    }
+
+    @Override
     public Duration uptime() {
       return Duration.ofMillis(ManagementFactory.getRuntimeMXBean().getUptime());
     }
@@ -1077,6 +1212,11 @@ public final class WarpServer implements Warp {
     @Override
     public @Nullable AntiBotService antiBot() {
       return antiBot;
+    }
+
+    @Override
+    public Metrics metrics() {
+      return metrics;
     }
   }
 
@@ -1167,7 +1307,8 @@ public final class WarpServer implements Warp {
         config.tcpFastOpen() && transport.tcpFastOpen(),
         bots,
         pipelines,
-        config.messages());
+        config.messages(),
+        proxyMetrics);
   }
 
   /**

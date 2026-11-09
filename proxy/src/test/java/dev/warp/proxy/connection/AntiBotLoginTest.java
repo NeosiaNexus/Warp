@@ -263,7 +263,21 @@ class AntiBotLoginTest {
                 v.sharedStoreTimeout()),
             d.attack(),
             d.blocklist(),
-            d.checkTimeout());
+            d.checkTimeout(),
+            // Learning from joins is what these tests watch: the probes have their own
+            // (VerificationLoginTest).
+            new AntiBotConfig.Verification(
+                AntiBotConfig.Mode.NEVER,
+                AntiBotConfig.Mode.NEVER,
+                d.verification().maxConcurrent(),
+                d.verification().queueSize(),
+                d.verification().queueMaxWait(),
+                d.verification().probeTimeout(),
+                d.verification().tokenLifetime(),
+                d.verification().tokenRotateAfter(),
+                d.verification().tokenSecretFile(),
+                d.verification().transferHost(),
+                d.verification().transferPort()));
     antiBot =
         new AntiBotService(
             config,

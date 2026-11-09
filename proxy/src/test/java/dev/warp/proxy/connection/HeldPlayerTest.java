@@ -42,6 +42,7 @@ import dev.warp.protocol.packet.StateRegistry;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.login.LoginAcknowledged;
+import dev.warp.protocol.packet.login.LoginDisconnect;
 import dev.warp.protocol.packet.login.LoginStart;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
@@ -52,6 +53,7 @@ import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.server.BackendServer;
+import dev.warp.proxy.server.ServerHealth;
 import dev.warp.proxy.server.ServerRegistry;
 
 import java.net.InetAddress;
@@ -304,6 +306,44 @@ class HeldPlayerTest {
       assertTrue(client.channel.isActive(), "the player waits for its fallback");
     }
 
+    @Test
+    @DisplayName(
+        "should feed the servers' health with their logins, not the connections they accept")
+    void loginsFeedHealth() {
+      Client client = joining(MODERN, TimeoutsConfig.DEFAULTS);
+      ServerHealth health = client.player().loginContext().serverRegistry().health();
+      // Two players the first server refused before, and one the fallback refused.
+      health.loginRefused(FIRST);
+      health.loginRefused(FIRST);
+      health.loginRefused(FALLBACK);
+      EmbeddedChannel lobby = backends.getFirst();
+
+      lobby.writeInbound(
+          frame(MODERN, ProtocolState.LOGIN, LoginDisconnect.ofPlainText("Not whitelisted")));
+      client.waitFor(Duration.ofSeconds(1), Client.Behaviour.ANSWERING);
+
+      assertEquals(List.of(FIRST, FALLBACK), targets, "down the fallback order");
+      assertEquals(
+          ServerHealth.State.OPEN,
+          health.status(FIRST).state(),
+          "the third login refused in a row opens the breaker");
+      assertEquals(
+          ServerHealth.LOGIN_REFUSALS_TO_OPEN,
+          health.status(FIRST).failures(),
+          "a kick followed by the connection closing counts once");
+      assertEquals(
+          1,
+          health.status(FALLBACK).failures(),
+          "the connection the fallback accepted settles nothing");
+
+      backends.getLast().writeInbound(loginSuccess(MODERN));
+      client.waitFor(Duration.ofSeconds(1), Client.Behaviour.ANSWERING);
+
+      assertEquals(ServerHealth.State.CLOSED, health.status(FALLBACK).state());
+      assertEquals(0, health.status(FALLBACK).failures(), "the login accepted closes the breaker");
+      assertTrue(client.channel.isActive(), "the player plays on the fallback");
+    }
+
     /** Timeouts of {@code read} for clients and {@code backendRead} for backends. */
     private static TimeoutsConfig timeouts(Duration read, Duration backendRead) {
       TimeoutsConfig defaults = TimeoutsConfig.DEFAULTS;
@@ -338,7 +378,7 @@ class HeldPlayerTest {
             client.shareClock(channel);
             MinecraftConnection backend = connectionOf(channel);
             backend.setSessionHandler(
-                new BackendLoginSessionHandler(player, backend, target.address(), new byte[0]));
+                new BackendLoginSessionHandler(player, backend, target, new byte[0]));
             return CompletableFuture.completedFuture(new BackendConnection(backend, target));
           });
       hold.complete(null);

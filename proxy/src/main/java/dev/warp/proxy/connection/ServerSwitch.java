@@ -87,6 +87,16 @@ sealed interface ServerSwitch permits ReconfigurationSwitch, RespawnSwitch {
   void loggedIn(MinecraftConnection backend);
 
   /**
+   * Returns whether {@code backend} is the one logging the player in: the one whose login the
+   * player follows, as opposed to one an earlier connect opened and a later one superseded, which
+   * is abandoned once it reaches the world.
+   *
+   * @param backend a backend connection in its login
+   * @return {@code true} if the player's login goes through it
+   */
+  boolean isJoining(MinecraftConnection backend);
+
+  /**
    * Reacts to a backend that refused the player, kicked it, or closed. A backend can report several
    * times (a kick, then the closed connection), and backends the player has left report too: only
    * the first report of a backend the player depends on counts.

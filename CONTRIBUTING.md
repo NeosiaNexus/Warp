@@ -234,8 +234,9 @@ are kept.
 
 The JMH benchmarks in [`protocol/src/jmh`](protocol/src/jmh) measure the forwarding path and the
 codecs ([results and methodology](docs/benchmarks/)). Two checks watch the benchmarks of the hot
-path, relaying clientbound packets with compression passthrough and peeking at the id of a
-compressed packet:
+path: relaying clientbound packets with compression passthrough, relaying the tab list and boss bar
+packets the proxy watches, peeking at the id of a compressed packet, and the JDK and libdeflate
+codecs:
 
 | Where | What runs |
 |---|---|

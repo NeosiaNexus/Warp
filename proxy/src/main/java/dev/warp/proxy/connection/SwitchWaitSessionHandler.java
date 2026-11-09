@@ -24,6 +24,7 @@ import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 
 import java.util.ArrayDeque;
+import java.util.List;
 import java.util.Queue;
 
 import io.netty.buffer.ByteBuf;
@@ -94,6 +95,16 @@ final class SwitchWaitSessionHandler implements SessionHandler {
 
   @Override
   public void handleBlind(ByteBuf buf) {
+    hold(buf);
+  }
+
+  /**
+   * Holds a frame for the next server, as if the client had just sent it: what it sent while it was
+   * probed ({@link ProbeSessionHandler}) is held this way, ahead of what follows.
+   *
+   * @param buf the frame, owned by this handler from now on
+   */
+  void hold(ByteBuf buf) {
     held.add(buf);
     heldBytes += buf.readableBytes();
     if (isFull()) {
@@ -122,6 +133,11 @@ final class SwitchWaitSessionHandler implements SessionHandler {
 
   private boolean isFull() {
     return held.size() >= MAX_HELD_FRAMES || heldBytes >= MAX_HELD_BYTES;
+  }
+
+  /** The frames held, in order, for tests. */
+  List<ByteBuf> heldFrames() {
+    return List.copyOf(held);
   }
 
   /**

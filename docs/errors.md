@@ -17,6 +17,7 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-CFG-006](#w-cfg-006) | warning | A new forwarding secret was generated |
 | [W-CFG-007](#w-cfg-007) | warning | tcp-fast-open is on without epoll |
 | [W-CFG-008](#w-cfg-008) | warning | A console setting is invalid |
+| [W-CFG-009](#w-cfg-009) | warning | A route points to an unknown server |
 | [W-START-001](#w-start-001) | error | The listening address does not resolve |
 | [W-START-002](#w-start-002) | error | The port is already in use |
 | [W-START-003](#w-start-003) | error | Listening on the port is not permitted |
@@ -76,9 +77,15 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-BOT-008](#w-bot-008) | warning | Trusted identities cannot be saved |
 | [W-BOT-009](#w-bot-009) | warning | The anti-bot snapshot is corrupt |
 | [W-BOT-010](#w-bot-010) | warning | The anti-bot journal was cut short |
+| [W-BOT-011](#w-bot-011) | warning | The anti-bot token key cannot be rotated |
+| [W-BOT-012](#w-bot-012) | warning | A verified player could not be transferred back |
 | [W-LOG-001](#w-log-001) | warning | Log sinks receive nothing |
 | [W-MGMT-001](#w-mgmt-001) | warning | A management request was refused |
 | [W-MGMT-002](#w-mgmt-002) | warning | A renewed management certificate could not be read |
+| [W-MGMT-003](#w-mgmt-003) | warning | GET /metrics is open to other machines |
+| [W-MET-001](#w-met-001) | warning | A metric reached a cardinality cap |
+| [W-MET-002](#w-met-002) | warning | A metrics collector failed |
+| [W-MET-003](#w-met-003) | warning | GET /metrics could not be answered |
 | [W-RCON-001](#w-rcon-001) | warning | The remote console streams nothing |
 | [W-RCON-002](#w-rcon-002) | warning | A remote console token lacks a scope |
 | [W-RCON-003](#w-rcon-003) | warning | A remote command arrived without TLS from an untrusted address |
@@ -106,6 +113,10 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-BACK-007](#w-back-007) | warning | No server available for a player |
 | [W-BACK-008](#w-back-008) | warning | A server switch timed out |
 | [W-BACK-009](#w-back-009) | warning | A held packet was dropped |
+| [W-BACK-010](#w-back-010) | warning | A server group has no server available |
+| [W-BACK-011](#w-back-011) | warning | A server is skipped by the balancers |
+| [W-BACK-012](#w-back-012) | warning | A backend's login query was too large for a client |
+| [W-BACK-013](#w-back-013) | warning | A backend left too many login queries unanswered |
 | [W-AUTH-001](#w-auth-001) | warning | Players authenticate against a custom server |
 | [W-AUTH-002](#w-auth-002) | warning | Profile keys are checked against a custom key |
 | [W-AUTH-003](#w-auth-003) | error | Encryption could not be enabled |
@@ -188,6 +199,14 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** WARP_COLOR, WARP_CONSOLE, WARP_THEME, WARP_HYPERLINKS or console.theme has a value Warp does not know; it uses auto instead.
 
 **Fix.** Use one of the values the message lists, or remove the setting.
+
+### W-CFG-009
+
+**A route points to an unknown server** (warning)
+
+**Cause.** A routes entry of warp.conf sends players to a name that is neither a registered server nor a group: a capture such as $1 named something that does not exist, or the server was unregistered. Those players go to the default server instead.
+
+**Fix.** Add the server or group, fix the entry, or point the host at an existing one.
 
 ## Startup
 
@@ -679,6 +698,22 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 
 **Fix.** Nothing to do.
 
+### W-BOT-011
+
+**The anti-bot token key cannot be rotated** (warning)
+
+**Cause.** The key verification tokens are signed under is due for rotation, but its file (anti-bot.verification.token.secret-file) cannot be written. The current key stays in use.
+
+**Fix.** Check the directory's permissions and free space, or set WARP_ANTIBOT_TOKEN_SECRET to manage the key yourself.
+
+### W-BOT-012
+
+**A verified player could not be transferred back** (warning)
+
+**Cause.** A player verified before authentication during an attack must be transferred back to the proxy, but its handshake named no usable host and anti-bot.verification.transfer is not set. The player was asked to reconnect instead.
+
+**Fix.** Set anti-bot.verification.transfer.host and port to the address players connect to.
+
 ## Logging
 
 ### W-LOG-001
@@ -706,6 +741,40 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** The files of management.tls changed, but the new certificate or key could not be read: a renewal caught halfway, a key not in PKCS#8, or a certificate that does not match the key. Warp keeps serving the previous certificate.
 
 **Fix.** Check the files the message names: PEM, the key in PKCS#8 (openssl pkcs8 -topk8 -nocrypt, or privateKey.encoding: PKCS8 in cert-manager). Warp reads them again when they next change.
+
+### W-MGMT-003
+
+**GET /metrics is open to other machines** (warning)
+
+**Cause.** management.bind is not a loopback address, and neither management.tls nor management.metrics.require-token is on: anyone who reaches the port reads the metrics (players online, servers, versions).
+
+**Fix.** Bind the management server to loopback or a private network, enable management.tls, or set management.metrics.require-token = true and give Prometheus the token.
+
+## Metrics
+
+### W-MET-001
+
+**A metric reached a cardinality cap** (warning)
+
+**Cause.** A label of the metric had its 33rd distinct value (256th for the proxy's own metrics), or a plugin reached 2000 series, or the registry 10000. Further values are recorded as 'other' and counted in warp_metrics_label_overflow_total, so the series stay bounded; the metric loses detail, not correctness. Logged once per metric.
+
+**Fix.** If a plugin's metric is named, report it to its author: a label must take values from a closed set (an outcome, a state), never a player, address or item name.
+
+### W-MET-002
+
+**A metrics collector failed** (warning)
+
+**Cause.** A collector, or the supplier of a pull gauge, threw while GET /metrics was answered. It is skipped for that scrape and counted in warp_metrics_collector_errors_total; the other metrics are served. Logged once per collector.
+
+**Fix.** If a plugin's collector is named, report it with the stack trace to its author.
+
+### W-MET-003
+
+**GET /metrics could not be answered** (warning)
+
+**Cause.** Writing the metrics failed with an exception, so the scraper got a 500. The metrics are still collected; the next scrape is tried afresh.
+
+**Fix.** Report it with the stack trace.
 
 ## Remote console
 
@@ -928,6 +997,38 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** A packet waiting for a protocol phase that the connection never reached was dropped.
 
 **Fix.** Report it with the client's and the backend's versions if it repeats.
+
+### W-BACK-010
+
+**A server group has no server available** (warning)
+
+**Cause.** Every server of the group is unregistered, excluded for the player (the one it is leaving, or one that failed it already), or its balancer declined to pick one. The player goes to the next fallback, or is disconnected if there is none.
+
+**Fix.** Start or register the group's servers, or add a fallback outside the group.
+
+### W-BACK-011
+
+**A server is skipped by the balancers** (warning)
+
+**Cause.** The server did not answer its last ping within timeouts.ping, a player could not connect to it, or it refused the logins of three players in a row (a single refusal is taken as aimed at that player: a ban, a whitelist). Groups and fallbacks skip it for a cool-down, then let one player through to find out whether it is back; a successful ping brings it back at once.
+
+**Fix.** Check that the server runs, is reachable from Warp and accepts logins from it (forwarding secret, whitelist). Raise timeouts.ping if it answers pings slowly under load. Nothing to do if it was restarting.
+
+### W-BACK-012
+
+**A backend's login query was too large for a client** (warning)
+
+**Cause.** A backend sent a login plugin request over 1 MiB, the most a client accepts; Warp answered it as not understood instead of relaying it to the client, which would have dropped the connection.
+
+**Fix.** Check the mods of that backend: Forge splits its registries into messages under the limit.
+
+### W-BACK-013
+
+**A backend left too many login queries unanswered** (warning)
+
+**Cause.** A backend sent more than 256 login plugin requests before the client answered any; Warp dropped the connection to that backend, and the player falls back or is kicked.
+
+**Fix.** Check the mods of that backend: a login-phase mod that floods queries is misbehaving.
 
 ## Authentication and login
 

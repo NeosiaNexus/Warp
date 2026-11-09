@@ -188,6 +188,12 @@ final class ReconfigurationSwitch implements ServerSwitch {
   }
 
   @Override
+  public boolean isJoining(MinecraftConnection backend) {
+    BackendConnection joining = phase == Phase.CONNECTING ? pending : player.backendConnection();
+    return joining != null && joining.connection() == backend;
+  }
+
+  @Override
   public void connectFailed(ServerInfo target) {
     if (phase == Phase.CONNECTING) {
       abandon(target, null, KickedFromServerEvent.Cause.UNREACHABLE);

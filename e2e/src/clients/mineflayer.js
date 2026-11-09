@@ -112,6 +112,20 @@ export function answerPacksByUuid(client) {
     write(name, name === 'resource_pack_receive' && params?.uuid !== undefined ? { ...params, uuid: String(params.uuid) } : params);
 }
 
+/**
+ * Keeps and returns cookies as the vanilla client does (1.20.5+): a Store Cookie is kept for the
+ * connection, a Cookie Request answered with the cookie kept under its key, or with none. In every
+ * state: minecraft-protocol 1.68 parses both packets but answers neither, and a server that asks a
+ * cookie back (Warp's probe asks its own) would otherwise wait for its deadline.
+ *
+ * @param {object} client the bot's minecraft-protocol client
+ */
+export function answerCookies(client) {
+  const cookies = new Map();
+  client.on('store_cookie', (packet) => cookies.set(packet.key, packet.value));
+  client.on('cookie_request', (packet) => client.write('cookie_response', { key: packet.cookie, value: cookies.get(packet.cookie) }));
+}
+
 // ---------------------------------------------------------------------------
 // Tab list
 // ---------------------------------------------------------------------------
@@ -287,6 +301,7 @@ export function connect({ host, port, version, username, profileKeys = null, tra
     });
     endTicks(bot._client, version);
     answerPacksByUuid(bot._client);
+    answerCookies(bot._client);
     if (transfer) declareTransfer(bot._client);
     if (locale) announceLocale(bot._client, locale);
     const handle = new Bot(bot, username, announcedProtocol(version), profileKeys !== null);

@@ -27,6 +27,7 @@ import dev.warp.api.server.RegisteredServer;
 import dev.warp.proxy.logging.LogCode;
 
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -34,6 +35,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
 
 import io.netty.channel.ChannelPipeline;
+import io.netty.channel.group.ChannelGroup;
+import io.netty.channel.group.DefaultChannelGroup;
+import io.netty.util.concurrent.GlobalEventExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -61,6 +65,17 @@ public final class PipelineRegistry {
 
   /** The plugins already reported for changing a protected handler: each is reported once. */
   private final Set<String> reportedPlugins = ConcurrentHashMap.newKeySet();
+
+  /**
+   * The connections whose pipeline an initializer ran on: the ones that may carry a plugin's
+   * handlers. A channel leaves the group by itself when it closes; once the group is closed, a
+   * channel added to it (a connection that raced the shutdown) is closed at once.
+   */
+  private final ChannelGroup connections =
+      new DefaultChannelGroup("warp-plugin-pipelines", GlobalEventExecutor.INSTANCE, true);
+
+  /** Set once the proxy stops: from then on no connection takes plugin handlers. */
+  private volatile boolean closing;
 
   // ---------------------------------------------------------------------------
   // Registration
@@ -164,6 +179,13 @@ public final class PipelineRegistry {
       Function<String, AbstractConnectionPipeline> pipelines,
       PipelineHost host,
       String description) {
+    if (closing) {
+      // The proxy is stopping, or stopped: a plugin's handler on this connection could run after
+      // the plugin's class loader closed. The connection goes like a listener that is gone.
+      var _ = host.channel().close();
+      return false;
+    }
+    var _ = connections.add(host.channel());
     ChannelPipeline channelPipeline = host.channel().pipeline();
     ProtectedHandlers protectedHandlers = ProtectedHandlers.of(channelPipeline);
     for (Registration<?> registration : registrations) {
@@ -193,6 +215,33 @@ public final class PipelineRegistry {
       protectedHandlers = ProtectedHandlers.of(channelPipeline);
     }
     return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Shutdown
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Closes every connection that carries plugin handlers and waits for them to close, so that no
+   * handler runs once its plugin is disabled and its class loader closed (a {@link
+   * NoClassDefFoundError} in the middle of a decode, otherwise). From this call on, a connection
+   * that asks for plugin handlers is closed instead. Idempotent.
+   *
+   * @param timeout how long to wait for the connections to close
+   * @return {@code true} if every connection closed within the timeout
+   */
+  public boolean closeConnections(Duration timeout) {
+    closing = true;
+    return connections.close().awaitUninterruptibly(timeout.toMillis());
+  }
+
+  /**
+   * Returns how many connections carrying plugin handlers are open.
+   *
+   * @return the number of connections
+   */
+  public int connectionCount() {
+    return connections.size();
   }
 
   /**

@@ -18,6 +18,7 @@ package dev.warp.proxy.console;
 
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.ServerPing;
+import dev.warp.proxy.server.ServerHealth;
 
 import java.net.InetSocketAddress;
 import java.time.Duration;
@@ -28,6 +29,8 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * Pings the backend servers for the console: once at startup, for the summary, then every few
  * seconds while the status line shows, to count the servers up. Pings run on the proxy's event
@@ -37,6 +40,23 @@ public final class ServerChecks {
 
   /** The servers that answered their last ping, by name. */
   private final Map<String, Boolean> up = new ConcurrentHashMap<>();
+
+  private final @Nullable ServerHealth health;
+
+  /** Creates checks that only remember which servers are up. */
+  public ServerChecks() {
+    this(null);
+  }
+
+  /**
+   * Creates checks that also feed the servers' health: a ping answered closes a server's circuit
+   * breaker and records its round trip, one unanswered opens it.
+   *
+   * @param health the health to feed, or {@code null} for none
+   */
+  public ServerChecks(@Nullable ServerHealth health) {
+    this.health = health;
+  }
 
   /**
    * Pings servers.
@@ -59,7 +79,15 @@ public final class ServerChecks {
                   (ping, error) -> {
                     boolean answered = error == null && ping != null;
                     up.put(name, answered);
-                    long millis = Math.max(0, (System.nanoTime() - start) / 1_000_000);
+                    long elapsed = Math.max(0, System.nanoTime() - start);
+                    long millis = elapsed / 1_000_000;
+                    if (health != null) {
+                      if (answered) {
+                        health.pingSucceeded(name, Duration.ofNanos(elapsed));
+                      } else {
+                        health.pingFailed(name);
+                      }
+                    }
                     return new Summaries.Server(
                         name, address, answered ? millis : -1, answered ? version(ping) : null);
                   }));

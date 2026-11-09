@@ -32,5 +32,14 @@ public enum Signal {
   AUTHENTICATION_FAILURES,
 
   /** Connections the proxy refused or closed before login, for any reason. Reported only. */
-  REFUSALS
+  REFUSALS,
+
+  /** Verifications of unknown identities that passed. Reported only. */
+  VERIFICATIONS_PASSED,
+
+  /**
+   * Verifications of unknown identities that failed, for any reason. A trigger as a ratio: over
+   * half of twenty or more verifications in ten seconds.
+   */
+  VERIFICATIONS_FAILED
 }

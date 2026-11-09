@@ -17,6 +17,7 @@
 package dev.warp.protocol.compress;
 
 import java.nio.ByteBuffer;
+import java.util.function.Supplier;
 import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
 import java.util.zip.Inflater;
@@ -27,12 +28,15 @@ import org.jspecify.annotations.Nullable;
 /**
  * Pure-Java compressor using {@link Deflater} and {@link Inflater}.
  *
- * <p>Uses the {@link ByteBuffer}-based API (Java 11+) with {@link ByteBuf#nioBuffer()} for
- * near-zero-copy operation on direct buffers. No intermediate {@code byte[]} allocations on the hot
- * path.
+ * <p>Uses the {@link ByteBuffer}-based API with each buffer's own cached NIO view ({@link
+ * ByteBuf#internalNioBuffer}), so that a call between direct buffers allocates nothing on the heap:
+ * {@link ByteBuf#nioBuffer()} would create a duplicate and a slice per call, which escape analysis
+ * cannot remove because the inflater keeps a reference to its input. A buffer that is not backed by
+ * exactly one NIO buffer (a composite of several components) takes a slower path through a copy,
+ * which Netty's allocators never hand out.
  *
- * <p>Not as fast as native implementations (libdeflate ≈ 4× faster, zlib-ng ≈ 2.5×) but fully
- * portable. Suitable as a fallback when native libraries are unavailable.
+ * <p>Not as fast as native implementations (libdeflate about 4x faster, zlib-ng about 2.5x) but
+ * fully portable. Suitable as a fallback when native libraries are unavailable.
  *
  * <p>The native zlib streams are created on first use: a decoder only ever inflates and an encoder
  * only ever deflates, and an idle {@link Deflater} alone pins ~256 KiB of native memory.
@@ -42,7 +46,8 @@ public final class JavaCompressor implements PacketCompressor {
   /** Growth increment when the output buffer runs out of space during deflation. */
   private static final int DEFLATE_GROW = 8192;
 
-  private final int level;
+  private final Supplier<? extends Deflater> deflaters;
+  private final Supplier<? extends Inflater> inflaters;
   private @Nullable Deflater deflater;
   private @Nullable Inflater inflater;
   private boolean closed;
@@ -50,27 +55,49 @@ public final class JavaCompressor implements PacketCompressor {
   /**
    * Creates a new Java-based compressor.
    *
-   * @param level the compression level (0–9), or {@link Deflater#DEFAULT_COMPRESSION}
+   * @param level the compression level (0 to 9), or {@link Deflater#DEFAULT_COMPRESSION}
    */
   public JavaCompressor(int level) {
-    this.level = level;
+    this(() -> new Deflater(level), Inflater::new);
   }
 
+  /**
+   * Creates a compressor whose streams come from the given factories, each called at most once, on
+   * the first deflate or inflate. Lets tests observe the streams' lifecycle.
+   */
+  JavaCompressor(Supplier<? extends Deflater> deflaters, Supplier<? extends Inflater> inflaters) {
+    this.deflaters = deflaters;
+    this.inflaters = inflaters;
+  }
+
+  /**
+   * {@inheritDoc}
+   *
+   * <p>The two buffers must not share memory: each one's cached NIO view is in use for the whole
+   * call.
+   */
   @Override
   public void inflate(ByteBuf source, ByteBuf destination, int uncompressedSize)
       throws DataFormatException {
     Inflater inflater = inflater();
+    destination.ensureWritable(uncompressedSize);
 
-    // nioBuffer() returns a ByteBuffer view — zero-copy for direct buffers.
-    inflater.setInput(source.nioBuffer());
+    inflater.setInput(readableView(source));
     try {
-      destination.ensureWritable(uncompressedSize);
-      ByteBuffer destNio = destination.nioBuffer(destination.writerIndex(), uncompressedSize);
-      inflater.inflate(destNio);
-      destination.writerIndex(destination.writerIndex() + destNio.position());
+      int writerIndex = destination.writerIndex();
+      int produced;
+      if (destination.nioBufferCount() == 1) {
+        produced = inflater.inflate(destination.internalNioBuffer(writerIndex, uncompressedSize));
+        destination.writerIndex(writerIndex + produced);
+      } else {
+        // Several components: a view of them would be a copy, so inflate through one instead.
+        byte[] staging = new byte[uncompressedSize];
+        produced = inflater.inflate(staging);
+        destination.writeBytes(staging, 0, produced);
+      }
 
-      // If the inflater isn't finished, the actual data is larger than claimed — reject.
-      // This catches decompression bombs that lie about their uncompressed size.
+      // If the inflater isn't finished, the actual data is larger than claimed: reject it. This
+      // catches decompression bombs that lie about their uncompressed size.
       if (!inflater.finished()) {
         throw new DataFormatException(
             "Compressed stream contains more data than claimed uncompressed size of "
@@ -82,25 +109,50 @@ public final class JavaCompressor implements PacketCompressor {
     }
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * <p>The two buffers must not share memory: each one's cached NIO view is in use for the whole
+   * call.
+   */
   @Override
   public void deflate(ByteBuf source, ByteBuf destination) throws DataFormatException {
     Deflater deflater = deflater();
 
-    deflater.setInput(source.nioBuffer());
+    deflater.setInput(readableView(source));
     deflater.finish();
     try {
       while (!deflater.finished()) {
         if (!destination.isWritable()) {
           destination.ensureWritable(DEFLATE_GROW);
         }
-        ByteBuffer destNio =
-            destination.nioBuffer(destination.writerIndex(), destination.writableBytes());
-        int produced = deflater.deflate(destNio);
-        destination.writerIndex(destination.writerIndex() + produced);
+        int writerIndex = destination.writerIndex();
+        int writable = destination.writableBytes();
+        if (destination.nioBufferCount() == 1) {
+          int produced = deflater.deflate(destination.internalNioBuffer(writerIndex, writable));
+          destination.writerIndex(writerIndex + produced);
+        } else {
+          // Several components: a view of them would be a copy, so deflate through one instead.
+          byte[] staging = new byte[writable];
+          int produced = deflater.deflate(staging);
+          destination.writeBytes(staging, 0, produced);
+        }
       }
     } finally {
       deflater.reset();
     }
+  }
+
+  /**
+   * Returns the readable bytes of {@code buffer} as an NIO buffer: its cached view when it is
+   * backed by one NIO buffer (no allocation), else a merged copy.
+   */
+  private static ByteBuffer readableView(ByteBuf buffer) {
+    int index = buffer.readerIndex();
+    int length = buffer.readableBytes();
+    return buffer.nioBufferCount() == 1
+        ? buffer.internalNioBuffer(index, length)
+        : buffer.nioBuffer(index, length);
   }
 
   @Override
@@ -120,7 +172,7 @@ public final class JavaCompressor implements PacketCompressor {
     ensureOpen();
     Inflater current = inflater;
     if (current == null) {
-      current = new Inflater();
+      current = inflaters.get();
       inflater = current;
     }
     return current;
@@ -130,7 +182,7 @@ public final class JavaCompressor implements PacketCompressor {
     ensureOpen();
     Deflater current = deflater;
     if (current == null) {
-      current = new Deflater(level);
+      current = deflaters.get();
       deflater = current;
     }
     return current;
