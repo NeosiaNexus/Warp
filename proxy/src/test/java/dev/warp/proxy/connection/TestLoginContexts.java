@@ -26,6 +26,7 @@ import dev.warp.proxy.config.ForwardingMode;
 import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.fleet.FleetService;
 import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.messaging.ChannelRegistry;
@@ -288,6 +289,7 @@ final class TestLoginContexts {
       Class<? extends io.netty.channel.Channel> channelClass,
       AntiBotService antiBot) {
     PlayerRegistry players = new PlayerRegistry();
+    MetricRegistry metrics = new MetricRegistry(0);
     return new ServerLoginContext(
         KEY_PAIR,
         onlineMode,
@@ -316,7 +318,8 @@ final class TestLoginContexts {
         antiBot,
         new PipelineRegistry(),
         PlayerMessages.bundled(),
-        new ProxyMetrics(new MetricRegistry(0)));
+        new ProxyMetrics(metrics),
+        FleetService.singleNode(players, registry, events, metrics, policy, onlineMode));
   }
 
   /**
@@ -332,6 +335,17 @@ final class TestLoginContexts {
     org.mockito.Mockito.when(context.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
     org.mockito.Mockito.when(context.antiBot()).thenReturn(calmAntiBot());
     org.mockito.Mockito.when(context.messages()).thenReturn(PlayerMessages.bundled());
+    PlayerRegistry players = new PlayerRegistry();
+    org.mockito.Mockito.when(context.playerRegistry()).thenReturn(players);
+    org.mockito.Mockito.when(context.fleet())
+        .thenReturn(
+            FleetService.singleNode(
+                players,
+                new ServerRegistry(java.util.Map.of(), null, java.util.List.of()),
+                EVENTS,
+                new MetricRegistry(0),
+                DuplicateLoginPolicy.AUTO,
+                false));
     return context;
   }
 
@@ -404,7 +418,8 @@ final class TestLoginContexts {
         base.antiBot(),
         base.pipelines(),
         base.messages(),
-        base.metrics());
+        base.metrics(),
+        base.fleet());
   }
 
   /**

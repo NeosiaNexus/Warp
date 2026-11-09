@@ -26,6 +26,7 @@ import dev.warp.proxy.config.ForwardingMode;
 import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.fleet.FleetService;
 import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.messaging.ChannelRegistry;
@@ -81,6 +82,7 @@ import io.netty.channel.Channel;
  * @param pipelines the pipeline initializers plugins registered
  * @param messages what the proxy tells players, rendered in each player's language
  * @param metrics the proxy's metrics, which the handlers update
+ * @param fleet the fleet, which settles who owns an account across proxies
  */
 @SuppressWarnings("ArrayRecordComponent") // forwardingSecret is treated as immutable
 public record ServerLoginContext(
@@ -111,7 +113,8 @@ public record ServerLoginContext(
     AntiBotService antiBot,
     PipelineRegistry pipelines,
     PlayerMessages messages,
-    ProxyMetrics metrics) {
+    ProxyMetrics metrics,
+    FleetService fleet) {
 
   /** Validates configuration invariants. */
   public ServerLoginContext {

@@ -18,6 +18,7 @@ package dev.warp.api;
 
 import dev.warp.api.antibot.AntiBot;
 import dev.warp.api.command.CommandSource;
+import dev.warp.api.fleet.Fleet;
 import dev.warp.api.lifecycle.DrainPhase;
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.player.Player;
@@ -105,6 +106,14 @@ public interface Warp {
    * @return the anti-bot
    */
   AntiBot antiBot();
+
+  /**
+   * Returns the fleet: every proxy that shares this proxy's store and every player on them. Without
+   * a store configured, it is this proxy alone, and the same code works on one node and on many.
+   *
+   * @return the fleet
+   */
+  Fleet fleet();
 
   /**
    * Returns the console, as the command source that runs the commands typed at it. It has every

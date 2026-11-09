@@ -133,6 +133,13 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-NET-009](#w-net-009) | warning | Cookie requests went unanswered |
 | [W-NET-010](#w-net-010) | warning | A transfer failed |
 | [W-NET-011](#w-net-011) | warning | A player's command list could not be refreshed |
+| [W-FLEET-001](#w-fleet-001) | warning | The fleet store is unreachable |
+| [W-FLEET-002](#w-fleet-002) | error | Two proxies share a fleet node id |
+| [W-FLEET-003](#w-fleet-003) | warning | A login was not settled with the fleet in time |
+| [W-FLEET-004](#w-fleet-004) | warning | A fleet bus handler failed |
+| [W-FLEET-005](#w-fleet-005) | warning | A malformed fleet message was dropped |
+| [W-FLEET-006](#w-fleet-006) | warning | A proxy of the fleet stopped heartbeating |
+| [W-FLEET-007](#w-fleet-007) | warning | A player is online on two proxies |
 
 ## Configuration
 
@@ -1161,3 +1168,61 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** Rebuilding the commands a player sees failed; the player keeps the previous list.
 
 **Fix.** Report it with the stack trace.
+
+## Fleet
+
+### W-FLEET-001
+
+**The fleet store is unreachable** (warning)
+
+**Cause.** Warp cannot reach the store named in fleet.store (Valkey): it is down, the address or the credentials are wrong, or a firewall is in the way. This proxy keeps running alone: the other proxies' players are frozen as last seen, and logins follow fleet.on-store-down. Warp reconnects by itself and logs when the store is back.
+
+**Fix.** Check that the store runs and that fleet.store.valkey.address, username and password are right. Nothing to do once the store is back: the proxies resynchronise.
+
+### W-FLEET-002
+
+**Two proxies share a fleet node id** (error)
+
+**Cause.** Another proxy heartbeats under this proxy's fleet.node-id with a newer incarnation: two proxies have the same id, and would reap each other's players. This proxy left the fleet; its own players are unaffected, but it is invisible to the others.
+
+**Fix.** Give each proxy a distinct fleet.node-id (or leave it empty, so that each uses its host name), then restart this proxy.
+
+### W-FLEET-003
+
+**A login was not settled with the fleet in time** (warning)
+
+**Cause.** The store did not answer within fleet.claim-timeout whether the account is online on another proxy. The login followed fleet.on-store-down: let in (duplicates settled on this proxy alone) or refused.
+
+**Fix.** A slow or overloaded store: check its latency, or raise fleet.claim-timeout.
+
+### W-FLEET-004
+
+**A fleet bus handler failed** (warning)
+
+**Cause.** A plugin's listener or responder on the fleet bus threw an exception. The message was lost for that listener; a request got a failure in reply.
+
+**Fix.** Report it to the plugin's author with the stack trace.
+
+### W-FLEET-005
+
+**A malformed fleet message was dropped** (warning)
+
+**Cause.** A message on a fleet channel could not be read: another program publishes on Warp's channels, or two Warp versions with different frames share a network.
+
+**Fix.** Run one Warp version per network, and keep other programs off the warp:<network>:* channels.
+
+### W-FLEET-006
+
+**A proxy of the fleet stopped heartbeating** (warning)
+
+**Cause.** A proxy wrote no heartbeat for fleet.heartbeat-ttl: it crashed, hung, or lost the store. This proxy reaped its player records, so that its players can log in elsewhere.
+
+**Fix.** Check that proxy. A clean stop or drain says goodbye and is not logged here.
+
+### W-FLEET-007
+
+**A player is online on two proxies** (warning)
+
+**Cause.** After the store came back, a player connected here is claimed by another proxy: a write was lost during the outage (an asynchronous replica failing over). Both sessions stay until one leaves.
+
+**Fix.** Nothing to do for one player. Repeated conflicts point at a store that loses writes on failover: check its replication.

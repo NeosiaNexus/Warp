@@ -1097,7 +1097,77 @@ public enum LogCode {
       false,
       "A player's command list could not be refreshed",
       "Rebuilding the commands a player sees failed; the player keeps the previous list.",
-      "Report it with the stack trace.");
+      "Report it with the stack trace."),
+
+  // ---------------------------------------------------------------------------
+  // Fleet
+  // ---------------------------------------------------------------------------
+
+  /** The fleet store is unreachable. */
+  FLEET_STORE_UNAVAILABLE(
+      "W-FLEET-001",
+      false,
+      "The fleet store is unreachable",
+      "Warp cannot reach the store named in fleet.store (Valkey): it is down, the address or the"
+          + " credentials are wrong, or a firewall is in the way. This proxy keeps running alone:"
+          + " the other proxies' players are frozen as last seen, and logins follow"
+          + " fleet.on-store-down. Warp reconnects by itself and logs when the store is back.",
+      "Check that the store runs and that fleet.store.valkey.address, username and password are"
+          + " right. Nothing to do once the store is back: the proxies resynchronise."),
+  /** Two proxies run with the same node id. */
+  FLEET_NODE_ID_CONFLICT(
+      "W-FLEET-002",
+      true,
+      "Two proxies share a fleet node id",
+      "Another proxy heartbeats under this proxy's fleet.node-id with a newer incarnation: two"
+          + " proxies have the same id, and would reap each other's players. This proxy left the"
+          + " fleet; its own players are unaffected, but it is invisible to the others.",
+      "Give each proxy a distinct fleet.node-id (or leave it empty, so that each uses its host"
+          + " name), then restart this proxy."),
+  /** The store did not settle a login in time. */
+  FLEET_CLAIM_FAILED(
+      "W-FLEET-003",
+      false,
+      "A login was not settled with the fleet in time",
+      "The store did not answer within fleet.claim-timeout whether the account is online on another"
+          + " proxy. The login followed fleet.on-store-down: let in (duplicates settled on this"
+          + " proxy alone) or refused.",
+      "A slow or overloaded store: check its latency, or raise fleet.claim-timeout."),
+  /** A fleet handler threw. */
+  FLEET_HANDLER_FAILED(
+      "W-FLEET-004",
+      false,
+      "A fleet bus handler failed",
+      "A plugin's listener or responder on the fleet bus threw an exception. The message was lost"
+          + " for that listener; a request got a failure in reply.",
+      "Report it to the plugin's author with the stack trace."),
+  /** A malformed frame arrived on a fleet channel. */
+  FLEET_FRAME_INVALID(
+      "W-FLEET-005",
+      false,
+      "A malformed fleet message was dropped",
+      "A message on a fleet channel could not be read: another program publishes on Warp's"
+          + " channels, or two Warp versions with different frames share a network.",
+      "Run one Warp version per network, and keep other programs off the warp:<network>:*"
+          + " channels."),
+  /** A node's heartbeat expired. */
+  FLEET_NODE_EXPIRED(
+      "W-FLEET-006",
+      false,
+      "A proxy of the fleet stopped heartbeating",
+      "A proxy wrote no heartbeat for fleet.heartbeat-ttl: it crashed, hung, or lost the store."
+          + " This proxy reaped its player records, so that its players can log in elsewhere.",
+      "Check that proxy. A clean stop or drain says goodbye and is not logged here."),
+  /** A player is claimed by two proxies. */
+  FLEET_PRESENCE_CONFLICT(
+      "W-FLEET-007",
+      false,
+      "A player is online on two proxies",
+      "After the store came back, a player connected here is claimed by another proxy: a write"
+          + " was lost during the outage (an asynchronous replica failing over). Both sessions stay"
+          + " until one leaves.",
+      "Nothing to do for one player. Repeated conflicts point at a store that loses writes on"
+          + " failover: check its replication.");
 
   /** Where the codes are documented: each has an anchor named after it. */
   public static final String DOCUMENTATION =

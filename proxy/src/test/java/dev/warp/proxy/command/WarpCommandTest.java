@@ -108,7 +108,7 @@ class WarpCommandTest {
       assertTrue(lines.get(4).startsWith("Heap "), lines.get(4));
       assertEquals("Plugins 2 (1 enabled, 1 failed)", lines.get(5));
       assertEquals(
-          "More: /warp plugins, /warp startup, /warp groups, /warp routes, /warp antibot",
+          "More: /warp plugins, /warp startup, /warp groups, /warp routes, /warp fleet, /warp antibot",
           lines.get(6));
     }
 

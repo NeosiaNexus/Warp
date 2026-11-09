@@ -23,6 +23,10 @@ import static org.mockito.Mockito.mock;
 
 import dev.warp.api.Warp;
 import dev.warp.api.command.CommandSource;
+import dev.warp.api.fleet.Fleet;
+import dev.warp.api.fleet.NodeState;
+import dev.warp.api.fleet.ProxyNode;
+import dev.warp.api.fleet.StoreState;
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.permission.Tristate;
 import dev.warp.api.player.ConnectionResult;
@@ -41,6 +45,7 @@ import dev.warp.proxy.i18n.PlayerMessages;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
@@ -74,6 +79,7 @@ final class AdminFixture {
   }
 
   final Warp proxy = mock(Warp.class);
+  final Fleet fleet = mock(Fleet.class);
   final ServerRegistry servers = mock(ServerRegistry.class);
   final PluginManager plugins = mock(PluginManager.class);
   final List<PluginContainer> pluginList = new ArrayList<>();
@@ -111,11 +117,24 @@ final class AdminFixture {
                 Optional.ofNullable(
                     playerMap.get(invocation.<String>getArgument(0).toLowerCase(Locale.ROOT))));
     lenient().when(proxy.isDraining()).thenAnswer(invocation -> draining);
+    // A fleet of this proxy alone, from the same mocks, so that the commands see one node.
+    lenient().when(fleet.storeState()).thenReturn(StoreState.SINGLE_NODE);
+    lenient().when(fleet.local()).thenAnswer(invocation -> localNode());
+    lenient().when(fleet.nodes()).thenAnswer(invocation -> List.of(localNode()));
+    lenient().when(fleet.player(anyString())).thenReturn(Optional.empty());
+    lenient().when(fleet.playerCount()).thenAnswer(invocation -> playerMap.size());
+    lenient().when(proxy.fleet()).thenReturn(fleet);
     lenient()
         .when(proxy.drainStatus())
         .thenAnswer(invocation -> drainStatus != null ? drainStatus : DrainStatus.notDraining(0));
     ProxyCommands.register(commands, servers);
     ProxyCommands.registerAdmin(commands, proxy, control, mock(AntiBotService.class));
+  }
+
+  /** This proxy as the fleet's only node. */
+  private ProxyNode localNode() {
+    return new ProxyNode(
+        "local", 1, null, playerMap.size(), NodeState.READY, Instant.EPOCH, "test");
   }
 
   /** Makes the proxy drain, as the status says. */

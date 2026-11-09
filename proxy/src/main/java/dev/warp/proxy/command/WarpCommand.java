@@ -18,6 +18,10 @@ package dev.warp.proxy.command;
 
 import dev.warp.api.Warp;
 import dev.warp.api.command.CommandSource;
+import dev.warp.api.fleet.Fleet;
+import dev.warp.api.fleet.NodeState;
+import dev.warp.api.fleet.ProxyNode;
+import dev.warp.api.fleet.StoreState;
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginDescription;
@@ -118,6 +122,14 @@ final class WarpCommand {
             .executes(
                 context -> {
                   context.getSource().sendMessage(groups(proxy, control.health()));
+                  return Command.SINGLE_SUCCESS;
+                }));
+    warp.then(
+        LiteralArgumentBuilder.<CommandSource>literal("fleet")
+            .requires(source -> source.hasPermission(PERMISSION))
+            .executes(
+                context -> {
+                  context.getSource().sendMessage(fleet(proxy.fleet()));
                   return Command.SINGLE_SUCCESS;
                 }));
     warp.then(
@@ -314,6 +326,60 @@ final class WarpCommand {
     return Component.join(JoinConfiguration.newlines(), lines);
   }
 
+  /**
+   * The answer to {@code /warp fleet}: the network, its store, and one line per proxy.
+   *
+   * @param fleet the fleet
+   * @return the message
+   */
+  static Component fleet(Fleet fleet) {
+    if (fleet.storeState() == StoreState.SINGLE_NODE) {
+      return Message.WARP_FLEET_SINGLE.with(Message.text("node", fleet.local().id()));
+    }
+    List<ProxyNode> nodes = new ArrayList<>(fleet.nodes());
+    nodes.sort(java.util.Comparator.comparing(ProxyNode::id));
+    List<Component> lines = new ArrayList<>();
+    lines.add(
+        Message.WARP_FLEET.with(
+            Message.text("network", networkOf(fleet)),
+            Message.component(
+                "store",
+                fleet.storeState() == StoreState.CONNECTED
+                    ? Message.WARP_FLEET_STORE_CONNECTED.of()
+                    : Message.WARP_FLEET_STORE_DEGRADED.of()),
+            Message.count(nodes.size())));
+    String local = fleet.local().id();
+    for (ProxyNode node : nodes) {
+      String address = node.publicAddress();
+      lines.add(
+          Message.WARP_FLEET_NODE.with(
+              Message.component(
+                  "node",
+                  node.id().equals(local)
+                      ? Component.text(node.id())
+                          .append(Component.space())
+                          .append(Message.WARP_FLEET_LOCAL.of())
+                      : Component.text(node.id())),
+              Message.component(
+                  "state",
+                  node.state() == NodeState.DRAINING
+                      ? Message.WARP_FLEET_STATE_DRAINING.of()
+                      : Message.WARP_FLEET_STATE_READY.of()),
+              Message.number("incarnation", node.incarnation()),
+              Message.component(
+                  "address",
+                  address == null ? Message.WARP_FLEET_NO_ADDRESS.of() : Component.text(address)),
+              Message.number("players", node.players()),
+              Message.text("version", node.version())));
+    }
+    return Component.join(JoinConfiguration.newlines(), lines);
+  }
+
+  /** The network's name is not in the API: the fleet shows it through its local node's store. */
+  private static String networkOf(Fleet fleet) {
+    return fleet instanceof dev.warp.proxy.fleet.FleetService service ? service.network() : "";
+  }
+
   /** The subcommands a source may use, each a link that types it. */
   private static Component subcommands(CommandSource source, boolean antiBot) {
     List<Component> links = new ArrayList<>();
@@ -322,6 +388,7 @@ final class WarpCommand {
       links.add(subcommand("/warp startup"));
       links.add(subcommand("/warp groups"));
       links.add(subcommand("/warp routes"));
+      links.add(subcommand("/warp fleet"));
     }
     if (antiBot && source.hasPermission(AntiBotCommand.PERMISSION)) {
       links.add(subcommand("/warp antibot"));
