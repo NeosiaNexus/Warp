@@ -82,7 +82,11 @@ class FrameLimitsTest {
     @DisplayName("should bound the handshake by the largest and smallest one its codec writes")
     void handshake() {
       FrameLimits limits = FrameLimits.HANDSHAKE;
-      int largest = size(Handshake.CODEC, new Handshake(-1, wide(255), 65535, -1), LATEST);
+      int largest =
+          size(
+              Handshake.CODEC,
+              new Handshake(-1, wide(Handshake.MAX_SERVER_ADDRESS), 65535, -1),
+              LATEST);
       int smallest = size(Handshake.CODEC, new Handshake(0, "", 0, 0), LATEST);
 
       assertEquals(largest, limits.largest(0x00));

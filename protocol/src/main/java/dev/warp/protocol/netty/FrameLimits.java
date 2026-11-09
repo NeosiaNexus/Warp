@@ -20,6 +20,7 @@ import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McIdentifier;
 import dev.warp.protocol.packet.cookie.CookiePayload;
+import dev.warp.protocol.packet.handshake.Handshake;
 
 import java.util.Arrays;
 import java.util.concurrent.ConcurrentHashMap;
@@ -68,12 +69,13 @@ public final class FrameLimits {
   private static final int UUID = 16;
 
   /**
-   * Handshake: protocol (VarInt), server address (a string of 255 characters, 765 bytes of UTF-8
-   * and its 2-byte length), port (unsigned short), next state (VarInt).
+   * Handshake: protocol (VarInt), server address (a string of {@link Handshake#MAX_SERVER_ADDRESS}
+   * characters at most, three bytes of UTF-8 each and its 2-byte length), port (unsigned short),
+   * next state (VarInt).
    */
   static final int HANDSHAKE_MIN = ID + 1 + 1 + 2 + 1;
 
-  static final int HANDSHAKE_MAX = ID + VARINT + 2 + 255 * 3 + 2 + VARINT;
+  static final int HANDSHAKE_MAX = ID + VARINT + 2 + Handshake.MAX_SERVER_ADDRESS * 3 + 2 + VARINT;
 
   /** Status Request: the identifier alone. */
   static final int STATUS_REQUEST = ID;
