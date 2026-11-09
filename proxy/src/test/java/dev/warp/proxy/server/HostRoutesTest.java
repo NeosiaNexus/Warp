@@ -37,8 +37,11 @@ class HostRoutesTest {
   private static final int PORT = 25565;
 
   private static HostRoutes routes(String... pairs) {
+    if (pairs.length % 2 != 0) {
+      throw new IllegalArgumentException("pattern without a target: " + pairs[pairs.length - 1]);
+    }
     Map<String, String> map = new LinkedHashMap<>();
-    for (int i = 0; i < pairs.length; i += 2) {
+    for (int i = 0; i + 1 < pairs.length; i += 2) {
       map.put(pairs[i], pairs[i + 1]);
     }
     return HostRoutes.compile(map);

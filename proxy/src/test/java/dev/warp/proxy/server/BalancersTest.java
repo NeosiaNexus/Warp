@@ -42,7 +42,7 @@ import org.junit.jupiter.api.Test;
 @DisplayName("Balancers")
 class BalancersTest {
 
-  private record Candidate(
+  private record TestCandidate(
       RegisteredServer server, int weight, int connections, @Nullable Duration rtt)
       implements Balancer.Candidate {
 
@@ -58,8 +58,8 @@ class BalancersTest {
     return server;
   }
 
-  private static Candidate candidate(String name, int connections) {
-    return new Candidate(server(name), 1, connections, null);
+  private static TestCandidate candidate(String name, int connections) {
+    return new TestCandidate(server(name), 1, connections, null);
   }
 
   private static String pick(Balancer balancer, List<Balancer.Candidate> candidates) {
@@ -117,9 +117,9 @@ class BalancersTest {
       Balancer balancer = Balancers.lowestLatency();
       List<Balancer.Candidate> candidates =
           List.of(
-              new Candidate(server("unknown"), 1, 0, null),
-              new Candidate(server("slow"), 1, 0, Duration.ofMillis(50)),
-              new Candidate(server("fast"), 1, 9, Duration.ofMillis(5)));
+              new TestCandidate(server("unknown"), 1, 0, null),
+              new TestCandidate(server("slow"), 1, 0, Duration.ofMillis(50)),
+              new TestCandidate(server("fast"), 1, 9, Duration.ofMillis(5)));
 
       assertEquals("fast", pick(balancer, candidates));
       assertEquals("unknown", pick(balancer, List.of(candidates.getFirst())));
@@ -131,8 +131,8 @@ class BalancersTest {
       Balancer balancer = Balancers.lowestLatency();
       List<Balancer.Candidate> candidates =
           List.of(
-              new Candidate(server("busy"), 1, 10, Duration.ofMillis(5)),
-              new Candidate(server("idle"), 1, 1, Duration.ofMillis(5)));
+              new TestCandidate(server("busy"), 1, 10, Duration.ofMillis(5)),
+              new TestCandidate(server("idle"), 1, 1, Duration.ofMillis(5)));
 
       assertEquals("idle", pick(balancer, candidates));
     }
@@ -158,8 +158,8 @@ class BalancersTest {
       Balancer balancer = Balancers.weighted();
       List<Balancer.Candidate> candidates =
           List.of(
-              new Candidate(server("heavy"), 9, 0, null),
-              new Candidate(server("light"), 1, 0, null));
+              new TestCandidate(server("heavy"), 9, 0, null),
+              new TestCandidate(server("light"), 1, 0, null));
       Map<String, Integer> picks = new HashMap<>();
       for (int i = 0; i < 2000; i++) {
         picks.merge(pick(balancer, candidates), 1, Integer::sum);
@@ -171,7 +171,8 @@ class BalancersTest {
     @DisplayName("weighted should pick the only candidate")
     void weightedSingle() {
       assertEquals(
-          "only", pick(Balancers.weighted(), List.of(new Candidate(server("only"), 3, 0, null))));
+          "only",
+          pick(Balancers.weighted(), List.of(new TestCandidate(server("only"), 3, 0, null))));
     }
   }
 

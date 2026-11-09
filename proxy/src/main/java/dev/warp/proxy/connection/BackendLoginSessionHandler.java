@@ -237,7 +237,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
     adviseIfBackendUncompressed();
     // The configuration phase from 1.20.2, straight to PLAY before: the server switch strategy
     // knows which, and installs the next handler.
-    player.backendAccepted(backendConnection, server);
+    player.backendAccepted(server);
     player.serverSwitch().loggedIn(backendConnection);
   }
 

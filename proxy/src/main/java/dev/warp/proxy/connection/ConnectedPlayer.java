@@ -886,10 +886,9 @@ public final class ConnectedPlayer {
    * circuit breaker: a login accepted is what proves a server takes players. Called by the
    * backend's login handler, on the client event loop.
    *
-   * @param backend the backend that logged the player in
-   * @param server the server it belongs to
+   * @param server the server whose backend logged the player in
    */
-  void backendAccepted(MinecraftConnection backend, ServerInfo server) {
+  void backendAccepted(ServerInfo server) {
     loginContext.serverRegistry().health().connectSucceeded(server.name());
     BackendServer target = connectingTo;
     if (target != null) {
