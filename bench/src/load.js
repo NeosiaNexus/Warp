@@ -11,6 +11,37 @@ import { connectIdle, frameHandshake, frameStatusRequest } from './rawclient.js'
 
 const HOST = '127.0.0.1';
 
+/**
+ * Packets a client may still send while it is back in the configuration phase. Everything else a
+ * bot writes in that window (a teleport confirmation or a position from a physics tick that was
+ * already queued when the server asked it to reconfigure) is a PLAY packet in CONFIG framing: a
+ * vanilla client never sends one, Warp drops it, and Velocity decodes the id as a configuration
+ * packet, fails, and kicks the player. The guard makes the bots behave like a vanilla client.
+ */
+const CONFIG_PHASE_PACKETS = new Set([
+  'configuration_acknowledged', 'settings', 'finish_configuration', 'keep_alive', 'pong', 'select_known_packs',
+  'resource_pack_receive', 'custom_payload', 'cookie_response', 'client_information',
+]);
+
+/** Drops PLAY-state writes between the start and the end of a configuration re-entry. */
+function guardConfigPhase(handle) {
+  const client = handle.bot._client;
+  const write = client.write.bind(client);
+  let reconfiguring = false;
+  client.on('start_configuration', () => { reconfiguring = true; });
+  client.on('state', (state) => { if (state === 'play') reconfiguring = false; });
+  client.write = (name, params) => {
+    if (reconfiguring && !CONFIG_PHASE_PACKETS.has(name)) return;
+    write(name, params);
+  };
+  return handle;
+}
+
+/** Connects a mineflayer bot with the configuration-phase guard installed. */
+function connectGuarded(options) {
+  return connectBot(options).then(guardConfigPhase);
+}
+
 /** Spreads `count` actions over `count/ratePerSec` seconds, calling `fn(i)` for each. */
 async function ramp(count, ratePerSec, fn) {
   const gap = 1000 / Math.max(1, ratePerSec);
@@ -73,7 +104,7 @@ export class TrafficPool {
 
   async fill(count, ratePerSec) {
     const pending = await ramp(count, ratePerSec, (i) =>
-      connectBot({ host: HOST, port: this.port, version: this.version, username: `${this.prefix}_${i}` })
+      connectGuarded({ host: HOST, port: this.port, version: this.version, username: `${this.prefix}_${i}` })
         .then((b) => this.bots.push(b))
         .catch((e) => this.failures.push(e.message)),
     );
@@ -139,7 +170,7 @@ export class TrafficPool {
  * @returns {Promise<number[]>} raw latencies in milliseconds
  */
 export async function probeLatency({ port, version, samples, intervalMs, username = 'probe' }) {
-  const bot = await connectBot({ host: HOST, port, version, username });
+  const bot = await connectGuarded({ host: HOST, port, version, username });
   const latencies = [];
   try {
     const start = Date.now();
@@ -185,12 +216,13 @@ export class SwitchPool {
     this.switches = 0;
     this.switchFailures = 0;
     this.latencies = [];
+    this.firstChunkLatencies = [];
     this.running = false;
   }
 
   async fill(count, ratePerSec) {
     const pending = await ramp(count, ratePerSec, (i) =>
-      connectBot({ host: HOST, port: this.port, version: this.version, username: `${this.prefix}_${i}` })
+      connectGuarded({ host: HOST, port: this.port, version: this.version, username: `${this.prefix}_${i}` })
         .then((b) => this.bots.push(b))
         .catch((e) => this.failures.push(e.message)),
     );
@@ -215,6 +247,10 @@ export class SwitchPool {
         try {
           const chunks = handle.stats.chunks;
           await handle.command(`server ${target}`);
+          // First chunk: the proxy has connected the bot to the new backend and the backend has
+          // logged it in and started sending its world. Five chunks: the world is arriving.
+          await handle.waitFor(() => handle.stats.chunks > chunks, `first chunk after switch to ${target}`, 15_000);
+          this.firstChunkLatencies.push(Date.now() - t0);
           await handle.waitFor(() => handle.stats.chunks > chunks + 5, `chunks after switch to ${target}`, 15_000);
           this.switches++;
           this.latencies.push(Date.now() - t0);
@@ -279,7 +315,7 @@ export async function connectionStorm({ port, version, ratePerSec, durationMs })
   const join = (async () => {
     await sleep(durationMs / 2);
     try {
-      const bot = await connectBot({ host: HOST, port, version, username: 'storm_survivor' });
+      const bot = await connectGuarded({ host: HOST, port, version, username: 'storm_survivor' });
       joinedDuringStorm = true;
       await sleep(1_000);
       await bot.quit();

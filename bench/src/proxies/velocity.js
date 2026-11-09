@@ -25,12 +25,14 @@ export class VelocityProxy extends Proxy {
     const jar = await download(this.spec.url, join(this.cacheDir, 'proxies', `velocity-${this.spec.version}-${this.spec.build}.jar`), { sha256: this.spec.sha256 });
     writeFileSync(join(dir, 'velocity.toml'), this.config());
     writeFileSync(join(dir, 'forwarding.secret'), this.secret);
-    // An empty plugins dir keeps Velocity from scanning anything.
-    mkdirSync(join(dir, 'plugins'), { recursive: true });
+    // No plugins, and bStats telemetry off (its opt-out lives in plugins/bStats/config.txt).
+    mkdirSync(join(dir, 'plugins', 'bStats'), { recursive: true });
+    writeFileSync(join(dir, 'plugins', 'bStats', 'config.txt'), 'enabled=false\nserverUuid=00000000-0000-0000-0000-000000000000\nlogFailedRequests=false\n');
     const java = await findJava(this.spec.java, this.cacheDir);
     return {
       command: java,
-      args: [...JVM_HEADLINE_FLAGS, '-jar', jar],
+      // Decode failures name the packet instead of a generic error: diagnostics only, no cost otherwise.
+      args: [...JVM_HEADLINE_FLAGS, '-Dvelocity.packet-decode-logging=true', '-jar', jar],
       env: {},
     };
   }
@@ -56,6 +58,10 @@ show-ping-requests = false
 [servers]
 ${servers}
 try = [${order}]
+
+# Empty on purpose: without this table Velocity fills in its example forced hosts, which point
+# at servers that do not exist here and make the configuration invalid.
+[forced-hosts]
 
 [advanced]
 compression-threshold = ${this.compressionThreshold}

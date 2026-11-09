@@ -93,6 +93,46 @@ loop, intended-time latency, HdrHistogram, full percentile spectrum) and the Tec
 (averages are the wrong ranking statistic; runs must be long enough to expose GC; a standardised
 client should enforce correct behaviour).
 
+## What the live validation of each adapter found
+
+Every adapter was run end to end in smoke mode on the development machine before the first rented
+run, and each one needed a fix that a config-only review would have missed. Keep these in mind when
+updating a proxy version:
+
+- **Velocity**: without a `[forced-hosts]` table it fills in its example hosts, which name servers
+  that do not exist, and refuses to start. bStats is opted out through `plugins/bStats/config.txt`.
+  During a server switch Velocity kicked the bots with "A packet did not decode successfully":
+  with `-Dvelocity.packet-decode-logging=true` it named a serverbound id 0x00 in the CONFIG state
+  decoded as ClientSettings ("Bad VarInt"). The bot had sent a PLAY packet (a teleport confirmation
+  is also 0x00) in the window after acknowledging the configuration re-entry, which a vanilla
+  client never does. Warp drops such a packet; Velocity treats it as corrupt. The harness now
+  guards every bot so that only configuration-phase packets leave it in that window
+  (`guardConfigPhase` in `bench/src/load.js`). This is a bot behaviour, not a Velocity bug.
+- **Gate (full and Lite)**: per-/24 connection and login quotas are on by default (burst 10), so a
+  load generator on one address gets exactly ten connections in; the configs turn them off. Gate
+  logs one line per connection at INFO, by default; that logging cost is part of what it measures.
+- **BungeeCord**: boots with the mbed TLS native cipher and epoll confirmed from its log; it logs a
+  WARNING per connection reset, which the storm scenario produces by design.
+- **Warp**: its compressor and transport lines are logged at DEBUG, so the config raises those two
+  loggers to make the natives check possible.
+
+### Switch latency: where the time goes
+
+The first Warp smoke run reported a 510 ms median switch, which looked slow. The harness measured a
+switch from the `/server` command to five chunks of the new backend reaching the bot. Warp's own
+millisecond log for the same run shows steady-state switches ("Switching" to "Server switch
+complete") taking 80 to 180 ms, with one 1 s outlier when every bot switched at once on cold
+backends. The remaining time is Paper logging the player in on the new backend and sending its first
+chunks, plus the bot parsing them. The scenario now reports two numbers: time to the first chunk (proxy hand-off plus backend login) and
+time to five chunks. Re-run with that split, the proxies agree on the hand-off: Warp 110 ms, Velocity
+101 ms, BungeeCord 101 ms, Gate 301 ms to the first chunk (medians, smoke profile, WSL2). So the 510 ms
+was not Warp's switch. The tail from the first to the fifth chunk differs (Warp 615 ms and Gate 502 ms
+to five chunks against about 105 ms for Velocity and BungeeCord) and is governed by Paper's chunk
+batching since 1.20.2, which paces chunk sends on the client's batch acknowledgements; why that pacing
+lands differently behind different proxies is an open question for a tier T1 run, not something a WSL
+smoke can settle. Compare the first-chunk column across proxies for the proxy's own cost, and treat
+the five-chunk column as a backend-plus-client figure.
+
 ## Publishing
 
 - Results are written under `bench/results/<date>/` with the report, raw CSVs, the exact configs and

@@ -191,21 +191,21 @@ export function buildReport({ results, env, versions, profileName, date, cpuNote
   if (results.some((r) => r.metrics.switch)) {
     out.push('## Switch storm');
     out.push('');
-    out.push('Bots repeatedly run /server to change backend. Reports sustained switches per second, failures, and how long a switch took (command sent to chunks from the new backend).');
+    out.push('Bots repeatedly run /server to change backend. Reports sustained switches per second, failures, and how long a switch took: from the command to the first chunk of the new backend (proxy hand-off plus backend login), and to five chunks (world arriving).');
     out.push('');
-    out.push('| Proxy | bots | switches | /s | failures | p50 | p99 |');
-    out.push('|---|--:|--:|--:|--:|--:|--:|');
+    out.push('| Proxy | bots | switches | /s | failures | first chunk p50 | 5 chunks p50 | 5 chunks p99 |');
+    out.push('|---|--:|--:|--:|--:|--:|--:|--:|');
     for (const r of results) {
       const m = r.metrics.switch;
       if (!m) {
-        out.push(`| ${r.label} | - | - | - | - | - | - |`);
+        out.push(`| ${r.label} | - | - | - | - | - | - | - |`);
         continue;
       }
       if (m.skipped) {
-        out.push(`| ${r.label} | - | - | - | - | - | - | (${m.skipped}) |`);
+        out.push(`| ${r.label} | - | - | - | - | - | - | ${m.skipped} |`);
         continue;
       }
-      out.push(`| ${r.label} | ${m.online} | ${m.switches} | ${num(m.switchesPerSec, 1)} | ${m.failures} | ${num(m.p50Ms, 0)} ms | ${num(m.p99Ms, 0)} ms |`);
+      out.push(`| ${r.label} | ${m.online} | ${m.switches} | ${num(m.switchesPerSec, 1)} | ${m.failures} | ${num(m.firstChunkP50Ms, 0)} ms | ${num(m.p50Ms, 0)} ms | ${num(m.p99Ms, 0)} ms |`);
     }
     out.push('');
   }

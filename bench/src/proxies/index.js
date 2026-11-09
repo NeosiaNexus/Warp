@@ -23,6 +23,8 @@ export const JVM_HEADLINE_FLAGS = [
   '-XX:+UseG1GC',
   '-XX:+AlwaysPreTouch',
   '-Dio.netty.leakDetection.level=disabled',
+  // Java 25 warns when a library loads natives without this; the same flag for every JVM proxy.
+  '--enable-native-access=ALL-UNNAMED',
 ];
 
 const REGISTRY = {

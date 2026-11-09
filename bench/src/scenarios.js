@@ -146,6 +146,7 @@ export async function switchScenario(ctx, { bots, durationMs, ratePerSec }) {
     failures: pool.switchFailures,
     p50Ms: median(pool.latencies),
     p99Ms: percentile(pool.latencies, 99),
+    firstChunkP50Ms: median(pool.firstChunkLatencies),
   };
   await pool.drain();
   ctx.state({ scenario: 'switch', phase: 'drain', offered: bots, bots: 0 });

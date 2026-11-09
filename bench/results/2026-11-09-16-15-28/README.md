@@ -1,6 +1,6 @@
-# Warp macro benchmark - 2026-11-09-15-43-14
+# Warp macro benchmark - 2026-11-09-16-15-28
 
-Profile: **smoke**. Proxies: Warp.
+Profile: **smoke**. Proxies: Velocity 3.4.0.
 
 > This run was on WSL2. Timing numbers are not credible here (no CPU isolation, hypervisor scheduling noise). Treat this as a functional run only. See docs/benchmarks/README.md, hardware tiers.
 
@@ -10,9 +10,9 @@ Every number is measured from outside the proxy (the kernel's view in /proc and 
 
 ## Fairness and natives
 
-**Warp** (forwarding: modern) - natives confirmed
-  - compression: 16:44:27 DEBUG compress   Compression: libdeflate 1.26 (linux-x86_64) from /home/neosianexus/.cache/warp/natives/libdeflate-1.26-linux-x86_64-b935df31e97b25e8.so
-  - transport: 16:44:27 DEBUG warp       Using epoll native transport
+**Velocity 3.4.0** (forwarding: modern) - natives confirmed
+  - transport: [17:17:39 INFO]: Connections will use epoll channels, libdeflate (Linux x86_64) compression, OpenSSL 3.x.x (Linux x86_64) ciphers
+  - compression: [17:17:39 INFO]: Connections will use epoll channels, libdeflate (Linux x86_64) compression, OpenSSL 3.x.x (Linux x86_64) ciphers
 
 CPU pinning: CPU pinning on: proxy on cores 0,1, backends on 2,3, bots on the rest.
 
@@ -24,14 +24,14 @@ Resident memory, open file descriptors and CPU with N idle connections held in t
 
 | Proxy | RSS @ 50 | FDs @ 50 | fail |
 |---|--:|--:|--:|
-| Warp | 2226 MiB | 128 | 0 |
+| Velocity 3.4.0 | 2224 MiB | 133 | 0 |
 
 <svg xmlns="http://www.w3.org/2000/svg" width="520" height="64" role="img" aria-label="RSS at 50 idle connections (MiB)">
 <text x="8" y="16" font-size="13" font-weight="bold" fill="#1f2933">RSS at 50 idle connections (MiB)</text>
 <line x1="150" y1="20" x2="150" y2="56" stroke="#d7dce2"/>
-<text x="142" y="38" text-anchor="end" font-size="12" fill="#1f2933">Warp</text>
+<text x="142" y="38" text-anchor="end" font-size="12" fill="#1f2933">Velocity 3.4.0</text>
 <rect x="150" y="28" width="300.0" height="16" rx="3" fill="#3a7bd5"/>
-<text x="456.0" y="41" font-size="12" fill="#1f2933">2226 MiB</text>
+<text x="456.0" y="41" font-size="12" fill="#1f2933">2224 MiB</text>
 </svg>
 
 ## Heavy traffic (moving bots, loading chunks)
@@ -40,14 +40,14 @@ Bots walk and load chunks so the proxy forwards a real clientbound stream. Throu
 
 | Proxy | bots | throughput | CPU % | CPU-s/MB | RSS |
 |---|--:|--:|--:|--:|--:|
-| Warp | 10 | 26 KiB/s | 7 | 2.230 | 2227 MiB |
+| Velocity 3.4.0 | 10 | 20 KiB/s | 6 | 4.018 | 2227 MiB |
 
 <svg xmlns="http://www.w3.org/2000/svg" width="520" height="64" role="img" aria-label="CPU seconds per MB forwarded (lower is better)">
 <text x="8" y="16" font-size="13" font-weight="bold" fill="#1f2933">CPU seconds per MB forwarded (lower is better)</text>
 <line x1="150" y1="20" x2="150" y2="56" stroke="#d7dce2"/>
-<text x="142" y="38" text-anchor="end" font-size="12" fill="#1f2933">Warp</text>
+<text x="142" y="38" text-anchor="end" font-size="12" fill="#1f2933">Velocity 3.4.0</text>
 <rect x="150" y="28" width="300.0" height="16" rx="3" fill="#3a7bd5"/>
-<text x="456.0" y="41" font-size="12" fill="#1f2933">2.230</text>
+<text x="456.0" y="41" font-size="12" fill="#1f2933">4.018</text>
 </svg>
 
 <svg xmlns="http://www.w3.org/2000/svg" width="560" height="200" role="img" aria-label="Proxy CPU during traffic">
@@ -55,10 +55,10 @@ Bots walk and load chunks so the proxy forwards a real clientbound stream. Throu
 <line x1="36" y1="164" x2="550" y2="164" stroke="#d7dce2"/>
 <line x1="36" y1="16" x2="36" y2="164" stroke="#d7dce2"/>
 <text x="36" y="178" font-size="10" fill="#1f2933">0</text>
-<text x="540" y="178" font-size="10" fill="#1f2933">112s</text>
-<text x="4" y="24" font-size="10" fill="#1f2933">38</text>
-<polyline fill="none" stroke="#3a7bd5" stroke-width="1.5" points="463.1,160.1 467.2,16.0 471.8,105.6 476.4,97.8 481.0,125.1 485.6,136.7 490.2,136.7 494.8,144.5 499.4,136.7 504.0,140.6 508.6,136.7 513.2,136.7 517.8,136.7 522.4,148.4 527.0,136.7 531.6,144.5 536.2,140.6 540.8,144.5 545.4,148.4 550.0,121.2"/>
-<text x="440" y="20" font-size="11" fill="#3a7bd5">Warp</text>
+<text x="540" y="178" font-size="10" fill="#1f2933">172s</text>
+<text x="4" y="24" font-size="10" fill="#1f2933">63</text>
+<polyline fill="none" stroke="#3a7bd5" stroke-width="1.5" points="490.5,135.8 493.2,16.0 496.1,133.5 499.1,107.6 502.1,140.5 505.1,98.2 508.1,135.8 511.1,147.6 514.1,149.9 517.1,145.2 520.1,147.6 523.1,138.2 526.1,149.9 529.1,154.6 532.0,149.9 535.0,149.9 538.0,149.9 541.0,152.3 544.0,157.0 548.2,161.7 550.0,98.2"/>
+<text x="440" y="20" font-size="11" fill="#3a7bd5">Velocity 3.4.0</text>
 </svg>
 
 ## Added latency at low load
@@ -67,23 +67,23 @@ Chat round-trip through the proxy versus straight to the backend. Added latency 
 
 | Proxy | via proxy p50 | via proxy p99 | direct p50 | added p50 | added p99 |
 |---|--:|--:|--:|--:|--:|
-| Warp | 21.0 ms | 155.0 ms | 16.0 ms | 5.0 ms | 86.0 ms |
+| Velocity 3.4.0 | 17.0 ms | 414.0 ms | 17.0 ms | 0.0 ms | 355.0 ms |
 
 <svg xmlns="http://www.w3.org/2000/svg" width="520" height="64" role="img" aria-label="Added p99 latency (ms, lower is better)">
 <text x="8" y="16" font-size="13" font-weight="bold" fill="#1f2933">Added p99 latency (ms, lower is better)</text>
 <line x1="150" y1="20" x2="150" y2="56" stroke="#d7dce2"/>
-<text x="142" y="38" text-anchor="end" font-size="12" fill="#1f2933">Warp</text>
+<text x="142" y="38" text-anchor="end" font-size="12" fill="#1f2933">Velocity 3.4.0</text>
 <rect x="150" y="28" width="300.0" height="16" rx="3" fill="#3a7bd5"/>
-<text x="456.0" y="41" font-size="12" fill="#1f2933">86.0 ms</text>
+<text x="456.0" y="41" font-size="12" fill="#1f2933">355.0 ms</text>
 </svg>
 
 ## Switch storm
 
-Bots repeatedly run /server to change backend. Reports sustained switches per second, failures, and how long a switch took (command sent to chunks from the new backend).
+Bots repeatedly run /server to change backend. Reports sustained switches per second, failures, and how long a switch took: from the command to the first chunk of the new backend (proxy hand-off plus backend login), and to five chunks (world arriving).
 
-| Proxy | bots | switches | /s | failures | p50 | p99 |
-|---|--:|--:|--:|--:|--:|--:|
-| Warp | 3 | 59 | 3.9 | 2 | 510 ms | 1685 ms |
+| Proxy | bots | switches | /s | failures | first chunk p50 | 5 chunks p50 | 5 chunks p99 |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| Velocity 3.4.0 | 5 | 57 | 3.8 | 0 | 101 ms | 107 ms | 10200 ms |
 
 ## Connection / status storm
 
@@ -91,7 +91,7 @@ Hostile connections at a rising rate while a genuine player tries to join. The k
 
 | Proxy | joined @ 500/s | peak CPU % |
 |---|:--:|--:|
-| Warp | yes | 24 |
+| Velocity 3.4.0 | yes | 45 |
 
 ## Exact versions
 
@@ -107,7 +107,7 @@ Hostile connections at a rising rate while a genuine player tries to join. The k
 
 ```json
 {
-  "date": "2026-11-09T15:43:14.558Z",
+  "date": "2026-11-09T16:15:29.009Z",
   "host": "PC-TOUR-MATHEO",
   "platform": "linux",
   "arch": "x64",
@@ -126,7 +126,7 @@ Hostile connections at a rising rate while a genuine player tries to join. The k
   "node": "v22.22.3",
   "java": "",
   "isWsl": true,
-  "harnessSha": "6856300",
+  "harnessSha": "fc88a64",
   "proxies": {
     "warp": "0.1.0-beta.7",
     "velocity": "3.4.0-566",
