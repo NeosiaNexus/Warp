@@ -128,7 +128,7 @@ class ManagementServerTest {
         HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + address.getPort() + path))
             .timeout(ANSWER_TIMEOUT)
             .GET();
-    for (int i = 0; i < headers.length; i += 2) {
+    for (int i = 0; i + 1 < headers.length; i += 2) {
       request.header(headers[i], headers[i + 1]);
     }
     return client.send(request.build(), HttpResponse.BodyHandlers.ofByteArray());

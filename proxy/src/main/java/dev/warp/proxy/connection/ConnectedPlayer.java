@@ -998,16 +998,17 @@ public final class ConnectedPlayer {
   }
 
   /** The {@code outcome} of a connection attempt that got no backend connection. */
-  private static ServerConnectOutcome connectFailure(@Nullable Throwable ex) {
+  static ServerConnectOutcome connectFailure(@Nullable Throwable ex) {
     Throwable cause = ex;
     while (cause != null) {
-      if (cause instanceof java.net.ConnectException) {
-        return ServerConnectOutcome.REFUSED;
-      }
+      // Netty's ConnectTimeoutException extends ConnectException: timeouts come first.
       if (cause instanceof io.netty.channel.ConnectTimeoutException
           || cause instanceof java.util.concurrent.TimeoutException
           || cause instanceof io.netty.handler.timeout.TimeoutException) {
         return ServerConnectOutcome.TIMEOUT;
+      }
+      if (cause instanceof java.net.ConnectException) {
+        return ServerConnectOutcome.REFUSED;
       }
       if (cause instanceof java.nio.channels.ClosedChannelException
           || cause instanceof java.io.IOException) {

@@ -31,7 +31,6 @@ import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.play.KeepAlive;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Random;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -290,7 +289,9 @@ class TrafficObserverTest {
 
   private static byte[] packet(int size) {
     byte[] payload = new byte[size - 1];
-    new Random(size).nextBytes(payload);
+    for (int i = 0; i < payload.length; i++) {
+      payload[i] = (byte) (i * 31 + size);
+    }
     return Frames.packet(0x55, payload);
   }
 }

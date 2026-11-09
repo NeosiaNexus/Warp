@@ -415,7 +415,7 @@ public final class MetricRegistry implements Metrics {
   private record Registered(Owner owner, Collector collector) {}
 
   /** A metric: its description and its children, one per label combination. */
-  private abstract class Family implements Comparable<Family> {
+  private abstract class Family {
     final Owner owner;
     final String name;
     final String help;
@@ -511,11 +511,6 @@ public final class MetricRegistry implements Metrics {
             return 0;
           });
       return sorted;
-    }
-
-    @Override
-    public int compareTo(Family other) {
-      return name.compareTo(other.name);
     }
   }
 

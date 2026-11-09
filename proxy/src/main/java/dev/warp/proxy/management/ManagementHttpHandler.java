@@ -180,8 +180,8 @@ final class ManagementHttpHandler extends SimpleChannelInboundHandler<FullHttpRe
               head,
               HttpResponseStatus.NOT_FOUND,
               error("metrics are off; see management.metrics.enabled in warp.conf"));
-        } else if (readOnly(ctx, method, head)
-            && (!metrics.requireToken() || authorize(ctx, request, "GET /metrics"))) {
+        } else if ((!metrics.requireToken() || authorize(ctx, request, "GET /metrics"))
+            && readOnly(ctx, method, head)) {
           metrics(ctx, request, head, uri);
         }
       }
