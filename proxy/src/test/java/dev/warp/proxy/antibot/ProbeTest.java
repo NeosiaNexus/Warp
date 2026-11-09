@@ -162,6 +162,64 @@ class ProbeTest {
   // ---------------------------------------------------------------------------
 
   @Nested
+  @DisplayName("a client without cookies")
+  class NoCookies {
+
+    @Test
+    @DisplayName(
+        "should wait one grace for the cookie after the keep-alive echo, not the whole timeout")
+    void cookieGrace() {
+      Probe probe = configuration(MODERN);
+      probe.settings(VANILLA_SETTINGS);
+      probe.brand("node-minecraft-protocol");
+      nanos.addAndGet(TimeUnit.MILLISECONDS.toNanos(20));
+      probe.pong(probe.pingId());
+      long afterPong = probe.deadlineNanos();
+      nanos.addAndGet(TimeUnit.MILLISECONDS.toNanos(1));
+
+      Probe.Outcome outcome = probe.keepAlive(probe.keepAliveId());
+
+      assertInstanceOf(Probe.Outcome.Pending.class, outcome);
+      assertEquals(nanos.get() + Probe.COOKIE_GRACE.toNanos(), probe.deadlineNanos());
+      assertTrue(probe.deadlineNanos() < afterPong, "moved closer");
+      nanos.set(probe.deadlineNanos() - 1);
+      assertInstanceOf(Probe.Outcome.Pending.class, probe.deadline());
+      nanos.set(probe.deadlineNanos());
+      Probe.Outcome.Passed passed = assertInstanceOf(Probe.Outcome.Passed.class, probe.deadline());
+      assertEquals(Set.of(Probe.Flag.COOKIE_MISSING), passed.flags());
+      assertTrue(passed.trusted());
+    }
+
+    @Test
+    @DisplayName("should give the cookie four round trips when the connection is slow")
+    void cookieGraceFollowsRoundTrip() {
+      Probe probe = configuration(MODERN);
+      probe.settings(VANILLA_SETTINGS);
+      long rtt = TimeUnit.MILLISECONDS.toNanos(400);
+      nanos.addAndGet(rtt);
+      probe.pong(probe.pingId());
+
+      probe.keepAlive(probe.keepAliveId());
+
+      assertEquals(nanos.get() + 4 * rtt, probe.deadlineNanos());
+    }
+
+    @Test
+    @DisplayName("should move no deadline before 1.20.5, where no cookie is asked")
+    void noGraceWithoutCookie() {
+      Probe probe = configuration(FIRST_CONFIGURATION);
+      nanos.addAndGet(TimeUnit.MILLISECONDS.toNanos(20));
+      probe.pong(probe.pingId());
+      long afterPong = probe.deadlineNanos();
+
+      Probe.Outcome outcome = probe.keepAlive(probe.keepAliveId());
+
+      assertInstanceOf(Probe.Outcome.Pending.class, outcome, "its settings are still to come");
+      assertEquals(afterPong, probe.deadlineNanos());
+    }
+  }
+
+  @Nested
   @DisplayName("hard verdicts")
   class HardVerdicts {
 

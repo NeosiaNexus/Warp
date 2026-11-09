@@ -60,7 +60,12 @@ import org.jspecify.annotations.Nullable;
  *
  * <p><b>Deadlines</b> follow the measured round trip (rule 3): the first answer gets {@code
  * probe-timeout}; once the ping is answered, every later one gets {@code probe-timeout} plus four
- * round trips, within {@value #MAX_SECONDS} s in all.
+ * round trips, within {@value #MAX_SECONDS} s in all. One exception: the cookie answer, which is
+ * optional (its absence is a flag) and follows the keep-alive echo at once in a client that gives
+ * it, since the request was flushed right after the keep-alive and clients answer in order. Once
+ * the keep-alive is echoed, the probe waits for the cookie only {@link #COOKIE_GRACE} or four round
+ * trips, whichever is longer: a client without cookies (client libraries, most of all) is let in
+ * without paying the whole {@code probe-timeout}.
  *
  * <p>Not thread-safe: a probe belongs to one connection's event loop.
  */
@@ -71,6 +76,13 @@ public final class Probe {
 
   /** The key of the cookie the configuration probe stores and asks back. */
   public static final String COOKIE_KEY = "warp:probe";
+
+  /**
+   * How long the probe waits for the cookie answer after the keep-alive echo, at least: a client
+   * that answers cookies does so right after the keep-alive, so a longer wait only delays the
+   * clients that have none, flagged {@link Flag#COOKIE_MISSING} and let in.
+   */
+  public static final Duration COOKIE_GRACE = Duration.ofSeconds(1);
 
   /** The size of the random cookie payload. */
   static final int COOKIE_BYTES = 16;
@@ -320,6 +332,12 @@ public final class Probe {
       measureRoundTrip();
     }
     answered(1);
+    if (cookiePayload != null && !cookieAnswered) {
+      // The cookie answer, if it comes, is right behind: wait one grace for it, not the whole
+      // base deadline (the deadline only moves closer, and the cap holds).
+      long grace = Math.max(COOKIE_GRACE.toNanos(), 4 * roundTripNanos);
+      deadlineNanos = Math.min(deadlineNanos, nanoClock.getAsLong() + grace);
+    }
     return evaluate(false);
   }
 

@@ -317,6 +317,32 @@ class VerificationLoginTest {
     }
 
     @Test
+    @DisplayName(
+        "should let a client that answers no cookie in after a short grace, flagged, not after the"
+            + " whole timeout")
+    void noCookieWaitsOneGrace() throws Exception {
+      start(false, AntiBotConfig.Verification.DEFAULTS);
+      EmbeddedChannel channel = login("Steve", "203.0.113.9", MODERN);
+      nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, MODERN);
+      send(channel, ProtocolState.LOGIN, new LoginAcknowledged(), MODERN);
+      Asked asked = asked(channel, MODERN);
+      // node-minecraft-protocol 1.68: settings, brand, pong and keep-alive, never a cookie.
+      send(channel, ProtocolState.CONFIGURATION, SETTINGS, MODERN);
+      send(channel, ProtocolState.CONFIGURATION, brand("vanilla"), MODERN);
+      send(channel, ProtocolState.CONFIGURATION, new ConfigPong(asked.ping), MODERN);
+      send(channel, ProtocolState.CONFIGURATION, new KeepAlive(asked.keepAlive), MODERN);
+      assertEquals(1, bots().status().verifications().running(), "waiting for the cookie");
+
+      advance(channel, Probe.COOKIE_GRACE);
+
+      Identity steve = new Identity.NameAtAddress("Steve", address("203.0.113.9"));
+      assertTrue(waitFor(() -> bots().verified().check(steve).isPresent()), "one flag: trusted");
+      assertEquals(1, bots().status().verifications().passed());
+      assertEquals(0, bots().status().verifications().running());
+      assertNotRefused();
+    }
+
+    @Test
     @DisplayName("should let a client in with two flags or more, without trusting it")
     void flaggedPassesUntrusted() throws Exception {
       start(false, AntiBotConfig.Verification.DEFAULTS);

@@ -1368,7 +1368,10 @@ authentication`):
   frame still forwarded untouched), a random `warp:probe` cookie stored and asked back (1.20.5+). No
   Select Known Packs offer: the e2e matrix showed node-minecraft-protocol answers one offer per
   configuration phase, so the proxy's offer left the server's unanswered (see §10, item 2). The last answer closes the probe (clients answer in order), the deadline is
-  `probe-timeout` + 4 RTT after the pong, 30 s at most. Hard verdicts only on a wrong echo, a packet
+  `probe-timeout` + 4 RTT after the pong, 30 s at most; once the Keep Alive is echoed, the cookie (optional,
+  flagged when missing) gets only max(1 s, 4 RTT) more, so a client without cookies (node-minecraft-protocol
+  1.68 has none) is let in without paying the whole `probe-timeout` (the full e2e matrix hit its 30 min job
+  budget when every bot login waited 5 s). Hard verdicts only on a wrong echo, a packet
   illegal in the state, a changed cookie, or no echo and no settings at the deadline; everything else
   is a flag (`Probe.Flag`), and a pass with two flags or more lets the player in without trusting it.
 - The pre-join probe (`PreJoinProbeSessionHandler`): one Keep Alive before Join Game for 1.8 to 1.20.1;

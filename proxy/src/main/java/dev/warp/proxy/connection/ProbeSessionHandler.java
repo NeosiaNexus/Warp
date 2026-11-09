@@ -92,6 +92,10 @@ final class ProbeSessionHandler implements SessionHandler {
   private final LongSupplier nanoClock;
   private @Nullable ClientInformation settings;
   private @Nullable ScheduledFuture<?> deadline;
+
+  /** The probe's deadline {@link #deadline} was scheduled for, to notice it moving closer. */
+  private long deadlineAtNanos;
+
   private boolean ended;
 
   /** Frames the client sent for its first server, which no probe reads. */
@@ -242,7 +246,8 @@ final class ProbeSessionHandler implements SessionHandler {
   // ---------------------------------------------------------------------------
 
   private void scheduleDeadline() {
-    long delay = Math.max(0, probe.deadlineNanos() - nanoClock.getAsLong());
+    deadlineAtNanos = probe.deadlineNanos();
+    long delay = Math.max(0, deadlineAtNanos - nanoClock.getAsLong());
     deadline =
         connection
             .channel()
@@ -292,7 +297,11 @@ final class ProbeSessionHandler implements SessionHandler {
     }
     switch (outcome) {
       case Probe.Outcome.Pending _ -> {
-        // Waiting for more.
+        // Waiting for more; sooner when the answer moved the deadline closer (the cookie's grace).
+        if (deadline != null && probe.deadlineNanos() - deadlineAtNanos < 0) {
+          cancelDeadline();
+          scheduleDeadline();
+        }
       }
       case Probe.Outcome.Passed passed -> {
         ended = true;
