@@ -21,14 +21,17 @@ dependencies the first time; it adds no npm dependencies of its own.
 | Scenario | What it answers | Headline metric |
 |---|---|---|
 | Idle connections | Per-connection cost | RSS, file descriptors and CPU at 500 / 2000 / 5000 idle connections |
-| Heavy traffic | Forwarding efficiency | throughput, CPU seconds per MB forwarded |
-| Added latency | The proxy's own cost on the path | chat round-trip through the proxy minus direct, p50/p99 |
+| Heavy traffic | Forwarding efficiency | bytes written per second, CPU seconds per MB written |
+| Added latency | The proxy's own cost on the path | tab-complete round-trip through the proxy minus direct (same background load on both), p50/p99 |
 | Switch storm | Robustness under churn | sustained switches per second, failures, switch latency |
 | Connection storm | Anti-flood behaviour | whether a real player still joins at 1k / 5k / 10k conn/s, CPU, memory |
 
 Each scenario warms up, then measures over a fixed window, repeated three times (once in smoke mode);
 tables report the median. The proxy is sampled once a second from `/proc` (never from its own
-metrics), and latency is measured from the intended send time to guard against coordinated omission.
+metrics); bytes forwarded are the proxy's bytes written, since a JVM's socket reads are not
+accounted in `/proc/<pid>/io` while a Go runtime's are. The latency probe waits for its join burst
+to end, discards a warm-up, counts a timed-out round at the timeout, and measures from the intended
+send time to guard against coordinated omission.
 
 ## How it stays fair
 

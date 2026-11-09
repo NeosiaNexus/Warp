@@ -5,7 +5,7 @@
 // and durations come from the caller, so smoke mode runs the same code briefly with a handful of bots.
 import { IdlePool, TrafficPool, SwitchPool, probeLatency, connectionStorm } from './load.js';
 import { sleep } from './reuse.js';
-import { median, percentile } from './stats.js';
+import { median, percentile, trafficWindow } from './stats.js';
 
 export { median, percentile };
 
@@ -15,6 +15,12 @@ function columnMedian(rows, predicate, key) {
   return median(vals);
 }
 
+/** Maximum of a sampler column over the rows of one phase, or null. */
+function columnMax(rows, predicate, key) {
+  const vals = rows.filter(predicate).map((r) => r[key]).filter((v) => typeof v === 'number');
+  return vals.length ? Math.max(...vals) : null;
+}
+
 // ---------------------------------------------------------------------------
 // Idle connections: how much a bare connection costs (RSS, FDs, CPU at rest)
 // ---------------------------------------------------------------------------
@@ -22,7 +28,7 @@ function columnMedian(rows, predicate, key) {
 export async function idleScenario(ctx, { levels, warmupMs, measureMs, reps, ratePerSec }) {
   const results = [];
   for (const level of levels) {
-    const perLevel = { level, rss: [], fds: [], cpu: [], failures: 0 };
+    const perLevel = { level, rss: [], fds: [], cpu: [], online: [], failures: 0 };
     for (let rep = 0; rep < reps; rep++) {
       const pool = new IdlePool({ port: ctx.port, prefix: `idle${level}r${rep}` });
       ctx.state({ scenario: 'idle', phase: 'ramp', offered: level, bots: 0 });
@@ -38,6 +44,7 @@ export async function idleScenario(ctx, { levels, warmupMs, measureMs, reps, rat
       perLevel.rss.push(columnMedian(ctx.rows(), inWindow, 'rssMiB'));
       perLevel.fds.push(columnMedian(ctx.rows(), inWindow, 'fds'));
       perLevel.cpu.push(columnMedian(ctx.rows(), inWindow, 'cpuPct'));
+      perLevel.online.push(pool.online);
       await pool.drain();
       ctx.state({ scenario: 'idle', phase: 'drain', offered: level, bots: 0 });
       await sleep(1_000);
@@ -47,6 +54,7 @@ export async function idleScenario(ctx, { levels, warmupMs, measureMs, reps, rat
       rssMiB: median(perLevel.rss.filter((v) => v != null)),
       fds: median(perLevel.fds.filter((v) => v != null)),
       cpuPct: median(perLevel.cpu.filter((v) => v != null)),
+      online: median(perLevel.online),
       failures: perLevel.failures,
     });
   }
@@ -73,16 +81,13 @@ export async function trafficScenario(ctx, { bots, warmupMs, measureMs, reps, ra
     const to = ctx.now();
     const inWindow = (r) => r.scenario === 'traffic' && r.phase === 'measure' && r.t >= from && r.t <= to;
     const rows = ctx.rows().filter(inWindow);
-    const bytesPerSec = median(rows.map((r) => r.readBytes + r.writeBytes));
-    const cpu = columnMedian(ctx.rows(), inWindow, 'cpuPct');
-    const mbForwarded = rows.reduce((s, r) => s + r.readBytes + r.writeBytes, 0) / 1024 / 1024;
-    const cpuSeconds = rows.reduce((s, r) => s + (r.cpuPct ?? 0) / 100, 0);
+    const window = trafficWindow(rows);
     repResults.push({
       online: pool.online,
       chunks: pool.chunks - chunksBefore,
-      bytesPerSec,
-      cpuPct: cpu,
-      cpuPerMb: mbForwarded > 0 ? cpuSeconds / mbForwarded : null,
+      bytesPerSec: window.bytesPerSec,
+      cpuPct: columnMedian(ctx.rows(), inWindow, 'cpuPct'),
+      cpuPerMb: window.cpuPerMb,
       rssMiB: columnMedian(ctx.rows(), inWindow, 'rssMiB'),
     });
     await pool.drain();
@@ -105,19 +110,33 @@ export async function trafficScenario(ctx, { bots, warmupMs, measureMs, reps, ra
 // Added latency at low load (probe vs direct)
 // ---------------------------------------------------------------------------
 
-export async function latencyScenario(ctx, { samples, intervalMs, backgroundBots, ratePerSec }) {
-  // A little background load, below the knee, so the number is "added latency under light use".
-  const bg = new TrafficPool({ port: ctx.port, version: ctx.version, prefix: 'lat_bg' });
-  if (backgroundBots > 0) {
-    await bg.fill(backgroundBots, ratePerSec);
-    bg.startMoving();
-  }
-  ctx.state({ scenario: 'latency', phase: 'measure', offered: backgroundBots, bots: bg.online });
-  const viaProxy = await probeLatency({ port: ctx.port, version: ctx.version, samples, intervalMs, username: 'probe_proxy' });
-  await bg.drain();
-  // Direct baseline against the forwarding-free clone backend, same probe.
-  const direct = await probeLatency({ port: ctx.directPort, version: ctx.version, samples, intervalMs, username: 'probe_direct' });
-  const stat = (arr) => ({ p50: median(arr), p99: percentile(arr, 99), max: arr.length ? Math.max(...arr) : null, n: arr.length });
+export async function latencyScenario(ctx, { samples, intervalMs, warmup = 0, timeoutMs = 8_000, backgroundBots, ratePerSec }) {
+  // A little background load, below the knee, so the number is "added latency under light use". The
+  // direct baseline runs the same probe against the forwarding-free clone backend with the same
+  // background bots on it, so the difference is the proxy hop and nothing else.
+  const probe = async (port, prefix) => {
+    const bg = new TrafficPool({ port, version: ctx.version, prefix: `${prefix}_bg` });
+    try {
+      if (backgroundBots > 0) {
+        await bg.fill(backgroundBots, ratePerSec);
+        bg.startMoving();
+      }
+      ctx.state({ scenario: 'latency', phase: prefix, offered: backgroundBots, bots: bg.online });
+      return await probeLatency({ port, version: ctx.version, samples, intervalMs, warmup, timeoutMs, username: `probe_${prefix}` });
+    } finally {
+      await bg.drain();
+    }
+  };
+  const viaProxy = await probe(ctx.port, 'proxy');
+  const direct = await probe(ctx.directPort, 'direct');
+  const stat = (r) => ({
+    p50: median(r.latencies),
+    p99: percentile(r.latencies, 99),
+    max: r.latencies.length ? Math.max(...r.latencies) : null,
+    n: r.latencies.length,
+    timeouts: r.timeouts,
+    settled: r.settled,
+  });
   const p = stat(viaProxy);
   const d = stat(direct);
   const added = (a, b) => (a != null && b != null ? Math.round((a - b) * 10) / 10 : null);
@@ -125,6 +144,8 @@ export async function latencyScenario(ctx, { samples, intervalMs, backgroundBots
     viaProxy: p,
     direct: d,
     added: { p50: added(p.p50, d.p50), p99: added(p.p99, d.p99) },
+    warmup,
+    timeoutMs,
   };
 }
 
@@ -172,6 +193,7 @@ export async function stormScenario(ctx, { rates, durationMs }) {
       joined: r.joinedDuringStorm,
       joinError: r.joinError,
       cpuPct: columnMedian(ctx.rows(), inWindow, 'cpuPct'),
+      cpuPeakPct: columnMax(ctx.rows(), inWindow, 'cpuPct'),
       rssMiB: columnMedian(ctx.rows(), inWindow, 'rssMiB'),
     });
     ctx.state({ scenario: 'storm', phase: 'cool', offered: rate, bots: 0 });

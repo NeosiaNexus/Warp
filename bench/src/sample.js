@@ -1,8 +1,10 @@
 // Samples a running proxy once a second, from /proc alone so it works the same for a JVM proxy and a
 // Go proxy: resident memory, threads, open file descriptors, CPU percent, bytes read and written at
-// the syscall boundary (a process-specific stand-in for bytes forwarded), and the count of client
-// and backend TCP connections. Nothing here reads the proxy's own metrics: the methodology measures
-// the proxy from the outside, never from inside it. Rows accumulate and are written to CSV at the end
+// the syscall boundary, and the count of client and backend TCP connections. Only the written bytes
+// (`wchar`) stand in for bytes forwarded: a JVM's Netty socket reads do not show up in `rchar` while
+// a Go runtime's do, so `rchar` is recorded for the record but never compared across proxies.
+// Nothing here reads the proxy's own metrics: the methodology measures the proxy from the outside,
+// never from inside it. Rows accumulate and are written to CSV at the end
 // of each scenario, with the scenario's phase and the offered load annotated on every row.
 import { readdirSync, readFileSync, readlinkSync } from 'node:fs';
 

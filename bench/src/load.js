@@ -6,6 +6,7 @@
 import { connect as netConnect } from 'node:net';
 
 import { connect as connectBot } from '../../e2e/src/clients/mineflayer.js';
+import { probeRounds, settle } from './probe.js';
 import { sleep } from './reuse.js';
 import { connectIdle, frameHandshake, frameStatusRequest } from './rawclient.js';
 
@@ -155,8 +156,13 @@ export class TrafficPool {
 }
 
 // ---------------------------------------------------------------------------
-// Latency probe (chat round-trip through the proxy vs direct to the backend)
+// Latency probe (tab-complete round-trip through the proxy vs direct to the backend)
 // ---------------------------------------------------------------------------
+
+/** The join burst has ended once no chunk has arrived for this long. */
+const BURST_QUIET_MS = 1_500;
+/** Never wait longer than this for the join burst to end. */
+const BURST_MAX_MS = 20_000;
 
 /**
  * One probe bot asks the server to complete a command prefix at a fixed cadence and times the reply.
@@ -164,41 +170,29 @@ export class TrafficPool {
  * keep-alive but on demand and at a controlled rate, and crucially it is not chat or a command: a
  * modern server answers it without the signing that makes it disconnect an offline bot's chat or
  * command packet. The prefix must match at least one command, because a server sends no response for
- * a prefix with no suggestions; `/he` matches `help` on every server. Latency is measured from the
- * intended send time, not the actual one, so a slow round does not hide behind the next (the
- * coordinated-omission guard).
- * @returns {Promise<number[]>} raw latencies in milliseconds
+ * a prefix with no suggestions; `/he` matches `help` on every server. The probe waits for the bot's
+ * join burst (its chunks) to end, runs `warmup` rounds it discards, then `samples` rounds it keeps;
+ * latency is measured from the intended send time, not the actual one, so a slow round does not
+ * hide behind the next (the coordinated-omission guard), and a round slower than `timeoutMs` counts
+ * as `timeoutMs` (see probe.js).
+ * @returns {Promise<{latencies: number[], timeouts: number, warmup: number, settled: boolean}>}
  */
-export async function probeLatency({ port, version, samples, intervalMs, username = 'probe' }) {
+export async function probeLatency({ port, version, samples, intervalMs, warmup = 0, timeoutMs = 8_000, username = 'probe' }) {
   const bot = await connectGuarded({ host: HOST, port, version, username });
-  const latencies = [];
   try {
-    const start = Date.now();
-    for (let i = 0; i < samples; i++) {
-      const intended = start + i * intervalMs;
-      const wait = intended - Date.now();
-      if (wait > 0) await sleep(wait);
-      try {
-        await withTimeout(bot.bot.tabComplete('/he', false), 8_000);
-        latencies.push(Date.now() - intended);
-      } catch {
-        // a dropped or timed-out round is a gap, not the end of the probe
-      }
-    }
+    const settled = await settle(() => bot.stats.chunks, { quietMs: BURST_QUIET_MS, maxMs: BURST_MAX_MS, sleep });
+    const result = await probeRounds({
+      round: () => bot.bot.tabComplete('/he', false),
+      samples,
+      warmup,
+      intervalMs,
+      timeoutMs,
+      sleep,
+    });
+    return { ...result, settled };
   } finally {
     await bot.quit();
   }
-  return latencies;
-}
-
-function withTimeout(promise, ms) {
-  let timer;
-  return Promise.race([
-    Promise.resolve(promise).finally(() => clearTimeout(timer)),
-    new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error('timeout')), ms);
-    }),
-  ]);
 }
 
 // ---------------------------------------------------------------------------

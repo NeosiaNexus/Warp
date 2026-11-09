@@ -83,7 +83,9 @@ ${lines}
 
 function fairnessRow(r) {
   if (!r.natives) return `${r.label}: not launched`;
-  const flag = r.natives.ok ? 'confirmed' : 'NOT CONFIRMED (run marked unfair)';
+  let flag;
+  if (r.natives.checked === false) flag = 'none to check (no native compression or transport to load; standard library)';
+  else flag = r.natives.ok ? 'confirmed' : 'NOT CONFIRMED (run marked unfair)';
   return `**${r.label}** (forwarding: ${r.forwarding}) - natives ${flag}\n` + r.natives.notes.map((n) => `  - ${n}`).join('\n');
 }
 
@@ -147,7 +149,7 @@ export function buildReport({ results, env, versions, profileName, date, cpuNote
   if (results.some((r) => r.metrics.traffic)) {
     out.push('## Heavy traffic (moving bots, loading chunks)');
     out.push('');
-    out.push('Bots walk and load chunks so the proxy forwards a real clientbound stream. Throughput is the proxy\'s read+write bytes per second at the syscall boundary; CPU per MB is proxy CPU-seconds divided by MB forwarded in the window.');
+    out.push('Bots walk and load chunks so the proxy forwards a real clientbound stream. Throughput is the proxy\'s bytes written per second at the syscall boundary (writes alone: every forwarded byte is written exactly once by every proxy, while read accounting differs between a JVM and a Go runtime); CPU per MB is proxy CPU-seconds divided by MB written in the window.');
     out.push('');
     out.push('| Proxy | bots | throughput | CPU % | CPU-s/MB | RSS |');
     out.push('|---|--:|--:|--:|--:|--:|');
@@ -170,17 +172,18 @@ export function buildReport({ results, env, versions, profileName, date, cpuNote
   if (results.some((r) => r.metrics.latency)) {
     out.push('## Added latency at low load');
     out.push('');
-    out.push('Chat round-trip through the proxy versus straight to the backend. Added latency is the difference; it is the proxy\'s own cost on the path.');
+    const lat = results.map((r) => r.metrics.latency).find(Boolean);
+    out.push(`Tab-complete round-trip (a request-response the backend answers, not chat) through the proxy versus straight to a forwarding-free clone backend, with the same background bots on both. Added latency is the difference; it is the proxy\'s own cost on the path. The probe waits for its join burst to end, discards ${lat?.warmup ?? 0} warm-up rounds, and counts a round slower than ${lat?.timeoutMs ?? 8000} ms at that value (the timeouts column). n is the number of counted rounds.`);
     out.push('');
-    out.push('| Proxy | via proxy p50 | via proxy p99 | direct p50 | added p50 | added p99 |');
-    out.push('|---|--:|--:|--:|--:|--:|');
+    out.push('| Proxy | via proxy p50 | via proxy p99 | direct p50 | added p50 | added p99 | n | timeouts |');
+    out.push('|---|--:|--:|--:|--:|--:|--:|--:|');
     for (const r of results) {
       const m = r.metrics.latency;
       if (!m) {
-        out.push(`| ${r.label} | - | - | - | - | - |`);
+        out.push(`| ${r.label} | - | - | - | - | - | - | - |`);
         continue;
       }
-      out.push(`| ${r.label} | ${num(m.viaProxy.p50, 1)} ms | ${num(m.viaProxy.p99, 1)} ms | ${num(m.direct.p50, 1)} ms | ${num(m.added.p50, 1)} ms | ${num(m.added.p99, 1)} ms |`);
+      out.push(`| ${r.label} | ${num(m.viaProxy.p50, 1)} ms | ${num(m.viaProxy.p99, 1)} ms | ${num(m.direct.p50, 1)} ms | ${num(m.added.p50, 1)} ms | ${num(m.added.p99, 1)} ms | ${m.viaProxy.n ?? '-'} | ${m.viaProxy.timeouts ?? '-'} / ${m.direct.timeouts ?? '-'} |`);
     }
     out.push('');
     out.push(barChart('Added p99 latency (ms, lower is better)', results.map((r) => ({ label: r.label, value: r.metrics.latency?.added.p99 })), { unit: ' ms', digits: 1 }));
@@ -217,13 +220,19 @@ export function buildReport({ results, env, versions, profileName, date, cpuNote
     out.push('Hostile connections at a rising rate while a genuine player tries to join. The key question is whether the real player still gets in, and at what CPU and memory cost.');
     out.push('');
     const rates = [...new Set(results.flatMap((r) => (r.metrics.storm?.rates ?? []).map((x) => x.rate)))].sort((a, b) => a - b);
-    out.push(`| Proxy | ${rates.map((x) => `joined @ ${x}/s`).join(' | ')} | peak CPU % |`);
-    out.push(`|---|${rates.map(() => ':--:').join('|')}|--:|`);
+    out.push('Median CPU is the highest per-rate median over the flood; peak CPU is the highest one-second sample in any flood window.');
+    out.push('');
+    out.push(`| Proxy | ${rates.map((x) => `joined @ ${x}/s`).join(' | ')} | median CPU % | peak CPU % |`);
+    out.push(`|---|${rates.map(() => ':--:').join('|')}|--:|--:|`);
     for (const r of results) {
-      const byRate = Object.fromEntries((r.metrics.storm?.rates ?? []).map((x) => [x.rate, x]));
+      const stormRates = r.metrics.storm?.rates ?? [];
+      const byRate = Object.fromEntries(stormRates.map((x) => [x.rate, x]));
       const cells = rates.map((x) => (byRate[x] ? (byRate[x].joined ? 'yes' : 'NO') : '-'));
-      const cpu = Math.max(0, ...(r.metrics.storm?.rates ?? []).map((x) => x.cpuPct ?? 0));
-      out.push(`| ${r.label} | ${cells.join(' | ')} | ${num(cpu, 0)} |`);
+      const maxOf = (key) => {
+        const vals = stormRates.map((x) => x[key]).filter((v) => typeof v === 'number');
+        return vals.length ? Math.max(...vals) : null;
+      };
+      out.push(`| ${r.label} | ${cells.join(' | ')} | ${num(maxOf('cpuPct'), 0)} | ${num(maxOf('cpuPeakPct'), 0)} |`);
     }
     out.push('');
   }

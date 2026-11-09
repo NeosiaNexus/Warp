@@ -70,10 +70,20 @@ describe('buildReport', () => {
       metrics: {
         idle: { levels: [{ level: 50, rssMiB: 120, fds: 80, cpuPct: 2, failures: 0 }] },
         traffic: { online: 10, bytesPerSec: 2_000_000, cpuPct: 30, cpuPerMb: 0.012, rssMiB: 200, chunks: 400 },
-        latency: { viaProxy: { p50: 3, p99: 8 }, direct: { p50: 2, p99: 5 }, added: { p50: 1, p99: 3 } },
+        latency: { viaProxy: { p50: 3, p99: 8, n: 20, timeouts: 1 }, direct: { p50: 2, p99: 5, n: 20, timeouts: 0 }, added: { p50: 1, p99: 3 }, warmup: 5, timeoutMs: 8000 },
         switch: { online: 5, switches: 40, switchesPerSec: 2.6, failures: 0, p50Ms: 120, p99Ms: 300 },
-        storm: { rates: [{ rate: 500, opened: 2000, joined: true, cpuPct: 40, rssMiB: 210 }] },
+        storm: { rates: [{ rate: 500, opened: 2000, joined: true, cpuPct: 26, cpuPeakPct: 100, rssMiB: 210 }] },
       },
+    },
+    {
+      id: 'gate',
+      label: 'Gate',
+      forwarding: 'modern',
+      natives: { ok: true, checked: false, notes: ['listening: listening on :25565'] },
+      errors: [],
+      proxyFailures: [],
+      rows: [],
+      metrics: {},
     },
   ];
 
@@ -86,8 +96,34 @@ describe('buildReport', () => {
     assert.match(md, /Added latency/);
     assert.match(md, /Switch storm/);
     assert.match(md, /Connection \/ status storm/);
-    assert.match(md, /natives confirmed/);
+    assert.match(md, /\*\*Warp\*\*.*natives confirmed/);
     assert.match(md, /Paper 1\.21\.4/);
     assert.match(md, /<svg/); // at least one chart
+  });
+
+  it('should say a Go proxy has no natives to check rather than "confirmed"', () => {
+    const md = buildReport({ results, env, versions, profileName: 'smoke', date: '2026-01-01', cpuNote: 'pinning off' });
+    assert.match(md, /\*\*Gate\*\*.*natives none to check/);
+    assert.doesNotMatch(md, /\*\*Gate\*\*.*natives confirmed/);
+  });
+
+  it('should describe the probe as a tab-complete round-trip and show n and timeouts', () => {
+    const md = buildReport({ results, env, versions, profileName: 'smoke', date: '2026-01-01', cpuNote: 'pinning off' });
+    assert.match(md, /Tab-complete round-trip/);
+    assert.doesNotMatch(md, /Chat round-trip/);
+    assert.match(md, /discards 5 warm-up rounds/);
+    assert.match(md, /\| Warp \| 3\.0 ms \| 8\.0 ms \| 2\.0 ms \| 1\.0 ms \| 3\.0 ms \| 20 \| 1 \/ 0 \|/);
+  });
+
+  it('should report the storm peak from the per-second maximum, next to the median', () => {
+    const md = buildReport({ results, env, versions, profileName: 'smoke', date: '2026-01-01', cpuNote: 'pinning off' });
+    assert.match(md, /\| median CPU % \| peak CPU % \|/);
+    assert.match(md, /\| Warp \| yes \| 26 \| 100 \|/);
+  });
+
+  it('should describe throughput as bytes written, not read\+write', () => {
+    const md = buildReport({ results, env, versions, profileName: 'smoke', date: '2026-01-01', cpuNote: 'pinning off' });
+    assert.match(md, /bytes written per second/);
+    assert.doesNotMatch(md, /read\+write/);
   });
 });
