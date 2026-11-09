@@ -1,0 +1,41 @@
+{{- if .Values.autoscaling.enabled }}
+{{- $a := .Values.autoscaling }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "warp.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "warp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "warp.fullname" . }}
+  minReplicas: {{ $a.minReplicas }}
+  maxReplicas: {{ $a.maxReplicas }}
+  metrics:
+    {{- if $a.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $a.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if $a.targetPlayersPerPod }}
+    # warp_players_online, exposed to the HPA by the Prometheus adapter (or KEDA) under this name.
+    - type: Pods
+      pods:
+        metric:
+          name: warp_players_online
+        target:
+          type: AverageValue
+          averageValue: {{ $a.targetPlayersPerPod | quote }}
+    {{- end }}
+  {{- with $a.behavior }}
+  behavior:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

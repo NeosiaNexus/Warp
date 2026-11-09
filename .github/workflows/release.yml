@@ -26,6 +26,7 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
     steps:
       # Pull requests opened with GITHUB_TOKEN wait for a manual approval before CI runs on them;
       # a GitHub App token lets CI run on the release PR right away. Falls back to GITHUB_TOKEN
@@ -131,3 +132,95 @@ jobs:
         run: |
           cp -- "$BUNDLE_PATH" "$JAR.intoto.jsonl"
           gh release upload "$TAG_NAME" "$JAR" "$JAR.intoto.jsonl" SHA256SUMS --clobber
+
+      # The same jar goes into the container images (below), rather than a second build.
+      - name: Upload the jar for the container images
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-jar
+          path: proxy/build/libs/${{ steps.jar.outputs.name }}
+          if-no-files-found: error
+          retention-days: 1
+
+  # ghcr.io/neosianexus/warp:<version> and :<version>-alpine, for linux/amd64 and linux/arm64,
+  # from the released jar: tested, scanned, signed and attested (.github/workflows/_container.yml).
+  container:
+    name: Container images
+    needs: [release-please, publish]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    permissions:
+      contents: read # check out the code
+      packages: write # push the images to GHCR
+      id-token: write # sign the images and their provenance (Sigstore)
+      attestations: write # store the attestations on the repository
+    uses: $/.github/workflows/_container.yml
+    with:
+      ref: ${{ needs.release-please.outputs.tag_name }}
+      version: ${{ needs.release-please.outputs.version }}
+      jar-artifact: release-jar
+      push: true
+
+  # The Helm chart, oci://ghcr.io/neosianexus/charts/warp:<version>, signed with cosign (keyless).
+  # Its version and appVersion are version.txt's: release-please bumps them (extra-files).
+  chart:
+    name: Helm chart
+    needs: [release-please, container]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: release
+      url: https://github.com/${{ github.repository }}/pkgs/container/charts%2Fwarp
+    permissions:
+      contents: read # check out the code
+      packages: write # push the chart to GHCR
+      id-token: write # sign the chart (Sigstore)
+    env:
+      VERSION: ${{ needs.release-please.outputs.version }}
+    steps:
+      - name: Check out ${{ needs.release-please.outputs.tag_name }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+      - name: Package
+        run: |
+          chart=$(sed -n 's/^version: *\([^ #]*\).*/\1/p' charts/warp/Chart.yaml)
+          if [ "$chart" != "$VERSION" ]; then
+            echo "::error file=charts/warp/Chart.yaml::the chart's version ($chart) is not the release's ($VERSION)"
+            exit 1
+          fi
+          helm lint charts/warp --strict
+          helm package charts/warp --destination "$RUNNER_TEMP/chart"
+
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$GITHUB_TOKEN"
+
+      # Verify with: cosign verify ghcr.io/neosianexus/charts/warp:<version> \
+      #   --certificate-identity-regexp 'https://github.com/NeosiaNexus/Warp/' \
+      #   --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      - name: Push and sign
+        run: |
+          registry="oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
+          output=$(helm push "$RUNNER_TEMP/chart/warp-$VERSION.tgz" "$registry" 2>&1)
+          echo "$output"
+          digest=$(sed -n 's/^Digest: *//p' <<< "$output")
+          if [ -z "$digest" ]; then
+            echo "::error::helm push printed no digest"
+            exit 1
+          fi
+          cosign sign --yes "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts/warp@$digest"
+          {
+            echo "### Helm chart"
+            echo
+            echo "\`helm install warp $registry/warp --version $VERSION\` (digest \`$digest\`)"
+          } >> "$GITHUB_STEP_SUMMARY"

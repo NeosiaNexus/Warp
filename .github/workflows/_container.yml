@@ -1,0 +1,302 @@
+name: Container image (reusable)
+
+# Reusable: builds Warp's container image (Dockerfile) from a shadow jar another job built and
+# uploaded as an artifact, in two variants (Ubuntu Noble with glibc, and Alpine with musl), and
+# tests each before anything is published (`test`): the image is built for the runner's
+# architecture, started, probed, pinged and drained by .github/scripts/docker-smoke.sh, then
+# scanned by Trivy (fixed critical and high vulnerabilities fail the run). With `push`, each
+# variant is then built for linux/amd64 and linux/arm64 (`publish`), pushed to GHCR with a SBOM
+# and SLSA provenance in its manifest, signed with cosign (keyless, the workflow's Sigstore
+# identity) and attested on the repository. A caller that only tests needs `contents: read`.
+#
+# Tags: <version> and <version>-alpine; `latest` and `latest-alpine` too for a stable version
+# (no prerelease suffix). `edge` is the version of the images built from main.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: The git ref to build the image from (its Dockerfile and docker/ files).
+        type: string
+        required: true
+      version:
+        description: The image's version tag, such as 0.1.0 or edge.
+        type: string
+        required: true
+      jar-artifact:
+        description: The artifact holding the shadow jar (warp-*.jar, in any directory).
+        type: string
+        required: true
+      push:
+        description: Publish to GHCR (multi-architecture), sign and attest.
+        type: boolean
+        default: false
+      require-natives:
+        description: >-
+          Fail the smoke test unless the proxy compresses with the jar's libdeflate, installed in
+          the image. False for a jar built on one runner, which has that runner's library only.
+        type: boolean
+        default: true
+
+permissions: {}
+
+env:
+  # The runtime images of the two variants, pinned by digest (multi-architecture indexes). The
+  # Noble digest is the Dockerfile's default; both are listed here so that Dependabot's updates to
+  # the Dockerfile and this file stay in step.
+  ALPINE_IMAGE: eclipse-temurin:25-jre-alpine@sha256:e1898fd6a11fc965a994d8ace186fd3585aeb636cf8f05f47a723fcfee0b0918
+
+jobs:
+  test:
+    name: Test (${{ matrix.variant }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: noble
+            suffix: ''
+          - variant: alpine
+            suffix: -alpine
+    permissions:
+      contents: read # check out the code
+    env:
+      VERSION: ${{ inputs.version }}
+      SUFFIX: ${{ matrix.suffix }}
+      VARIANT: ${{ matrix.variant }}
+    steps:
+      - name: Check out ${{ inputs.ref }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Download the shadow jar
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.jar-artifact }}
+          path: ${{ runner.temp }}/jar
+
+      # The Dockerfile's `prebuilt` stage takes the one warp-*.jar of proxy/build/libs.
+      - name: Place the jar
+        run: |
+          mkdir -p proxy/build/libs
+          mapfile -t jars < <(find "$RUNNER_TEMP/jar" -name 'warp-*.jar' -type f)
+          if (( ${#jars[@]} != 1 )); then
+            echo "::error::Expected exactly one warp-*.jar in the artifact, found ${#jars[@]}: ${jars[*]}"
+            exit 1
+          fi
+          cp -- "${jars[0]}" proxy/build/libs/
+          ls -l proxy/build/libs
+
+      - name: Image name and tags
+        id: meta
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/warp"
+          tags="$image:$VERSION$SUFFIX"
+          # A stable version (no prerelease suffix) is also the latest.
+          if [[ "$VERSION" != edge && "$VERSION" != *-* ]]; then
+            tags="$tags,$image:latest$SUFFIX"
+          fi
+          base_image_arg=""
+          if [ "$VARIANT" = alpine ]; then
+            base_image_arg="BASE_IMAGE=$ALPINE_IMAGE"
+          fi
+          {
+            echo "image=$image"
+            echo "tags=$tags"
+            echo "base-image-arg=$base_image_arg"
+            echo "test-tag=warp:test$SUFFIX"
+          } >> "$GITHUB_OUTPUT"
+          echo "Tags: $tags"
+
+      - name: OCI labels
+        id: labels
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.meta.outputs.image }}
+          labels: |
+            org.opencontainers.image.title=Warp
+            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.vendor=Warp Contributors
+            org.opencontainers.image.licenses=AGPL-3.0-only
+            org.opencontainers.image.base.name=${{ matrix.variant == 'alpine' && 'docker.io/library/eclipse-temurin:25-jre-alpine' || 'docker.io/library/eclipse-temurin:25-jre-noble' }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # The runner's architecture only, loaded into the local Docker: what the smoke test and the
+      # scan run against.
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: ${{ steps.meta.outputs.test-tag }}
+          labels: ${{ steps.labels.outputs.labels }}
+          build-args: |
+            JAR_SOURCE=prebuilt
+            ${{ steps.meta.outputs.base-image-arg }}
+          provenance: false
+
+      - name: Smoke test
+        env:
+          TEST_TAG: ${{ steps.meta.outputs.test-tag }}
+          SMOKE_REQUIRE_NATIVES: ${{ inputs.require-natives }}
+        run: .github/scripts/docker-smoke.sh "$TEST_TAG"
+
+      # Fixed critical and high vulnerabilities in the image's packages and the jar's dependencies
+      # fail the run; unfixed ones are reported in the log.
+      - name: Scan with Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.meta.outputs.test-tag }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+
+  publish:
+    name: Publish (${{ matrix.variant }})
+    needs: test
+    if: ${{ inputs.push }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: noble
+            suffix: ''
+          - variant: alpine
+            suffix: -alpine
+    permissions:
+      contents: read # check out the code
+      packages: write # push the image to GHCR
+      id-token: write # sign the image with cosign and the provenance attestation (Sigstore)
+      attestations: write # store the attestation on the repository
+    env:
+      VERSION: ${{ inputs.version }}
+      SUFFIX: ${{ matrix.suffix }}
+      VARIANT: ${{ matrix.variant }}
+    steps:
+      - name: Check out ${{ inputs.ref }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Download the shadow jar
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.jar-artifact }}
+          path: ${{ runner.temp }}/jar
+
+      # The Dockerfile's `prebuilt` stage takes the one warp-*.jar of proxy/build/libs.
+      - name: Place the jar
+        run: |
+          mkdir -p proxy/build/libs
+          mapfile -t jars < <(find "$RUNNER_TEMP/jar" -name 'warp-*.jar' -type f)
+          if (( ${#jars[@]} != 1 )); then
+            echo "::error::Expected exactly one warp-*.jar in the artifact, found ${#jars[@]}: ${jars[*]}"
+            exit 1
+          fi
+          cp -- "${jars[0]}" proxy/build/libs/
+          ls -l proxy/build/libs
+
+      - name: Image name and tags
+        id: meta
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/warp"
+          tags="$image:$VERSION$SUFFIX"
+          # A stable version (no prerelease suffix) is also the latest.
+          if [[ "$VERSION" != edge && "$VERSION" != *-* ]]; then
+            tags="$tags,$image:latest$SUFFIX"
+          fi
+          base_image_arg=""
+          if [ "$VARIANT" = alpine ]; then
+            base_image_arg="BASE_IMAGE=$ALPINE_IMAGE"
+          fi
+          {
+            echo "image=$image"
+            echo "tags=$tags"
+            echo "base-image-arg=$base_image_arg"
+            echo "test-tag=warp:test$SUFFIX"
+          } >> "$GITHUB_OUTPUT"
+          echo "Tags: $tags"
+
+      - name: OCI labels
+        id: labels
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.meta.outputs.image }}
+          labels: |
+            org.opencontainers.image.title=Warp
+            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.vendor=Warp Contributors
+            org.opencontainers.image.licenses=AGPL-3.0-only
+            org.opencontainers.image.base.name=${{ matrix.variant == 'alpine' && 'docker.io/library/eclipse-temurin:25-jre-alpine' || 'docker.io/library/eclipse-temurin:25-jre-noble' }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # SBOM and SLSA provenance travel in the image index (`docker buildx imagetools inspect`).
+      - name: Build and push (linux/amd64, linux/arm64)
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.labels.outputs.labels }}
+          build-args: |
+            JAR_SOURCE=prebuilt
+            ${{ steps.meta.outputs.base-image-arg }}
+          sbom: true
+          provenance: mode=max
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+      # Keyless: the signature names this workflow and repository. Verify with
+      #   cosign verify ghcr.io/neosianexus/warp:<tag> \
+      #     --certificate-identity-regexp 'https://github.com/NeosiaNexus/Warp/' \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      - name: Sign the image
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "$IMAGE@$DIGEST"
+
+      # Verifiable with: gh attestation verify oci://ghcr.io/neosianexus/warp:<tag> --repo NeosiaNexus/Warp
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.meta.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summary
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          {
+            echo "### Image (${VARIANT})"
+            echo
+            echo "Digest: \`$DIGEST\`"
+            echo
+            for tag in ${TAGS//,/ }; do echo "- \`$tag\`"; done
+          } >> "$GITHUB_STEP_SUMMARY"

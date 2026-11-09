@@ -210,6 +210,45 @@ Coming from Velocity or BungeeCord? `java -jar warp.jar migrate /path/to/proxy -
 configuration and reports what became of every setting and plugin: see
 [docs/migration.md](docs/migration.md).
 
+### Run with Docker
+
+Official images, for `linux/amd64` and `linux/arm64`, signed and attested:
+`ghcr.io/neosianexus/warp:<version>` (Temurin 25 JRE on Ubuntu, glibc) and
+`:<version>-alpine` (musl, smaller); `:edge` and `:edge-alpine` follow `main`.
+
+```bash
+docker run -d --name warp -p 25565:25577 \
+  -e WARP_LOBBY_ADDRESS=host.docker.internal:25566 \
+  -e WARP_FORWARDING_SECRET="$(openssl rand -hex 32)" \
+  -v warp-data:/data ghcr.io/neosianexus/warp:latest
+```
+
+The image runs as uid 1000, keeps everything under `/data`, answers its `HEALTHCHECK` from the
+management server, and drains on `docker stop` (give it time: `docker stop -t 1830`). Variables
+set the essentials; mount your own `warp.conf` at `/data/warp.conf` for the rest. A Compose
+example with two backends, the JVM flags and how to verify an image:
+[docs/deploy/docker.md](docs/deploy/docker.md).
+
+### Deploy on Kubernetes
+
+The `warp` Helm chart ([charts/warp](charts/warp), published as an OCI chart) deploys a fleet of
+proxies behind a `LoadBalancer` Service, with probes on the management endpoints, a Secret for the
+forwarding secret, a PodDisruptionBudget, and optionally an HPA, a ServiceMonitor and a
+NetworkPolicy. Its selling point: a rolling update, a scale-down or a node drain sends each Pod
+SIGTERM, Warp drains (readiness says no, players are transferred to your public address, the rest
+leave on their own), and the Pod exits once empty, within a `terminationGracePeriodSeconds` derived
+from the drain settings.
+
+```bash
+helm install warp oci://ghcr.io/neosianexus/charts/warp --version <version> \
+  --namespace minecraft --create-namespace \
+  --set config.servers.lobby.address=lobby.minecraft.svc.cluster.local:25565 \
+  --set drain.transferTo=play.example.com
+```
+
+How it works, the PROXY protocol, metrics, autoscaling and the remote console through
+`port-forward`: [docs/deploy/kubernetes.md](docs/deploy/kubernetes.md).
+
 ### Configure
 
 `warp.conf` (HOCON) is commented; the essentials:

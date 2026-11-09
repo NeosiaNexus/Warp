@@ -8,6 +8,7 @@
 #                               build tools share the version catalog and the same type: Dependabot
 #                               allows one entry, so one prefix, per ecosystem and directory.
 #   github-actions  ci(deps)    workflows and the composite actions (CI)
+#   docker          build(deps) the base images of the container image, pinned by digest (Build System)
 #   npm             test(deps)  the end-to-end harness in e2e/ (Tests)
 #
 # Groups take minor and patch updates: a major update of a library or tool gets its own pull
@@ -103,3 +104,20 @@ updates:
       e2e:
         patterns: ['*']
         update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    # The Dockerfile's base images (eclipse-temurin, by digest). The alpine digest also lives in
+    # .github/workflows/_container.yml, which the github-actions entry does not track: update it
+    # with the Dockerfile's.
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Paris
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build
+      include: scope
+    labels: [dependencies, 'area: build']
