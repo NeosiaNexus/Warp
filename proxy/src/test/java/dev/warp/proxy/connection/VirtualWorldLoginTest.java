@@ -174,8 +174,8 @@ class VirtualWorldLoginTest {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("dev.warp.proxy.connection.VirtualWorldLoginTest#families")
-    @DisplayName("should disconnect a script that lands without falling, after one retry")
-    void scriptFails(ProtocolVersion version) throws Exception {
+    @DisplayName("should let in, never trusted, a script that lands without falling twice")
+    void scriptLetInUntrusted(ProtocolVersion version) throws Exception {
       start(true, false);
       EmbeddedChannel channel = login("bot", "203.0.113.10", version);
       probe(channel, version);
@@ -195,16 +195,21 @@ class VirtualWorldLoginTest {
           new ClientMovement.Position(again.x, again.platformTop(), again.z, true),
           version);
 
-      assertDisconnected(channel, version);
+      // Off the vanilla trajectory twice: not a protocol impossibility, so no kick for it. The
+      // player goes on to its first server (none here: the disconnect is the one for that).
+      channel.runPendingTasks();
       assertEquals(1, bots().status().world().checksRetried());
-      assertEquals(1, bots().status().world().checksFailed());
-      assertEquals(1, limits.refusals(Refusal.WORLD_CHECK_FAILED));
+      assertEquals(1, bots().status().world().checksMismatched());
+      assertEquals(0, bots().status().world().checksFailed());
+      assertEquals(0, bots().status().world().checksPassed());
+      assertEquals(0, limits.refusals(Refusal.WORLD_CHECK_FAILED), "physics never kick");
       assertEquals(0, limits.refusals(Refusal.VERIFICATION_FAILED), "physics never strike");
       assertTrue(
           bots()
               .verified()
               .check(new Identity.NameAtAddress("bot", address("203.0.113.10")))
-              .isEmpty());
+              .isEmpty(),
+          "never trusted");
     }
 
     @ParameterizedTest(name = "{0}")
@@ -312,12 +317,13 @@ class VirtualWorldLoginTest {
       probe(channel, version);
       nextPacket(channel, ProtocolState.CONFIGURATION, KnownPacks.class, version);
 
-      send(
-          channel,
-          ProtocolState.CONFIGURATION,
-          new KnownPacks(List.of(new KnownPacks.Pack("minecraft", "core", "1.21.9"))),
-          version);
+      KnownPacks answer =
+          new KnownPacks(List.of(new KnownPacks.Pack("minecraft", "core", "1.21.9")));
+      ConnectedPlayer via = player("Via");
+      send(channel, ProtocolState.CONFIGURATION, answer, version);
 
+      // The first server asks the same question in this phase: the proxy answers for the client.
+      assertEquals(answer, via.worldKnownPacks());
       ByteBuf next = channel.readOutbound();
       assertNotNull(next, "the player goes on without the world: no server here, a disconnect");
       try {

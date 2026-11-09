@@ -37,10 +37,17 @@ import java.util.random.RandomGenerator;
  * <p>Verdicts follow the rules of section 10: a wrong id, a packet illegal in the state or a first
  * position elsewhere are protocol impossibilities and fail the check; a fall that does not follow
  * the gravity is a {@link Outcome.Mismatch}, which the caller answers with one retry from a new
- * height before it fails the check without a blocklist strike. Deadlines follow the measured round
- * trip: {@code stageTimeout + 4 RTT} per stage, {@value #MAX_SECONDS} s in all. The physics are
- * tick-based, so latency changes nothing else. Tick End (1.21.2+) and the number of flag-only
- * packets are counted, never judged.
+ * height, then lets the client in untrusted ({@link Flag#PHYSICS_MISMATCH}): never a kick, never a
+ * blocklist strike. Deadlines follow the measured round trip: {@code stageTimeout + 4 RTT} per
+ * stage, {@value #MAX_SECONDS} s in all. The physics are tick-based, so latency changes nothing
+ * else. Tick End (1.21.2+) and the number of flag-only packets are counted, never judged.
+ *
+ * <p>Two things a client does for reasons of its own are tolerated during the fall, and the fall
+ * stays on the vanilla trajectory: a position repeated at the height the client already stands at
+ * (its chunk arrived after the teleport, so it has not moved yet; the vanilla client reports its
+ * position every second while idle), and a position that skips up to {@value #MAX_SKIPPED_TICKS}
+ * ticks (a client that simulates several ticks between two reports, as mineflayer catching up does;
+ * the vanilla client reports every tick it moves).
  *
  * <p>Not thread-safe: driven from the connection's event loop.
  */
@@ -66,6 +73,9 @@ public final class WorldCheck {
   /** Positions a client may send during its fall before the check gives up on the physics. */
   private static final int MAX_POSITIONS = 64;
 
+  /** Ticks a position may be ahead of the previous one: the trajectory is still the vanilla one. */
+  static final int MAX_SKIPPED_TICKS = 3;
+
   /** The platform's height: within the proxy's 256-block dimension and the vanilla overworld. */
   private static final int MIN_PLATFORM_Y = 40;
 
@@ -83,7 +93,12 @@ public final class WorldCheck {
     /** The check needed its retry. */
     RETRIED,
     /** The echo came after the landing. */
-    LATE_ECHO
+    LATE_ECHO,
+    /**
+     * The fall did not follow the gravity twice, or never ended: the client is let in, never
+     * trusted (rule 1 of section 10: a physics mismatch is not a protocol impossibility).
+     */
+    PHYSICS_MISMATCH
   }
 
   /** Where the check stands after an answer. */
@@ -109,10 +124,10 @@ public final class WorldCheck {
       /**
        * Returns whether the pass is clean enough to trust the identity.
        *
-       * @return {@code true} with fewer than two flags
+       * @return {@code true} with fewer than two flags, none of them a physics mismatch
        */
       public boolean trusted() {
-        return flags.size() < 2;
+        return flags.size() < 2 && !flags.contains(Flag.PHYSICS_MISMATCH);
       }
     }
 
@@ -197,7 +212,10 @@ public final class WorldCheck {
   // The placement
   // ---------------------------------------------------------------------------
 
-  /** Draws the platform and the height of the fall, and restarts the stages. */
+  /**
+   * Draws the platform and the height of the fall, and restarts the stages. The echo is not asked
+   * again: its id is the same, and a client that answered it already keeps its answer.
+   */
   private void place(long nowNanos) {
     blockX = MIN_BLOCK + random.nextInt(MAX_BLOCK - MIN_BLOCK + 1);
     blockZ = MIN_BLOCK + random.nextInt(MAX_BLOCK - MIN_BLOCK + 1);
@@ -211,7 +229,6 @@ public final class WorldCheck {
     expectedY = startY;
     velocity = 0;
     landed = false;
-    echoed = false;
     positions = 0;
     stage =
         version.isAtLeast(ProtocolVersion.MINECRAFT_1_9)
@@ -342,6 +359,17 @@ public final class WorldCheck {
     return retried;
   }
 
+  /**
+   * Ends the check after a mismatch the retry did not resolve: the client is let in, never trusted.
+   *
+   * @return the flags of the pass, {@link Flag#PHYSICS_MISMATCH} among them
+   */
+  public Set<Flag> mismatched() {
+    flags.add(Flag.PHYSICS_MISMATCH);
+    stage = Stage.DONE;
+    return EnumSet.copyOf(flags);
+  }
+
   // ---------------------------------------------------------------------------
   // Answers
   // ---------------------------------------------------------------------------
@@ -422,32 +450,42 @@ public final class WorldCheck {
     if (++positions > MAX_POSITIONS) {
       return new Outcome.Mismatch("still falling after " + positions + " positions");
     }
-    velocity = (velocity - GRAVITY) * DRAG;
-    double predicted = expectedY + velocity;
+    if (movement.y() == expectedY && !movement.onGround()) {
+      // Not moved yet (its chunk came after the teleport): idle reports are not ticks.
+      return new Outcome.Pending();
+    }
     double top = platformTop();
-    if (predicted <= top + LANDING_TOLERANCE) {
-      // The last step is clamped by the platform.
-      if (Math.abs(movement.y() - top) > LANDING_TOLERANCE || !movement.onGround()) {
-        return new Outcome.Mismatch(
-            "landing at "
-                + movement.y()
-                + (movement.onGround() ? " on" : " off")
-                + " the ground, platform top at "
-                + top);
+    double v = velocity;
+    double y = expectedY;
+    for (int skipped = 0; skipped <= MAX_SKIPPED_TICKS; skipped++) {
+      v = (v - GRAVITY) * DRAG;
+      double predicted = y + v;
+      if (predicted <= top + LANDING_TOLERANCE) {
+        // The last step is clamped by the platform.
+        if (Math.abs(movement.y() - top) > LANDING_TOLERANCE || !movement.onGround()) {
+          return new Outcome.Mismatch(
+              "landing at "
+                  + movement.y()
+                  + (movement.onGround() ? " on" : " off")
+                  + " the ground, platform top at "
+                  + top);
+        }
+        landed = true;
+        return landedOrEcho(nowNanos);
       }
-      landed = true;
-      return landedOrEcho(nowNanos);
+      if (Math.abs(movement.y() - predicted) <= GRAVITY_TOLERANCE && !movement.onGround()) {
+        velocity = v;
+        expectedY = predicted;
+        return new Outcome.Pending();
+      }
+      y = predicted;
     }
-    if (Math.abs(movement.y() - predicted) > GRAVITY_TOLERANCE || movement.onGround()) {
-      return new Outcome.Mismatch(
-          "fell to "
-              + movement.y()
-              + (movement.onGround() ? " on the ground" : "")
-              + ", gravity predicted "
-              + predicted);
-    }
-    expectedY = predicted;
-    return new Outcome.Pending();
+    return new Outcome.Mismatch(
+        "fell to "
+            + movement.y()
+            + (movement.onGround() ? " on the ground" : "")
+            + ", gravity predicted "
+            + (expectedY + (velocity - GRAVITY) * DRAG));
   }
 
   private Outcome landedOrEcho(long nowNanos) {

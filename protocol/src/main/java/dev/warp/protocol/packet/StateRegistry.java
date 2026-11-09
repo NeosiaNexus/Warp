@@ -310,7 +310,13 @@ public final class StateRegistry {
    */
   private static void registerConfiguration() {
     directionMap(ProtocolState.CONFIGURATION)
-        .put(PacketDirection.SERVERBOUND, serverboundConfiguration().build());
+        .put(
+            PacketDirection.SERVERBOUND,
+            serverboundConfiguration()
+                // Written by the proxy for a client whose answer it holds (see the virtual
+                // world's registry, which decodes it); a client's own answer stays opaque.
+                .registerEncodeOnly(KnownPacks.class, KnownPacks.CODEC, map(0x07, MINECRAFT_1_20_5))
+                .build());
 
     directionMap(ProtocolState.CONFIGURATION)
         .put(
@@ -374,7 +380,9 @@ public final class StateRegistry {
                     RegistryData.CODEC,
                     map(0x05, MINECRAFT_1_20_2),
                     map(0x07, MINECRAFT_1_20_5))
-                .registerEncodeOnly(
+                // Decoded: a server's offer is answered by the proxy for a client whose answer it
+                // already holds (the virtual world asked first), forwarded otherwise.
+                .register(
                     KnownPacks.class,
                     KnownPacks.CODEC,
                     map(0x0E, MINECRAFT_1_20_5),

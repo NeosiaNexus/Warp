@@ -85,6 +85,8 @@ public record AntiBotStatus(
    * @param checks world checks started
    * @param checksPassed world checks passed
    * @param checksRetried world checks that needed their retry (a physics mismatch once)
+   * @param checksMismatched world checks whose fall was off the gravity after the retry too: the
+   *     client let in, untrusted
    * @param checksFailed world checks failed, every reason
    * @param holds players held for want of a server
    * @param holdsReleased holds that ended on a server
@@ -95,6 +97,7 @@ public record AntiBotStatus(
       long checks,
       long checksPassed,
       long checksRetried,
+      long checksMismatched,
       long checksFailed,
       long holds,
       long holdsReleased,

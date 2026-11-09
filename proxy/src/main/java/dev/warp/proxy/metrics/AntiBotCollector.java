@@ -187,10 +187,11 @@ public final class AntiBotCollector implements Collector {
     out.family(
         "warp_antibot_world_checks_total",
         MetricType.COUNTER,
-        "World checks by result: passed, retried (a physics mismatch given its second fall), or"
-            + " failed.");
+        "World checks by result: passed, retried (a physics mismatch given its second fall),"
+            + " mismatched (off the gravity after the retry too: let in, untrusted), or failed.");
     result(out, "warp_antibot_world_checks_total", "passed", world.checksPassed());
     result(out, "warp_antibot_world_checks_total", "retried", world.checksRetried());
+    result(out, "warp_antibot_world_checks_total", "mismatched", world.checksMismatched());
     result(out, "warp_antibot_world_checks_total", "failed", world.checksFailed());
     out.family(
         "warp_antibot_holds_total",

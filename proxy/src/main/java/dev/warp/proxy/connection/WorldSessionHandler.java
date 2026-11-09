@@ -92,14 +92,16 @@ final class WorldSessionHandler implements SessionHandler {
   interface Listener {
 
     /**
-     * The client fell and landed as a vanilla client does.
+     * The client fell and landed as a vanilla client does, or its fall did not follow the gravity
+     * twice ({@link WorldCheck.Flag#PHYSICS_MISMATCH}: let in, never trusted).
      *
      * @param flags what was odd about it, if anything (see {@link WorldCheck.Outcome.Passed})
      */
     void passed(Set<WorldCheck.Flag> flags);
 
     /**
-     * The client did what no client does, or its fall did not follow the gravity twice.
+     * The client did what no client does: a protocol impossibility. A fall that does not follow the
+     * gravity twice is not one: it passes with {@link WorldCheck.Flag#PHYSICS_MISMATCH}.
      *
      * @param reason why
      * @param detail what was seen
@@ -471,15 +473,19 @@ final class WorldSessionHandler implements SessionHandler {
           scheduleDeadline(running);
           return;
         }
+        // Twice off the vanilla trajectory: not a protocol impossibility, so never a kick (rule 1
+        // of section 10 of the research). Let in, untrusted, and counted.
         checking = false;
         ended = true;
         cancelDeadline();
         logger.debug(
-            "World check failed for {} after its retry: {} ({} unknown packets ignored)",
+            "World check mismatch for {} after its retry, let in untrusted: {} ({} unknown packets"
+                + " ignored)",
             connection.remoteAddress(),
             mismatch.detail(),
             running.unknownPackets());
-        told.failed(VerificationFailure.PHYSICS, mismatch.detail());
+        world.checkMismatched();
+        told.passed(running.mismatched());
       }
       case WorldCheck.Outcome.Failed failed -> {
         checking = false;

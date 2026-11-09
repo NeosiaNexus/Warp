@@ -185,6 +185,10 @@ final class WorldConfigSessionHandler implements SessionHandler {
           connection.remoteAddress(),
           version.name(),
           answer.packs());
+      if (player != null) {
+        // The first server asks the same question in this very phase: answered for the client.
+        player.worldKnownPacksAnswered(answer);
+      }
       end(() -> listener.unsupported("no known pack in common: " + answer.packs()));
       return;
     }

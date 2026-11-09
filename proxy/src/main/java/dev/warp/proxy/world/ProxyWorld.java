@@ -52,6 +52,7 @@ public final class ProxyWorld implements VirtualWorld {
   private final LongAdder checks = new LongAdder();
   private final LongAdder checksPassed = new LongAdder();
   private final LongAdder checksRetried = new LongAdder();
+  private final LongAdder checksMismatched = new LongAdder();
   private final LongAdder checksFailed = new LongAdder();
   private final LongAdder holds = new LongAdder();
   private final LongAdder holdsReleased = new LongAdder();
@@ -178,6 +179,11 @@ public final class ProxyWorld implements VirtualWorld {
     checksFailed.increment();
   }
 
+  /** A check's fall did not follow the gravity after its retry: the client was let in untrusted. */
+  public void checkMismatched() {
+    checksMismatched.increment();
+  }
+
   /** A player is held for want of a server. */
   public void holdStarted() {
     holds.increment();
@@ -204,6 +210,7 @@ public final class ProxyWorld implements VirtualWorld {
         checks.sum(),
         checksPassed.sum(),
         checksRetried.sum(),
+        checksMismatched.sum(),
         checksFailed.sum(),
         holds.sum(),
         holdsReleased.sum(),

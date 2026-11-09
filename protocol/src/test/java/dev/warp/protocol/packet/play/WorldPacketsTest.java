@@ -100,6 +100,83 @@ class WorldPacketsTest {
     }
   }
 
+  static Stream<ProtocolVersion> paletteVersions() {
+    return Stream.of(
+        ProtocolVersion.MINECRAFT_1_9,
+        ProtocolVersion.MINECRAFT_1_12_2,
+        ProtocolVersion.MINECRAFT_1_13,
+        ProtocolVersion.MINECRAFT_1_14,
+        ProtocolVersion.MINECRAFT_1_15_2,
+        ProtocolVersion.MINECRAFT_1_16,
+        ProtocolVersion.MINECRAFT_1_16_4);
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("paletteVersions")
+  @DisplayName(
+      "should send 1.9 to 1.16 one section of air, which clients reading a zero bitmask as 1.8's"
+          + " unload keep")
+  void airSection(ProtocolVersion version) {
+    ByteBuf buf = Unpooled.buffer();
+    try {
+      EmptyChunk.CODEC.encode(new EmptyChunk(0, 0), buf, version);
+      buf.skipBytes(8); // chunk x, chunk z
+      assertTrue(buf.readBoolean(), "full chunk");
+      if (version.isBetween(ProtocolVersion.MINECRAFT_1_16, ProtocolVersion.MINECRAFT_1_16_1)) {
+        assertTrue(buf.readBoolean(), "ignore old data");
+      }
+      assertEquals(1, VarInt.read(buf), "the lowest section is present");
+      if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_14)) {
+        skipHeightmaps(buf);
+      }
+      if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_16_2)) {
+        int biomes = VarInt.read(buf);
+        assertEquals(1024, biomes);
+        for (int i = 0; i < biomes; i++) {
+          assertEquals(0, VarInt.read(buf));
+        }
+      } else if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_15)) {
+        buf.skipBytes(1024 * 4);
+      }
+      int size = VarInt.read(buf);
+      int dataStart = buf.readerIndex();
+      if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_14)) {
+        assertEquals(0, buf.readShort(), "no block but air");
+      }
+      assertEquals(4, buf.readUnsignedByte(), "the narrowest palette these clients accept");
+      assertEquals(1, VarInt.read(buf), "one palette entry");
+      assertEquals(0, VarInt.read(buf), "air");
+      assertEquals(256, VarInt.read(buf), "4096 blocks of 4 bits in longs");
+      buf.skipBytes(256 * 8);
+      if (version.isOlderThan(ProtocolVersion.MINECRAFT_1_14)) {
+        buf.skipBytes(2048 + 2048); // block light, sky light
+      }
+      if (version.isOlderThan(ProtocolVersion.MINECRAFT_1_13)) {
+        buf.skipBytes(256); // biomes as bytes
+      } else if (version.isOlderThan(ProtocolVersion.MINECRAFT_1_15)) {
+        buf.skipBytes(256 * 4); // biomes as ints
+      }
+      assertEquals(size, buf.readerIndex() - dataStart, "the data is exactly the section");
+      if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_9_4)) {
+        assertEquals(0, VarInt.read(buf), "no block entity");
+      }
+      assertEquals(0, buf.readableBytes(), "nothing after");
+    } finally {
+      buf.release();
+    }
+  }
+
+  /** An unnamed compound of long arrays, as 1.14 to 1.20.1 write the heightmaps. */
+  private static void skipHeightmaps(ByteBuf buf) {
+    assertEquals(10, buf.readByte(), "a compound");
+    buf.skipBytes(2); // empty root name
+    for (byte tag = buf.readByte(); tag != 0; tag = buf.readByte()) {
+      assertEquals(12, tag, "a long array");
+      buf.skipBytes(buf.readUnsignedShort()); // the name
+      buf.skipBytes(buf.readInt() * 8);
+    }
+  }
+
   @Test
   @DisplayName("should send 1.8 one empty section, not the ground-up unload a zero bitmask means")
   void legacyChunk18() {

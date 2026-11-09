@@ -1764,9 +1764,13 @@ final class LoginSessionHandler implements SessionHandler {
     @Override
     public void passed(Set<WorldCheck.Flag> flags) {
       release();
-      loginContext.antiBot().world().checkPassed();
-      // Two flags or more across the probe and the world: let in, not trusted.
-      boolean trusted = probe.trusted() && probe.flags().size() + flags.size() < 2;
+      boolean mismatched = flags.contains(WorldCheck.Flag.PHYSICS_MISMATCH);
+      if (!mismatched) {
+        loginContext.antiBot().world().checkPassed();
+      }
+      // Two flags or more across the probe and the world, or a fall off the gravity after the
+      // retry: let in, not trusted.
+      boolean trusted = !mismatched && probe.trusted() && probe.flags().size() + flags.size() < 2;
       logger.trace("World check passed for {}: {}", username, flags);
       verified(trusted);
     }

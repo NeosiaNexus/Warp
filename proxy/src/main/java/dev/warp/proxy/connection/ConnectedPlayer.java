@@ -44,6 +44,7 @@ import dev.warp.protocol.packet.ComponentPackets;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigPluginMessage;
+import dev.warp.protocol.packet.config.KnownPacks;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatAcknowledgement;
 import dev.warp.protocol.packet.play.ClearDialog;
@@ -361,6 +362,16 @@ public final class ConnectedPlayer {
   private @Nullable ScheduledFuture<?> holdRetryTask;
   private @Nullable ScheduledFuture<?> holdCountdownTask;
   private @Nullable WorldEntry worldEntry;
+
+  /**
+   * The client's answer to the world's Select Known Packs when the world was skipped for want of a
+   * core pack in common (1.20.5+): the client stays in the configuration phase it answered in, and
+   * its first server asks the same question. Some clients answer it once per phase
+   * (node-minecraft-protocol's bots), so the proxy answers the server with what it holds and the
+   * client never sees the second offer. Set on the client's event loop, read on the backend's,
+   * cleared when the client leaves the phase (the play state, or the world).
+   */
+  private volatile @Nullable KnownPacks worldKnownPacks;
 
   /** An entry into the world that waits for the client to acknowledge Start Configuration. */
   private record WorldEntry(Runnable then, Consumer<String> failed) {}
@@ -2289,9 +2300,31 @@ public final class ConnectedPlayer {
     return loginContext.antiBot().world();
   }
 
+  /**
+   * The world asked the client which packs it knows and skipped itself on the answer: kept for the
+   * first server's offer, which the proxy answers in the client's stead.
+   *
+   * @param answer what the client knows of the proxy's offer
+   */
+  void worldKnownPacksAnswered(KnownPacks answer) {
+    worldKnownPacks = answer;
+  }
+
+  /**
+   * Returns the client's answer to the world's Select Known Packs, if the world was skipped on it
+   * in the configuration phase the client is still in. Kept for the whole phase: a server that
+   * fails during its configuration is followed by a fallback, which asks again.
+   *
+   * @return the answer; {@code null} when the client answers servers itself
+   */
+  @Nullable KnownPacks worldKnownPacks() {
+    return worldKnownPacks;
+  }
+
   /** The world's session handler took the client: it stands in the world, on no server. */
   void worldEntered() {
     inWorld = true;
+    worldKnownPacks = null;
     leaveServer();
     currentServerName = null;
     world().entered(this);
@@ -2678,6 +2711,9 @@ public final class ConnectedPlayer {
       }
     }
     keepAliveHeld = false;
+    if (state == ProtocolState.PLAY) {
+      worldKnownPacks = null; // the next configuration phase is a new question
+    }
     clientConnection.setState(state);
   }
 

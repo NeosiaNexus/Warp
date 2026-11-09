@@ -231,12 +231,16 @@ class WorldCheckTest {
       assertInstanceOf(WorldCheck.Outcome.Mismatch.class, outcome);
     }
 
-    @Test
-    @DisplayName("should pass after its retry when the second fall is right")
-    void retryThenPass() {
-      ProtocolVersion version = ProtocolVersion.MINECRAFT_1_21_4;
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("dev.warp.proxy.world.WorldCheckTest#families")
+    @DisplayName("should pass after its retry when the second fall is right, the echo kept")
+    void retryThenPass(ProtocolVersion version) {
       WorldCheck check = new WorldCheck(version, new Random(5), STAGE, RTT, 0);
-      check.teleportConfirmed(check.teleportId(), 0);
+      // The echo is answered at once, before the fall: the retry must not ask for it again.
+      assertInstanceOf(WorldCheck.Outcome.Pending.class, echo(check, version));
+      if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_9)) {
+        check.teleportConfirmed(check.teleportId(), 0);
+      }
       check.moved(
           new ClientMovement.PositionRotation(
               check.startX(), check.startY(), check.startZ(), 0, 0, false),
@@ -252,12 +256,155 @@ class WorldCheckTest {
       check.retry(0);
       assertTrue(check.retried());
       assertFalse(before == check.startY() && check.landed(), "a new height");
-      echo(check, version);
       WorldCheck.Outcome outcome = vanillaFall(check, version);
 
       WorldCheck.Outcome.Passed passed = assertInstanceOf(WorldCheck.Outcome.Passed.class, outcome);
       assertEquals(List.of(WorldCheck.Flag.RETRIED), List.copyOf(passed.flags()));
       assertTrue(passed.trusted());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("dev.warp.proxy.world.WorldCheckTest#families")
+    @DisplayName("should not count a position repeated at the height it stands at as a tick")
+    void idleBeforeTheChunk(ProtocolVersion version) {
+      WorldCheck check = new WorldCheck(version, new Random(7), STAGE, RTT, 0);
+      if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_9)) {
+        check.teleportConfirmed(check.teleportId(), 0);
+      }
+      check.moved(
+          new ClientMovement.PositionRotation(
+              check.startX(), check.startY(), check.startZ(), 0, 0, false),
+          0);
+
+      // Its chunk came after the teleport: it reports where it stands, not having moved yet.
+      for (int i = 0; i < 3; i++) {
+        assertInstanceOf(
+            WorldCheck.Outcome.Pending.class,
+            check.moved(
+                new ClientMovement.Position(check.startX(), check.startY(), check.startZ(), false),
+                0),
+            "idle report " + i);
+      }
+      echo(check, version);
+      WorldCheck.Outcome outcome = fallFrom(check, version, check.startY(), 0, 1);
+
+      WorldCheck.Outcome.Passed passed = assertInstanceOf(WorldCheck.Outcome.Passed.class, outcome);
+      assertTrue(passed.trusted());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("dev.warp.proxy.world.WorldCheckTest#families")
+    @DisplayName("should accept a report that skips up to three ticks of the fall, not four")
+    void skippedTicks(ProtocolVersion version) {
+      WorldCheck check = new WorldCheck(version, new Random(11), STAGE, RTT, 0);
+      if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_9)) {
+        check.teleportConfirmed(check.teleportId(), 0);
+      }
+      check.moved(
+          new ClientMovement.PositionRotation(
+              check.startX(), check.startY(), check.startZ(), 0, 0, false),
+          0);
+      echo(check, version);
+
+      // One report for the first two ticks, then one for the next four, then every tick: the
+      // trajectory is still the vanilla one, as a client that simulates several ticks between two
+      // reports sends it. The fall lasts 8 to 12 ticks, so neither skip lands.
+      WorldCheck.Outcome outcome = fallFrom(check, version, check.startY(), 0, 2);
+      assertInstanceOf(WorldCheck.Outcome.Pending.class, outcome, "two ticks at once");
+      outcome = fallFrom(check, version, expectedY(check.startY(), 2), velocity(2), 4);
+      assertInstanceOf(WorldCheck.Outcome.Pending.class, outcome, "four ticks at once");
+      outcome = fallFrom(check, version, expectedY(check.startY(), 6), velocity(6), 1);
+      assertInstanceOf(WorldCheck.Outcome.Passed.class, outcome, "then one tick at a time");
+
+      WorldCheck fresh = new WorldCheck(version, new Random(11), STAGE, RTT, 0);
+      if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_9)) {
+        fresh.teleportConfirmed(fresh.teleportId(), 0);
+      }
+      fresh.moved(
+          new ClientMovement.PositionRotation(
+              fresh.startX(), fresh.startY(), fresh.startZ(), 0, 0, false),
+          0);
+      double y = fresh.startY();
+      double v = 0;
+      for (int tick = 0; tick < 5; tick++) {
+        v = (v - 0.08) * 0.98f;
+        y += v;
+      }
+      assertTrue(y > fresh.platformTop(), "still in the air after five ticks");
+      assertInstanceOf(
+          WorldCheck.Outcome.Mismatch.class,
+          fresh.moved(new ClientMovement.Position(fresh.startX(), y, fresh.startZ(), false), 0),
+          "five ticks at once");
+    }
+
+    @Test
+    @DisplayName("should end as a pass that is never trusted when the retry did not resolve it")
+    void mismatchedAfterRetry() {
+      WorldCheck check =
+          new WorldCheck(ProtocolVersion.MINECRAFT_1_20_1, new Random(5), STAGE, RTT, 0);
+      check.retry(0);
+
+      var flags = check.mismatched();
+
+      assertTrue(flags.contains(WorldCheck.Flag.PHYSICS_MISMATCH));
+      assertTrue(flags.contains(WorldCheck.Flag.RETRIED));
+      assertFalse(new WorldCheck.Outcome.Passed(flags).trusted());
+      assertFalse(
+          new WorldCheck.Outcome.Passed(java.util.Set.of(WorldCheck.Flag.PHYSICS_MISMATCH))
+              .trusted(),
+          "one flag, but that one");
+      assertInstanceOf(
+          WorldCheck.Outcome.Pending.class,
+          check.moved(new ClientMovement.Position(0, 0, 0, true), 0),
+          "over: nothing judged after");
+    }
+
+    private static double velocity(int ticks) {
+      double v = 0;
+      for (int i = 0; i < ticks; i++) {
+        v = (v - 0.08) * 0.98f;
+      }
+      return v;
+    }
+
+    private static double expectedY(double start, int ticks) {
+      double y = start;
+      double v = 0;
+      for (int i = 0; i < ticks; i++) {
+        v = (v - 0.08) * 0.98f;
+        y += v;
+      }
+      return y;
+    }
+
+    /**
+     * Falls from {@code y} with velocity {@code v}, reporting once every {@code every} ticks, until
+     * the platform; returns the last outcome.
+     */
+    private WorldCheck.Outcome fallFrom(
+        WorldCheck check, ProtocolVersion version, double y, double v, int every) {
+      double top = check.platformTop();
+      for (int report = 0; report < 64; report++) {
+        for (int i = 0; i < every; i++) {
+          if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_21_2)) {
+            check.tickEnded();
+          }
+          v = (v - 0.08) * 0.98f;
+          double next = y + v;
+          if (next <= top) {
+            return check.moved(
+                new ClientMovement.Position(check.startX(), top, check.startZ(), true), 0);
+          }
+          y = next;
+        }
+        WorldCheck.Outcome outcome =
+            check.moved(new ClientMovement.Position(check.startX(), y, check.startZ(), false), 0);
+        if (every > 1) {
+          return outcome;
+        }
+        assertInstanceOf(WorldCheck.Outcome.Pending.class, outcome, "report " + report);
+      }
+      throw new AssertionError("never landed");
     }
 
     @Test
