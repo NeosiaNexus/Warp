@@ -1,0 +1,100 @@
+// Shared behaviour for every proxy adapter: where its working directory and log go, how it is
+// launched as a managed process, and how the orchestrator starts it and waits until it listens.
+// Subclasses provide the artifact, the config, the launch command and the start-up lines that prove
+// natives loaded.
+import { mkdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { ManagedProcess, waitForPort } from '../reuse.js';
+
+export class Proxy {
+  /**
+   * @param {object} options
+   * @param {string} options.id proxy id
+   * @param {object} options.spec versions.json entry
+   * @param {number} options.port the port the proxy listens on
+   * @param {Record<string, number>} options.backends backend name -> port
+   * @param {string} options.defaultBackend name tried first
+   * @param {number} options.compressionThreshold
+   * @param {number} options.compressionLevel
+   * @param {string} options.secret forwarding secret
+   * @param {string} options.cacheDir download cache
+   * @param {string} options.workDir this proxy's working directory (wiped)
+   * @param {string} options.logDir
+   * @param {string[]} [options.cpus] CPU ids to pin the proxy to with taskset, or null
+   */
+  constructor(options) {
+    Object.assign(this, options);
+    this.process = null;
+    this.jar = null;
+    this.bin = null;
+  }
+
+  /** 'modern', 'legacy' or 'none': the forwarding this proxy uses (backends are configured to match). */
+  get forwarding() {
+    return 'modern';
+  }
+
+  /** Readies the working directory and returns it. */
+  freshWorkDir() {
+    rmSync(this.workDir, { recursive: true, force: true });
+    mkdirSync(this.workDir, { recursive: true });
+    return this.workDir;
+  }
+
+  /** Wraps argv in taskset when CPU pinning is requested. */
+  pinned(command, args) {
+    if (this.cpus?.length) return { command: 'taskset', args: ['-c', this.cpus.join(','), command, ...args] };
+    return { command, args };
+  }
+
+  /**
+   * Launches the proxy and resolves once it accepts connections on its port.
+   * @returns {Promise<ManagedProcess>}
+   */
+  async launch() {
+    const { command, args, env } = await this.spawnSpec();
+    const pinned = this.pinned(command, args);
+    this.process = new ManagedProcess(this.id, pinned.command, pinned.args, {
+      cwd: this.workDir,
+      env,
+      logFile: join(this.logDir, `${this.id}.log`),
+      failures: this.failurePatterns ?? [],
+    }).start();
+    await Promise.race([
+      waitForPort(this.port, 120_000),
+      this.process.exited.then((exit) => {
+        throw new Error(`${this.id} exited before listening (code ${exit.code ?? exit.signal})`);
+      }),
+    ]);
+    return this.process;
+  }
+
+  /**
+   * Checks the start-up log for the lines that prove natives and the right transport loaded.
+   * @returns {{ok: boolean, notes: string[]}}
+   */
+  verifyNatives() {
+    const notes = [];
+    let ok = true;
+    for (const { label, pattern, required } of this.nativeChecks ?? []) {
+      const line = this.process?.lines.find((l) => pattern.test(l));
+      if (line) notes.push(`${label}: ${line.trim()}`);
+      else {
+        notes.push(`${label}: NOT CONFIRMED (pattern ${pattern})`);
+        if (required) ok = false;
+      }
+    }
+    return { ok, notes };
+  }
+
+  /** The PID the sampler watches. For a JVM proxy under taskset this is still the JVM. */
+  get pid() {
+    return this.process?.pid ?? null;
+  }
+
+  async stop() {
+    if (!this.process) return null;
+    return this.process.stop({ command: this.stopCommand ?? null, graceMs: 20_000 });
+  }
+}

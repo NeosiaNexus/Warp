@@ -1,0 +1,107 @@
+name: Benchmark smoke
+
+# The macro benchmark harness (bench/) is large, downloads several proxies, and only produces
+# credible numbers on dedicated hardware, so it does not run on every push. This workflow runs it in
+# smoke mode on demand: one proxy (Warp, the locally built jar), about fifty bots, roughly two
+# minutes. It exists so the harness never rots: a change that breaks a proxy adapter, the raw client
+# or the report generator fails here. It makes no performance claims (a GitHub runner is tier T0).
+on:
+  workflow_dispatch:
+    inputs:
+      proxies:
+        description: Comma-separated proxies (default warp)
+        type: string
+        default: warp
+      scenarios:
+        description: Comma-separated scenarios (default all)
+        type: string
+        default: ''
+
+permissions: {}
+
+concurrency:
+  group: bench-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Warp
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # check out the code
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up build
+        uses: $/.github/actions/setup-build
+
+      - name: Build the shadow jar
+        run: ./gradlew :proxy:shadowJar
+
+      - name: Upload Warp jar
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: warp-jar
+          path: proxy/build/libs/warp-*.jar
+          if-no-files-found: error
+          retention-days: 7
+
+  smoke:
+    name: Benchmark smoke
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read # check out the harness
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: e2e/.nvmrc
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      # Java 25 runs Warp; Java 21 runs the Paper backend. The harness finds them through the
+      # JAVA_HOME_<major>_X64 variables setup-java exports.
+      - name: Set up Java
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: |
+            21
+            25
+
+      - name: Download the Warp jar
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: warp-jar
+          path: ${{ runner.temp }}/warp
+
+      - name: Run the smoke benchmark
+        env:
+          WARP_DIR: ${{ runner.temp }}/warp
+          PROXIES: ${{ inputs.proxies }}
+          SCENARIOS: ${{ inputs.scenarios }}
+        run: |
+          jar=$(ls "$WARP_DIR"/warp-*.jar | head -1)
+          args=(--smoke --warp-jar "$jar" --proxies "$PROXIES")
+          if [ -n "$SCENARIOS" ]; then args+=(--scenarios "$SCENARIOS"); fi
+          bench/run.sh "${args[@]}"
+
+      - name: Upload results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench-smoke-results
+          path: bench/results/
+          if-no-files-found: warn
+          retention-days: 14
