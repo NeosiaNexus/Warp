@@ -73,6 +73,8 @@ import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.messaging.BungeeCordChannel;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.messaging.PluginMessageEventImpl;
+import dev.warp.proxy.metrics.ProxyMetrics;
+import dev.warp.proxy.metrics.ServerConnectOutcome;
 import dev.warp.proxy.server.BackendServer;
 
 import java.net.InetSocketAddress;
@@ -185,6 +187,12 @@ public final class ConnectedPlayer {
 
   /** Guards against concurrent or duplicate {@link #disconnect()} calls. */
   private final AtomicBoolean disconnected = new AtomicBoolean();
+
+  /** Whether the player counts in {@code warp_client_protocol_version}. */
+  private final AtomicBoolean versionCounted = new AtomicBoolean();
+
+  /** When the current connection attempt to a backend began. */
+  private long connectStartNanos;
 
   // ---------------------------------------------------------------------------
   // Immutable identity
@@ -831,6 +839,7 @@ public final class ConnectedPlayer {
           disconnectFor(
               DisconnectEvent.Cause.DISCONNECTED_BY_PROXY, Message.INITIAL_SERVER_DENIED.of());
         } else {
+          loginContext.metrics().serverSwitch(ProxyMetrics.SwitchOutcome.CANCELLED);
           complete(result, new ConnectionResult.Denied(target));
           if (tell) {
             sendMessage(Message.CONNECT_DENIED.of(target.name()));
@@ -900,6 +909,12 @@ public final class ConnectedPlayer {
     loginContext.serverRegistry().health().connectSucceeded(server.name());
     BackendServer target = connectingTo;
     if (target != null) {
+      loginContext
+          .metrics()
+          .serverConnect(
+              target.name(),
+              ServerConnectOutcome.SUCCESS,
+              connectStartNanos == 0 ? -1 : System.nanoTime() - connectStartNanos);
       notify(new ServerConnectedEvent(api, target, currentServer));
     }
   }
@@ -948,6 +963,7 @@ public final class ConnectedPlayer {
    * @param target the server to connect to
    */
   void connect(ServerInfo target) {
+    connectStartNanos = System.nanoTime();
     var _ =
         connector
             .connect(target)
@@ -991,6 +1007,42 @@ public final class ConnectedPlayer {
     this.connector = connector;
   }
 
+  /** The {@code outcome} of a connection attempt that got no backend connection. */
+  static ServerConnectOutcome connectFailure(@Nullable Throwable ex) {
+    Throwable cause = ex;
+    while (cause != null) {
+      // Netty's ConnectTimeoutException extends ConnectException: timeouts come first.
+      if (cause instanceof io.netty.channel.ConnectTimeoutException
+          || cause instanceof java.util.concurrent.TimeoutException
+          || cause instanceof io.netty.handler.timeout.TimeoutException) {
+        return ServerConnectOutcome.TIMEOUT;
+      }
+      if (cause instanceof java.net.ConnectException) {
+        return ServerConnectOutcome.REFUSED;
+      }
+      if (cause instanceof java.nio.channels.ClosedChannelException
+          || cause instanceof java.io.IOException) {
+        return ServerConnectOutcome.RESET;
+      }
+      cause = cause.getCause();
+    }
+    return ServerConnectOutcome.OTHER;
+  }
+
+  /** Counts the player in {@code warp_client_protocol_version}, once registered. */
+  void countVersion() {
+    if (versionCounted.compareAndSet(false, true)) {
+      loginContext.metrics().playerVersion(protocolVersion(), 1);
+    }
+  }
+
+  /** Undoes {@link #countVersion()} for a player refused after registration, or disconnected. */
+  void uncountVersion() {
+    if (versionCounted.compareAndSet(true, false)) {
+      loginContext.metrics().playerVersion(protocolVersion(), -1);
+    }
+  }
+
   /**
    * Ends a switch whose new server could not be reached or refused the player, which still plays on
    * its current server.
@@ -999,6 +1051,7 @@ public final class ConnectedPlayer {
    */
   void switchFailed(
       ServerInfo target, @Nullable MinecraftConnection backend, KickedFromServerEvent.Cause cause) {
+    loginContext.metrics().serverSwitch(ProxyMetrics.SwitchOutcome.FAILED);
     logger.info(
         "Could not switch {} to '{}' ({}), staying on '{}'",
         username,
@@ -1026,6 +1079,7 @@ public final class ConnectedPlayer {
       return;
     }
     if (backend == null) {
+      loginContext.metrics().serverConnect(target.name(), connectFailure(ex), -1);
       logger.warn(
           LogCode.BACKEND_CONNECT_FAILED.marker(),
           "Could not connect {} to server '{}': {}",
@@ -1062,6 +1116,7 @@ public final class ConnectedPlayer {
    */
   void switchComplete() {
     if (switching) {
+      loginContext.metrics().serverSwitch(ProxyMetrics.SwitchOutcome.SUCCESS);
       cancelSwitchTimeout();
       ServerInfo target = pendingSwitchTarget;
       if (target != null) {
@@ -1964,6 +2019,18 @@ public final class ConnectedPlayer {
       KickedFromServerEvent.Cause baseCause,
       boolean duringConnect,
       boolean stillOnCurrent) {
+    if (duringConnect && backend != null) {
+      loginContext
+          .metrics()
+          .serverConnect(
+              lostName,
+              switch (baseCause) {
+                case KICKED -> ServerConnectOutcome.KICKED;
+                case CONNECTION_LOST -> ServerConnectOutcome.RESET;
+                default -> ServerConnectOutcome.OTHER;
+              },
+              -1);
+    }
     Component reason = backend == null ? null : backend.channel().attr(KICK_REASON).get();
     if (failedFallbackServers == null) {
       // The first loss of a chain of fallbacks: its reason is the one the player is told, even
@@ -2547,6 +2614,7 @@ public final class ConnectedPlayer {
     if (!disconnected.compareAndSet(false, true)) {
       return;
     }
+    uncountVersion();
     loginContext.playerRegistry().unregister(this);
     if (sessionStarted) {
       logConnection(
@@ -2630,6 +2698,7 @@ public final class ConnectedPlayer {
    */
   public void disconnectDuplicate() {
     setDisconnectCause(DisconnectEvent.Cause.CONFLICTING_LOGIN);
+    uncountVersion();
     loginContext.playerRegistry().unregister(this);
     endSession();
     logger.info("Disconnecting {}: the same account logged in again", username);

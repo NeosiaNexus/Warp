@@ -22,6 +22,7 @@ import dev.warp.api.event.EventBus;
 import dev.warp.api.lifecycle.ReadinessHold;
 import dev.warp.api.logging.LogSinks;
 import dev.warp.api.messaging.Messaging;
+import dev.warp.api.metrics.Metrics;
 import dev.warp.api.network.NetworkPipelines;
 import dev.warp.api.permission.Permissions;
 
@@ -149,6 +150,15 @@ public interface PluginContext {
    * @return the log sink registrar
    */
   LogSinks logSinks();
+
+  /**
+   * Returns the plugin's metrics, exposed on the management server's {@code GET /metrics} with the
+   * proxy's own. Names are prefixed with the plugin's id, and every metric registered through it is
+   * removed when the plugin is disabled or fails.
+   *
+   * @return the metric registrar
+   */
+  Metrics metrics();
 
   /**
    * Holds the proxy's readiness until the hold is released, or until the plugin is disabled or

@@ -52,6 +52,8 @@ import dev.warp.proxy.drain.ProxyDrain;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.metrics.MetricRegistry;
+import dev.warp.proxy.metrics.ProxyMetrics;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 
@@ -157,6 +159,7 @@ class DrainPlayersTest {
     MinecraftConnection connection = new MinecraftConnection(warpSide);
     warpSide.pipeline().addLast(ServerChannelInitializer.CONNECTION_HANDLER, connection);
     ServerLoginContext context = mock(ServerLoginContext.class);
+    when(context.metrics()).thenReturn(new ProxyMetrics(new MetricRegistry(0)));
     when(context.messages()).thenReturn(dev.warp.proxy.i18n.PlayerMessages.bundled());
     when(context.logging()).thenReturn(LoggingConfig.DEFAULTS);
     when(context.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);

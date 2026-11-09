@@ -647,6 +647,49 @@ public enum LogCode {
       "Check the files the message names: PEM, the key in PKCS#8 (openssl pkcs8 -topk8 -nocrypt,"
           + " or privateKey.encoding: PKCS8 in cert-manager). Warp reads them again when they"
           + " next change."),
+  /** The metrics are reachable from other machines without a token or TLS. */
+  METRICS_EXPOSED(
+      "W-MGMT-003",
+      false,
+      "GET /metrics is open to other machines",
+      "management.bind is not a loopback address, and neither management.tls nor"
+          + " management.metrics.require-token is on: anyone who reaches the port reads the"
+          + " metrics (players online, servers, versions).",
+      "Bind the management server to loopback or a private network, enable management.tls, or set"
+          + " management.metrics.require-token = true and give Prometheus the token."),
+
+  // ---------------------------------------------------------------------------
+  // Metrics
+  // ---------------------------------------------------------------------------
+
+  /** A metric has more label values or series than allowed. */
+  METRICS_CARDINALITY_CAPPED(
+      "W-MET-001",
+      false,
+      "A metric reached a cardinality cap",
+      "A label of the metric had its 33rd distinct value (256th for the proxy's own metrics), or a"
+          + " plugin reached 2000 series, or the registry 10000. Further values are recorded as"
+          + " 'other' and counted in warp_metrics_label_overflow_total, so the series stay"
+          + " bounded; the metric loses detail, not correctness. Logged once per metric.",
+      "If a plugin's metric is named, report it to its author: a label must take values from a"
+          + " closed set (an outcome, a state), never a player, address or item name."),
+  /** A metrics collector threw during a scrape. */
+  METRICS_COLLECTOR_FAILED(
+      "W-MET-002",
+      false,
+      "A metrics collector failed",
+      "A collector, or the supplier of a pull gauge, threw while GET /metrics was answered. It is"
+          + " skipped for that scrape and counted in warp_metrics_collector_errors_total; the"
+          + " other metrics are served. Logged once per collector.",
+      "If a plugin's collector is named, report it with the stack trace to its author."),
+  /** Answering GET /metrics failed. */
+  METRICS_SCRAPE_FAILED(
+      "W-MET-003",
+      false,
+      "GET /metrics could not be answered",
+      "Writing the metrics failed with an exception, so the scraper got a 500. The metrics are"
+          + " still collected; the next scrape is tried afresh.",
+      "Report it with the stack trace."),
 
   // ---------------------------------------------------------------------------
   // Remote console (the management server's /console, and its client)

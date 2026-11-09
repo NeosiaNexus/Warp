@@ -29,6 +29,7 @@ import dev.warp.protocol.packet.login.LoginDisconnect;
 import dev.warp.proxy.i18n.Message;
 import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.limit.Refusal;
+import dev.warp.proxy.metrics.LoginOutcome;
 
 import io.netty.channel.ChannelFutureListener;
 import net.kyori.adventure.text.Component;
@@ -158,6 +159,7 @@ final class HandshakeSessionHandler implements SessionHandler {
       return;
     }
     connection.setHandshakeIntent(intent);
+    loginContext.metrics().connectionAccepted(intent);
 
     ConnectionGuard guard = connection.guard();
     switch (intent) {
@@ -200,6 +202,7 @@ final class HandshakeSessionHandler implements SessionHandler {
    */
   private void refuseVersion(int protocol) {
     loginContext.limits().refused(Refusal.UNSUPPORTED_VERSION, connection.remoteAddress());
+    loginContext.metrics().loginEnded(LoginOutcome.PROTOCOL_UNSUPPORTED, -1);
     logger.debug("Refusing protocol {} from {}", protocol, connection.remoteAddress());
     boolean older = protocol < ProtocolVersion.oldest().protocol();
     Component reason =

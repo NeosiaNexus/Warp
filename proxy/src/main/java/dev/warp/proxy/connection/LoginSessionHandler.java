@@ -70,6 +70,7 @@ import dev.warp.proxy.limit.LoginAdmission;
 import dev.warp.proxy.limit.LoginSlot;
 import dev.warp.proxy.limit.Refusal;
 import dev.warp.proxy.logging.LogCode;
+import dev.warp.proxy.metrics.LoginOutcome;
 import dev.warp.proxy.player.PlayerRegistry;
 
 import java.net.InetSocketAddress;
@@ -209,6 +210,12 @@ final class LoginSessionHandler implements SessionHandler {
   /** Closes the login if it takes longer than the login timeout. */
   private @Nullable ScheduledFuture<?> timeoutTask;
 
+  /** When the login began, for {@code warp_login_duration_seconds}. */
+  private final long startNanos;
+
+  /** Whether the login's outcome was counted: once per login, whatever ends it. */
+  private boolean outcomeCounted;
+
   /** The player once authenticated and registered, until the client enters its first server. */
   private @Nullable ConnectedPlayer player;
 
@@ -272,6 +279,7 @@ final class LoginSessionHandler implements SessionHandler {
   // ---------------------------------------------------------------------------
 
   LoginSessionHandler(MinecraftConnection connection, ServerLoginContext loginContext) {
+    this.startNanos = System.nanoTime();
     this.connection = connection;
     this.loginContext = loginContext;
     this.onlineMode = loginContext.onlineMode();
@@ -302,10 +310,12 @@ final class LoginSessionHandler implements SessionHandler {
     switch (limits.admitLogin(connection.remoteAddress())) {
       case LoginAdmission.Admitted(LoginSlot admitted) -> this.slot = admitted;
       case LoginAdmission.TooFast(Duration retryAfter) -> {
+        ended(LoginOutcome.REFUSED_ANTIBOT);
         refuse(tooFastReason(retryAfter));
         return;
       }
       case LoginAdmission.TooManyInProgress() -> {
+        ended(LoginOutcome.REFUSED_ANTIBOT);
         refuse(TOO_MANY_LOGINS_REASON);
         return;
       }
@@ -669,6 +679,7 @@ final class LoginSessionHandler implements SessionHandler {
 
   private void refuseBusy(AuthenticationLane lane) {
     loginContext.limits().refused(Refusal.AUTHENTICATION_BUSY, connection.remoteAddress());
+    ended(LoginOutcome.REFUSED_ANTIBOT);
     refuse(busyReason(lane.maxWait()));
   }
 
@@ -677,6 +688,7 @@ final class LoginSessionHandler implements SessionHandler {
     slotDeadline = null;
     if (connection.channel().isActive() && state == LoginState.AWAITING_ENCRYPTION_RESPONSE) {
       loginContext.limits().refused(Refusal.LOGIN_TIMEOUT, connection.remoteAddress());
+      ended(LoginOutcome.AUTH_TIMEOUT);
       refuse(TIMED_OUT_REASON);
     }
   }
@@ -884,6 +896,7 @@ final class LoginSessionHandler implements SessionHandler {
   public void disconnected() {
     endOfLogin();
     endOfVerification();
+    ended(LoginOutcome.DISCONNECTED);
     if (state == LoginState.REFUSED) {
       return; // Counted by the limits: a flood must not write a line per connection.
     }
@@ -1079,6 +1092,7 @@ final class LoginSessionHandler implements SessionHandler {
       return;
     }
     this.player = joining;
+    joining.countVersion();
 
     // The place is taken atomically at registration: of two logins racing for the last place,
     // exactly one gets it. A session replacing a duplicate takes the place it frees.
@@ -1110,6 +1124,7 @@ final class LoginSessionHandler implements SessionHandler {
                     // No session started: no disconnect event for this player.
                     this.player = null;
                     loginContext.playerRegistry().unregister(joining);
+                    joining.uncountVersion();
                     deny(
                         proposed instanceof LoginEvent.Denied
                             ? Refusal.SERVER_FULL
@@ -1126,6 +1141,7 @@ final class LoginSessionHandler implements SessionHandler {
   private void refuseFull(ConnectedPlayer joining) {
     this.player = null;
     loginContext.playerRegistry().unregister(joining);
+    joining.uncountVersion();
     deny(Refusal.SERVER_FULL, SERVER_FULL);
   }
 
@@ -1159,6 +1175,7 @@ final class LoginSessionHandler implements SessionHandler {
     } else {
       connection.writeAndFlush(loginSuccess);
     }
+    ended(LoginOutcome.SUCCESS);
 
     if (joined != null
         && loginContext.logging().connections()
@@ -1629,6 +1646,7 @@ final class LoginSessionHandler implements SessionHandler {
       return;
     }
     loginContext.limits().refused(Refusal.LOGIN_TIMEOUT, connection.remoteAddress());
+    ended(LoginOutcome.AUTH_TIMEOUT);
     logger.debug("Login of {} from {} timed out", username, connection.remoteAddress());
     refuse(TIMED_OUT_REASON);
   }
@@ -1639,6 +1657,15 @@ final class LoginSessionHandler implements SessionHandler {
    * once it is logged in. Counted by the limits, not logged one by one, so that a flood cannot fill
    * the logs.
    */
+  /** Counts the login's outcome and duration, the first time only: later calls are no-ops. */
+  private void ended(LoginOutcome outcome) {
+    if (outcomeCounted) {
+      return;
+    }
+    outcomeCounted = true;
+    loginContext.metrics().loginEnded(outcome, System.nanoTime() - startNanos);
+  }
+
   private void refuse(Component reason) {
     state = LoginState.REFUSED;
     endOfLogin();
@@ -1665,6 +1692,7 @@ final class LoginSessionHandler implements SessionHandler {
    */
   private void refuseProfileKey(ProfileKeys.Problem problem) {
     loginContext.limits().refused(Refusal.INVALID_LOGIN, connection.remoteAddress());
+    ended(LoginOutcome.OTHER);
     logger.debug(
         "Disconnecting {} from {}: invalid profile public key, {}",
         username != null ? username : "unknown",
@@ -1704,6 +1732,7 @@ final class LoginSessionHandler implements SessionHandler {
 
   private void countDenial(Refusal reason, String message) {
     loginContext.limits().refused(reason, connection.remoteAddress());
+    ended(LoginOutcome.of(reason));
     logger.debug(
         "Disconnecting {} from {} ({}): {}",
         username != null ? username : "unknown",

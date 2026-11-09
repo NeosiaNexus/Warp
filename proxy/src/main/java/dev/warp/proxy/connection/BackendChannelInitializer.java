@@ -95,6 +95,7 @@ final class BackendChannelInitializer extends ChannelInitializer<Channel> {
         .addLast(ServerChannelInitializer.MINECRAFT_DECODER, decoder)
         .addLast(ServerChannelInitializer.MINECRAFT_ENCODER, encoder)
         .addLast(ServerChannelInitializer.CONNECTION_HANDLER, connection);
+    connection.observeTraffic(player.loginContext().metrics().backendTraffic(server.name()));
 
     // Plugin handlers go in before the handshake is written, so that a translator can rewrite it.
     initializePlugins(connection, version);

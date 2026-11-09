@@ -25,16 +25,19 @@ import dev.warp.protocol.compress.FrameDecompressor;
 import dev.warp.protocol.netty.CompressionEncoder;
 import dev.warp.protocol.netty.FrameDecoder;
 import dev.warp.protocol.netty.FrameForwarder;
+import dev.warp.protocol.netty.FrameLimitException;
 import dev.warp.protocol.netty.FrameLimits;
 import dev.warp.protocol.netty.MinecraftDecoder;
 import dev.warp.protocol.netty.MinecraftEncoder;
 import dev.warp.protocol.netty.PacketDecompressor;
 import dev.warp.protocol.netty.SessionHandler;
+import dev.warp.protocol.netty.TrafficObserver;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.proxy.compression.Compression;
 import dev.warp.proxy.limit.Refusal;
 import dev.warp.proxy.logging.LogCode;
+import dev.warp.proxy.metrics.ProxyMetrics;
 import dev.warp.proxy.pipeline.PipelineHost;
 import dev.warp.proxy.server.HostRoutes;
 
@@ -57,6 +60,7 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelOutboundBuffer;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.ChannelPromise;
+import io.netty.handler.codec.DecoderException;
 import io.netty.handler.timeout.IdleStateHandler;
 import io.netty.handler.timeout.ReadTimeoutException;
 import io.netty.util.ReferenceCountUtil;
@@ -164,6 +168,9 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
    */
   private @Nullable ConnectionGuard guard;
 
+  /** Counts the connection's states and refused frames, or {@code null} on backend connections. */
+  private @Nullable ProxyMetrics states;
+
   /** The frame decoder of a client connection, whose limits follow the state; looked up once. */
   private @Nullable FrameDecoder frameDecoder;
 
@@ -202,6 +209,28 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
   public MinecraftConnection(Channel channel) {
     this.channel = channel;
     this.forwarder = new FrameForwarder(channel);
+  }
+
+  /**
+   * Counts this connection in {@code warp_connections_active} by state, from its current state
+   * until it closes, and its refused frames in {@code warp_packet_drops_total}. For client
+   * connections.
+   *
+   * @param metrics the proxy's metrics
+   */
+  public void trackStates(ProxyMetrics metrics) {
+    this.states = metrics;
+    metrics.connectionMoved(null, decoder().state());
+  }
+
+  /**
+   * Sets who counts this connection's frames: its decoder's and its forwarder's.
+   *
+   * @param observer the observer
+   */
+  public void observeTraffic(TrafficObserver observer) {
+    decoder().observer(observer);
+    forwarder.observer(observer);
   }
 
   // ---------------------------------------------------------------------------
@@ -248,6 +277,11 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
 
   @Override
   public void channelInactive(ChannelHandlerContext ctx) {
+    ProxyMetrics counting = states;
+    if (counting != null) {
+      states = null;
+      counting.connectionMoved(decoder().state(), null);
+    }
     ConnectionGuard watching = guard;
     if (watching != null) {
       guard = null;
@@ -279,6 +313,18 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
 
   @Override
   public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+    ProxyMetrics counting = states;
+    if (counting != null) {
+      if (cause instanceof FrameLimitException limit) {
+        if (limit.reason() == FrameLimitException.Reason.PACKET_NOT_ALLOWED) {
+          counting.frameRefusedByState();
+        } else {
+          counting.frameOversized();
+        }
+      } else if (cause instanceof DecoderException) {
+        counting.frameInvalid();
+      }
+    }
     ConnectionGuard watching = guard;
     Refusal refusal = watching == null ? null : watching.failed(cause);
     if (refusal != null) {
@@ -761,6 +807,10 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
    * @param state the new protocol state
    */
   public void setState(ProtocolState state) {
+    ProxyMetrics counting = states;
+    if (counting != null) {
+      counting.connectionMoved(decoder().state(), state);
+    }
     decoder().setState(state);
     encoder().setState(state);
     updateFrameLimits();

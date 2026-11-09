@@ -43,6 +43,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 import net.kyori.adventure.text.Component;
 import org.jspecify.annotations.Nullable;
@@ -85,6 +86,7 @@ public final class DrainController<P extends DrainCandidate> {
   private final DrainConfig config;
   private final DrainScheduler scheduler;
   private final DrainHost<P> host;
+  private volatile Consumer<TransferResult> transferObserver = _ -> {};
 
   private final AtomicBoolean started = new AtomicBoolean();
   private final CompletableFuture<DrainStatus> done = new CompletableFuture<>();
@@ -127,6 +129,15 @@ public final class DrainController<P extends DrainCandidate> {
     this.config = config;
     this.scheduler = scheduler;
     this.host = host;
+  }
+
+  /**
+   * Sets who counts each transfer's result, for metrics.
+   *
+   * @param observer receives every {@link TransferResult}
+   */
+  public void onTransfer(Consumer<TransferResult> observer) {
+    this.transferObserver = observer;
   }
 
   // ---------------------------------------------------------------------------
@@ -593,6 +604,7 @@ public final class DrainController<P extends DrainCandidate> {
   }
 
   private void transferred(Step current, TransferResult result) {
+    transferObserver.accept(result);
     if (step != current) {
       return; // timed out already
     }

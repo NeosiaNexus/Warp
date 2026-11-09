@@ -18,11 +18,16 @@ package dev.warp.proxy.management;
 
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
+import dev.warp.api.metrics.Metrics;
 import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.antibot.AntiBotStatus;
+import dev.warp.proxy.config.MetricsConfig;
 import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.management.console.RemoteConsole;
+import dev.warp.proxy.metrics.PrometheusText;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -30,6 +35,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
+import java.util.zip.GZIPOutputStream;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -61,6 +67,8 @@ import org.slf4j.LoggerFactory;
  *   <li>{@code GET /drain}: where the drain stands
  *   <li>{@code POST /drain}: starts the drain (bearer token): 202, or 200 if one was in progress;
  *       with {@code ?wait=true}, answers 200 once every player left or the time-out expired
+ *   <li>{@code GET /metrics}: the metrics, Prometheus text or OpenMetrics (see {@link
+ *       PrometheusText})
  *   <li>{@code /console/...}: the remote console, when enabled (see {@link RemoteConsole})
  * </ul>
  *
@@ -74,12 +82,12 @@ final class ManagementHttpHandler extends SimpleChannelInboundHandler<FullHttpRe
   private static final String JSON = "application/json; charset=utf-8";
   private static final String BEARER = "Bearer ";
   private static final String TEXT = "text/plain; charset=utf-8";
-  private static final String METRICS = "text/plain; version=0.0.4; charset=utf-8";
 
   private final ProxyHealth health;
   private final boolean requireServer;
   private final byte @Nullable [] tokenDigest;
   private final @Nullable RemoteConsole console;
+  private final MetricsConfig metrics;
 
   /**
    * Creates the handler of one connection.
@@ -88,16 +96,19 @@ final class ManagementHttpHandler extends SimpleChannelInboundHandler<FullHttpRe
    * @param requireServer whether readiness needs a registered backend server
    * @param tokenDigest the SHA-256 of the bearer token, or {@code null} if none is configured
    * @param console the remote console, or {@code null} when it is off
+   * @param metrics the metrics endpoint's settings
    */
   ManagementHttpHandler(
       ProxyHealth health,
       boolean requireServer,
       byte @Nullable [] tokenDigest,
-      @Nullable RemoteConsole console) {
+      @Nullable RemoteConsole console,
+      MetricsConfig metrics) {
     this.health = health;
     this.requireServer = requireServer;
     this.tokenDigest = tokenDigest;
     this.console = console;
+    this.metrics = metrics;
   }
 
   @Override
@@ -150,20 +161,19 @@ final class ManagementHttpHandler extends SimpleChannelInboundHandler<FullHttpRe
           respond(ctx, head, HttpResponseStatus.OK, drainJson(health.drainStatus()));
         }
       }
-      case "/antibot", "/antibot/blocklist", "/metrics" -> {
+      case "/antibot", "/antibot/blocklist" -> {
         AntiBotService bots = health.antiBot();
         if (bots == null) {
           respond(ctx, head, HttpResponseStatus.SERVICE_UNAVAILABLE, error("starting"));
         } else if (readOnly(ctx, method, head)) {
-          switch (uri.path()) {
-            case "/antibot" ->
-                respond(ctx, head, HttpResponseStatus.OK, AntiBotEndpoints.json(bots.status()));
-            case "/antibot/blocklist" ->
-                respondText(ctx, head, AntiBotStatus.blocklistText(bots.blocklist()), TEXT);
-            default -> respondText(ctx, head, AntiBotEndpoints.metrics(bots.status()), METRICS);
+          if (uri.path().equals("/antibot")) {
+            respond(ctx, head, HttpResponseStatus.OK, AntiBotEndpoints.json(bots.status()));
+          } else {
+            respondText(ctx, head, AntiBotStatus.blocklistText(bots.blocklist()), TEXT);
           }
         }
       }
+      case "/metrics" -> metricsEndpoint(ctx, request, method, head, uri);
       case "/antibot/lockdown" -> lockdown(ctx, request, method, uri);
       default ->
           respond(
@@ -174,6 +184,88 @@ final class ManagementHttpHandler extends SimpleChannelInboundHandler<FullHttpRe
                   "no such endpoint; try /livez, /startupz, /readyz, /drain, /antibot,"
                       + " /antibot/blocklist, /antibot/lockdown or /metrics"));
     }
+  }
+
+  /**
+   * {@code GET /metrics}: the registry in the Prometheus text format, or OpenMetrics when {@code
+   * Accept} asks for it, gzipped when {@code Accept-Encoding} allows, restricted to one prefix with
+   * {@code ?filter=}. The scrape runs on a virtual thread, never on this loop.
+   */
+  /** {@code GET /metrics}: off by configuration, then the token when required, then the method. */
+  private void metricsEndpoint(
+      ChannelHandlerContext ctx,
+      FullHttpRequest request,
+      HttpMethod method,
+      boolean head,
+      QueryStringDecoder uri) {
+    if (!metrics.enabled()) {
+      respond(
+          ctx,
+          head,
+          HttpResponseStatus.NOT_FOUND,
+          error("metrics are off; see management.metrics.enabled in warp.conf"));
+      return;
+    }
+    if (metrics.requireToken() && !authorize(ctx, request, "GET /metrics")) {
+      return;
+    }
+    if (!readOnly(ctx, method, head)) {
+      return;
+    }
+    metrics(ctx, request, head, uri);
+  }
+
+  private void metrics(
+      ChannelHandlerContext ctx, FullHttpRequest request, boolean head, QueryStringDecoder uri) {
+    PrometheusText.Format format =
+        PrometheusText.negotiate(request.headers().get(HttpHeaderNames.ACCEPT));
+    List<String> filters = uri.parameters().getOrDefault("filter", List.of());
+    String filter = filters.isEmpty() || filters.getFirst().isBlank() ? null : filters.getFirst();
+    String encoding = request.headers().get(HttpHeaderNames.ACCEPT_ENCODING);
+    boolean gzip = encoding != null && encoding.toLowerCase(Locale.ROOT).contains("gzip");
+    Metrics registry = health.metrics();
+    Thread.ofVirtual()
+        .name("warp-metrics-scrape")
+        .start(
+            () -> {
+              FullHttpResponse response;
+              try {
+                byte[] body =
+                    PrometheusText.write(registry, format, filter).getBytes(StandardCharsets.UTF_8);
+                if (gzip) {
+                  body = gzip(body);
+                }
+                response =
+                    new DefaultFullHttpResponse(
+                        HttpVersion.HTTP_1_1,
+                        HttpResponseStatus.OK,
+                        head ? Unpooled.EMPTY_BUFFER : Unpooled.wrappedBuffer(body));
+                response
+                    .headers()
+                    .set(HttpHeaderNames.CONTENT_TYPE, format.contentType())
+                    .setInt(HttpHeaderNames.CONTENT_LENGTH, body.length)
+                    .set(HttpHeaderNames.CACHE_CONTROL, HttpHeaderValues.NO_STORE)
+                    .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+                if (gzip) {
+                  response.headers().set(HttpHeaderNames.CONTENT_ENCODING, HttpHeaderValues.GZIP);
+                }
+              } catch (IOException | RuntimeException e) {
+                logger.warn(LogCode.METRICS_SCRAPE_FAILED.marker(), "GET /metrics failed", e);
+                response =
+                    response(
+                        head, HttpResponseStatus.INTERNAL_SERVER_ERROR, error("scrape failed"));
+              }
+              FullHttpResponse answer = response;
+              ctx.executor().execute(() -> send(ctx, answer));
+            });
+  }
+
+  private static byte[] gzip(byte[] body) throws IOException {
+    ByteArrayOutputStream bytes = new ByteArrayOutputStream(body.length / 4 + 64);
+    try (GZIPOutputStream out = new GZIPOutputStream(bytes)) {
+      out.write(body);
+    }
+    return bytes.toByteArray();
   }
 
   /** {@code POST /antibot/lockdown?enabled=true|false}: turns lockdown on or off (bearer token). */
@@ -189,7 +281,7 @@ final class ManagementHttpHandler extends SimpleChannelInboundHandler<FullHttpRe
       send(ctx, response);
       return;
     }
-    if (!authorize(ctx, request, "/antibot/lockdown")) {
+    if (!authorize(ctx, request, "POST /antibot/lockdown")) {
       return;
     }
     AntiBotService bots = health.antiBot();
@@ -233,8 +325,7 @@ final class ManagementHttpHandler extends SimpleChannelInboundHandler<FullHttpRe
           false,
           HttpResponseStatus.FORBIDDEN,
           error(
-              "POST "
-                  + endpoint
+              endpoint
                   + " is disabled: no management token is configured"
                   + " (management.token-file or WARP_MANAGEMENT_TOKEN)"));
       return false;
@@ -242,7 +333,7 @@ final class ManagementHttpHandler extends SimpleChannelInboundHandler<FullHttpRe
     if (!authorized(request, expected)) {
       logger.warn(
           LogCode.MANAGEMENT_UNAUTHORIZED.marker(),
-          "Refused POST {} from {}: missing or wrong bearer token",
+          "Refused {} from {}: missing or wrong bearer token",
           endpoint,
           ctx.channel().remoteAddress());
       FullHttpResponse response =
@@ -305,7 +396,7 @@ final class ManagementHttpHandler extends SimpleChannelInboundHandler<FullHttpRe
 
   private void startDrain(
       ChannelHandlerContext ctx, FullHttpRequest request, QueryStringDecoder uri) {
-    if (!authorize(ctx, request, "/drain")) {
+    if (!authorize(ctx, request, "POST /drain")) {
       return;
     }
     if (!health.isStarted() || health.isStopping()) {

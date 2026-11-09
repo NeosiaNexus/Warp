@@ -139,7 +139,7 @@ public final class ManagementServer {
                           .addLast(new HttpObjectAggregator(MAX_BODY))
                           .addLast(
                               new ManagementHttpHandler(
-                                  health, requireServer, tokenDigest, remote));
+                                  health, requireServer, tokenDigest, remote, config.metrics()));
                     }
                   })
               .bind(config.bind())

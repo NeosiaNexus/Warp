@@ -78,6 +78,12 @@ public final class FrameForwarder {
 
   private final Channel channel;
   private boolean verbatimEnabled = true;
+
+  /**
+   * Counts verbatim and re-encoded frames, for metrics; {@link TrafficObserver#NONE} by default.
+   */
+  private TrafficObserver observer = TrafficObserver.NONE;
+
   private int threshold = -1;
   private @Nullable ChannelHandlerContext frameLayer;
 
@@ -113,6 +119,15 @@ public final class FrameForwarder {
    */
   public void setVerbatimEnabled(boolean enabled) {
     this.verbatimEnabled = enabled;
+  }
+
+  /**
+   * Sets who counts the compressed frames written verbatim and those re-encoded.
+   *
+   * @param observer the observer; {@link TrafficObserver#NONE} to count nothing
+   */
+  public void observer(TrafficObserver observer) {
+    this.observer = observer;
   }
 
   // ---------------------------------------------------------------------------
@@ -152,12 +167,16 @@ public final class FrameForwarder {
       }
       return;
     }
+    int wireBytes = frame.readableBytes();
     if (inflated != null) {
+      int rawBytes = inflated.readableBytes();
       if (verbatimEnabled && threshold >= 0 && source != null && accepts(frame)) {
         inflated.release();
+        observer.passthrough(wireBytes, rawBytes);
         writeVerbatim(frame);
       } else {
         frame.release();
+        observer.reencoded(wireBytes, rawBytes);
         writePacket(inflated);
       }
       return;
@@ -175,6 +194,7 @@ public final class FrameForwarder {
 
     int dataLength = VarInt.read(frame);
     if (verbatimEnabled && threshold >= 0 && accepts(dataLength, frame.readableBytes())) {
+      observer.passthrough(wireBytes, dataLength == 0 ? frame.readableBytes() : dataLength);
       writeVerbatim(frame.readerIndex(start));
       return;
     }
@@ -189,6 +209,7 @@ public final class FrameForwarder {
     } finally {
       frame.release();
     }
+    observer.reencoded(wireBytes, dataLength);
     writePacket(packet);
   }
 

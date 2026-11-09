@@ -78,6 +78,7 @@ class LogCodeTest {
     CATEGORIES.put("BOT", "Anti-bot");
     CATEGORIES.put("LOG", "Logging");
     CATEGORIES.put("MGMT", "Management");
+    CATEGORIES.put("MET", "Metrics");
     CATEGORIES.put("RCON", "Remote console");
     CATEGORIES.put("MSG", "BungeeCord channel");
     CATEGORIES.put("BACK", "Backends");

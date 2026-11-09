@@ -22,6 +22,8 @@ import dev.warp.api.lifecycle.DrainOutcome;
 import dev.warp.api.lifecycle.DrainPhase;
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
+import dev.warp.api.metrics.Metrics;
+import dev.warp.proxy.metrics.MetricRegistry;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -47,6 +49,11 @@ class ReadinessStateTest {
     @Override
     public boolean isStarted() {
       return started;
+    }
+
+    @Override
+    public Metrics metrics() {
+      return new MetricRegistry(0);
     }
 
     @Override
