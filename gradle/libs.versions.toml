@@ -18,7 +18,7 @@ disruptor = "4.0.0"
 gson = "2.14.0"
 configurate = "4.2.0"
 # The HOCON parser Configurate uses, read directly for the line of each configuration key.
-typesafe-config = "1.4.1"
+typesafe-config = "1.4.9"
 jspecify = "1.0.1"
 
 # Via plugin: ViaVersion, ViaBackwards, ViaRewind (and the Guava they expect their platform to
