@@ -23,6 +23,7 @@ import dev.warp.protocol.packet.config.KnownPacks;
 import dev.warp.protocol.packet.config.RegistryData;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.SpawnInfo;
+import dev.warp.protocol.packet.play.SystemChatMessage;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -319,9 +320,7 @@ public final class WorldLayouts {
                 registry(
                     "minecraft:worldgen/biome", List.of(entry(PLAINS, biomeElement(version)))));
     if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_19)) {
-      codec.put(
-          "minecraft:chat_type",
-          registry("minecraft:chat_type", List.of(entry("minecraft:chat", chatElement()))));
+      codec.put("minecraft:chat_type", registry("minecraft:chat_type", chatTypes(version)));
     }
     if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_19_4)) {
       List<Nbt.Compound> damage = new ArrayList<>();
@@ -405,6 +404,43 @@ public final class WorldLayouts {
     return element;
   }
 
+  /**
+   * The chat types the client resolves by id. 1.19.0 alone names the type of a system message by id
+   * (1 system, 2 game info in the action bar, see {@code SystemChatMessage}): the proxy's hold
+   * messages would point at nothing without them. From 1.19.1 a system message carries a boolean.
+   */
+  private static List<Nbt.Compound> chatTypes(ProtocolVersion version) {
+    if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_19_1)) {
+      return List.of(entry("minecraft:chat", chatElement()));
+    }
+    Nbt.Compound decoration =
+        new Nbt.Compound()
+            .put("translation_key", "chat.type.text")
+            .putStrings("parameters", List.of("sender", "content"))
+            .put("style", new Nbt.Compound());
+    Nbt.Compound narration =
+        new Nbt.Compound()
+            .put("translation_key", "chat.type.text.narrate")
+            .putStrings("parameters", List.of("sender", "content"))
+            .put("style", new Nbt.Compound());
+    Nbt.Compound chat =
+        new Nbt.Compound()
+            .put("chat", new Nbt.Compound().put("decoration", decoration))
+            .put(
+                "narration",
+                new Nbt.Compound().put("decoration", narration).put("priority", "chat"));
+    Nbt.Compound system =
+        new Nbt.Compound()
+            .put("chat", new Nbt.Compound())
+            .put("narration", new Nbt.Compound().put("priority", "system"));
+    Nbt.Compound gameInfo = new Nbt.Compound().put("overlay", new Nbt.Compound());
+    return List.of(
+        entry("minecraft:chat", 0, chat),
+        entry("minecraft:system", SystemChatMessage.SYSTEM, system),
+        entry("minecraft:game_info", SystemChatMessage.GAME_INFO, gameInfo));
+  }
+
+  /** 1.19.1+: the "chat" type as the vanilla registry defines it. */
   private static Nbt.Compound chatElement() {
     return new Nbt.Compound()
         .put(

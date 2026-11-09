@@ -17,6 +17,7 @@
 package dev.warp.proxy.world;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -29,6 +30,7 @@ import dev.warp.protocol.packet.config.KnownPacks;
 import dev.warp.protocol.packet.config.RegistryData;
 import dev.warp.protocol.packet.play.JoinGame;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -132,6 +134,34 @@ class WorldLayoutsTest {
     assertEquals(0, body.registry()[1] | body.registry()[2], "an empty root name");
     assertTrue(body.spawn().dimensionTypeData().length > 20, "the dimension type as NBT");
     assertEquals(List.of(WorldLayouts.OVERWORLD), body.worldNames());
+  }
+
+  @Test
+  @DisplayName("should register the system and game info chat types 1.19.0 resolves by id")
+  void chatTypes119() {
+    JoinGame.Decoded body =
+        assertInstanceOf(
+            JoinGame.Decoded.class, layouts.of(ProtocolVersion.MINECRAFT_1_19).joinBody());
+    String registry = new String(body.registry(), StandardCharsets.ISO_8859_1);
+
+    assertTrue(registry.contains("minecraft:chat"), registry);
+    assertTrue(registry.contains("minecraft:system"), "SystemChatMessage writes type 1");
+    assertTrue(registry.contains("minecraft:game_info"), "the action bar is type 2");
+    assertTrue(registry.contains("priority"), "the 1.19.0 narration shape");
+  }
+
+  @Test
+  @DisplayName(
+      "should register the chat type alone from 1.19.1, where system messages carry a flag")
+  void chatTypes1191() {
+    JoinGame.Decoded body =
+        assertInstanceOf(
+            JoinGame.Decoded.class, layouts.of(ProtocolVersion.MINECRAFT_1_19_2).joinBody());
+    String registry = new String(body.registry(), StandardCharsets.ISO_8859_1);
+
+    assertTrue(registry.contains("minecraft:chat"), registry);
+    assertFalse(registry.contains("minecraft:system"), registry);
+    assertFalse(registry.contains("minecraft:game_info"), registry);
   }
 
   @Test
