@@ -35,6 +35,7 @@ import dev.warp.api.event.antibot.AttackEndedEvent;
 import dev.warp.api.event.antibot.AttackStartedEvent;
 import dev.warp.api.event.antibot.LockdownChangedEvent;
 import dev.warp.api.event.antibot.VerificationFailedEvent;
+import dev.warp.api.player.ClientPlatform;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.proxy.config.AntiBotConfig;
 import dev.warp.proxy.config.LoggingConfig;
@@ -615,7 +616,11 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
    * @param version the client's version: 1.7 clients are never probed (their keep-alive answer is
    *     not reliable before Join Game, as Sonar found), and no version is verified before
    *     authentication without a way back (every version has one: transfer or reconnect)
-   * @return the plan
+   * @return the plan. The client's platform does not enter it: a verified Bedrock player
+   *     (Floodgate's data decrypted with the key) is planned like any other login, Geyser answers
+   *     the probe as a client does, and the budgets and limits apply to the player's own address.
+   *     What its proof exempts is the world check alone, see {@link #skipsWorldCheck}; a
+   *     self-declared platform (a Forge marker) exempts nothing
    */
   public Plan plan(Recognition recognition, boolean onlineMode, ProtocolVersion version) {
     if (!config.enabled()
@@ -630,6 +635,20 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
       return Plan.NONE;
     }
     return onlineMode && attack ? Plan.BEFORE_AUTHENTICATION : Plan.AFTER_LOGIN;
+  }
+
+  /**
+   * Returns whether a verification may skip its world check, the physics stage: Geyser translates
+   * Bedrock movement, which is not Java physics, so a verified Bedrock player (and only one with
+   * proof, which the {@link ClientPlatform.Bedrock} variant is by construction) would fail it for
+   * nothing. Every other stage still applies to it. The world check is a later phase of the
+   * anti-bot; this is the input it takes from the platform.
+   *
+   * @param platform the client's platform
+   * @return {@code true} for a verified Bedrock player
+   */
+  public boolean skipsWorldCheck(ClientPlatform platform) {
+    return platform instanceof ClientPlatform.Bedrock;
   }
 
   /**
@@ -755,16 +774,21 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
    *
    * @param kind what to ask
    * @param version the client's version
+   * @param platform the client's platform: a verified Bedrock player gets a longer deadline
    * @return the probe, with its ids drawn
    */
-  public Probe newProbe(Probe.Kind kind, ProtocolVersion version) {
-    return new Probe(
-        kind,
-        version,
-        config.verification().probeTimeout(),
-        ThreadLocalRandom.current(),
-        nanoClock);
+  public Probe newProbe(Probe.Kind kind, ProtocolVersion version, ClientPlatform platform) {
+    Duration timeout = config.verification().probeTimeout();
+    if (platform instanceof ClientPlatform.Bedrock) {
+      // Geyser answers for the Bedrock client, after its own translation and the Bedrock
+      // client's round trip: Sonar gives Bedrock players three times the deadline (45 s for 15).
+      timeout = timeout.multipliedBy(BEDROCK_DEADLINE_FACTOR);
+    }
+    return new Probe(kind, version, timeout, ThreadLocalRandom.current(), nanoClock);
   }
+
+  /** How many times the probe's deadline a Bedrock player gets, after Sonar's 45 s for 15 s. */
+  static final int BEDROCK_DEADLINE_FACTOR = 3;
 
   /**
    * Takes a passed verification: counted, and the identity trusted under {@link

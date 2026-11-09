@@ -638,6 +638,42 @@ the login flow of `main` before PR #179. What landed, and what moved:
   third branch, fed by `LoginQueryRelay.recorded()`; a server switch on 1.13 to 1.20.1 today still
   answers "not understood", so a modded second server kicks the player as before this PR.
 
+### Status of B1
+
+Shipped in one PR (`feat(proxy): native Floodgate support for Bedrock players`), standalone Geyser
+shape only. What landed, and what moved:
+
+- `dev.warp.proxy.bedrock`: `FloodgateCipher` (AES-GCM in Floodgate's framing, byte for byte what
+  Floodgate's `AesCipher` writes for the same IV), `FloodgateData` (the twelve fields, kept as text
+  so re-emission gives Floodgate exactly Geyser's data), `FloodgateReplayGuard` (bounded set of
+  accepted tags, ten minutes), `FloodgateService` (read, verify, derive the identity, re-encrypt for
+  backends). The format was verified against the classes themselves, which live in the Geyser
+  repository's `common` module, not in Floodgate's: `FloodgateCipher`, `AesCipher`,
+  `AesKeyProducer`, `BedrockData`, `LinkedPlayer`, `DeviceOs`, `InputMode`, `UiProfile`.
+- `ClientPlatform.Bedrock` carries the XUID, gamertag, device OS, input mode, UI profile, language,
+  linked account and address, with the enums as nested types and `floodgateId()`. The API changed
+  without a shim (no users yet).
+- Verification beyond Floodgate's own: a replay guard (Floodgate has no timestamp or nonce), the
+  address check against `bedrock.geyser.trusted` (loopback by default), the identity checks, a
+  version byte check. A failure is a refusal (`Refusal.FLOODGATE_REFUSED`, W-BEDROCK-001 throttled
+  to one line per five minutes), never a Java player.
+- Login: offline whatever `online-mode` says, lockdown skipped for the proven identity, the prefix
+  reserved for Bedrock players in offline mode, the probe's deadlines tripled, `skipsWorldCheck`
+  as the input for the world check phase. `/find` and the login line show the platform.
+- Routes: `@bedrock`, `@java`, `@forge`, `@neoforge` after the host, matched on the platform the
+  handshake decided, with the condition between the host's specificity and the port in the order.
+  Pulled forward from B2, since the handshake already had the platform when it matched routes.
+- Forwarding: `servers.<name>.floodgate` and `bedrock.floodgate.forward`, re-emission in the
+  backend handshake with the from-proxy flag set. Pulled forward from B3, minus skins.
+- **Deferred.** Skins through the Global API (B3): the profile has no properties, so F#508 stands
+  for Bedrock players until then. `LocalConnections` and `warp-geyser` (B2, B4). The e2e scenario
+  with a synthetic blob: the harness has no Bedrock client, and the unit test drives the blob
+  through the real pipeline instead. `ServerPreConnectEvent.platform()` (B2). Bedrock-specific
+  stage deadlines beyond the factor of three.
+- **Upstream quirk noted.** Geyser's `BedrockData.of` swaps the UI profile and input mode when it
+  builds the object, so the wire fields 5 and 6 hold what Floodgate reads as UI profile and input
+  mode respectively; Warp reads them as Floodgate does, and so agrees with every Floodgate backend.
+
 M1 to M3 unblock 1.20.2+ networks, the majority of new modded servers, in about nine days. M4 and M5
 are independent of each other. B1 alone makes Geyser standalone networks correct; B4 is the
 differentiator.

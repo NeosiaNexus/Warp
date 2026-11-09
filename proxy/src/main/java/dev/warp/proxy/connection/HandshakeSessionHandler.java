@@ -26,10 +26,15 @@ import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.handshake.HandshakePacket;
 import dev.warp.protocol.packet.login.LoginDisconnect;
+import dev.warp.proxy.bedrock.BedrockIdentity;
+import dev.warp.proxy.bedrock.FloodgateService;
 import dev.warp.proxy.i18n.Message;
 import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.limit.Refusal;
+import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.metrics.LoginOutcome;
+
+import java.net.InetSocketAddress;
 
 import io.netty.channel.ChannelFutureListener;
 import net.kyori.adventure.text.Component;
@@ -142,22 +147,31 @@ final class HandshakeSessionHandler implements SessionHandler {
       connection.setVersion(version);
     }
 
-    connection.setVirtualHost(handshake.serverAddress());
-    String host = connection.virtualHost();
-    connection.setRoute(
-        host == null
-            ? null
-            : loginContext.serverRegistry().routes().match(host, handshake.serverPort()));
-    connection.setVirtualPort(handshake.serverPort());
-    // The marker a modded client appends is kept apart from the host: routes match the host, the
-    // marker goes to the backend.
-    connection.setHandshakeMarker(HandshakeMarkers.detect(handshake.serverAddress(), version));
-
     HandshakeIntent intent = HandshakeIntent.byId(handshake.nextState());
     if (intent == null) {
       refuse(Refusal.INVALID_HANDSHAKE, "next state " + handshake.nextState());
       return;
     }
+
+    connection.setVirtualHost(handshake.serverAddress());
+    connection.setVirtualPort(handshake.serverPort());
+    // The marker a modded client appends is kept apart from the host: routes match the host, the
+    // marker goes to the backend.
+    connection.setHandshakeMarker(HandshakeMarkers.detect(handshake.serverAddress(), version));
+    // Floodgate's data, when Geyser sends a Bedrock player: verified now, since it decides the
+    // platform the routes are matched on. A status ping carries none, and is never refused for one.
+    if (intent != HandshakeIntent.STATUS && !readFloodgate(handshake, version)) {
+      return;
+    }
+    String host = connection.virtualHost();
+    connection.setRoute(
+        host == null
+            ? null
+            : loginContext
+                .serverRegistry()
+                .routes()
+                .match(host, handshake.serverPort(), connection.clientPlatform()));
+
     connection.setHandshakeIntent(intent);
     loginContext.metrics().connectionAccepted(intent);
 
@@ -173,6 +187,73 @@ final class HandshakeSessionHandler implements SessionHandler {
       }
       case LOGIN -> login(handshake, version);
       case TRANSFER -> transfer(handshake, version);
+    }
+  }
+
+  /**
+   * Reads the Floodgate data of the handshake, if any, and makes the connection the Bedrock
+   * player's it names. Data that does not verify refuses the login: counted, logged at most once
+   * per interval (the first time tells the operator the key differs from Geyser's), and never taken
+   * for a Java client, so that nobody logs in under a Bedrock name without the key.
+   *
+   * @return {@code false} if the connection was refused
+   */
+  private boolean readFloodgate(Handshake handshake, @Nullable ProtocolVersion version) {
+    FloodgateService floodgate = loginContext.floodgate();
+    if (!floodgate.enabled()) {
+      return true;
+    }
+    InetSocketAddress peer = (InetSocketAddress) connection.channel().remoteAddress();
+    InetSocketAddress remote = (InetSocketAddress) connection.remoteAddress();
+    switch (floodgate.read(handshake.serverAddress(), peer, remote)) {
+      case FloodgateService.Result.None _ -> {
+        return true;
+      }
+      case FloodgateService.Result.Verified(BedrockIdentity identity) -> {
+        if (identity.realAddress() != null) {
+          // The Geyser host is trusted to name the player's own address: limits, logs and
+          // forwarding use it from here on, not the Geyser host's. Accept admitted the Geyser
+          // host; the player's own address gets the same admission (blocklist, connection rate),
+          // as a PROXY protocol header's client does.
+          connection.setProxiedAddress(identity.realAddress());
+          if (!loginContext.limits().admitConnection(identity.realAddress())) {
+            // Counted by the limits, like any connection refused at accept.
+            logger.debug("Refused the Bedrock player at {} in HANDSHAKE", identity.realAddress());
+            connection.reset();
+            return false;
+          }
+        }
+        connection.setBedrock(identity);
+        return true;
+      }
+      case FloodgateService.Result.Rejected(FloodgateService.Reason reason, String detail) -> {
+        loginContext.limits().refused(Refusal.FLOODGATE_REFUSED, connection.remoteAddress());
+        loginContext.metrics().loginEnded(LoginOutcome.of(Refusal.FLOODGATE_REFUSED), -1);
+        long suppressed = floodgate.logRefusal();
+        if (suppressed >= 0) {
+          logger.warn(
+              LogCode.FLOODGATE_DATA_REFUSED.marker(),
+              "Refused the Floodgate data of a connection from {} ({}): {}{}{}",
+              remote,
+              reason.label(),
+              detail,
+              reason.hint(),
+              LogThrottle.suffix(suppressed, "refused Floodgate connections"));
+        } else {
+          logger.debug("Refused Floodgate data from {} ({}): {}", remote, reason.label(), detail);
+        }
+        // In the login state, whose disconnect packet the client reads: Geyser shows the reason
+        // to the Bedrock player.
+        ProtocolVersion shown = version != null ? version : ProtocolVersion.latest();
+        connection.setVersion(shown);
+        connection.setState(ProtocolState.LOGIN);
+        PlayerMessages messages = loginContext.messages();
+        connection.writeAndClose(
+            LoginDisconnect.of(
+                messages.render(Message.FLOODGATE_REFUSED.of(), messages.defaultLocale(), shown),
+                shown));
+        return false;
+      }
     }
   }
 

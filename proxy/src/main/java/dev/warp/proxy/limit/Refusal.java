@@ -116,7 +116,12 @@ public enum Refusal {
   DENIED_BY_PLUGIN("logins denied by plugins"),
 
   /** A login beyond the player limit. */
-  SERVER_FULL("logins refused as the server is full");
+  SERVER_FULL("logins refused as the server is full"),
+  /**
+   * A handshake whose Floodgate data did not verify: not encrypted with the proxy's key, replayed,
+   * naming another address, or carrying an identity that cannot log in.
+   */
+  FLOODGATE_REFUSED("Bedrock logins whose Floodgate data did not verify");
 
   private final String description;
 

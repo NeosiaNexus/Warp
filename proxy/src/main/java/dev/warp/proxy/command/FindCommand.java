@@ -20,6 +20,7 @@ import dev.warp.api.Warp;
 import dev.warp.api.command.CommandSource;
 import dev.warp.api.player.Player;
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.proxy.connection.Platforms;
 import dev.warp.proxy.i18n.Message;
 
 import java.util.Optional;
@@ -93,7 +94,9 @@ final class FindCommand {
             ? Message.FIND_ADDRESS.with(
                 Message.text("address", player.remoteAddress().getAddress().getHostAddress()))
             : Component.empty();
-    String versionName = version != null ? version.name() : "protocol " + player.protocolVersion();
+    String versionName =
+        (version != null ? version.name() : "protocol " + player.protocolVersion())
+            + Platforms.describe(player.platform());
     return player
         .currentServer()
         .map(

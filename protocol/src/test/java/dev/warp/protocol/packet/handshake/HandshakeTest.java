@@ -17,11 +17,15 @@
 package dev.warp.protocol.packet.handshake;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.codec.McString;
+import dev.warp.protocol.codec.VarInt;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.handler.codec.DecoderException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -75,6 +79,49 @@ class HandshakeTest {
       Handshake decoded = Handshake.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_21_4);
 
       assertEquals("mc.example.com\0FML2\0", decoded.serverAddress());
+    } finally {
+      buf.release();
+    }
+  }
+
+  @Test
+  @DisplayName("should roundtrip a server address longer than vanilla's 255 characters")
+  void longServerAddress() {
+    // A host name followed by Floodgate's data for a linked Bedrock account: around 270 characters,
+    // which Spigot reads and vanilla would refuse.
+    String address = "play.example.com\0^Floodgate^>" + "A".repeat(254);
+    Handshake original = new Handshake(769, address, 25565, 2);
+    ByteBuf buf = Unpooled.buffer();
+    try {
+      Handshake.CODEC.encode(original, buf, ProtocolVersion.MINECRAFT_1_21_4);
+      Handshake decoded = Handshake.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_21_4);
+
+      assertEquals(original, decoded);
+      assertEquals(0, buf.readableBytes());
+    } finally {
+      buf.release();
+    }
+  }
+
+  @Test
+  @DisplayName("should refuse a server address over the bound in both directions")
+  void boundedServerAddress() {
+    String address = "A".repeat(Handshake.MAX_SERVER_ADDRESS + 1);
+    ByteBuf buf = Unpooled.buffer();
+    try {
+      assertThrows(
+          IllegalArgumentException.class,
+          () ->
+              Handshake.CODEC.encode(
+                  new Handshake(769, address, 25565, 2), buf, ProtocolVersion.MINECRAFT_1_21_4));
+      buf.clear();
+      VarInt.write(buf, 769);
+      McString.write(buf, address);
+      buf.writeShort(25565);
+      VarInt.write(buf, 2);
+      assertThrows(
+          DecoderException.class,
+          () -> Handshake.CODEC.decode(buf, ProtocolVersion.MINECRAFT_1_21_4));
     } finally {
       buf.release();
     }
