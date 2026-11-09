@@ -13,12 +13,12 @@ jline = "4.4.8"
 guava = "33.7.2-jre"
 
 # Utilities
-caffeine = "3.3.0"
+caffeine = "3.3.1"
 disruptor = "4.0.0"
-gson = "2.14.0"
+gson = "2.15.0"
 configurate = "4.2.0"
 # The HOCON parser Configurate uses, read directly for the line of each configuration key.
-typesafe-config = "1.4.1"
+typesafe-config = "1.4.9"
 jspecify = "1.0.1"
 
 # Via plugin: ViaVersion, ViaBackwards, ViaRewind (and the Guava they expect their platform to
@@ -33,10 +33,10 @@ netty-tcnative = "2.0.84.Final"
 
 # Code quality
 errorprone-core = "2.51.0"
-errorprone-plugin = "5.1.1"
+errorprone-plugin = "5.2.0"
 nullaway = "0.14.3"
 spotless = "8.10.4"
-checkstyle = "14.3.0"
+checkstyle = "14.4.0"
 jacoco = "0.8.16"
 
 # Testing
@@ -49,8 +49,8 @@ pitest-plugin = "1.19.0"
 
 # Benchmarking
 jmh = "1.37"
-jmh-plugin = "0.7.3"
-velocity-native = "4.3.0"
+jmh-plugin = "0.7.4"
+velocity-native = "4.3.1"
 
 # Build plugins
 shadow = "9.6.1"

@@ -56,7 +56,7 @@ report() {
 }
 
 group "Build the benchmarks"
-./gradlew --quiet :protocol:jmhJar
+./gradlew --quiet :protocol:jmhJar -Pwarp.natives.required=true
 endgroup
 # The java of the toolchain that compiled the benchmarks, wherever Gradle found or installed it.
 java=$(./gradlew --quiet :protocol:jmhJava)
