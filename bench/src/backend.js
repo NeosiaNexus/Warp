@@ -125,7 +125,12 @@ export class Backend {
   async boot() {
     this.prepare();
     this.start();
-    await this.process.waitFor(READY, BOOT_TIMEOUT_MS);
+    try {
+      await this.process.waitFor(READY, BOOT_TIMEOUT_MS);
+    } catch (e) {
+      await this.stop().catch(() => {});
+      throw e;
+    }
     return this;
   }
 
@@ -139,13 +144,30 @@ export class Backend {
 }
 
 /**
- * Boots the three backends behind a proxy, in parallel, each with the forwarding the proxy uses.
- * @returns {Promise<Backend[]>}
+ * Boots a set of backends in parallel. If any of them fails to boot (a timeout waiting for "Done",
+ * a crash), the ones that did boot, and the one that is still starting, are stopped before the
+ * error propagates: a survivor left running would hold its port for every later proxy in the run
+ * and keep the process alive at the end. `backends` need only `boot()` and `stop()`.
+ * @template {{boot(): Promise<unknown>, stop(): Promise<unknown>}} B
+ * @param {B[]} backends
+ * @returns {Promise<B[]>} the same backends, all booted
  */
-export async function bootBackends({ jar, javaMajor, cacheDir, baseDir, logDir, basePort, backend, forwarding, secret, compressionThreshold, maxHeapMb }) {
-  const java = await findJava(javaMajor, cacheDir);
+export async function bootAll(backends) {
+  const outcomes = await Promise.allSettled(backends.map((b) => b.boot()));
+  const failed = outcomes.find((o) => o.status === 'rejected');
+  if (!failed) return backends;
+  await Promise.allSettled(backends.map((b) => b.stop()));
+  throw failed.reason;
+}
+
+/**
+ * Builds (without starting) the three backends behind a proxy, each with the forwarding the proxy
+ * uses.
+ * @returns {Backend[]}
+ */
+export function createBackends({ jar, java, baseDir, logDir, basePort, backend, forwarding, secret, compressionThreshold, maxHeapMb }) {
   const names = ['lobby', 'survival', 'mini'];
-  const backends = names.map(
+  return names.map(
     (name, i) =>
       new Backend({
         name,
@@ -162,6 +184,14 @@ export async function bootBackends({ jar, javaMajor, cacheDir, baseDir, logDir, 
         maxHeapMb,
       }),
   );
-  await Promise.all(backends.map((b) => b.boot()));
-  return backends;
+}
+
+/**
+ * Boots the three backends behind a proxy, in parallel, each with the forwarding the proxy uses.
+ * On failure every backend that started is stopped before the error propagates (see bootAll).
+ * @returns {Promise<Backend[]>}
+ */
+export async function bootBackends({ javaMajor, cacheDir, ...rest }) {
+  const java = await findJava(javaMajor, cacheDir);
+  return bootAll(createBackends({ java, ...rest }));
 }

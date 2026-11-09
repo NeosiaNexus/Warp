@@ -2,16 +2,20 @@ name: Benchmark smoke
 
 # The macro benchmark harness (bench/) is large, downloads several proxies, and only produces
 # credible numbers on dedicated hardware, so it does not run on every push. This workflow runs it in
-# smoke mode on demand: one proxy (Warp, the locally built jar), about fifty bots, roughly two
-# minutes. It exists so the harness never rots: a change that breaks a proxy adapter, the raw client
-# or the report generator fails here. It makes no performance claims (a GitHub runner is tier T0).
+# smoke mode, one job per proxy (Warp from the locally built jar, Velocity, Gate, Gate Lite and
+# BungeeCord), about fifty bots each, roughly two minutes each: weekly, and on demand. It exists so
+# the harness never rots: a change that breaks any proxy adapter, the raw client, the bot path or
+# the report generator fails here (the harness exits non-zero when a proxy does not launch, a
+# scenario throws, or no bot gets through). It makes no performance claims (a GitHub runner is T0).
 on:
+  schedule:
+    - cron: '17 5 * * 1' # Mondays 05:17 UTC
   workflow_dispatch:
     inputs:
       proxies:
-        description: Comma-separated proxies (default warp)
+        description: Comma-separated proxies (default all five)
         type: string
-        default: warp
+        default: warp,velocity,gate,gatelite,bungeecord
       scenarios:
         description: Comma-separated scenarios (default all)
         type: string
@@ -24,6 +28,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # One smoke job per proxy, from the input (or every proxy on the schedule).
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      proxies: ${{ steps.plan.outputs.proxies }}
+    steps:
+      - name: Choose proxies
+        id: plan
+        env:
+          PROXIES: ${{ inputs.proxies }}
+        run: |
+          list=${PROXIES:-warp,velocity,gate,gatelite,bungeecord}
+          json=$(printf '%s' "$list" | tr -d ' ' | tr ',' '\n' | sed '/^$/d' | jq -R . | jq -cs .)
+          echo "proxies=$json" >> "$GITHUB_OUTPUT"
+          echo "Proxies: $json"
+
   build:
     name: Build Warp
     runs-on: ubuntu-24.04
@@ -51,12 +74,16 @@ jobs:
           retention-days: 7
 
   smoke:
-    name: Benchmark smoke
-    needs: build
+    name: Benchmark smoke (${{ matrix.proxy }})
+    needs: [plan, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read # check out the harness
+    strategy:
+      fail-fast: false
+      matrix:
+        proxy: ${{ fromJSON(needs.plan.outputs.proxies) }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -89,11 +116,11 @@ jobs:
       - name: Run the smoke benchmark
         env:
           WARP_DIR: ${{ runner.temp }}/warp
-          PROXIES: ${{ inputs.proxies }}
+          PROXY: ${{ matrix.proxy }}
           SCENARIOS: ${{ inputs.scenarios }}
         run: |
           jar=$(ls "$WARP_DIR"/warp-*.jar | head -1)
-          args=(--smoke --warp-jar "$jar" --proxies "$PROXIES")
+          args=(--smoke --warp-jar "$jar" --proxies "$PROXY")
           if [ -n "$SCENARIOS" ]; then args+=(--scenarios "$SCENARIOS"); fi
           bench/run.sh "${args[@]}"
 
@@ -101,7 +128,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: bench-smoke-results
+          name: bench-smoke-results-${{ matrix.proxy }}
           path: bench/results/
           if-no-files-found: warn
           retention-days: 14

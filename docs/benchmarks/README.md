@@ -142,8 +142,9 @@ the five-chunk column as a backend-plus-client figure.
   internally to drive the work. This mirrors the methodology document's recommendation.
 - When results are published, they will be in a form a skeptic can re-run: pinned versions with
   checksums, full configs, the fingerprint, and the scenarios where Warp loses included.
-- The smoke workflow (`.github/workflows/bench-smoke.yml`, `workflow_dispatch`) runs the harness in
-  smoke mode so it never rots.
+- The smoke workflow (`.github/workflows/bench-smoke.yml`, weekly and `workflow_dispatch`) runs the
+  harness in smoke mode against every proxy, one job each, and fails when a proxy does not launch,
+  a scenario throws or no bot gets through, so the harness never rots.
 
 ## Updating the pinned versions
 

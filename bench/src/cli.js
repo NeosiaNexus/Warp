@@ -11,7 +11,9 @@ import { fileURLToPath } from 'node:url';
 import { cpuPlan, fingerprint } from './env.js';
 import { FULL, SMOKE, ALL_SCENARIOS, BACKEND_HEAP_MB } from './profiles.js';
 import { buildReport } from './report.js';
+import { killAll } from './reuse.js';
 import { runProxy } from './run.js';
+import { harnessFailures } from './verdict.js';
 import { PROXY_IDS } from './proxies/index.js';
 
 const BENCH_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -91,7 +93,7 @@ async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) {
     console.log(HELP);
-    return;
+    return 0;
   }
   if (opts.loadHost) {
     console.log(`note: --load-host ${opts.loadHost} is reserved; this run uses single-machine mode.`);
@@ -160,15 +162,35 @@ async function main() {
   writeFileSync(join(resultsDir, 'README.md'), report);
   console.log(`Report written: ${join(resultsDir, 'README.md')}`);
 
-  // A non-zero exit if any proxy failed to launch, so CI notices.
-  const launchFailures = results.filter((r) => !r.natives && r.errors.some((e) => e.startsWith('setup/launch')));
-  if (launchFailures.length) {
-    console.error(`FAILED: ${launchFailures.map((r) => r.id).join(', ')} did not launch`);
-    process.exitCode = 1;
+  // A non-zero exit when a proxy did not launch, a scenario threw, or no bot got through, so CI
+  // notices a broken adapter or bot path even when the report was written.
+  const failures = harnessFailures(results);
+  if (failures.length) {
+    console.error(`FAILED:\n  ${failures.join('\n  ')}`);
+    return 1;
   }
+  return 0;
 }
 
-main().catch((e) => {
-  console.error(e.stack ?? e.message);
-  process.exitCode = 1;
-});
+// Handled, so that an interrupted or killed run still stops the proxy and the Paper backends (which
+// would otherwise keep their ports and a few GiB until killed by hand); SIGHUP: its terminal closed.
+let interrupted = false;
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, () => {
+    if (interrupted) process.exit(130);
+    interrupted = true;
+    console.error(`\n${signal}: stopping the proxy and backends...`);
+    killAll('SIGTERM');
+    setTimeout(() => { killAll('SIGKILL'); process.exit(130); }, 15_000).unref();
+  });
+}
+
+// killAll on the way out: a child that survived its stop() would otherwise keep the process alive.
+main().then(
+  (code) => { killAll(); process.exit(code ?? 0); },
+  (e) => {
+    console.error(e.stack ?? e.message);
+    killAll();
+    process.exit(1);
+  },
+);

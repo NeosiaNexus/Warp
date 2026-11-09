@@ -5,5 +5,5 @@
 // here, so the relative path lives in one place.
 export { download, hashFile } from '../../e2e/src/download.js';
 export { findJava } from '../../e2e/src/java.js';
-export { ManagedProcess, run, sleep, waitForPort } from '../../e2e/src/proc.js';
+export { killAll, ManagedProcess, run, sleep, waitForPort } from '../../e2e/src/proc.js';
 export { parseStatus, parseCpuTicks } from '../../e2e/src/sampler.js';
