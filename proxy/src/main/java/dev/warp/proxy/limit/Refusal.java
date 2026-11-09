@@ -103,6 +103,13 @@ public enum Refusal {
   /** A transfer while {@code accepts-transfers} is off. */
   TRANSFER_REFUSED("transfers refused"),
 
+  /**
+   * A transfer whose handoff ticket was valid but whose proof, read once encrypted, was missing or
+   * wrong: the client was told to skip Mojang, so it cannot be authenticated, and the ticket was
+   * captured in transit.
+   */
+  HANDOFF_FAILED("transfer handoffs without their proof"),
+
   /** An invalid name, or a profile key that does not check. */
   INVALID_LOGIN("invalid names or profile keys"),
 

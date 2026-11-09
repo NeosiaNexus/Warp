@@ -76,6 +76,7 @@ import dev.warp.proxy.messaging.PluginMessageEventImpl;
 import dev.warp.proxy.metrics.ProxyMetrics;
 import dev.warp.proxy.metrics.ServerConnectOutcome;
 import dev.warp.proxy.server.BackendServer;
+import dev.warp.proxy.transfer.TransferHandoff;
 
 import java.net.InetSocketAddress;
 import java.time.Duration;
@@ -230,6 +231,12 @@ public final class ConnectedPlayer {
 
   /** Whether this player was authenticated with Mojang. */
   private volatile boolean onlineMode;
+
+  /**
+   * The server another Warp proxy handed this player off from, which it joins first if this proxy
+   * has it and it is healthy; {@code null} without a handoff.
+   */
+  private volatile @Nullable String handoffServer;
 
   /** Whether {@link PostLoginEvent} was fired: a {@link DisconnectEvent} must follow. */
   private volatile boolean sessionStarted;
@@ -722,13 +729,44 @@ public final class ConnectedPlayer {
     if (clientConnection.decoder().state() == ProtocolState.CONFIGURATION) {
       clientConnection.setSessionHandler(new SwitchWaitSessionHandler(this));
     }
-    BackendServer proposed = loginContext.serverRegistry().initialServer(clientConnection.route());
+    BackendServer proposed = handedOffServer();
+    if (proposed == null) {
+      proposed = loginContext.serverRegistry().initialServer(clientConnection.route());
+    }
     WarpEventBus events = loginContext.events();
     if (!events.hasHandlers(PlayerChooseInitialServerEventImpl.class)) {
       joinServer(proposed);
       return;
     }
     holdFor(new PlayerChooseInitialServerEventImpl(api, proposed), this::joinChosen);
+  }
+
+  /**
+   * The server a handoff named, if this proxy has it and its breaker is closed: proposed first, to
+   * plugins as to the player, so that a drain leaves the player where it played.
+   */
+  private @Nullable BackendServer handedOffServer() {
+    String server = handoffServer;
+    if (server == null) {
+      return null;
+    }
+    BackendServer found = loginContext.serverRegistry().handoffServer(server);
+    if (found == null) {
+      logger.debug(
+          "{} was handed off from server {}, which is not here or not healthy: the default instead",
+          username,
+          server);
+    }
+    return found;
+  }
+
+  /**
+   * Records the server a handoff named: the player joins it first. Called once, by the login.
+   *
+   * @param server the server's name on the proxy the player came from
+   */
+  void handedOffFrom(String server) {
+    this.handoffServer = server;
   }
 
   /** Applies the result {@link PlayerChooseInitialServerEvent} settled on. Client event loop. */
@@ -2499,8 +2537,54 @@ public final class ConnectedPlayer {
       // Inside an open bundle, the client would only act on it once the bundle closes.
       closeBundle();
     }
-    logger.info("Transferring {} to {}:{}", username, packet.host(), packet.port());
+    boolean handedOff = storeHandoff(packet.host(), packet.port());
+    loginContext
+        .metrics()
+        .transfer(
+            ProxyMetrics.TransferDirection.OUT,
+            handedOff ? ProxyMetrics.HandoffUse.USED : ProxyMetrics.HandoffUse.ABSENT);
+    logger.info(
+        "Transferring {} to {}:{}{}",
+        username,
+        packet.host(),
+        packet.port(),
+        handedOff ? " with a handoff" : "");
     clientConnection.writeWhenSettled(packet, promise);
+  }
+
+  /**
+   * Stores the handoff cookies before a transfer to a peer: the sealed ticket, and its proof for a
+   * player whose connection is encrypted. Written ahead of the Transfer packet, in order, so the
+   * client holds them when it connects to the peer. On the client event loop.
+   *
+   * @return whether the cookies were stored
+   */
+  private boolean storeHandoff(String host, int port) {
+    TransferHandoff handoff = loginContext.handoff();
+    if (!handoff.isPeer(host, port) || !cookies.supported()) {
+      return false;
+    }
+    boolean authenticated = onlineMode;
+    TransferHandoff.Issued issued =
+        handoff.issue(
+            new TransferHandoff.Subject(
+                uuid,
+                username,
+                profileProperties,
+                currentServerName,
+                authenticated,
+                authenticated && loginContext.antiBot().trustsAccount(uuid)),
+            host,
+            port);
+    if (issued == null) {
+      return false;
+    }
+    cookies.store(TransferHandoff.TICKET_COOKIE, issued.ticket());
+    byte[] proof = issued.proof();
+    if (proof != null) {
+      cookies.store(TransferHandoff.PROOF_COOKIE, proof);
+    }
+    return true;
   }
 
   /**

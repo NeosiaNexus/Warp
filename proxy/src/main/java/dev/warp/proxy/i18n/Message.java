@@ -98,6 +98,8 @@ public enum Message {
   VERIFICATION_TIMED_OUT("warp.login.verification-timed-out", Kind.DISCONNECT),
   /** A player verified before authentication, on a version without transfers. */
   VERIFIED_RECONNECT("warp.login.verified-reconnect", Kind.DISCONNECT),
+  /** A transfer whose handoff could not be proven: the player reconnects normally. */
+  HANDOFF_FAILED("warp.login.handoff-failed", Kind.DISCONNECT),
   /** A username no vanilla client sends. */
   INVALID_USERNAME("warp.login.invalid-username", Kind.DISCONNECT),
   /** A login packet sent out of order: a broken or modified client. */

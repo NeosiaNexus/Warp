@@ -645,6 +645,19 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
   }
 
   /**
+   * Returns whether the anti-bot trusts an account: it is among the identities it verified or
+   * learned. What a handoff ticket tells the next proxy, which then spares the account a
+   * verification of its own.
+   *
+   * @param account the authenticated account
+   * @return {@code true} if trusted; {@code false} when the anti-bot is off
+   */
+  public boolean trustsAccount(UUID account) {
+    IdentityStore open = store;
+    return open != null && open.knows(keys.account(account));
+  }
+
+  /**
    * Returns whether a login that arrived by a transfer must present a verification token: when it
    * would otherwise be verified before authentication (the token is what spares it), and when the
    * proxy accepts no transfers but its own (the token is what proves the transfer is one of the

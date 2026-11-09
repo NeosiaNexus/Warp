@@ -37,6 +37,7 @@ import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 import dev.warp.proxy.status.ServerList;
 import dev.warp.proxy.status.StatusSettings;
+import dev.warp.proxy.transfer.TransferHandoff;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -316,7 +317,8 @@ final class TestLoginContexts {
         antiBot,
         new PipelineRegistry(),
         PlayerMessages.bundled(),
-        new ProxyMetrics(new MetricRegistry(0)));
+        new ProxyMetrics(new MetricRegistry(0)),
+        TransferHandoff.disabled());
   }
 
   /**
@@ -376,6 +378,28 @@ final class TestLoginContexts {
       ServerRegistry servers,
       TimeoutsConfig timeouts,
       LoggingConfig logging) {
+    return with(base, servers, timeouts, logging, base.handoff());
+  }
+
+  /**
+   * Returns a context like {@code base}, with another seamless handoff and other servers.
+   *
+   * @param base the context to copy
+   * @param servers the servers players join and fall back to
+   * @param handoff the handoff
+   * @return the context
+   */
+  static ServerLoginContext withHandoff(
+      ServerLoginContext base, ServerRegistry servers, TransferHandoff handoff) {
+    return with(base, servers, base.timeouts(), base.logging(), handoff);
+  }
+
+  private static ServerLoginContext with(
+      ServerLoginContext base,
+      ServerRegistry servers,
+      TimeoutsConfig timeouts,
+      LoggingConfig logging,
+      TransferHandoff handoff) {
     return new ServerLoginContext(
         base.rsaKeyPair(),
         base.onlineMode(),
@@ -404,7 +428,8 @@ final class TestLoginContexts {
         base.antiBot(),
         base.pipelines(),
         base.messages(),
-        base.metrics());
+        base.metrics(),
+        handoff);
   }
 
   /**
