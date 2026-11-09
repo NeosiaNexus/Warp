@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
 
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.EventExecutorGroup;
@@ -52,17 +53,35 @@ public final class EventLoopLagProbe {
    */
   public void start(EventExecutorGroup group) {
     for (EventExecutor executor : group) {
-      long[] expected = {System.nanoTime() + PERIOD_NANOS};
       probes.add(
           executor.scheduleAtFixedRate(
-              () -> {
-                long now = System.nanoTime();
-                metrics.eventLoopLag(now - expected[0]);
-                expected[0] = now + PERIOD_NANOS;
-              },
+              new Tick(metrics, System::nanoTime, System.nanoTime() + PERIOD_NANOS),
               PERIOD_NANOS,
               PERIOD_NANOS,
               TimeUnit.NANOSECONDS));
+    }
+  }
+
+  /**
+   * One loop's probe. The expected time advances by the period from the previous deadline, as a
+   * fixed-rate schedule does, never from the time the tick ran: rebasing on the run time would
+   * measure the change in lag between two ticks, and a loop steadily late would show no lag.
+   */
+  static final class Tick implements Runnable {
+    private final ProxyMetrics metrics;
+    private final LongSupplier clock;
+    private long expected;
+
+    Tick(ProxyMetrics metrics, LongSupplier clock, long firstDeadline) {
+      this.metrics = metrics;
+      this.clock = clock;
+      this.expected = firstDeadline;
+    }
+
+    @Override
+    public void run() {
+      metrics.eventLoopLag(clock.getAsLong() - expected);
+      expected += PERIOD_NANOS;
     }
   }
 
