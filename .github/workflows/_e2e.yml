@@ -169,6 +169,9 @@ jobs:
         with:
           name: e2e-result-${{ matrix.id }}
           path: e2e/build/*/result.json
+          # A re-run of the failed jobs replaces the first attempt's result: without this, the
+          # upload fails on the name taken, and Report sums up the stale result and fails again.
+          overwrite: true
           if-no-files-found: warn
           retention-days: 14
 
@@ -177,6 +180,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-logs-${{ matrix.id }}
+          overwrite: true
           path: |
             e2e/build/*/logs/
             e2e/build/*/result.json
