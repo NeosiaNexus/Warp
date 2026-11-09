@@ -28,7 +28,8 @@ import org.spongepowered.configurate.CommentedConfigurationNode;
 /**
  * The {@code drain} section of {@code warp.conf}: how the proxy empties itself before it stops.
  *
- * @param transferTo where players are transferred (1.20.5+), or {@code null} to transfer nobody
+ * @param transferTo where players are transferred (1.20.5+), {@link Target#FLEET} for the least
+ *     loaded ready proxy of the fleet, or {@code null} to transfer nobody
  * @param onSigterm whether SIGTERM starts a drain instead of stopping at once
  * @param propagationDelay how long load balancers get to see the drain before players move
  * @param transferInterval the time between two transfers (or kicks)
@@ -63,8 +64,27 @@ public record DrainConfig(
    */
   public record Target(String host, int port) {
 
+    /** The word that makes the drain pick the least loaded proxy of the fleet. */
+    public static final String FLEET_WORD = "fleet";
+
+    /** {@code transfer-to = fleet}: the target is chosen among the fleet's ready proxies. */
+    public static final Target FLEET = new Target(FLEET_WORD, 0);
+
+    /**
+     * Returns whether players go to the fleet's least loaded ready proxy rather than a fixed
+     * address.
+     *
+     * @return {@code true} for {@code transfer-to = fleet}
+     */
+    public boolean isFleet() {
+      return port == 0 && host.equals(FLEET_WORD);
+    }
+
     @Override
     public String toString() {
+      if (isFleet()) {
+        return FLEET_WORD;
+      }
       return host.indexOf(':') >= 0 ? "[" + host + "]:" + port : host + ":" + port;
     }
   }
@@ -124,10 +144,13 @@ public record DrainConfig(
    *
    * @return the target, or {@code null} for a blank value
    */
-  static @Nullable Target parseTarget(String value) throws ConfigurationException {
+  public static @Nullable Target parseTarget(String value) throws ConfigurationException {
     String trimmed = value.trim();
     if (trimmed.isEmpty()) {
       return null;
+    }
+    if (trimmed.equalsIgnoreCase(Target.FLEET_WORD)) {
+      return Target.FLEET;
     }
     String host;
     String port;

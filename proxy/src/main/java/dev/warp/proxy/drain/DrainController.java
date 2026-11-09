@@ -44,6 +44,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import net.kyori.adventure.text.Component;
 import org.jspecify.annotations.Nullable;
@@ -87,6 +88,9 @@ public final class DrainController<P extends DrainCandidate> {
   private final DrainScheduler scheduler;
   private final DrainHost<P> host;
   private volatile Consumer<TransferResult> transferObserver = _ -> {};
+
+  /** Picks the fleet proxy players go to when {@code transfer-to = fleet}; null for none. */
+  private volatile Supplier<DrainConfig.@Nullable Target> fleetTargets = () -> null;
 
   private final AtomicBoolean started = new AtomicBoolean();
   private final CompletableFuture<DrainStatus> done = new CompletableFuture<>();
@@ -138,6 +142,16 @@ public final class DrainController<P extends DrainCandidate> {
    */
   public void onTransfer(Consumer<TransferResult> observer) {
     this.transferObserver = observer;
+  }
+
+  /**
+   * Sets who picks the proxy players go to when {@code drain.transfer-to = fleet}.
+   *
+   * @param targets returns the target for the next player, or {@code null} when no ready proxy of
+   *     the fleet accepts transfers
+   */
+  public void transferTargets(Supplier<DrainConfig.@Nullable Target> targets) {
+    this.fleetTargets = targets;
   }
 
   // ---------------------------------------------------------------------------
@@ -258,6 +272,9 @@ public final class DrainController<P extends DrainCandidate> {
    */
   public Decision defaultDecision(DrainCandidate player) {
     DrainConfig.Target target = config.transferTo();
+    if (target != null && target.isFleet()) {
+      target = fleetTargets.get();
+    }
     if (target != null && player.supportsTransfers()) {
       return new Transfer(target.host(), target.port());
     }

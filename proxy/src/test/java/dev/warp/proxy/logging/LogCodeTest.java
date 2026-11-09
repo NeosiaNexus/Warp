@@ -84,6 +84,7 @@ class LogCodeTest {
     CATEGORIES.put("BACK", "Backends");
     CATEGORIES.put("AUTH", "Authentication and login");
     CATEGORIES.put("NET", "Connections");
+    CATEGORIES.put("FLEET", "Fleet");
   }
 
   @Nested

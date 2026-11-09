@@ -129,6 +129,7 @@ public final class WarpConfig {
   private final boolean acceptsTransfers;
   private final ManagementConfig management;
   private final DrainConfig drain;
+  private final FleetConfig fleet;
   private final StatusSettings status;
   private final ProxyProtocolConfig proxyProtocol;
   private final LimitsConfig limits;
@@ -197,6 +198,7 @@ public final class WarpConfig {
       boolean acceptsTransfers,
       ManagementConfig management,
       DrainConfig drain,
+      FleetConfig fleet,
       StatusSettings status,
       ProxyProtocolConfig proxyProtocol,
       LimitsConfig limits,
@@ -223,6 +225,7 @@ public final class WarpConfig {
     this.acceptsTransfers = acceptsTransfers;
     this.management = management;
     this.drain = drain;
+    this.fleet = fleet;
     this.status = status;
     this.proxyProtocol = proxyProtocol;
     this.limits = limits;
@@ -391,6 +394,7 @@ public final class WarpConfig {
 
     ManagementConfig management = ManagementConfig.parse(root, directory, System::getenv);
     DrainConfig drain = DrainConfig.parse(root);
+    FleetConfig fleet = FleetConfig.parse(root, System::getenv);
     StatusSettings status = parseStatus(root, directory);
     ProxyProtocolConfig proxyProtocol = parseProxyProtocol(root);
     LimitsConfig limits = parseLimits(root);
@@ -434,6 +438,7 @@ public final class WarpConfig {
         acceptsTransfers,
         management,
         drain,
+        fleet,
         status,
         proxyProtocol,
         limits,
@@ -608,6 +613,15 @@ public final class WarpConfig {
    * Returns how the proxy drains before it stops.
    *
    * @return the {@code drain} section
+   */
+  public FleetConfig fleet() {
+    return fleet;
+  }
+
+  /**
+   * Returns the drain section.
+   *
+   * @return the drain settings
    */
   public DrainConfig drain() {
     return drain;
@@ -1732,7 +1746,8 @@ public final class WarpConfig {
         #            (exit code 0 once empty, 2 when the time-out expired)
         drain {
           # Where players go: your public address (the load balancer), never this proxy or a
-          # backend. Empty: nobody is transferred, the drain waits for players to leave.
+          # backend; or fleet, the least loaded ready proxy of the fleet (its fleet.public-address).
+          # Empty: nobody is transferred, the drain waits for players to leave.
           transfer-to = ""
           # Drain on SIGTERM instead of stopping at once (a second SIGTERM stops at once). Turn it
           # on under Kubernetes, with a terminationGracePeriodSeconds longer than the drain.
@@ -1752,6 +1767,56 @@ public final class WarpConfig {
           timeout = 30m
           # The players the drain disconnects and the logins it refuses are told the message
           # warp.disconnect.restarting, in their language: override it in the messages directory.
+        }
+
+        # ---------------------------------------------------------------------------
+        # Fleet: several proxies as one network
+        # ---------------------------------------------------------------------------
+        # Proxies that share a store see one list of players: /glist, /find and /send reach every
+        # proxy, the server list shows the network's count, a player logged in elsewhere is kicked
+        # or refused as duplicate-login-policy says, and a draining proxy can transfer its players
+        # to the least loaded peer (drain.transfer-to = fleet). Plugins get the same through the
+        # Fleet API. With no store, everything below is ignored and the fleet is this proxy alone.
+        fleet {
+          store {
+            # none, or valkey (Valkey 7+, Redis 6.2+, standalone or cluster).
+            type = none
+            valkey {
+              address = "valkey:6379"
+              tls = false
+              # ACL user, empty for the default user.
+              username = ""
+              # A file holding the password, or set the WARP_FLEET_PASSWORD variable. Empty: none.
+              password-file = ""
+              # Logical database; 0 on a cluster.
+              database = 0
+            }
+          }
+          # Proxies of the same network share players; keys in the store start with warp:<network>:.
+          network = "main"
+          # This proxy's name in the network. Empty: the host name (the pod name on Kubernetes), so
+          # that a restarted proxy keeps its name and cleans up after its previous life at once.
+          node-id = ""
+          # The host:port other proxies transfer players to when they drain towards the fleet: this
+          # proxy's public address, as players reach it. Empty: no transfers come here.
+          public-address = ""
+          # How often this proxy renews its heartbeat, and how long the heartbeat lives in the store:
+          # a proxy silent for heartbeat-ttl is dead, on the store's clock, whatever the proxies'
+          # clocks say. The ttl must be at least twice the heartbeat.
+          heartbeat = 2s
+          heartbeat-ttl = 10s
+          # How often this proxy compares its view with the store and repairs both.
+          reconcile = 30s
+          # How long a login waits for the store to settle who owns the account.
+          claim-timeout = 2s
+          # While the store is unreachable: allow (logins go on, duplicates are settled on this proxy
+          # alone) or refuse-new-logins (connected players stay).
+          on-store-down = allow
+          status {
+            # Show the network's player count in the server list, not this proxy's. Default: true
+            # with a store, false without.
+            network-count = true
+          }
         }
 
         # PROXY protocol (v1 and v2), for a load balancer in front of Warp that sends it: HAProxy
