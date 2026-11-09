@@ -882,12 +882,15 @@ public final class ConnectedPlayer {
   }
 
   /**
-   * Fires {@link ServerConnectedEvent} once a backend accepted the player. Called by the backend's
-   * login handler, on the client event loop.
+   * Fires {@link ServerConnectedEvent} once a backend accepted the player, and closes the server's
+   * circuit breaker: a login accepted is what proves a server takes players. Called by the
+   * backend's login handler, on the client event loop.
    *
    * @param backend the backend that logged the player in
+   * @param server the server it belongs to
    */
-  void backendAccepted(MinecraftConnection backend) {
+  void backendAccepted(MinecraftConnection backend, ServerInfo server) {
+    loginContext.serverRegistry().health().connectSucceeded(server.name());
     BackendServer target = connectingTo;
     if (target != null) {
       notify(new ServerConnectedEvent(api, target, currentServer));
@@ -1026,7 +1029,7 @@ public final class ConnectedPlayer {
       serverSwitch.connectFailed(target);
       return;
     }
-    loginContext.serverRegistry().health().connectSucceeded(target.name());
+    // The connection alone proves nothing: the server's breaker closes once it logs the player in.
     serverSwitch.connected(backend);
   }
 
@@ -1918,6 +1921,26 @@ public final class ConnectedPlayer {
    */
   void recordKick(MinecraftConnection backend, Component reason) {
     backend.channel().attr(KICK_REASON).set(reason);
+  }
+
+  /**
+   * Reports a backend that refused the player's login, or closed before the login was over: the
+   * refusal counts against the server's circuit breaker (a few in a row open it, one is taken as
+   * aimed at the player) and the player falls back as after any backend failure.
+   *
+   * <p>Safe to call from any thread, as {@link #scheduleBackendFailure}.
+   *
+   * @param backend the backend connection
+   * @param server the server it belongs to
+   * @param reason the reason the server gave, or {@code null} if it just closed
+   */
+  void backendRefusedLogin(
+      MinecraftConnection backend, ServerInfo server, @Nullable Component reason) {
+    if (reason != null) {
+      recordKick(backend, reason);
+    }
+    loginContext.serverRegistry().health().loginRefused(server.name());
+    scheduleBackendFailure(backend);
   }
 
   /**

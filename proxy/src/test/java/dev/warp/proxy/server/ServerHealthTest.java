@@ -152,6 +152,64 @@ class ServerHealthTest {
   }
 
   @Nested
+  @DisplayName("login refusals")
+  class LoginRefusals {
+
+    @Test
+    @DisplayName("should take a single refused login as aimed at that player")
+    void oneRefusalCounts() {
+      health.loginRefused("lobby");
+
+      assertTrue(health.allows("lobby"));
+      assertEquals(ServerHealth.State.CLOSED, health.status("lobby").state());
+      assertEquals(1, health.status("lobby").failures());
+    }
+
+    @Test
+    @DisplayName("should open after three refused logins in a row")
+    void opensAfterRepeatedRefusals() {
+      health.loginRefused("lobby");
+      health.loginRefused("lobby");
+      assertTrue(health.allows("lobby"), "two refusals may be two banned players");
+
+      health.loginRefused("lobby");
+
+      assertFalse(health.allows("lobby"));
+      assertEquals(ServerHealth.State.OPEN, health.status("lobby").state());
+      assertEquals(ServerHealth.LOGIN_REFUSALS_TO_OPEN, health.status("lobby").failures());
+    }
+
+    @Test
+    @DisplayName("should forget the refusals once a login is accepted")
+    void acceptedLoginResets() {
+      health.loginRefused("lobby");
+      health.loginRefused("lobby");
+
+      health.connectSucceeded("lobby");
+      health.loginRefused("lobby");
+      health.loginRefused("lobby");
+
+      assertTrue(health.allows("lobby"));
+      assertEquals(2, health.status("lobby").failures());
+    }
+
+    @Test
+    @DisplayName("should reopen at once when the probe's login is refused")
+    void refusedProbeReopens() {
+      health.pingFailed("lobby");
+      advance(COOLDOWN);
+      health.picked("lobby");
+
+      health.loginRefused("lobby");
+
+      assertEquals(ServerHealth.State.OPEN, health.status("lobby").state());
+      assertFalse(health.allows("lobby"));
+      advance(COOLDOWN.minusSeconds(1));
+      assertFalse(health.allows("lobby"), "another full cool-down");
+    }
+  }
+
+  @Nested
   @DisplayName("latency")
   class Latency {
 

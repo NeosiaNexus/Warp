@@ -623,7 +623,7 @@ class ClientCookiesTest {
       MinecraftConnection survival = setup.backend(ProtocolState.LOGIN);
       setup.player.serverSwitch().connected(new BackendConnection(survival, SURVIVAL));
       survival.setSessionHandler(
-          new BackendLoginSessionHandler(setup.player, survival, SURVIVAL.address(), new byte[0]));
+          new BackendLoginSessionHandler(setup.player, survival, SURVIVAL, new byte[0]));
       setup.sentToClient();
       setup.framesSentOn(survival); // its Handshake and Login Start
       return setup;

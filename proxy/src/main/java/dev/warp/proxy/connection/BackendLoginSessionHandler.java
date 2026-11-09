@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.server.ServerInfo;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.netty.SessionHandler;
@@ -67,17 +68,22 @@ final class BackendLoginSessionHandler implements SessionHandler {
 
   private final ConnectedPlayer player;
   private final MinecraftConnection backendConnection;
+  private final ServerInfo server;
   private final InetSocketAddress serverAddress;
   private final byte[] forwardingSecret;
+
+  /** Whether the backend's refusal was reported: a kick is followed by the connection closing. */
+  private boolean refused;
 
   BackendLoginSessionHandler(
       ConnectedPlayer player,
       MinecraftConnection backendConnection,
-      InetSocketAddress serverAddress,
+      ServerInfo server,
       byte[] forwardingSecret) {
     this.player = player;
     this.backendConnection = backendConnection;
-    this.serverAddress = serverAddress;
+    this.server = server;
+    this.serverAddress = server.address();
     this.forwardingSecret = forwardingSecret;
   }
 
@@ -153,8 +159,12 @@ final class BackendLoginSessionHandler implements SessionHandler {
 
   @Override
   public void disconnected() {
+    if (refused) {
+      return;
+    }
+    refused = true;
     logger.info("Backend disconnected during login for player {}", player.username());
-    player.scheduleBackendFailure(backendConnection);
+    player.backendRefusedLogin(backendConnection, server, null);
   }
 
   // ---------------------------------------------------------------------------
@@ -227,7 +237,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
     adviseIfBackendUncompressed();
     // The configuration phase from 1.20.2, straight to PLAY before: the server switch strategy
     // knows which, and installs the next handler.
-    player.backendAccepted(backendConnection);
+    player.backendAccepted(backendConnection, server);
     player.serverSwitch().loggedIn(backendConnection);
   }
 
@@ -237,7 +247,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
         serverAddress,
         player.username(),
         packet.reason());
-    player.recordKick(backendConnection, packet.decodedReason());
-    player.scheduleBackendFailure(backendConnection);
+    refused = true;
+    player.backendRefusedLogin(backendConnection, server, packet.decodedReason());
   }
 }

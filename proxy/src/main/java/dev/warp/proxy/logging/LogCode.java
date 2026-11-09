@@ -883,10 +883,14 @@ public enum LogCode {
       "W-BACK-011",
       false,
       "A server is skipped by the balancers",
-      "The server did not answer its last ping, or a player could not connect to it. Groups and"
-          + " fallbacks skip it for a cool-down, then let one player through to find out whether it"
-          + " is back; a successful ping brings it back at once.",
-      "Check that the server runs and is reachable from Warp. Nothing to do if it was restarting."),
+      "The server did not answer its last ping within timeouts.ping, a player could not connect to"
+          + " it, or it refused the logins of three players in a row (a single refusal is taken as"
+          + " aimed at that player: a ban, a whitelist). Groups and fallbacks skip it for a"
+          + " cool-down, then let one player through to find out whether it is back; a successful"
+          + " ping brings it back at once.",
+      "Check that the server runs, is reachable from Warp and accepts logins from it (forwarding"
+          + " secret, whitelist). Raise timeouts.ping if it answers pings slowly under load. Nothing"
+          + " to do if it was restarting."),
 
   // ---------------------------------------------------------------------------
   // Authentication and login

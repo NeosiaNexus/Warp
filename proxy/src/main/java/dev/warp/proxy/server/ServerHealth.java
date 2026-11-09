@@ -32,14 +32,17 @@ import org.slf4j.LoggerFactory;
 
 /**
  * What the proxy knows about each server's health: a circuit breaker fed by its pings and by the
- * players' connection attempts, and the round trip of its last successful ping.
+ * players' logins, and the round trip of its last successful ping.
  *
- * <p>The breaker of a server is closed while it answers. A failed ping or a failed connection opens
- * it: the balancers skip the server for a cool-down. Once the cool-down has passed the breaker is
- * half-open, and one player is let through as a probe; its connection closes the breaker again if
- * it succeeds, or opens it for another cool-down if it fails. A probe that never reports (the
- * player left meanwhile) expires after a cool-down, and another is let through. A successful ping
- * closes the breaker at any time.
+ * <p>The breaker of a server is closed while it answers. A failed ping or a connection that could
+ * not be opened opens it: the balancers skip the server for a cool-down. A server that accepts the
+ * connection but refuses the login may be refusing that one player (a ban, a whitelist), so a
+ * refusal only counts, and the breaker opens after {@link #LOGIN_REFUSALS_TO_OPEN} refusals in a
+ * row with no login in between. Once the cool-down has passed the breaker is half-open, and one
+ * player is let through as a probe; its login closes the breaker again if the server accepts it, or
+ * opens it for another cool-down if the connection or the login fails. A probe that never reports
+ * (the player left meanwhile) expires after a cool-down, and another is let through. A successful
+ * ping closes the breaker at any time.
  *
  * <p>Lock-free: every change is a compare-and-set on the server's snapshot.
  */
@@ -49,6 +52,12 @@ public final class ServerHealth {
 
   /** How long a breaker stays open before a probe is let through. */
   public static final Duration DEFAULT_COOLDOWN = Duration.ofSeconds(10);
+
+  /**
+   * How many logins in a row a server with a closed breaker may refuse before its breaker opens.
+   * Below that, the refusals are taken as aimed at those players.
+   */
+  public static final int LOGIN_REFUSALS_TO_OPEN = 3;
 
   /** The state of a server's circuit breaker. */
   public enum State {
@@ -202,7 +211,8 @@ public final class ServerHealth {
   }
 
   /**
-   * Records a connection the server accepted: closes its breaker.
+   * Records a login the server accepted: closes its breaker. A connection that is merely open
+   * proves nothing, a server may accept every connection and refuse every login.
    *
    * @param server the server's name, lowercase
    */
@@ -211,12 +221,37 @@ public final class ServerHealth {
   }
 
   /**
-   * Records a connection the server refused or that could not be opened: opens its breaker.
+   * Records a connection that could not be opened (refused, unreachable, timed out): opens its
+   * breaker.
    *
    * @param server the server's name, lowercase
    */
   public void connectFailed(String server) {
     open(server, "a player could not connect to it");
+  }
+
+  /**
+   * Records a login the server refused, or a connection it closed before the login was over. On a
+   * closed breaker the refusal counts, and the breaker opens at the {@link #LOGIN_REFUSALS_TO_OPEN
+   * third} in a row; a probe refused opens it at once.
+   *
+   * @param server the server's name, lowercase
+   */
+  public void loginRefused(String server) {
+    AtomicReference<Status> ref =
+        servers.computeIfAbsent(server, _ -> new AtomicReference<>(UNKNOWN));
+    while (true) {
+      Status current = Objects.requireNonNull(ref.get());
+      if (current.state() != State.CLOSED || current.failures() + 1 >= LOGIN_REFUSALS_TO_OPEN) {
+        open(server, "it refused the logins of " + LOGIN_REFUSALS_TO_OPEN + " players in a row");
+        return;
+      }
+      Status counted =
+          new Status(State.CLOSED, current.failures() + 1, current.latency(), 0, false);
+      if (ref.compareAndSet(current, counted)) {
+        return;
+      }
+    }
   }
 
   /**
