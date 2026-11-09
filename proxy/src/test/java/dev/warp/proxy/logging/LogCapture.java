@@ -76,6 +76,16 @@ public final class LogCapture implements AutoCloseable {
     return records.stream().anyMatch(matching);
   }
 
+  /**
+   * Returns how many records match so far.
+   *
+   * @param matching what a record must match
+   * @return the count
+   */
+  public long count(Predicate<LogRecord> matching) {
+    return records.stream().filter(matching).count();
+  }
+
   private List<String> messages() {
     return records.stream().map(LogRecord::message).toList();
   }

@@ -193,6 +193,14 @@ public final class WarpServer implements Warp {
   /** How often the backend servers are pinged while the console's status line shows them. */
   private static final long STATUS_PING_SECONDS = 10;
 
+  /**
+   * How long the startup summary waits for the backends' first pings once the port is bound. The
+   * pings start before the plugins load and run on with the configured deadline either way: a
+   * server that has not answered by then shows as still pinging, and its answer feeds its health.
+   * Readiness must not wait for the ping deadline of an unreachable server.
+   */
+  static final Duration STARTUP_PING_BUDGET = Duration.ofSeconds(1);
+
   /** How long shutdown waits for the handlers of {@link ProxyShutdownEvent}. */
   private static final long SHUTDOWN_EVENT_TIMEOUT_SECONDS = 30;
 
@@ -542,11 +550,11 @@ public final class WarpServer implements Warp {
     }
 
     serverRegistry.setPinger(new BackendPinger(workerGroup, transport.clientChannelClass()));
-    // Answered while plugins load; the summary waits for what is left once the port is bound. The
-    // pings feed the servers' health, so they get the configured deadline, not a shorter one.
+    // Answered while plugins load; the summary waits at most STARTUP_PING_BUDGET for what is left
+    // once the port is bound. The pings feed the servers' health, so they get the configured
+    // deadline, not a shorter one: an unreachable server delays the summary, not the readiness.
     Duration pingTimeout = config.timeouts().ping();
-    CompletableFuture<List<Summaries.Server>> checks =
-        serverChecks.check(serverRegistry.servers(), pingTimeout);
+    ServerChecks.Pings checks = serverChecks.start(serverRegistry.servers(), pingTimeout);
 
     mark = lap("event loops", mark);
     // Probes get an answer (503) while plugins load, and the agent check from the start.
@@ -608,7 +616,7 @@ public final class WarpServer implements Warp {
 
     this.running = true;
     this.started = true;
-    List<Summaries.Server> servers = awaitChecks(checks, pingTimeout);
+    List<Summaries.Server> servers = awaitChecks(checks);
     var _ = lap("servers", mark);
     BLOCKS.info(Summaries.startup(startupFacts(transport, servers)));
     this.readyNanos = System.nanoTime();
@@ -1417,21 +1425,13 @@ public final class WarpServer implements Warp {
   }
 
   /** The results of the startup's pings, those not over in time as unreachable. */
-  private List<Summaries.Server> awaitChecks(
-      CompletableFuture<List<Summaries.Server>> checks, Duration timeout) {
+  private List<Summaries.Server> awaitChecks(ServerChecks.Pings checks) {
     try {
-      return checks.get(timeout.toMillis() + 500, TimeUnit.MILLISECONDS);
+      return checks.within(STARTUP_PING_BUDGET);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-    } catch (ExecutionException | TimeoutException e) {
-      logger.debug("The startup's pings of the backend servers did not finish", e);
+      return checks.pending();
     }
-    List<Summaries.Server> unknown = new ArrayList<>();
-    for (var server : serverRegistry.servers()) {
-      unknown.add(
-          new Summaries.Server(server.name(), server.info().address().toString(), -1, null));
-    }
-    return unknown;
   }
 
   private Summaries.Startup startupFacts(TransportInfo transport, List<Summaries.Server> servers) {
@@ -1490,7 +1490,7 @@ public final class WarpServer implements Warp {
     String draining =
         drainState.phase() == DrainPhase.NONE
             ? null
-            : "draining, " + drainState.players() + " left";
+            : "draining, " + drainState.players() + " still connected";
     var servers = serverRegistry.servers();
     return new StatusLine.Snapshot(
         playerRegistry.count(),

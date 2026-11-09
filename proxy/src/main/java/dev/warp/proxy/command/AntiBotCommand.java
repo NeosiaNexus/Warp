@@ -30,6 +30,9 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -65,6 +68,10 @@ import org.jspecify.annotations.Nullable;
  * </ul>
  */
 final class AntiBotCommand {
+
+  /** The format of the log timestamps, in the console's zone: what an operator compares with. */
+  private static final DateTimeFormatter WHEN =
+      DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.ROOT);
 
   /** The permission the command needs. */
   static final String PERMISSION = "warp.command.antibot";
@@ -232,11 +239,11 @@ final class AntiBotCommand {
                           Component.text(
                               label
                                   + ": trusted since "
-                                  + v.verifiedAt()
+                                  + when(v.verifiedAt(), ZoneId.systemDefault())
                                   + " ("
                                   + v.method().name().toLowerCase(Locale.ROOT)
                                   + "), last seen "
-                                  + v.lastSeen(),
+                                  + when(v.lastSeen(), ZoneId.systemDefault()),
                               NamedTextColor.GREEN))
                   .orElseGet(
                       () -> Component.text(label + ": not trusted.", NamedTextColor.YELLOW)));
@@ -244,6 +251,14 @@ final class AntiBotCommand {
       }
     }
     return Command.SINGLE_SUCCESS;
+  }
+
+  /**
+   * Formats an instant as the console's log timestamps are: {@code yyyy-MM-dd HH:mm:ss} in the
+   * given zone, with no zone suffix. The JSON outputs keep their UTC instants.
+   */
+  static String when(Instant instant, ZoneId zone) {
+    return WHEN.format(instant.atZone(zone));
   }
 
   /** The identities a command names; throws with a message for the source when it names none. */

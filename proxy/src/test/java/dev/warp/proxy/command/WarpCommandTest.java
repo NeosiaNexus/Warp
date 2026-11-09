@@ -146,7 +146,8 @@ class WarpCommandTest {
       assertTrue(
           console
               .last()
-              .contains("Shutting down for 3s (announcing, by /shutdown), 5 players left"),
+              .contains(
+                  "Shutting down for 3s (announcing, by /shutdown), 5 players still connected"),
           console.last());
     }
   }
