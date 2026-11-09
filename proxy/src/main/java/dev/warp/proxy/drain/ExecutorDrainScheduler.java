@@ -28,8 +28,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Runs the drain's steps on a thread of its own, {@code warp-drain}: a daemon platform thread,
- * started on first use, that never runs plugin code or touches an event loop directly.
+ * Runs the drain's steps on a thread of its own, {@code warp-drain}: a platform thread, started on
+ * first use, that never runs plugin code or touches an event loop directly.
+ *
+ * <p>The thread is not a daemon: the drain's last step stops the proxy and then ends the process
+ * with the drain's exit code. Stopping the proxy ends the event loops, the last threads the JVM
+ * waits for; a daemon thread alone would not keep the JVM alive, which would start its shutdown
+ * hooks under that step, stop the logging and lose the exit log, and sometimes the exit code. The
+ * thread ends once {@link #shutdown()} let it finish its step, so a stopped proxy still exits.
  */
 public final class ExecutorDrainScheduler implements DrainScheduler {
 
@@ -40,8 +46,7 @@ public final class ExecutorDrainScheduler implements DrainScheduler {
   /** Creates the scheduler; its thread starts with the first task. */
   public ExecutorDrainScheduler() {
     this.executor =
-        new ScheduledThreadPoolExecutor(
-            1, Thread.ofPlatform().name("warp-drain").daemon().factory());
+        new ScheduledThreadPoolExecutor(1, Thread.ofPlatform().name("warp-drain").factory());
     executor.setRemoveOnCancelPolicy(true);
     // Once shut down, nothing scheduled runs any more: the proxy is stopping.
     executor.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
