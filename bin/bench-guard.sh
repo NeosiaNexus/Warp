@@ -38,8 +38,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 results=protocol/build/results/jmh
 baseline=protocol/src/jmh/alloc-baseline.json
 guarded=(
-  'ForwardingPathBenchmark\.relayClientbound$|PacketIdPeekBenchmark\.peek$|CodecCostBenchmark\.(deflate|inflate)$|CipherBenchmark\.(encrypt|decrypt)$'
-  -p mode=PASSTHROUGH -p implementation=WARP_NATIVE -p frameSize=1024
+  'ForwardingPathBenchmark\.relayClientbound$|WatchedPacketsBenchmark\.relayClientbound$|PacketIdPeekBenchmark\.peek$|CodecCostBenchmark\.(deflate|inflate)$|CipherBenchmark\.(encrypt|decrypt)$'
+  -p mode=PASSTHROUGH -p implementation=JDK,WARP_NATIVE -p frameSize=1024
 )
 
 # Collapsible sections in the Actions log, headings elsewhere.

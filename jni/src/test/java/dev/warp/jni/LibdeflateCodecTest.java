@@ -20,8 +20,10 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.ByteArrayOutputStream;
+import java.lang.management.ManagementFactory;
 import java.util.Arrays;
 import java.util.SplittableRandom;
 import java.util.stream.IntStream;
@@ -30,11 +32,13 @@ import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
 import java.util.zip.Inflater;
 
+import com.sun.management.ThreadMXBean;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.CompositeByteBuf;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.buffer.Unpooled;
+import io.netty.util.concurrent.FastThreadLocalThread;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -404,6 +408,129 @@ class LibdeflateCodecTest {
         }
         default -> PooledByteBufAllocator.DEFAULT.directBuffer(bytes.length + 1).writeBytes(bytes);
       };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Allocations
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("allocations")
+  class Allocations {
+
+    /** A tab list latency update for 40 players, the packet of issue #90. */
+    private static final int PACKET_SIZE = 740;
+
+    private static final int WARMUP_CALLS = 20_000;
+    private static final int MEASURED_CALLS = 20_000;
+    private static final int ROUNDS = 3;
+
+    /** The most heap a call may allocate on average: enough for nothing but measurement noise. */
+    private static final long MAX_BYTES_PER_CALL = 16;
+
+    private static final ThreadMXBean THREADS = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+
+    @Test
+    @DisplayName("should inflate between pooled direct buffers without allocating on the heap")
+    void inflateAllocatesNothing() {
+      LibdeflateCodec codec = LibdeflateCodec.create(6);
+      byte[] packet = randomPacket(new SplittableRandom(SEED));
+      ByteBuf compressed =
+          PooledByteBufAllocator.DEFAULT.directBuffer().writeBytes(deflate(codec, packet));
+      ByteBuf out = PooledByteBufAllocator.DEFAULT.directBuffer(packet.length);
+      try {
+        assertNoAllocation(
+            "LibdeflateCodec.inflate",
+            () -> {
+              out.clear();
+              codec.inflate(compressed, out, packet.length);
+            });
+      } finally {
+        compressed.release();
+        out.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should deflate between pooled direct buffers without allocating on the heap")
+    void deflateAllocatesNothing() {
+      LibdeflateCodec codec = LibdeflateCodec.create(6);
+      byte[] packet = randomPacket(new SplittableRandom(SEED));
+      ByteBuf plain = PooledByteBufAllocator.DEFAULT.directBuffer().writeBytes(packet);
+      ByteBuf out = PooledByteBufAllocator.DEFAULT.directBuffer(codec.deflateBound(packet.length));
+      try {
+        assertNoAllocation(
+            "LibdeflateCodec.deflate",
+            () -> {
+              out.clear();
+              codec.deflate(plain, out);
+            });
+      } finally {
+        plain.release();
+        out.release();
+      }
+    }
+
+    private interface Call {
+      void run() throws DataFormatException;
+    }
+
+    /**
+     * Warms {@code call} up, then measures the heap it allocates per call on a {@link
+     * FastThreadLocalThread}, as Netty's event loops are (a plain thread gets no allocator thread
+     * cache). The lowest of {@value #ROUNDS} rounds counts, so that a one-time cost such as class
+     * loading never fails the test.
+     */
+    private static void assertNoAllocation(String what, Call call) {
+      assumeTrue(
+          THREADS.isThreadAllocatedMemorySupported() && THREADS.isThreadAllocatedMemoryEnabled(),
+          "per-thread allocation accounting unsupported");
+      long[] perCall = new long[1];
+      Throwable[] failure = new Throwable[1];
+      Thread thread =
+          new FastThreadLocalThread(
+              () -> {
+                try {
+                  perCall[0] = bytesPerCall(call);
+                } catch (Throwable t) {
+                  failure[0] = t;
+                }
+              });
+      thread.start();
+      try {
+        thread.join();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new AssertionError(e);
+      }
+      if (failure[0] != null) {
+        throw new AssertionError(what + " failed", failure[0]);
+      }
+      assertTrue(
+          perCall[0] <= MAX_BYTES_PER_CALL,
+          () ->
+              what
+                  + " allocated "
+                  + perCall[0]
+                  + " B per call, expected at most "
+                  + MAX_BYTES_PER_CALL);
+    }
+
+    private static long bytesPerCall(Call call) throws DataFormatException {
+      for (int i = 0; i < WARMUP_CALLS; i++) {
+        call.run();
+      }
+      long lowest = Long.MAX_VALUE;
+      for (int round = 0; round < ROUNDS; round++) {
+        long before = THREADS.getCurrentThreadAllocatedBytes();
+        for (int i = 0; i < MEASURED_CALLS; i++) {
+          call.run();
+        }
+        lowest =
+            Math.min(lowest, (THREADS.getCurrentThreadAllocatedBytes() - before) / MEASURED_CALLS);
+      }
+      return lowest;
     }
   }
 
