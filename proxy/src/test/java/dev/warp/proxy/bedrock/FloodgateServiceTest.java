@@ -23,7 +23,6 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import dev.warp.api.player.ClientPlatform;
 import dev.warp.api.player.ClientPlatform.Bedrock;
 import dev.warp.api.player.ClientPlatform.DeviceOs;
 import dev.warp.api.player.ClientPlatform.InputMode;
@@ -140,7 +139,6 @@ class FloodgateServiceTest {
       assertTrue(platform.linkedJava().isEmpty());
       assertEquals(PLAYER.getAddress(), platform.address());
       assertEquals(platform.floodgateId(), identity.javaId());
-      assertTrue(platform instanceof ClientPlatform);
       assertEquals(FloodgateDataTest.GEYSER_PLAINTEXT, identity.data().encode());
     }
 

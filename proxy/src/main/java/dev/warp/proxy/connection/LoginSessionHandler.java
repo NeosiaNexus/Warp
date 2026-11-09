@@ -522,8 +522,7 @@ final class LoginSessionHandler implements SessionHandler {
   private void verifyOrCheck(LoginStart packet, AntiBotService.Recognition recognized) {
     AntiBotService antiBot = loginContext.antiBot();
     if (tokenClaim == null
-        && antiBot.plan(recognized, onlineMode, clientVersion(), connection.clientPlatform())
-            == Plan.BEFORE_AUTHENTICATION) {
+        && antiBot.plan(recognized, onlineMode, clientVersion()) == Plan.BEFORE_AUTHENTICATION) {
       plan = Plan.BEFORE_AUTHENTICATION;
       state = LoginState.AWAITING_LOGIN_START;
       acquireVerification(this::beginUnauthenticatedVerification);
@@ -653,9 +652,7 @@ final class LoginSessionHandler implements SessionHandler {
     plan =
         tokenClaim != null
             ? Plan.NONE
-            : loginContext
-                .antiBot()
-                .plan(recognized, onlineMode, clientVersion(), connection.clientPlatform());
+            : loginContext.antiBot().plan(recognized, onlineMode, clientVersion());
     if (plan == Plan.BEFORE_AUTHENTICATION) {
       acquireVerification(this::beginUnauthenticatedVerification);
       return;

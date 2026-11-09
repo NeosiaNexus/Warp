@@ -616,18 +616,13 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
    * @param version the client's version: 1.7 clients are never probed (their keep-alive answer is
    *     not reliable before Join Game, as Sonar found), and no version is verified before
    *     authentication without a way back (every version has one: transfer or reconnect)
-   * @param platform the client's platform. A verified Bedrock player (Floodgate's data decrypted
-   *     with the key) is planned like any other login: Geyser answers the probe as a client does,
-   *     and the budgets and limits apply to the player's own address. What its proof exempts is the
-   *     world check alone, see {@link #skipsWorldCheck}; a self-declared platform (a Forge marker)
-   *     exempts nothing
-   * @return the plan
+   * @return the plan. The client's platform does not enter it: a verified Bedrock player
+   *     (Floodgate's data decrypted with the key) is planned like any other login, Geyser answers
+   *     the probe as a client does, and the budgets and limits apply to the player's own address.
+   *     What its proof exempts is the world check alone, see {@link #skipsWorldCheck}; a
+   *     self-declared platform (a Forge marker) exempts nothing
    */
-  public Plan plan(
-      Recognition recognition,
-      boolean onlineMode,
-      ProtocolVersion version,
-      ClientPlatform platform) {
+  public Plan plan(Recognition recognition, boolean onlineMode, ProtocolVersion version) {
     if (!config.enabled()
         || recognition.known()
         || version.isOlderThan(ProtocolVersion.MINECRAFT_1_8)) {
@@ -689,8 +684,7 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
       return false;
     }
     return !acceptsTransfers
-        || plan(recognition, onlineMode, version, ClientPlatform.JAVA)
-            == Plan.BEFORE_AUTHENTICATION;
+        || plan(recognition, onlineMode, version) == Plan.BEFORE_AUTHENTICATION;
   }
 
   /**

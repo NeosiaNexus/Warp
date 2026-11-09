@@ -42,6 +42,8 @@ import org.junit.jupiter.api.Test;
 class FloodgateCipherTest {
 
   /** Gate's test key: 16 bytes of 0x42. */
+  static final SecureRandom RANDOM = new SecureRandom();
+
   static final byte[] KEY = repeat(0x42, 16);
 
   static final byte[] OTHER_KEY = repeat(0x13, 16);
@@ -128,7 +130,7 @@ class FloodgateCipherTest {
     @DisplayName("should decrypt what Floodgate's AesCipher writes")
     void readsFloodgate() throws Exception {
       byte[] iv = new byte[FloodgateCipher.IV_LENGTH];
-      new SecureRandom().nextBytes(iv);
+      RANDOM.nextBytes(iv);
       String blob = new String(floodgateEncrypt(KEY, iv, PLAINTEXT), StandardCharsets.UTF_8);
 
       FloodgateCipher.Decrypted decrypted = new FloodgateCipher(KEY).decrypt(blob);

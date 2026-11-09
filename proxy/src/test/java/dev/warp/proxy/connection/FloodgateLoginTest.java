@@ -239,7 +239,7 @@ class FloodgateLoginTest {
       // before authentication, which has no authentication to protect for a Bedrock player.
       Mockito.doReturn(Plan.BEFORE_AUTHENTICATION)
           .when(antiBot)
-          .plan(Mockito.any(), Mockito.eq(true), Mockito.any(), Mockito.any());
+          .plan(Mockito.any(), Mockito.eq(true), Mockito.any());
       EmbeddedChannel channel = channel(".", limits, true, antiBot);
       try {
         handshake(channel, hostname(PLAINTEXT));
@@ -253,9 +253,9 @@ class FloodgateLoginTest {
           success.release();
         }
         Mockito.verify(antiBot, Mockito.atLeastOnce())
-            .plan(Mockito.any(), Mockito.eq(false), Mockito.any(), Mockito.any());
+            .plan(Mockito.any(), Mockito.eq(false), Mockito.any());
         Mockito.verify(antiBot, Mockito.never())
-            .plan(Mockito.any(), Mockito.eq(true), Mockito.any(), Mockito.any());
+            .plan(Mockito.any(), Mockito.eq(true), Mockito.any());
       } finally {
         channel.finishAndReleaseAll();
       }
