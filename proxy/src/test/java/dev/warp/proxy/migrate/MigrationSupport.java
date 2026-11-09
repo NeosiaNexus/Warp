@@ -49,34 +49,15 @@ final class MigrationSupport {
   }
 
   /**
-   * Loads a generated {@code warp.conf} through Warp's own parser, and fails on any problem but the
-   * {@code routes} block, which lands with the routing pull request (feat/routing-and-groups):
-   * until then it is the one key Warp does not know yet.
+   * Loads a generated {@code warp.conf} through Warp's own parser, routes and groups included, and
+   * fails on any problem.
    */
   static WarpConfig assertLoads(Path directory, String warpConf) throws IOException {
     Files.writeString(directory.resolve("warp.conf"), warpConf, StandardCharsets.UTF_8);
     try {
       return WarpConfig.load(directory);
     } catch (ConfigurationException e) {
-      List<ConfigurationException.Problem> others =
-          e.problems().stream()
-              .filter(
-                  p ->
-                      p.key() == null
-                          || !p.key().startsWith("routes") && !p.key().startsWith("groups"))
-              .toList();
-      if (!others.isEmpty()) {
-        fail("warp.conf does not load:\n" + e.getMessage() + "\n---\n" + warpConf);
-      }
-      // Only the routes block is unknown: load the file without it to check everything else.
-      String withoutRoutes = warpConf.replaceAll("(?s)\n(routes|groups) \\{.*?\n\\}\n", "\n");
-      assertTrue(withoutRoutes.length() < warpConf.length(), "the routes block was expected");
-      Files.writeString(directory.resolve("warp.conf"), withoutRoutes, StandardCharsets.UTF_8);
-      try {
-        return WarpConfig.load(directory);
-      } catch (ConfigurationException again) {
-        return fail("warp.conf does not load:\n" + again.getMessage() + "\n---\n" + warpConf);
-      }
+      return fail("warp.conf does not load:\n" + e.getMessage() + "\n---\n" + warpConf);
     }
   }
 
