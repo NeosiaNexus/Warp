@@ -19,6 +19,8 @@ package dev.warp.proxy.command;
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.proxy.config.DrainConfig;
 import dev.warp.proxy.console.StartupTimings;
+import dev.warp.proxy.server.HostRoutes;
+import dev.warp.proxy.server.ServerHealth;
 
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
@@ -36,6 +38,25 @@ public interface ProxyControl {
    */
   default @Nullable StartupTimings startup() {
     return null;
+  }
+
+  /**
+   * Returns the servers' health: their circuit breakers and ping round trips, for {@code /warp
+   * groups}.
+   *
+   * @return the health, or {@code null} when the proxy does not track it
+   */
+  default @Nullable ServerHealth health() {
+    return null;
+  }
+
+  /**
+   * Returns the routes of the configuration, for {@code /warp routes}.
+   *
+   * @return the routes
+   */
+  default HostRoutes routes() {
+    return HostRoutes.EMPTY;
   }
 
   /**

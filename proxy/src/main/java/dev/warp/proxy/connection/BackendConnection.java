@@ -117,8 +117,7 @@ public final class BackendConnection {
                     // Set session handler AFTER TCP connect succeeds — activated()
                     // sends Handshake + LoginStart, which requires an active channel.
                     conn.setSessionHandler(
-                        new BackendLoginSessionHandler(
-                            player, conn, serverAddress, forwardingSecret));
+                        new BackendLoginSessionHandler(player, conn, server, forwardingSecret));
                     future.complete(new BackendConnection(conn, server));
                   } else {
                     future.completeExceptionally(channelFuture.cause());

@@ -706,7 +706,7 @@ public final class ConnectedPlayer {
     if (clientConnection.decoder().state() == ProtocolState.CONFIGURATION) {
       clientConnection.setSessionHandler(new SwitchWaitSessionHandler(this));
     }
-    BackendServer proposed = loginContext.serverRegistry().initialServer();
+    BackendServer proposed = loginContext.serverRegistry().initialServer(clientConnection.route());
     WarpEventBus events = loginContext.events();
     if (!events.hasHandlers(PlayerChooseInitialServerEventImpl.class)) {
       joinServer(proposed);
@@ -882,12 +882,14 @@ public final class ConnectedPlayer {
   }
 
   /**
-   * Fires {@link ServerConnectedEvent} once a backend accepted the player. Called by the backend's
-   * login handler, on the client event loop.
+   * Fires {@link ServerConnectedEvent} once a backend accepted the player, and closes the server's
+   * circuit breaker: a login accepted is what proves a server takes players. Called by the
+   * backend's login handler, on the client event loop.
    *
-   * @param backend the backend that logged the player in
+   * @param server the server whose backend logged the player in
    */
-  void backendAccepted(MinecraftConnection backend) {
+  void backendAccepted(ServerInfo server) {
+    loginContext.serverRegistry().health().connectSucceeded(server.name());
     BackendServer target = connectingTo;
     if (target != null) {
       notify(new ServerConnectedEvent(api, target, currentServer));
@@ -1022,9 +1024,11 @@ public final class ConnectedPlayer {
           username,
           target.name(),
           ex != null ? ex.getMessage() : "no connection");
+      loginContext.serverRegistry().health().connectFailed(target.name());
       serverSwitch.connectFailed(target);
       return;
     }
+    // The connection alone proves nothing: the server's breaker closes once it logs the player in.
     serverSwitch.connected(backend);
   }
 
@@ -1916,6 +1920,26 @@ public final class ConnectedPlayer {
    */
   void recordKick(MinecraftConnection backend, Component reason) {
     backend.channel().attr(KICK_REASON).set(reason);
+  }
+
+  /**
+   * Reports a backend that refused the player's login, or closed before the login was over: the
+   * refusal counts against the server's circuit breaker (a few in a row open it, one is taken as
+   * aimed at the player) and the player falls back as after any backend failure.
+   *
+   * <p>Safe to call from any thread, as {@link #scheduleBackendFailure}.
+   *
+   * @param backend the backend connection
+   * @param server the server it belongs to
+   * @param reason the reason the server gave, or {@code null} if it just closed
+   */
+  void backendRefusedLogin(
+      MinecraftConnection backend, ServerInfo server, @Nullable Component reason) {
+    if (reason != null) {
+      recordKick(backend, reason);
+    }
+    loginContext.serverRegistry().health().loginRefused(server.name());
+    scheduleBackendFailure(backend);
   }
 
   /**

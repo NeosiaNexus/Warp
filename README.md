@@ -57,6 +57,16 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 - **Fallback**: when the server a player joins or switches to is unreachable or refuses the
   login, or kicks them during play, Warp tries the servers of `fallback-order` in turn before
   disconnecting the player.
+- **Hostname routing**: `routes` sends a player to a server or group by the host they connected
+  with. Exact hosts and wildcards (`*.example.com`), case-insensitive, with an optional port, and
+  `"*.play.example.com" = "$1"` to name the server after the subdomain. Forge's `\0FML\0` markers,
+  a BungeeCord payload and a trailing dot never make a route miss; the most specific entry wins.
+- **Server groups and load balancing**: `groups` spreads players over several servers with
+  `round-robin`, `least-connections`, `lowest-latency`, `random`, `weighted` or `fill`. A group
+  stands wherever a server name does (default, fallback, route). A server that failed its last
+  ping or a player's connection is skipped for a cool-down, then probed with one player (circuit
+  breaker); the player's current server is never picked. `/warp groups` shows the balancer's
+  view, and plugins supply their own `Balancer` or register groups at runtime.
 - **BungeeCord plugin messaging channel** (`BungeeCord`, `bungeecord:main`): all 18 sub-channels
   Paper and Spigot plugins use to move players and query the network, answered byte for byte as
   BungeeCord and Velocity answer them. Connect goes through Warp's own switch and events; each
@@ -199,6 +209,18 @@ servers {
 }
 default-server = "lobby"
 fallback-order = ["lobby", "survival"]
+
+groups {
+  lobbies {
+    servers = ["lobby", "lobby2"]   # a group stands wherever a server name does
+    strategy = "least-connections"  # round-robin, lowest-latency, random, weighted, fill
+  }
+}
+
+routes {
+  "play.example.com" = "lobbies"    # the host the client typed decides where they go
+  "*.mini.example.com" = "$1"       # kitpvp.mini.example.com goes to the server kitpvp
+}
 
 forwarding {
   mode = "velocity"                # or "none"

@@ -30,7 +30,8 @@ import org.spongepowered.configurate.CommentedConfigurationNode;
  * @param backendRead the longest a connection to a backend server may stay silent before it is
  *     closed, in every state: while it logs the player in, until its first Join Game, and in play
  * @param ping the longest {@code RegisteredServer.ping()} waits for a backend's answer, connection
- *     included, when its caller gives no time-out
+ *     included, when its caller gives no time-out; also the deadline of the proxy's own periodic
+ *     pings, which decide whether the balancers skip a server
  */
 public record TimeoutsConfig(Duration connect, Duration read, Duration backendRead, Duration ping) {
 

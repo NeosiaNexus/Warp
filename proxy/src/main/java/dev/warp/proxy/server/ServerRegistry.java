@@ -20,9 +20,12 @@ import dev.warp.api.event.server.ServerRegisteredEvent;
 import dev.warp.api.event.server.ServerUnregisteredEvent;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.api.server.RegistrationResult;
+import dev.warp.api.server.Route;
 import dev.warp.api.server.ServerInfo;
 import dev.warp.api.server.ServerPingException;
+import dev.warp.proxy.connection.LogThrottle;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.logging.LogCode;
 
 import java.net.InetSocketAddress;
 import java.time.Duration;
@@ -38,6 +41,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The backend servers known to the proxy, which can change while it runs.
@@ -60,6 +65,8 @@ import org.jspecify.annotations.Nullable;
  */
 public final class ServerRegistry implements dev.warp.api.server.ServerRegistry {
 
+  private static final Logger logger = LoggerFactory.getLogger(ServerRegistry.class);
+
   /** How long a ping waits for its answer, unless the caller gives its own time-out. */
   public static final Duration DEFAULT_PING_TIMEOUT = Duration.ofSeconds(5);
 
@@ -78,37 +85,55 @@ public final class ServerRegistry implements dev.warp.api.server.ServerRegistry 
                   null));
   private volatile Duration pingTimeout = DEFAULT_PING_TIMEOUT;
   private volatile @Nullable WarpEventBus events;
-  private final @Nullable String defaultServerName;
+  private final @Nullable String defaultTarget;
   private final List<String> fallbackOrder;
+  private final ServerHealth health;
+  private final ServerGroupRegistry groups;
+  private volatile HostRoutes routes = HostRoutes.EMPTY;
+  private final LogThrottle unknownTargetLog = new LogThrottle(Duration.ofMinutes(1));
+  private final LogThrottle groupExhaustedLog = new LogThrottle(Duration.ofMinutes(1));
+
+  /**
+   * Creates a registry holding the given static servers, with the default cool-down for the
+   * servers' circuit breakers.
+   *
+   * @param servers the static servers, by name (may be empty: servers are then registered at
+   *     runtime)
+   * @param defaultTarget the server or group players join first, or {@code null} for none
+   * @param fallbackOrder the servers or groups tried in order when a player loses its server
+   */
+  public ServerRegistry(
+      Map<String, InetSocketAddress> servers,
+      @Nullable String defaultTarget,
+      List<String> fallbackOrder) {
+    this(servers, defaultTarget, fallbackOrder, new ServerHealth());
+  }
 
   /**
    * Creates a registry holding the given static servers.
    *
+   * <p>The default and the fallbacks name servers or groups; the configuration checked that they
+   * exist, and a name that is neither at the time a player needs it is skipped.
+   *
    * @param servers the static servers, by name (may be empty: servers are then registered at
    *     runtime)
-   * @param defaultServerName the server players join first, or {@code null} for none
-   * @param fallbackServerNames the servers tried in order when a player loses its server
-   * @throws IllegalArgumentException if the default server is not one of {@code servers}
+   * @param defaultTarget the server or group players join first, or {@code null} for none
+   * @param fallbackOrder the servers or groups tried in order when a player loses its server
+   * @param health the servers' health, fed by their pings and the players' connection attempts
    */
   public ServerRegistry(
       Map<String, InetSocketAddress> servers,
-      @Nullable String defaultServerName,
-      List<String> fallbackServerNames) {
+      @Nullable String defaultTarget,
+      List<String> fallbackOrder,
+      ServerHealth health) {
+    this.health = health;
+    this.groups = new ServerGroupRegistry(this);
     for (var entry : servers.entrySet()) {
       register(new ServerInfo(normalize(entry.getKey()), entry.getValue()));
     }
-
-    this.defaultServerName = defaultServerName == null ? null : normalize(defaultServerName);
-    if (this.defaultServerName != null && !this.servers.containsKey(this.defaultServerName)) {
-      throw new IllegalArgumentException(
-          "Default server '"
-              + defaultServerName
-              + "' not found in server list: "
-              + servers.keySet());
-    }
-
-    List<String> fallback = new ArrayList<>(fallbackServerNames.size());
-    for (String name : fallbackServerNames) {
+    this.defaultTarget = defaultTarget == null ? null : normalize(defaultTarget);
+    List<String> fallback = new ArrayList<>(fallbackOrder.size());
+    for (String name : fallbackOrder) {
       fallback.add(normalize(name));
     }
     this.fallbackOrder = List.copyOf(fallback);
@@ -154,6 +179,7 @@ public final class ServerRegistry implements dev.warp.api.server.ServerRegistry 
     try {
       BackendServer removed = servers.remove(normalize(name));
       if (removed != null) {
+        health.forget(removed.name());
         notify(new ServerUnregisteredEvent(removed));
       }
       return Optional.ofNullable(removed);
@@ -171,6 +197,7 @@ public final class ServerRegistry implements dev.warp.api.server.ServerRegistry 
     try {
       boolean removed = servers.remove(backend.name(), backend);
       if (removed) {
+        health.forget(backend.name());
         notify(new ServerUnregisteredEvent(backend));
       }
       return removed;
@@ -244,39 +271,183 @@ public final class ServerRegistry implements dev.warp.api.server.ServerRegistry 
     return List.copyOf(snapshot);
   }
 
+  // ---------------------------------------------------------------------------
+  // Where players go
+  // ---------------------------------------------------------------------------
+
   /**
-   * Returns the server a player joining the proxy connects to: the default server if it is
-   * registered, else the first registered server of the fallback order.
+   * Returns the server groups, and the servers' health they balance over.
+   *
+   * @return the group registry
+   */
+  public ServerGroupRegistry groups() {
+    return groups;
+  }
+
+  /**
+   * Returns the servers' health: their circuit breakers and ping round trips.
+   *
+   * @return the health
+   */
+  public ServerHealth health() {
+    return health;
+  }
+
+  /**
+   * Returns the routes of the configuration, matched against each client's virtual host.
+   *
+   * @return the routes
+   */
+  public HostRoutes routes() {
+    return routes;
+  }
+
+  /**
+   * Sets the routes of the configuration.
+   *
+   * @param routes the routes
+   */
+  public void setRoutes(HostRoutes routes) {
+    this.routes = routes;
+  }
+
+  /**
+   * Returns the name of the server or group players join first, as configured.
+   *
+   * @return the name, or {@code null} for none
+   */
+  public @Nullable String defaultTarget() {
+    return defaultTarget;
+  }
+
+  /**
+   * Returns the names of the servers or groups tried in order when a player loses its server.
+   *
+   * @return the names, lowercase, unmodifiable
+   */
+  public List<String> fallbackOrder() {
+    return fallbackOrder;
+  }
+
+  /**
+   * Returns the server a player joining the proxy connects to, when no route matched: the default
+   * server or group, else the fallback order, preferring the servers whose circuit breaker is
+   * closed, and taking any registered one when none is.
    *
    * @return the server, or {@code null} if none of them is registered
    */
   public @Nullable BackendServer initialServer() {
-    if (defaultServerName != null) {
-      BackendServer server = servers.get(defaultServerName);
+    return initialServer(null);
+  }
+
+  /**
+   * Returns the server a player joining the proxy connects to.
+   *
+   * <p>A matched route decides first: its target server or group, healthy or, failing that, any
+   * registered one. A route whose target is neither a server nor a group (a capture that named
+   * nothing registered) is logged and ignored. Then the default and the fallback order, as {@link
+   * #initialServer()}.
+   *
+   * @param route the route the client's host matched, or {@code null} for none
+   * @return the server, or {@code null} if none of them is registered
+   */
+  public @Nullable BackendServer initialServer(@Nullable Route route) {
+    if (route != null) {
+      BackendServer routed = resolve(route.target(), Set.of(), true);
+      if (routed == null) {
+        routed = resolve(route.target(), Set.of(), false);
+      }
+      if (routed != null) {
+        return routed;
+      }
+      if (getServer(route.target()) == null && groups.getGroup(route.target()) == null) {
+        long suppressed = unknownTargetLog.tryAcquire();
+        if (suppressed >= 0) {
+          logger.warn(
+              LogCode.ROUTE_TARGET_UNKNOWN.marker(),
+              "Route '{}' sends players to '{}', which is neither a server nor a group: they"
+                  + " go to the default instead{}",
+              route.host(),
+              route.target(),
+              LogThrottle.suffix(suppressed, "route"));
+        }
+      }
+    }
+    if (defaultTarget != null) {
+      BackendServer server = resolve(defaultTarget, Set.of(), true);
       if (server != null) {
         return server;
       }
     }
-    return nextFallback(Set.of());
+    BackendServer fallback = nextFallback(Set.of(), true);
+    if (fallback != null) {
+      return fallback;
+    }
+    if (defaultTarget != null) {
+      BackendServer server = resolve(defaultTarget, Set.of(), false);
+      if (server != null) {
+        return server;
+      }
+    }
+    return nextFallback(Set.of(), false);
   }
 
   /**
-   * Returns the first registered server of the fallback order that is not excluded.
+   * Returns the first server of the fallback order that is registered and not excluded, preferring
+   * those whose circuit breaker is closed, and taking any when none is. A group of the fallback
+   * order stands for the server its balancer picks.
    *
    * @param excludedServers names of the servers to skip (lowercase)
    * @return the server, or {@code null} if every fallback is excluded or unregistered
    */
   public @Nullable BackendServer nextFallback(Set<String> excludedServers) {
+    BackendServer healthy = nextFallback(excludedServers, true);
+    return healthy != null ? healthy : nextFallback(excludedServers, false);
+  }
+
+  private @Nullable BackendServer nextFallback(Set<String> excludedServers, boolean healthyOnly) {
     for (String name : fallbackOrder) {
-      if (excludedServers.contains(name)) {
-        continue;
-      }
-      BackendServer server = servers.get(name);
+      BackendServer server = resolve(name, excludedServers, healthyOnly);
       if (server != null) {
         return server;
       }
     }
     return null;
+  }
+
+  /**
+   * Resolves a server or group name to a server a player may be sent to.
+   *
+   * @param name the name, lowercase
+   * @param excluded names of the servers to skip, lowercase
+   * @param healthyOnly whether to skip the servers whose breaker is open
+   * @return the server, or {@code null} if the name resolves to nothing usable
+   */
+  public @Nullable BackendServer resolve(String name, Set<String> excluded, boolean healthyOnly) {
+    BackendServer server = servers.get(name);
+    if (server != null) {
+      if (excluded.contains(name) || (healthyOnly && !health.allows(name))) {
+        return null;
+      }
+      health.picked(name);
+      return server;
+    }
+    BackendGroup group = groups.getGroup(name);
+    if (group == null) {
+      return null;
+    }
+    BackendServer chosen = group.choose(excluded, healthyOnly);
+    if (chosen == null && !healthyOnly) {
+      long suppressed = groupExhaustedLog.tryAcquire();
+      if (suppressed >= 0) {
+        logger.warn(
+            LogCode.GROUP_EXHAUSTED.marker(),
+            "Group '{}' has no server to send a player to{}",
+            name,
+            LogThrottle.suffix(suppressed, "group"));
+      }
+    }
+    return chosen;
   }
 
   /**

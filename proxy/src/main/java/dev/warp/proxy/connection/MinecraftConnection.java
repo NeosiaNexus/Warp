@@ -17,6 +17,7 @@
 package dev.warp.proxy.connection;
 
 import dev.warp.api.network.PipelinePosition;
+import dev.warp.api.server.Route;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.compress.FrameDecompressor;
@@ -34,6 +35,7 @@ import dev.warp.proxy.compression.Compression;
 import dev.warp.proxy.limit.Refusal;
 import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.pipeline.PipelineHost;
+import dev.warp.proxy.server.HostRoutes;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -122,6 +124,8 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
 
   /** The host name the client connected to, from its handshake; {@code null} until known. */
   private volatile @Nullable String virtualHost;
+
+  private volatile @Nullable Route route;
 
   private @Nullable MinecraftDecoder decoder;
   private @Nullable MinecraftEncoder encoder;
@@ -930,8 +934,8 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
   // ---------------------------------------------------------------------------
 
   /**
-   * Returns the host name the client typed to connect, cleaned of the suffixes some platforms
-   * append (Forge's {@code \0FML\0} markers, a trailing dot).
+   * Returns the host name the client typed to connect, cleaned as {@link HostRoutes#clean}: in
+   * lowercase, without the Forge markers or a BungeeCord payload, a trailing dot or a port.
    *
    * @return the host name, or {@code null} before the handshake or if it was empty
    */
@@ -945,15 +949,26 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
    * @param serverAddress the address field of the handshake, as sent
    */
   public void setVirtualHost(String serverAddress) {
-    String host = serverAddress;
-    int nul = host.indexOf('\0');
-    if (nul >= 0) {
-      host = host.substring(0, nul);
-    }
-    while (host.endsWith(".")) {
-      host = host.substring(0, host.length() - 1);
-    }
+    String host = HostRoutes.clean(serverAddress);
     this.virtualHost = host.isEmpty() ? null : host;
+  }
+
+  /**
+   * Returns the route the client's host matched.
+   *
+   * @return the route, or {@code null} when none matched or before the handshake
+   */
+  public @Nullable Route route() {
+    return route;
+  }
+
+  /**
+   * Records the route the client's host matched.
+   *
+   * @param route the route, or {@code null} for none
+   */
+  public void setRoute(@Nullable Route route) {
+    this.route = route;
   }
 
   /**

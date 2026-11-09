@@ -17,6 +17,7 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-CFG-006](#w-cfg-006) | warning | A new forwarding secret was generated |
 | [W-CFG-007](#w-cfg-007) | warning | tcp-fast-open is on without epoll |
 | [W-CFG-008](#w-cfg-008) | warning | A console setting is invalid |
+| [W-CFG-009](#w-cfg-009) | warning | A route points to an unknown server |
 | [W-START-001](#w-start-001) | error | The listening address does not resolve |
 | [W-START-002](#w-start-002) | error | The port is already in use |
 | [W-START-003](#w-start-003) | error | Listening on the port is not permitted |
@@ -106,6 +107,8 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-BACK-007](#w-back-007) | warning | No server available for a player |
 | [W-BACK-008](#w-back-008) | warning | A server switch timed out |
 | [W-BACK-009](#w-back-009) | warning | A held packet was dropped |
+| [W-BACK-010](#w-back-010) | warning | A server group has no server available |
+| [W-BACK-011](#w-back-011) | warning | A server is skipped by the balancers |
 | [W-AUTH-001](#w-auth-001) | warning | Players authenticate against a custom server |
 | [W-AUTH-002](#w-auth-002) | warning | Profile keys are checked against a custom key |
 | [W-AUTH-003](#w-auth-003) | error | Encryption could not be enabled |
@@ -188,6 +191,14 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** WARP_COLOR, WARP_CONSOLE, WARP_THEME, WARP_HYPERLINKS or console.theme has a value Warp does not know; it uses auto instead.
 
 **Fix.** Use one of the values the message lists, or remove the setting.
+
+### W-CFG-009
+
+**A route points to an unknown server** (warning)
+
+**Cause.** A routes entry of warp.conf sends players to a name that is neither a registered server nor a group: a capture such as $1 named something that does not exist, or the server was unregistered. Those players go to the default server instead.
+
+**Fix.** Add the server or group, fix the entry, or point the host at an existing one.
 
 ## Startup
 
@@ -928,6 +939,22 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** A packet waiting for a protocol phase that the connection never reached was dropped.
 
 **Fix.** Report it with the client's and the backend's versions if it repeats.
+
+### W-BACK-010
+
+**A server group has no server available** (warning)
+
+**Cause.** Every server of the group is unregistered, excluded for the player (the one it is leaving, or one that failed it already), or its balancer declined to pick one. The player goes to the next fallback, or is disconnected if there is none.
+
+**Fix.** Start or register the group's servers, or add a fallback outside the group.
+
+### W-BACK-011
+
+**A server is skipped by the balancers** (warning)
+
+**Cause.** The server did not answer its last ping within timeouts.ping, a player could not connect to it, or it refused the logins of three players in a row (a single refusal is taken as aimed at that player: a ban, a whitelist). Groups and fallbacks skip it for a cool-down, then let one player through to find out whether it is back; a successful ping brings it back at once.
+
+**Fix.** Check that the server runs, is reachable from Warp and accepts logins from it (forwarding secret, whitelist). Raise timeouts.ping if it answers pings slowly under load. Nothing to do if it was restarting.
 
 ## Authentication and login
 

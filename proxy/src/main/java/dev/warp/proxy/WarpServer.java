@@ -31,6 +31,8 @@ import dev.warp.api.player.Player;
 import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginManager;
 import dev.warp.api.plugin.PluginState;
+import dev.warp.api.server.Balancer;
+import dev.warp.api.server.ServerGroup;
 import dev.warp.jni.NativeStatus;
 import dev.warp.jni.Natives;
 import dev.warp.proxy.antibot.AntiBotService;
@@ -42,6 +44,7 @@ import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.compression.Compression;
 import dev.warp.proxy.config.AntiBotConfig;
 import dev.warp.proxy.config.DrainConfig;
+import dev.warp.proxy.config.GroupConfig;
 import dev.warp.proxy.config.WarpConfig;
 import dev.warp.proxy.connection.BackendPinger;
 import dev.warp.proxy.connection.ConnectedPlayer;
@@ -77,6 +80,10 @@ import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.pipeline.PipelineRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.plugin.WarpPluginManager;
+import dev.warp.proxy.server.Balancers;
+import dev.warp.proxy.server.HostRoutes;
+import dev.warp.proxy.server.ServerGroupRegistry;
+import dev.warp.proxy.server.ServerHealth;
 import dev.warp.proxy.server.ServerRegistry;
 import dev.warp.proxy.status.ServerList;
 
@@ -94,6 +101,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -171,9 +179,6 @@ public final class WarpServer implements Warp {
   /** Why the proxy stops when nothing says otherwise: a call to {@link #stop()}. */
   private static final String DEFAULT_STOP_CAUSE = "stop requested";
 
-  /** How long the startup's status pings of the backend servers may take, at most. */
-  private static final Duration STARTUP_PING_TIMEOUT = Duration.ofSeconds(2);
-
   /** How often the backend servers are pinged while the console's status line shows them. */
   private static final long STATUS_PING_SECONDS = 10;
 
@@ -238,7 +243,7 @@ public final class WarpServer implements Warp {
   private final LogLevels logLevels = new LogLevels();
 
   /** Pings the backend servers for the startup summary and the status line. */
-  private final ServerChecks serverChecks = new ServerChecks();
+  private final ServerChecks serverChecks;
 
   private @Nullable WarpConsole console;
 
@@ -360,6 +365,11 @@ public final class WarpServer implements Warp {
         new ServerRegistry(config.servers(), config.defaultServer(), config.fallbackOrder());
     serverRegistry.setEventBus(events);
     serverRegistry.setPingTimeout(config.timeouts().ping());
+    serverRegistry.setRoutes(HostRoutes.compile(config.routes()));
+    for (GroupConfig group : config.groups().values()) {
+      registerGroup(serverRegistry.groups(), group);
+    }
+    this.serverChecks = new ServerChecks(serverRegistry.health());
     this.channels =
         new ChannelRegistry(
             new BungeeCordChannel(config.bungeeCord(), playerRegistry, serverRegistry));
@@ -466,11 +476,9 @@ public final class WarpServer implements Warp {
     }
 
     serverRegistry.setPinger(new BackendPinger(workerGroup, transport.clientChannelClass()));
-    // Answered while plugins load; the summary waits for what is left once the port is bound.
-    Duration pingTimeout =
-        config.timeouts().ping().compareTo(STARTUP_PING_TIMEOUT) < 0
-            ? config.timeouts().ping()
-            : STARTUP_PING_TIMEOUT;
+    // Answered while plugins load; the summary waits for what is left once the port is bound. The
+    // pings feed the servers' health, so they get the configured deadline, not a shorter one.
+    Duration pingTimeout = config.timeouts().ping();
     CompletableFuture<List<Summaries.Server>> checks =
         serverChecks.check(serverRegistry.servers(), pingTimeout);
 
@@ -578,15 +586,20 @@ public final class WarpServer implements Warp {
     reader.start();
     ConsoleOutput output = ConsoleOutput.get();
     MultiThreadIoEventLoopGroup workers = workerGroup;
-    if (output != null && output.mode().interactive() && workers != null) {
+    if (workers != null) {
+      // The pings feed the servers' health (the balancers skip a server that does not answer
+      // within timeouts.ping) and, on an interactive console, the status line.
+      Duration pingTimeout = config.timeouts().ping();
       var _ =
           workers.scheduleAtFixedRate(
               () -> {
-                var _ = serverChecks.check(serverRegistry.servers(), STARTUP_PING_TIMEOUT);
+                var _ = serverChecks.check(serverRegistry.servers(), pingTimeout);
               },
               STATUS_PING_SECONDS,
               STATUS_PING_SECONDS,
               TimeUnit.SECONDS);
+    }
+    if (output != null && output.mode().interactive()) {
       output.status(() -> StatusLine.render(statusSnapshot(), output.mode()));
     }
   }
@@ -925,6 +938,24 @@ public final class WarpServer implements Warp {
     return serverRegistry;
   }
 
+  @Override
+  public dev.warp.api.server.ServerGroupRegistry groups() {
+    return serverRegistry.groups();
+  }
+
+  /** Registers a group of the configuration, whose settings were validated when it was read. */
+  private static void registerGroup(ServerGroupRegistry groups, GroupConfig group) {
+    List<ServerGroup.Member> members = new ArrayList<>(group.servers().size());
+    for (String server : group.servers()) {
+      members.add(new ServerGroup.Member(server, group.weight(server)));
+    }
+    Balancer balancer =
+        group.strategy().equals(Balancers.FILL)
+            ? Balancers.fill(group.capacity())
+            : Objects.requireNonNull(Balancers.of(group.strategy()), group.strategy());
+    var _ = groups.register(group.name(), members, balancer, group.strategy());
+  }
+
   /**
    * Returns the holds plugins keep on the proxy's readiness (tests take one as a plugin would).
    *
@@ -1010,6 +1041,16 @@ public final class WarpServer implements Warp {
     @Override
     public StartupTimings startup() {
       return startup;
+    }
+
+    @Override
+    public ServerHealth health() {
+      return serverRegistry.health();
+    }
+
+    @Override
+    public HostRoutes routes() {
+      return serverRegistry.routes();
     }
 
     @Override

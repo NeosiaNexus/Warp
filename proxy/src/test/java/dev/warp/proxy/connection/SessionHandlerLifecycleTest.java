@@ -403,7 +403,10 @@ class SessionHandlerLifecycleTest {
       // checks backendConnection.channel().isActive().
       BackendLoginSessionHandler loginHandler =
           new BackendLoginSessionHandler(
-              player, backendConn, new InetSocketAddress("localhost", 25565), new byte[0]);
+              player,
+              backendConn,
+              new ServerInfo("lobby", new InetSocketAddress("localhost", 25565)),
+              new byte[0]);
       backendConn.setSessionHandler(loginHandler);
 
       // Simulate handler swap (e.g., transition to CONFIG after LoginSuccess).
@@ -418,7 +421,10 @@ class SessionHandlerLifecycleTest {
     void realBackendDisconnectDuringLogin() {
       BackendLoginSessionHandler loginHandler =
           new BackendLoginSessionHandler(
-              player, backendConn, new InetSocketAddress("localhost", 25565), new byte[0]);
+              player,
+              backendConn,
+              new ServerInfo("lobby", new InetSocketAddress("localhost", 25565)),
+              new byte[0]);
       backendConn.setSessionHandler(loginHandler);
 
       backendChannel.close().syncUninterruptibly();

@@ -16,6 +16,8 @@
  */
 package dev.warp.api.player;
 
+import dev.warp.api.server.Route;
+
 import java.net.InetSocketAddress;
 import java.util.Optional;
 
@@ -36,12 +38,23 @@ public interface InboundConnection {
   InetSocketAddress remoteAddress();
 
   /**
-   * Returns the host name the client typed to connect, as sent in its handshake, without the
-   * suffixes some platforms append (Forge's {@code \0FML\0}, trailing dots).
+   * Returns the host name the client typed to connect, cleaned: lowercase, without a trailing dot,
+   * without a {@code :port}, and without the suffixes some platforms append (Forge's {@code
+   * \0FML\0}, {@code \0FML2\0} and {@code \0FML3\0} markers, a BungeeCord forwarding payload). The
+   * one the {@code routes} of {@code warp.conf} are matched against.
    *
    * @return the host name, or empty if the client sent none
    */
   Optional<String> virtualHost();
+
+  /**
+   * Returns the route the connection matched, if the {@code routes} of {@code warp.conf} have an
+   * entry for its {@link #virtualHost() virtual host}. Known from the handshake on, so from the
+   * first login event.
+   *
+   * @return the route, or empty when no entry matches and the connection goes to the default
+   */
+  Optional<Route> route();
 
   /**
    * Returns the protocol version the client speaks, as its handshake announced it: during a server
