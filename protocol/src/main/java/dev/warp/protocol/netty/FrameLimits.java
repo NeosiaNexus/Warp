@@ -126,18 +126,25 @@ public final class FrameLimits {
   // ---------------------------------------------------------------------------
 
   /** The HANDSHAKE state: the handshake alone, whatever the version. */
-  public static final FrameLimits HANDSHAKE =
-      new Builder(ProtocolState.HANDSHAKE).allow(0x00, HANDSHAKE_MIN, HANDSHAKE_MAX).build();
+  public static final FrameLimits HANDSHAKE;
 
   /** The STATUS state: a request and a ping, whatever the version. */
-  public static final FrameLimits STATUS =
-      new Builder(ProtocolState.STATUS)
-          .allow(0x00, STATUS_REQUEST, STATUS_REQUEST)
-          .allow(0x01, PING_REQUEST, PING_REQUEST)
-          .build();
+  public static final FrameLimits STATUS;
 
-  /** The LOGIN limits of each protocol, without and with cookie responses. */
-  private static final ConcurrentHashMap<Integer, FrameLimits[]> LOGIN = new ConcurrentHashMap<>();
+  static {
+    Builder handshake = new Builder(ProtocolState.HANDSHAKE);
+    handshake.allow(0x00, HANDSHAKE_MIN, HANDSHAKE_MAX);
+    HANDSHAKE = handshake.build();
+
+    Builder status = new Builder(ProtocolState.STATUS);
+    status.allow(0x00, STATUS_REQUEST, STATUS_REQUEST);
+    status.allow(0x01, PING_REQUEST, PING_REQUEST);
+    STATUS = status.build();
+  }
+
+  /** The LOGIN limits of each version, without and with cookie responses. */
+  private static final ConcurrentHashMap<ProtocolVersion, FrameLimits[]> LOGIN =
+      new ConcurrentHashMap<>();
 
   private final ProtocolState state;
 
@@ -186,13 +193,19 @@ public final class FrameLimits {
     return switch (state) {
       case HANDSHAKE -> HANDSHAKE;
       case STATUS -> STATUS;
-      case LOGIN ->
-          LOGIN.computeIfAbsent(version.protocol(), _ -> login(version))[cookieResponses ? 1 : 0];
+      case LOGIN -> LOGIN.computeIfAbsent(version, FrameLimits::login)[cookieResponses ? 1 : 0];
       case CONFIGURATION, PLAY -> null;
     };
   }
 
-  private static FrameLimits[] login(ProtocolVersion version) {
+  /**
+   * Computes what {@link #serverbound} caches for a version: the limits of the LOGIN state without
+   * cookie responses, then with them.
+   *
+   * @param version the client's protocol version
+   * @return the two limits, in that order
+   */
+  static FrameLimits[] login(ProtocolVersion version) {
     return new FrameLimits[] {login(version, false), login(version, true)};
   }
 
@@ -335,11 +348,10 @@ public final class FrameLimits {
       this.state = state;
     }
 
-    Builder allow(int packetId, int smallest, int largestFrame) {
+    void allow(int packetId, int smallest, int largestFrame) {
       min[packetId] = smallest;
       max[packetId] = largestFrame;
       count = Math.max(count, packetId + 1);
-      return this;
     }
 
     FrameLimits build() {

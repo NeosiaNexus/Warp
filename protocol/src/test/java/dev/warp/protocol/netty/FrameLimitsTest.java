@@ -231,6 +231,22 @@ class FrameLimitsTest {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("dev.warp.protocol.netty.FrameLimitsTest#versions")
+    @DisplayName("should compute the cached pair as the limits without, then with cookies")
+    void cachedPair(ProtocolVersion version) {
+      FrameLimits[] pair = FrameLimits.login(version);
+
+      assertEquals(2, pair.length);
+      assertFalse(pair[0].allows(0x04));
+      assertEquals(
+          version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5), pair[1].allows(0x04), "cookies");
+      for (int packetId = 0; packetId < 8; packetId++) {
+        assertEquals(login(version, false).largest(packetId), pair[0].largest(packetId));
+        assertEquals(login(version, true).largest(packetId), pair[1].largest(packetId));
+      }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("dev.warp.protocol.netty.FrameLimitsTest#versions")
     @DisplayName("should cache the very limits it computes for the version")
     void cachedAsComputed(ProtocolVersion version) {
       for (boolean cookies : new boolean[] {false, true}) {
