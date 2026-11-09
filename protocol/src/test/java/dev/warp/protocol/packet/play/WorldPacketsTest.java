@@ -23,6 +23,8 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.VarInt;
 
 import java.util.stream.Stream;
+import java.util.zip.DataFormatException;
+import java.util.zip.Inflater;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -93,6 +95,52 @@ class WorldPacketsTest {
       buf.clear();
       SetDefaultSpawnPosition.CODEC.encode(new SetDefaultSpawnPosition(8, 65, 3), buf, version);
       GameEvent.CODEC.encode(new GameEvent(GameEvent.START_WAITING_FOR_CHUNKS, 0), buf, version);
+    } finally {
+      buf.release();
+    }
+  }
+
+  @Test
+  @DisplayName("should send 1.8 one empty section, not the ground-up unload a zero bitmask means")
+  void legacyChunk18() {
+    ByteBuf buf = Unpooled.buffer();
+    try {
+      EmptyChunk.CODEC.encode(new EmptyChunk(0, 0), buf, ProtocolVersion.MINECRAFT_1_8);
+      buf.skipBytes(8); // chunk x, chunk z
+      assertTrue(buf.readBoolean(), "ground-up continuous");
+      assertEquals(1, buf.readUnsignedShort(), "the lowest section is present");
+      int size = VarInt.read(buf);
+      assertEquals(4096 * 2 + 2048 + 2048 + 256, size, "blocks, block light, sky light, biomes");
+      assertEquals(size, buf.readableBytes());
+    } finally {
+      buf.release();
+    }
+  }
+
+  @Test
+  @DisplayName("should send 1.7 one empty section, deflated with the biomes")
+  void legacyChunk17() throws DataFormatException {
+    ByteBuf buf = Unpooled.buffer();
+    try {
+      EmptyChunk.CODEC.encode(new EmptyChunk(0, 0), buf, ProtocolVersion.MINECRAFT_1_7_6);
+      buf.skipBytes(8);
+      assertTrue(buf.readBoolean(), "ground-up continuous");
+      assertEquals(1, buf.readUnsignedShort(), "primary bitmap: the lowest section");
+      assertEquals(0, buf.readUnsignedShort(), "add bitmap");
+      int length = buf.readInt();
+      assertEquals(length, buf.readableBytes());
+      byte[] compressed = new byte[length];
+      buf.readBytes(compressed);
+      Inflater inflater = new Inflater();
+      try {
+        inflater.setInput(compressed);
+        byte[] data = new byte[4096 + 2048 + 2048 + 2048 + 256 + 1];
+        int inflated = inflater.inflate(data);
+        assertTrue(inflater.finished(), "the whole column");
+        assertEquals(data.length - 1, inflated, "blocks, metadata, block light, sky light, biomes");
+      } finally {
+        inflater.end();
+      }
     } finally {
       buf.release();
     }

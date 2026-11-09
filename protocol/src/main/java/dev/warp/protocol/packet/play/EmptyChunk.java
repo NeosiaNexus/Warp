@@ -20,6 +20,7 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.packet.PacketCodec;
 
+import java.util.Arrays;
 import java.util.zip.Deflater;
 
 import io.netty.buffer.ByteBuf;
@@ -29,6 +30,10 @@ import io.netty.buffer.ByteBuf;
  * from bottom to top, biome 0 everywhere, no block entity and no light. Encode-only: the anti-bot's
  * virtual world sends the column under the player, so that the client ticks its physics; a server's
  * chunks stay opaque.
+ *
+ * <p>Before 1.9 the column carries its lowest section, empty: a ground-up column with no section is
+ * how those clients are told to unload the chunk, and block updates into an unloaded chunk are
+ * dropped (the platform would never exist).
  *
  * <p>The layout changed in nearly every release: 1.7 (zlib-compressed data), 1.8 (two bitmasks
  * become one), 1.9 (VarInt bitmask), 1.9.4 (block entities), 1.13 (int biomes), 1.14 (heightmaps),
@@ -95,32 +100,50 @@ public record EmptyChunk(int chunkX, int chunkZ) implements PlayPacket {
   // Layouts
   // ---------------------------------------------------------------------------
 
-  /** 1.7: ground-up, no section, the biomes deflated. */
+  /** 1.7 and 1.8: the lowest section is sent, empty, so that the client loads the column. */
+  private static final int LEGACY_SECTION_BIT = 1;
+
+  /** 1.8: 4096 shorts of block state, then the block light and the sky light nibbles. */
+  private static final int SECTION_BYTES_18 = 4096 * 2 + 2048 + 2048;
+
+  /** 1.7: 4096 block ids, then the metadata, block light and sky light nibbles. */
+  private static final int SECTION_BYTES_17 = 4096 + 2048 + 2048 + 2048;
+
+  /** 1.7's column, deflated once: one empty section and the biomes, all zero. */
+  private static final byte[] DEFLATED_17 = deflate(new byte[SECTION_BYTES_17 + BIOME_COLUMNS]);
+
+  /** 1.7: ground-up, one empty section, the biomes, all deflated. */
   private static void encode17(ByteBuf buf) {
     buf.writeBoolean(true); // ground-up continuous
-    buf.writeShort(0); // primary bitmap
+    buf.writeShort(LEGACY_SECTION_BIT); // primary bitmap
     buf.writeShort(0); // add bitmap
-    byte[] biomes = new byte[BIOME_COLUMNS];
-    byte[] compressed = new byte[BIOME_COLUMNS + 64];
+    buf.writeInt(DEFLATED_17.length);
+    buf.writeBytes(DEFLATED_17);
+  }
+
+  private static byte[] deflate(byte[] data) {
+    byte[] compressed = new byte[data.length + 64];
     Deflater deflater = new Deflater();
     int length;
     try {
-      deflater.setInput(biomes);
+      deflater.setInput(data);
       deflater.finish();
       length = deflater.deflate(compressed);
+      if (!deflater.finished()) {
+        throw new IllegalStateException("zeros did not deflate into " + compressed.length);
+      }
     } finally {
       deflater.end();
     }
-    buf.writeInt(length);
-    buf.writeBytes(compressed, 0, length);
+    return Arrays.copyOf(compressed, length);
   }
 
-  /** 1.8: ground-up, a short bitmask, the biomes as bytes. */
+  /** 1.8: ground-up, a short bitmask with one empty section, the biomes as bytes. */
   private static void encode18(ByteBuf buf) {
     buf.writeBoolean(true);
-    buf.writeShort(0);
-    VarInt.write(buf, BIOME_COLUMNS);
-    buf.writeZero(BIOME_COLUMNS);
+    buf.writeShort(LEGACY_SECTION_BIT);
+    VarInt.write(buf, SECTION_BYTES_18 + BIOME_COLUMNS);
+    buf.writeZero(SECTION_BYTES_18 + BIOME_COLUMNS);
   }
 
   /** 1.9 to 1.13.2: a VarInt bitmask, the biomes as bytes then ints, block entities from 1.9.4. */
