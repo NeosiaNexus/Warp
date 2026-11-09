@@ -130,6 +130,7 @@ public final class WarpConfig {
   private final ManagementConfig management;
   private final DrainConfig drain;
   private final StatusSettings status;
+  private final QueryConfig query;
   private final ProxyProtocolConfig proxyProtocol;
   private final LimitsConfig limits;
   private final AntiBotConfig antiBot;
@@ -198,6 +199,7 @@ public final class WarpConfig {
       ManagementConfig management,
       DrainConfig drain,
       StatusSettings status,
+      QueryConfig query,
       ProxyProtocolConfig proxyProtocol,
       LimitsConfig limits,
       AntiBotConfig antiBot,
@@ -224,6 +226,7 @@ public final class WarpConfig {
     this.management = management;
     this.drain = drain;
     this.status = status;
+    this.query = query;
     this.proxyProtocol = proxyProtocol;
     this.limits = limits;
     this.antiBot = antiBot;
@@ -392,6 +395,7 @@ public final class WarpConfig {
     ManagementConfig management = ManagementConfig.parse(root, directory, System::getenv);
     DrainConfig drain = DrainConfig.parse(root);
     StatusSettings status = parseStatus(root, directory);
+    QueryConfig query = QueryConfig.parse(root, bind);
     ProxyProtocolConfig proxyProtocol = parseProxyProtocol(root);
     LimitsConfig limits = parseLimits(root);
     AntiBotConfig antiBot = AntiBotConfig.parse(root);
@@ -435,6 +439,7 @@ public final class WarpConfig {
         management,
         drain,
         status,
+        query,
         proxyProtocol,
         limits,
         antiBot,
@@ -620,6 +625,15 @@ public final class WarpConfig {
    */
   public StatusSettings status() {
     return status;
+  }
+
+  /**
+   * Returns the GS4 Query listener's settings, from the {@code query} block.
+   *
+   * @return the query settings
+   */
+  public QueryConfig query() {
+    return query;
   }
 
   /**
@@ -1581,6 +1595,33 @@ public final class WarpConfig {
           # version-name = "{default-version-name}"
         }
 
+        # GS4 Query, the UDP protocol server lists, hosting panels and monitoring agents use to read
+        # the MOTD, the counts and the player names (enable-query in a vanilla server). Off unless
+        # something you run asks for it: the server list ping gives clients everything already.
+        query {
+          enabled = false
+          # The UDP address: empty takes bind's address and port number (the TCP port stays the
+          # players', the UDP port answers queries).
+          bind = ""
+          # The map field of the replies.
+          map = "Warp"
+          # List the plugins after Warp's version in a full stat ("Warp 1.0: foo 1.2; bar 2.0").
+          show-plugins = false
+          # Player names a full stat lists, 0 to 1000. 0 lists none: a reply never exceeds 1400
+          # bytes and names stop at that size anyway.
+          player-names = 0
+          # The hostip of the replies. Empty: the host of drain.transfer-to when set (the public
+          # address), otherwise the listener's address, which is useless behind 0.0.0.0 or NAT.
+          advertise-host = ""
+          # Datagrams allowed before anything is read: per source address (one IPv6 /64) per
+          # second, with a burst, and over every source together. Beyond, dropped and counted.
+          rate-limit {
+            per-address = 5
+            burst = 10
+            global = 2000
+          }
+        }
+
 
         # Packet compression settings (applied after login). Warp compresses with the libdeflate
         # bundled in its jar, or with Java's zlib where that cannot load (the startup log says
@@ -2064,6 +2105,7 @@ public final class WarpConfig {
         status.showPlayerCount(),
         status.sampleSize(),
         favicon == null ? "none" : favicon.uri().length() + " characters");
+    logger.info(ConsoleMarkers.FILE_ONLY, "  query: {}", config.query);
     if (config.proxyProtocol.enabled()) {
       logger.info(
           ConsoleMarkers.FILE_ONLY,

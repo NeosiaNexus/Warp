@@ -127,7 +127,8 @@ public final class StartupException extends RuntimeException {
    * @param cause why binding failed
    * @return the exception
    */
-  static StartupException cannotBind(InetSocketAddress address, String key, Throwable cause) {
+  public static StartupException cannotBind(
+      InetSocketAddress address, String key, Throwable cause) {
     String why = String.valueOf(cause.getMessage()).toLowerCase(Locale.ROOT);
     String where = describe(address);
     String message;

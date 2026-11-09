@@ -444,6 +444,48 @@ event loop, so an increment on the forwarding path allocates nothing and contend
 Plugins register their metrics through `PluginContext.metrics()`, under their id as a prefix, and a
 label per player or address is refused at registration.
 
+### Query
+
+GS4 Query is the UDP protocol server lists, hosting panels and monitoring agents speak to read a
+server's MOTD, counts and player names (`enable-query` in a vanilla server). Warp answers it from
+the same entry as the server list ping, through `ProxyPingEvent` when a plugin shapes it, so a
+plugin that changes the MOTD needs no query code. Off by default:
+
+```hocon
+query {
+  enabled = true
+  bind = ""                        # empty: bind's address and port number, over UDP
+  map = "Warp"
+  show-plugins = false             # "Warp 1.0: foo 1.2; bar 2.0" in a full stat
+  player-names = 0                 # names a full stat lists, 0 to 1000
+  advertise-host = ""              # hostip: empty takes drain.transfer-to, else the listener's
+  rate-limit { per-address = 5, burst = 10, global = 2000 }
+}
+```
+
+The listener is one datagram channel on the proxy's event loops, built to be hit from the internet:
+
+- The challenge token comes from `SecureRandom` and is bound to the client's address and port, as
+  the protocol specifies, in a fixed table of 65,536 slots indexed by a keyed hash: a flood of
+  spoofed handshakes overwrites slots instead of growing a cache, where Velocity and BungeeCord
+  keep every address until it expires, and nobody can compute which endpoints share a monitor's
+  slot.
+- Two token buckets, per source address (one IPv6 /64) then global, are checked before a byte of
+  the datagram is read, in that order so that one host flooding past the global rate spends no more
+  than its own share of it. Whatever is over the limit, malformed, of an unknown type or without a
+  valid token is dropped without a reply and counted under `warp_query_requests_total`; no
+  exception ever leaves the handler (Velocity issue 1828).
+- A stat is a copy of a body encoded once every 2 seconds, through `ProxyPingEvent` when a plugin
+  listens, and a stat that finds it stale is answered from the refresh, so a plugin that hides the
+  proxy is honoured from the first query. A reply never exceeds 1,400 bytes: the MOTD, version and
+  `hostip` are cut to a budget, the plugins list is dropped when it alone does not fit, and the
+  full stat lists as many player names as fit, then stops (`W-QUERY-001` once). With no valid
+  token the only reply is the handshake's, about the size of its request, so a spoofed source
+  cannot turn the proxy into an amplifier.
+- `hostip` and `hostport` are the address players connect to, not the listener's: `advertise-host`
+  when set, else the host and port of `drain.transfer-to`, else `bind`. Behind a load balancer or
+  in a container, set one of the first two.
+
 ## Project Structure
 
 ```

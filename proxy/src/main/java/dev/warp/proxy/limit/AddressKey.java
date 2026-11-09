@@ -28,7 +28,7 @@ import java.net.InetAddress;
  * them by /24, as Gate does, would make the customers of a carrier-grade NAT share one budget with
  * their neighbours. An IPv4-mapped IPv6 address counts as its IPv4 address.
  */
-final class AddressKey {
+public final class AddressKey {
 
   /**
    * Marks IPv4 keys apart from IPv6 networks. An IPv6 /64 with these 32 leading bits is in {@code
@@ -44,8 +44,17 @@ final class AddressKey {
    * @param address the client's address
    * @return its key: the IPv4 address, or the IPv6 /64 network, in a {@code long}
    */
-  static long of(InetAddress address) {
-    byte[] bytes = address.getAddress();
+  public static long of(InetAddress address) {
+    return of(address.getAddress());
+  }
+
+  /**
+   * Returns the key of an address given as bytes, for a caller that already holds them.
+   *
+   * @param bytes the address, 4 bytes (IPv4) or 16 (IPv6, IPv4-mapped included)
+   * @return its key, as {@link #of(InetAddress)} returns it
+   */
+  public static long of(byte[] bytes) {
     if (bytes.length == 4) {
       return IPV4_TAG | ipv4(bytes, 0);
     }
@@ -66,7 +75,7 @@ final class AddressKey {
    * @param key a key from {@link #of(InetAddress)}
    * @return its CIDR
    */
-  static String cidr(long key) {
+  public static String cidr(long key) {
     if ((key & IPV4_TAG) == IPV4_TAG) {
       return ((key >>> 24) & 0xFF)
           + "."
