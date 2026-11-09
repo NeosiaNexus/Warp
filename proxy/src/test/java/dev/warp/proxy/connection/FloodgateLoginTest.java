@@ -32,12 +32,18 @@ import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.StateRegistry;
+import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.login.LoginDisconnect;
 import dev.warp.protocol.packet.login.LoginSuccess;
+import dev.warp.proxy.antibot.AntiBotService;
+import dev.warp.proxy.antibot.AntiBotService.Plan;
 import dev.warp.proxy.bedrock.FloodgateCipher;
 import dev.warp.proxy.bedrock.FloodgateData;
 import dev.warp.proxy.bedrock.FloodgateService;
 import dev.warp.proxy.config.BedrockConfig;
+import dev.warp.proxy.config.LimitsConfig;
+import dev.warp.proxy.limit.Blocklist;
+import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.limit.Refusal;
 import dev.warp.proxy.network.CidrRanges;
 import dev.warp.proxy.server.ServerRegistry;
@@ -46,6 +52,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -55,9 +62,11 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
 /**
  * Drives a Bedrock player's login through the pipeline {@link ServerChannelInitializer} builds,
@@ -90,14 +99,38 @@ class FloodgateLoginTest {
           + "-1\0"
           + "null";
 
+  /** The Java account Steve Jr linked through Floodgate's global linking. */
+  private static final UUID LINKED_JAVA_ID =
+      UUID.fromString("069a79f4-44e9-4726-a5be-fca90e38aaf5");
+
+  /**
+   * What Geyser writes for Steve Jr once the account is linked: the host field runs past vanilla's
+   * 255-character cap with this plaintext.
+   */
+  private static final String LINKED_PLAINTEXT =
+      PLAINTEXT.replace("\0null\0", "\0Notch;" + LINKED_JAVA_ID + ";" + new UUID(0, XUID) + "\0");
+
   private final FloodgateCipher cipher = new FloodgateCipher(KEY);
 
   private ServerLoginContext context = TestLoginContexts.offline();
 
   private EmbeddedChannel channel() {
+    return channel(".", ClientLimits.unlimited(), false, null);
+  }
+
+  /**
+   * Opens a connection from the Geyser host to a proxy whose Bedrock names carry {@code prefix}.
+   *
+   * @param prefix the Bedrock name prefix
+   * @param limits the limits
+   * @param onlineMode whether Java players authenticate with Mojang
+   * @param antiBot the anti-bot, or {@code null} for a disabled one sharing {@code limits}
+   */
+  private EmbeddedChannel channel(
+      String prefix, ClientLimits limits, boolean onlineMode, @Nullable AntiBotService antiBot) {
     BedrockConfig config =
         new BedrockConfig(
-            new BedrockConfig.Floodgate(true, KEY, "key.pem", ".", false),
+            new BedrockConfig.Floodgate(true, KEY, "key.pem", prefix, false),
             CidrRanges.parse(List.of("127.0.0.1/32", "::1/128")),
             Map.of("survival", true));
     ServerRegistry registry =
@@ -109,7 +142,13 @@ class FloodgateLoginTest {
                 new InetSocketAddress(InetAddress.getLoopbackAddress(), 2)),
             "lobby",
             List.of("lobby"));
-    context = TestLoginContexts.offline(new FloodgateService(config), registry);
+    context =
+        TestLoginContexts.floodgate(
+            onlineMode,
+            new FloodgateService(config),
+            registry,
+            limits,
+            antiBot != null ? antiBot : AntiBotService.disabled(limits, TestLoginContexts.EVENTS));
     EmbeddedChannel channel = new ClientChannel();
     channel.pipeline().addLast(new ServerChannelInitializer(context));
     channel.runPendingTasks();
@@ -164,6 +203,65 @@ class FloodgateLoginTest {
     }
 
     @Test
+    @DisplayName("should log in a linked account, whose host field runs past 255 characters")
+    void linked() {
+      String host = hostname(LINKED_PLAINTEXT);
+      assertTrue(
+          host.length() > 255, "the linked host must exceed vanilla's cap: " + host.length());
+      EmbeddedChannel channel = channel();
+      try {
+        handshake(channel, host);
+        loginStart(channel, "Steve Jr");
+
+        ByteBuf success =
+            Unpooled.wrappedBuffer(nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class));
+        try {
+          assertEquals(LINKED_JAVA_ID, McUuid.read(success));
+          assertEquals("Notch", McString.read(success));
+        } finally {
+          success.release();
+        }
+        assertInstanceOf(ClientPlatform.Bedrock.class, connection(channel).clientPlatform());
+        assertEquals(0, context.limits().refusals(Refusal.FLOODGATE_REFUSED));
+        assertEquals(0, context.limits().refusals(Refusal.INVALID_FRAME));
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should plan the anti-bot for an offline login, even on an online proxy")
+    void plannedOffline() {
+      ClientLimits limits = ClientLimits.unlimited();
+      AntiBotService antiBot =
+          Mockito.spy(AntiBotService.disabled(limits, TestLoginContexts.EVENTS));
+      // What an online proxy under attack would plan for an unknown Java login: a verification
+      // before authentication, which has no authentication to protect for a Bedrock player.
+      Mockito.doReturn(Plan.BEFORE_AUTHENTICATION)
+          .when(antiBot)
+          .plan(Mockito.any(), Mockito.eq(true), Mockito.any(), Mockito.any());
+      EmbeddedChannel channel = channel(".", limits, true, antiBot);
+      try {
+        handshake(channel, hostname(PLAINTEXT));
+        loginStart(channel, "Steve Jr");
+
+        ByteBuf success =
+            Unpooled.wrappedBuffer(nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class));
+        try {
+          assertEquals(new UUID(0, XUID), McUuid.read(success), "Floodgate's UUID, no detour");
+        } finally {
+          success.release();
+        }
+        Mockito.verify(antiBot, Mockito.atLeastOnce())
+            .plan(Mockito.any(), Mockito.eq(false), Mockito.any(), Mockito.any());
+        Mockito.verify(antiBot, Mockito.never())
+            .plan(Mockito.any(), Mockito.eq(true), Mockito.any(), Mockito.any());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
     @DisplayName("should re-emit the data to a backend running Floodgate, and only to it")
     void forwards() throws Exception {
       EmbeddedChannel channel = channel();
@@ -188,6 +286,42 @@ class FloodgateLoginTest {
             FloodgateData.parse(
                 cipher.decrypt(survival.substring("10.0.0.2\0".length())).plaintext());
         assertEquals(FloodgateData.parse(PLAINTEXT).fromProxy(true), forwarded);
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should re-emit a linked account's data in a handshake the codec accepts")
+    void forwardsLinked() throws Exception {
+      EmbeddedChannel channel = channel();
+      try {
+        handshake(channel, hostname(LINKED_PLAINTEXT));
+        loginStart(channel, "Steve Jr");
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class);
+        ConnectedPlayer player = context.playerRegistry().get("Notch");
+        assertNotNull(player);
+        InetSocketAddress backend = new InetSocketAddress(InetAddress.getLoopbackAddress(), 2);
+
+        String host =
+            BackendLoginSessionHandler.backendHost(
+                player, new ServerInfo("survival", backend), "survival.internal.example.com");
+        assertTrue(
+            host.length() > 255, "the re-emitted host exceeds vanilla's cap: " + host.length());
+        Handshake handshake = new Handshake(VERSION.protocol(), host, 25565, 2);
+        ByteBuf wire = Unpooled.buffer();
+        try {
+          Handshake.CODEC.encode(handshake, wire, VERSION);
+          assertEquals(handshake, Handshake.CODEC.decode(wire, VERSION));
+        } finally {
+          wire.release();
+        }
+        FloodgateData forwarded =
+            FloodgateData.parse(
+                cipher
+                    .decrypt(host.substring("survival.internal.example.com\0".length()))
+                    .plaintext());
+        assertEquals(FloodgateData.parse(LINKED_PLAINTEXT).fromProxy(true), forwarded);
       } finally {
         channel.finishAndReleaseAll();
       }
@@ -245,15 +379,63 @@ class FloodgateLoginTest {
 
     @Test
     @DisplayName("should refuse a Java client using the Bedrock prefix without data")
-    void javaWithPrefix() {
-      EmbeddedChannel channel = channel();
-      try {
+    void javaWithPrefix() throws Exception {
+      // A prefix of name characters: "_Steve" is a valid Java name, so only the reservation of the
+      // prefix for Bedrock players can turn it away.
+      EmbeddedChannel channel = channel("_", ClientLimits.unlimited(), false, null);
+      try (LogCapture log = new LogCapture(LoginSessionHandler.class)) {
         handshake(channel, "play.example.com");
-        loginStart(channel, ".Steve");
+        loginStart(channel, "_Steve");
 
         nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class);
         assertClosed(channel);
         assertEquals(1, context.limits().refusals(Refusal.INVALID_LOGIN));
+        assertTrue(
+            log.events().stream()
+                .anyMatch(
+                    event ->
+                        event
+                            .getMessage()
+                            .getFormattedMessage()
+                            .contains("Bedrock name prefix without Floodgate data")),
+            "refused for the prefix, not the name");
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should let a Java client in under a name the Bedrock prefix does not reserve")
+    void javaWithoutPrefix() {
+      EmbeddedChannel channel = channel("_", ClientLimits.unlimited(), false, null);
+      try {
+        handshake(channel, "play.example.com");
+        loginStart(channel, "Steve_");
+
+        nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class);
+        assertEquals(0, context.limits().refusals(Refusal.INVALID_LOGIN));
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should refuse a blocklisted Bedrock address a trusted Geyser names, counted")
+    void blocklistedRealAddress() {
+      ClientLimits limits =
+          new ClientLimits(
+              LimitsConfig.DEFAULTS,
+              CidrRanges.none(),
+              new Blocklist(1, Duration.ofMinutes(10), System::nanoTime));
+      InetSocketAddress bedrock = new InetSocketAddress(InetAddress.ofLiteral("198.51.100.7"), 1);
+      limits.refused(Refusal.INVALID_HANDSHAKE, bedrock);
+      EmbeddedChannel channel = channel(".", limits, false, null);
+      try {
+        handshake(channel, hostname(PLAINTEXT));
+
+        assertClosed(channel);
+        assertEquals(1, limits.refusals(Refusal.BLOCKLISTED));
+        assertEquals(0, limits.refusals(Refusal.FLOODGATE_REFUSED));
       } finally {
         channel.finishAndReleaseAll();
       }

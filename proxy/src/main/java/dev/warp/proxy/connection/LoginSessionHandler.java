@@ -468,10 +468,7 @@ final class LoginSessionHandler implements SessionHandler {
           }
           if (connection.handshakeIntent() == HandshakeIntent.TRANSFER
               && antiBot.checksToken(
-                  recognized,
-                  loginContext.onlineMode(),
-                  clientVersion(),
-                  loginContext.acceptsTransfers())) {
+                  recognized, onlineMode, clientVersion(), loginContext.acceptsTransfers())) {
             checkToken(packet, recognized);
             return;
           }
@@ -525,8 +522,7 @@ final class LoginSessionHandler implements SessionHandler {
   private void verifyOrCheck(LoginStart packet, AntiBotService.Recognition recognized) {
     AntiBotService antiBot = loginContext.antiBot();
     if (tokenClaim == null
-        && antiBot.plan(
-                recognized, loginContext.onlineMode(), clientVersion(), connection.clientPlatform())
+        && antiBot.plan(recognized, onlineMode, clientVersion(), connection.clientPlatform())
             == Plan.BEFORE_AUTHENTICATION) {
       plan = Plan.BEFORE_AUTHENTICATION;
       state = LoginState.AWAITING_LOGIN_START;

@@ -154,8 +154,28 @@ final class TestLoginContexts {
    */
   static ServerLoginContext offline(FloodgateService floodgate, ServerRegistry registry) {
     ClientLimits limits = ClientLimits.unlimited();
+    return floodgate(false, floodgate, registry, limits, AntiBotService.disabled(limits, EVENTS));
+  }
+
+  /**
+   * Returns a context without compression whose Bedrock players log in through {@code floodgate},
+   * with the given servers, limits and anti-bot.
+   *
+   * @param onlineMode whether Java players authenticate with Mojang
+   * @param floodgate the Floodgate service
+   * @param registry the servers
+   * @param limits the limits, which the anti-bot must share
+   * @param antiBot the anti-bot
+   * @return the context
+   */
+  static ServerLoginContext floodgate(
+      boolean onlineMode,
+      FloodgateService floodgate,
+      ServerRegistry registry,
+      ClientLimits limits,
+      AntiBotService antiBot) {
     return context(
-        false,
+        onlineMode,
         -1,
         new MojangSessionService(),
         ProfileKeys.mojang(),
@@ -168,7 +188,7 @@ final class TestLoginContexts {
         ForwardingMode.NONE,
         new byte[0],
         NioSocketChannel.class,
-        AntiBotService.disabled(limits, EVENTS),
+        antiBot,
         floodgate);
   }
 
