@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.1.0-beta.7](https://github.com/NeosiaNexus/Warp/compare/v0.1.0-beta.6...v0.1.0-beta.7) (2026-11-09)
+
+
+### Features
+
+* **metrics:** allocation-free metric registry, Prometheus exposition and proxy instrumentation ([#185](https://github.com/NeosiaNexus/Warp/issues/185)) ([52191fc](https://github.com/NeosiaNexus/Warp/commit/52191fc80483c93ee4ea3284237eac8d4c1d8149))
+* **proxy:** carry Forge handshake markers and relay login queries ([#184](https://github.com/NeosiaNexus/Warp/issues/184)) ([52191fc](https://github.com/NeosiaNexus/Warp/commit/52191fc80483c93ee4ea3284237eac8d4c1d8149))
+* **proxy:** migrate a Velocity or BungeeCord configuration with warp migrate ([#177](https://github.com/NeosiaNexus/Warp/issues/177)) ([52191fc](https://github.com/NeosiaNexus/Warp/commit/52191fc80483c93ee4ea3284237eac8d4c1d8149))
+* **proxy:** route by hostname and balance players across server groups ([#179](https://github.com/NeosiaNexus/Warp/issues/179)) ([52191fc](https://github.com/NeosiaNexus/Warp/commit/52191fc80483c93ee4ea3284237eac8d4c1d8149))
+* **proxy:** verify unknown players with login and configuration probes before authentication ([#178](https://github.com/NeosiaNexus/Warp/issues/178)) ([52191fc](https://github.com/NeosiaNexus/Warp/commit/52191fc80483c93ee4ea3284237eac8d4c1d8149))
+
+
+### Bug Fixes
+
+* **deps:** dependency updates of 2026-11-09 ([#194](https://github.com/NeosiaNexus/Warp/issues/194)) ([52191fc](https://github.com/NeosiaNexus/Warp/commit/52191fc80483c93ee4ea3284237eac8d4c1d8149))
+* **e2e:** let the soak's object check tell a bounded console tail from a leak ([#176](https://github.com/NeosiaNexus/Warp/issues/176)) ([52191fc](https://github.com/NeosiaNexus/Warp/commit/52191fc80483c93ee4ea3284237eac8d4c1d8149))
+* **e2e:** root-cause the 1.16 keep-alive timeout, Paper boot hangs and the drain exit-code capture ([#180](https://github.com/NeosiaNexus/Warp/issues/180)) ([37b18b8](https://github.com/NeosiaNexus/Warp/commit/37b18b8f0b496a79a2202dfe14085984d862b390)), closes [#110](https://github.com/NeosiaNexus/Warp/issues/110)
+* **proxy:** close plugin-handled connections before disabling plugins, replace stale E2E results on re-run ([#195](https://github.com/NeosiaNexus/Warp/issues/195)) ([52191fc](https://github.com/NeosiaNexus/Warp/commit/52191fc80483c93ee4ea3284237eac8d4c1d8149))
+* **proxy:** verify Forge clients before holding them for the backend ([#198](https://github.com/NeosiaNexus/Warp/issues/198)) ([47e35d4](https://github.com/NeosiaNexus/Warp/commit/47e35d438ab2aef8f8a4fc8b7b14a1a85fcbf736))
+
+
+### Performance
+
+* **protocol:** inflate and deflate without allocating per frame ([#181](https://github.com/NeosiaNexus/Warp/issues/181)) ([52191fc](https://github.com/NeosiaNexus/Warp/commit/52191fc80483c93ee4ea3284237eac8d4c1d8149))
+
+
+### Documentation
+
+* **research:** design Forge, NeoForge and Bedrock support ([#182](https://github.com/NeosiaNexus/Warp/issues/182)) ([52191fc](https://github.com/NeosiaNexus/Warp/commit/52191fc80483c93ee4ea3284237eac8d4c1d8149))
+* **research:** design metrics, query and multi-proxy fleet support ([#183](https://github.com/NeosiaNexus/Warp/issues/183)) ([52191fc](https://github.com/NeosiaNexus/Warp/commit/52191fc80483c93ee4ea3284237eac8d4c1d8149))
+
 ## [0.1.0-beta.6](https://github.com/NeosiaNexus/Warp/compare/v0.1.0-beta.5...v0.1.0-beta.6) (2026-11-07)
 
 
