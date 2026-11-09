@@ -379,13 +379,17 @@ query {
 Rules:
 
 - Challenge bound to (address, port) as the wiki specifies [S24], not address
-  alone. Token from `SecureRandom` seeded `SplittableRandom`, 31 bits.
+  alone. Token from `SecureRandom`, 31 bits: a statistical generator leaks its
+  state through the tokens it hands to anyone who shakes hands, and a predicted
+  token turns a spoofed full stat into a 90x amplifier.
 - Bounded challenge table: an open-addressing array of 65 536 entries keyed by
-  a hash of (address, port), each slot holding token and expiry; a new
-  handshake overwrites the slot. Fixed memory, no allocation, no eviction
-  thread. Expiry 30 s.
-- Per-address token bucket on handshakes and a global bucket on all datagrams,
-  both checked before any parsing. The per-address table is also fixed-size
+  a hash of (address, port) mixed with a per-process secret, so that colliding
+  endpoints cannot be computed offline to overwrite a chosen monitor's token;
+  each slot holds token and expiry, and a new handshake overwrites the slot.
+  Fixed memory, no allocation, no eviction thread. Expiry 30 s.
+- Per-address token bucket, then a global bucket, on all datagrams, both
+  checked before any parsing and in that order, so that one source past its
+  own rate cannot drain the global budget of every other. The per-address table is also fixed-size
   (hash of address, 16 384 slots). Over the limit, the datagram is dropped and
   `warp_query_requests_total{outcome="rate_limited"}` increments.
 - Every malformed datagram (short, wrong magic, unknown type, wrong token) is

@@ -41,7 +41,9 @@ import dev.warp.proxy.status.StatusSettings;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.SplittableRandom;
 import java.util.UUID;
@@ -521,6 +523,22 @@ class QueryHandlerTest {
     }
 
     @Test
+    @DisplayName("should not let one source past its own limit spend the global budget of the rest")
+    void singleSourceCannotStarveOthers() {
+      start(config, 5, 10, 20);
+      // One host floods well past the global rate: its own bucket drops all but its burst, and
+      // only those count against the global bucket.
+      for (int i = 0; i < 60; i++) {
+        send(CLIENT, handshake());
+      }
+
+      assertNotNull(send(address("198.51.100.9", 40000), handshake()));
+      assertNotNull(send(address("198.51.100.10", 40000), handshake()));
+      assertEquals(10, count("handshake", "answered") - 2);
+      assertEquals(50, count("unknown", "rate_limited"));
+    }
+
+    @Test
     @DisplayName("should count the whole IPv6 /64 as one source")
     void ipv6Network() {
       for (int i = 0; i < 10; i++) {
@@ -530,6 +548,135 @@ class QueryHandlerTest {
 
       assertNull(send(address("2001:db8:1:2::ffff", 40000), handshake()));
       assertNotNull(send(address("2001:db8:1:3::1", 40000), handshake()));
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Asynchronous refresh
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("with plugins answering on another thread")
+  class Asynchronous {
+
+    /** What the event bus was asked to run, held until the test lets the plugins speak. */
+    private final Deque<Runnable> deliveries = new ArrayDeque<>();
+
+    @BeforeEach
+    void asynchronousBus() {
+      events = new WarpEventBus(deliveries::add);
+      start(config, 5, 10, 100);
+    }
+
+    /** Runs the plugins, then what they completed on the channel's event loop. */
+    private void deliver() {
+      while (!deliveries.isEmpty()) {
+        deliveries.poll().run();
+      }
+      channel.runPendingTasks();
+    }
+
+    private byte @Nullable [] reply() {
+      DatagramPacket reply = channel.readOutbound();
+      if (reply == null) {
+        return null;
+      }
+      try {
+        byte[] bytes = new byte[reply.content().readableBytes()];
+        reply.content().readBytes(bytes);
+        return bytes;
+      } finally {
+        reply.release();
+      }
+    }
+
+    @Test
+    @DisplayName("should hold the first stat after boot until the plugins answered, then hide")
+    void hidesFromTheFirstStat() {
+      new PluginEventBus(events, "test", null, s -> {})
+          .subscribe(ProxyPingEvent.class, event -> event.setResult(new ProxyPingEvent.Ignore()));
+      int token = token(CLIENT);
+
+      assertNull(send(CLIENT, stat(token, false)));
+      assertEquals(0, count("basic", "answered"));
+      assertEquals(0, count("basic", "ignored"));
+      deliver();
+
+      assertNull(reply());
+      assertEquals(1, count("basic", "ignored"));
+      assertNull(status.peek());
+    }
+
+    @Test
+    @DisplayName("should answer the first stat with what the plugin set, never the proposal")
+    void answersFromTheRefresh() {
+      new PluginEventBus(events, "test", null, s -> {})
+          .subscribe(
+              ProxyPingEvent.class,
+              event ->
+                  event.setPing(
+                      new ServerPing(
+                          new ServerPing.Version("Custom", 0),
+                          new ServerPing.Players(7, 99, List.of()),
+                          Component.text("Hidden MOTD"),
+                          null)));
+      int token = token(CLIENT);
+
+      assertNull(send(CLIENT, stat(token, false)));
+      deliver();
+
+      byte[] reply = reply();
+      assertNotNull(reply);
+      String text = new String(reply, StandardCharsets.UTF_8);
+      assertTrue(text.contains("Hidden MOTD\0SMP\0world\u00007\u000099\0"));
+      assertTrue(!text.contains("A Minecraft Server"));
+      assertEquals(1, count("basic", "answered"));
+    }
+
+    @Test
+    @DisplayName("should answer every stat that arrived during the refresh once it completes")
+    void joinsTheRefresh() {
+      new PluginEventBus(events, "test", null, s -> {})
+          .subscribe(ProxyPingEvent.class, event -> {});
+      int token = token(CLIENT);
+      InetSocketAddress other = address("198.51.100.9", 40000);
+      int otherToken = token(other);
+
+      assertNull(send(CLIENT, stat(token, false)));
+      assertNull(send(other, stat(otherToken, true)));
+      assertEquals(1, deliveries.size());
+      deliver();
+
+      DatagramPacket first = channel.readOutbound();
+      DatagramPacket second = channel.readOutbound();
+      assertNotNull(first);
+      assertNotNull(second);
+      // Both answered, in whichever order the future ran its dependents.
+      assertEquals(
+          java.util.Set.of(CLIENT, other), java.util.Set.of(first.recipient(), second.recipient()));
+      first.release();
+      second.release();
+      assertEquals(1, count("basic", "answered"));
+      assertEquals(1, count("full", "answered"));
+    }
+
+    @Test
+    @DisplayName("should answer a fresh snapshot at once and refresh again after 2 seconds")
+    void freshAnsweredInline() {
+      new PluginEventBus(events, "test", null, s -> {})
+          .subscribe(ProxyPingEvent.class, event -> {});
+      int token = token(CLIENT);
+      assertNull(send(CLIENT, stat(token, false)));
+      deliver();
+      assertNotNull(reply());
+
+      now += TimeUnit.SECONDS.toNanos(1);
+      assertNotNull(send(CLIENT, stat(token, false)));
+      assertTrue(deliveries.isEmpty());
+
+      now += TimeUnit.SECONDS.toNanos(1);
+      assertNull(send(CLIENT, stat(token, false)));
+      assertEquals(1, deliveries.size());
     }
   }
 

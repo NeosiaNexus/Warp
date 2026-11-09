@@ -37,6 +37,7 @@ import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongSupplier;
@@ -58,8 +59,13 @@ import org.slf4j.LoggerFactory;
  * {@link dev.warp.api.event.proxy.ProxyPingEvent.Ignore} hides the proxy from queries as from
  * pings: stats are dropped until the next snapshot says otherwise.
  *
- * <p>The refresh is asynchronous: a stat that finds the snapshot stale starts one and is answered
- * from the snapshot it found. The event loop never waits for plugins.
+ * <p>The refresh is asynchronous, and a stat that finds the snapshot stale is answered from the
+ * refresh once it completes, never from the stale snapshot: a plugin that hides the proxy or
+ * rewrites its entry is honoured by the very first stat after boot and by the first after a quiet
+ * period, where answering stale would hand out what the plugin meant to hide. The event loop never
+ * waits for plugins: {@link #current} returns a future, completed already while the snapshot is
+ * fresh, and the handler answers when it completes. While a refresh is in flight, every stat joins
+ * it.
  */
 public final class QueryStatus {
 
@@ -83,6 +89,12 @@ public final class QueryStatus {
   /** The current snapshot, or {@code null} while a plugin hides the proxy. */
   private volatile @Nullable QuerySnapshot snapshot;
 
+  /**
+   * What {@link #current} returns: completed with {@link #snapshot} while no refresh runs, else the
+   * refresh in flight, completed with its result.
+   */
+  private volatile CompletableFuture<@Nullable QuerySnapshot> state;
+
   /** When the current snapshot was built, in {@link System#nanoTime()} time. */
   private volatile long builtAt;
 
@@ -90,7 +102,9 @@ public final class QueryStatus {
   private final AtomicBoolean reportedTruncation = new AtomicBoolean();
 
   /**
-   * Creates the status and builds its first snapshot from the proxy's proposal, without plugins.
+   * Creates the status and builds a first snapshot from the proxy's proposal, without plugins. It
+   * is born stale: the first stat refreshes through the ping event before it is answered, so that
+   * what plugins set is never bypassed; the proposal only stands in when that refresh fails.
    *
    * @param config the {@code query} section
    * @param serverList the server list entry the proxy proposes
@@ -121,21 +135,28 @@ public final class QueryStatus {
     this.origin = new QueryOrigin(listener);
     this.hostIp = hostOf(playersAddress);
     this.hostPort = playersAddress.getPort();
-    this.snapshot = build(serverList.proposal(ProtocolVersion.latest().protocol()));
-    this.builtAt = nanoClock.getAsLong();
+    QuerySnapshot initial = build(serverList.proposal(ProtocolVersion.latest().protocol()));
+    this.snapshot = initial;
+    this.state = CompletableFuture.completedFuture(initial);
+    this.builtAt = nanoClock.getAsLong() - REFRESH_NANOS;
   }
 
   /**
-   * Returns the snapshot to answer a stat from, starting a refresh when it is stale.
+   * Returns the snapshot to answer a stat from: completed already while the snapshot is fresh, else
+   * the refresh this stat starts or joins, completed once the ping event is answered. The future
+   * never completes exceptionally: a refresh that fails completes with the last snapshot.
    *
    * @param now the current {@link System#nanoTime()}
-   * @return the snapshot, or {@code null} if a plugin chose to hide the proxy
+   * @return the snapshot, completed with {@code null} if a plugin chose to hide the proxy
    */
-  @Nullable QuerySnapshot current(long now) {
+  CompletableFuture<@Nullable QuerySnapshot> current(long now) {
     if (now - builtAt >= REFRESH_NANOS && refreshing.compareAndSet(false, true)) {
-      refresh();
+      CompletableFuture<@Nullable QuerySnapshot> pending = new CompletableFuture<>();
+      this.state = pending;
+      refresh(pending);
+      return pending;
     }
-    return snapshot;
+    return state;
   }
 
   /** Returns the current snapshot without refreshing, for tests. */
@@ -143,11 +164,11 @@ public final class QueryStatus {
     return snapshot;
   }
 
-  private void refresh() {
+  private void refresh(CompletableFuture<@Nullable QuerySnapshot> pending) {
     try {
       ServerPing proposal = serverList.proposal(ProtocolVersion.latest().protocol());
       if (!events.hasHandlers(ProxyPingEventImpl.class)) {
-        publish(proposal);
+        publish(proposal, pending);
         return;
       }
       var _ =
@@ -158,28 +179,45 @@ public final class QueryStatus {
                     if (failure != null) {
                       logger.debug(
                           "The ping event for a query failed: kept the last snapshot", failure);
-                      refreshing.set(false);
+                      keep(pending);
                       return;
                     }
-                    publish(event.answer());
+                    publish(event.answer(), pending);
                   });
     } catch (RuntimeException e) {
       logger.debug("Building the query snapshot failed: kept the last snapshot", e);
-      refreshing.set(false);
+      keep(pending);
     }
   }
 
-  private void publish(@Nullable ServerPing ping) {
+  private void publish(
+      @Nullable ServerPing ping, CompletableFuture<@Nullable QuerySnapshot> pending) {
+    QuerySnapshot fresh;
     try {
-      QuerySnapshot fresh = ping == null ? null : build(ping);
-      this.snapshot = fresh;
-      this.builtAt = nanoClock.getAsLong();
-      if (fresh != null && fresh.truncated()) {
-        reportTruncation(fresh);
-      }
-    } finally {
-      refreshing.set(false);
+      fresh = ping == null ? null : build(ping);
+    } catch (RuntimeException e) {
+      logger.debug("Building the query snapshot failed: kept the last snapshot", e);
+      keep(pending);
+      return;
     }
+    this.snapshot = fresh;
+    this.builtAt = nanoClock.getAsLong();
+    settle(pending, fresh);
+    if (fresh != null && fresh.truncated()) {
+      reportTruncation(fresh);
+    }
+  }
+
+  /** Ends a failed refresh with the last snapshot, to be tried again at the next stat. */
+  private void keep(CompletableFuture<@Nullable QuerySnapshot> pending) {
+    settle(pending, snapshot);
+  }
+
+  private void settle(
+      CompletableFuture<@Nullable QuerySnapshot> pending, @Nullable QuerySnapshot result) {
+    // The settled future stands for the snapshot until the next refresh replaces it.
+    refreshing.set(false);
+    pending.complete(result);
   }
 
   private QuerySnapshot build(ServerPing ping) {

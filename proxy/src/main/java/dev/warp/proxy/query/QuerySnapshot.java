@@ -27,20 +27,25 @@ import java.util.List;
  *
  * <p>A reply is capped at {@value #MAX_REPLY} bytes, under a typical MTU: a full stat lists as many
  * of the player names as fit, then stops. The cap also bounds what a spoofed source can make the
- * proxy send to a victim once an attacker holds a token for it, which is already the hard part.
+ * proxy send to a victim once an attacker holds a token for it, which is already the hard part. The
+ * free-form fields a plugin or the configuration controls are cut first so that the cap holds
+ * whatever they carry: the MOTD at {@value #MAX_MOTD_BYTES} bytes, the version at {@value
+ * #MAX_VERSION_BYTES} and {@code hostip} at {@value #MAX_HOST_BYTES}, on a character boundary; the
+ * {@code map} is bounded by the configuration and the plugins list is dropped when it alone does
+ * not fit. What remains is always under the cap, which {@link #of} checks.
  *
  * <p>Strings are UTF-8, as the vanilla server writes them since 1.14; names of Java players are
  * ASCII anyway.
  *
- * @param motd the message of the day as plain text: {@code hostname} in a full stat
- * @param version the version shown
+ * @param motd the message of the day as plain text, as written: {@code hostname} in a full stat
+ * @param version the version shown, as written
  * @param plugins the {@code plugins} field: {@code Warp <version>: <plugin> <version>; ...}, or
  *     empty when the plugins are hidden
  * @param map the {@code map} field
  * @param numPlayers the players online, as the server list shows them
  * @param maxPlayers the maximum, as the server list shows it
  * @param hostPort the port players connect to
- * @param hostIp the host players connect to
+ * @param hostIp the host players connect to, as written
  * @param players the names a full stat lists, in order, before the size cap
  * @param basicBody the encoded basic stat, after the type byte and the session id
  * @param fullBody the encoded full stat, after the type byte and the session id
@@ -65,6 +70,15 @@ record QuerySnapshot(
 
   /** The bytes before a body: the type byte and the session id. */
   static final int HEADER = 1 + 4;
+
+  /** The most bytes of UTF-8 the MOTD is written with: more than two full lines of the client. */
+  static final int MAX_MOTD_BYTES = 256;
+
+  /** The most bytes of UTF-8 the version is written with. */
+  static final int MAX_VERSION_BYTES = 64;
+
+  /** The most bytes of UTF-8 {@code hostip} is written with: a host name is at most 253. */
+  static final int MAX_HOST_BYTES = 255;
 
   /** The {@code gametype} field: always SMP, as every implementation writes it. */
   static final String GAME_TYPE = "SMP";
@@ -93,6 +107,7 @@ record QuerySnapshot(
    * @param hostIp the host players connect to
    * @param players the names to list, in order; as many as fit are written
    * @return the snapshot, with both bodies encoded
+   * @throws IllegalStateException if a body exceeds the cap, which the field bounds rule out
    */
   static QuerySnapshot of(
       String motd,
@@ -105,6 +120,9 @@ record QuerySnapshot(
       String hostIp,
       List<String> players) {
     List<String> names = List.copyOf(players);
+    motd = bounded(motd, MAX_MOTD_BYTES);
+    version = bounded(version, MAX_VERSION_BYTES);
+    hostIp = bounded(hostIp, MAX_HOST_BYTES);
     byte[] basic = encodeBasic(motd, map, numPlayers, maxPlayers, hostPort, hostIp);
     ByteArrayOutputStream full = new ByteArrayOutputStream(512);
     full.writeBytes(KEY_VALUE_PADDING);
@@ -128,6 +146,16 @@ record QuerySnapshot(
       listed++;
     }
     full.write(0);
+    byte[] fullBody = full.toByteArray();
+    if (basic.length + HEADER > MAX_REPLY || fullBody.length + HEADER > MAX_REPLY) {
+      throw new IllegalStateException(
+          "A query reply exceeds "
+              + MAX_REPLY
+              + " bytes: basic "
+              + basic.length
+              + ", full "
+              + fullBody.length);
+    }
     return new QuerySnapshot(
         motd,
         version,
@@ -139,8 +167,25 @@ record QuerySnapshot(
         hostIp,
         names,
         basic,
-        full.toByteArray(),
+        fullBody,
         listed);
+  }
+
+  /**
+   * Returns a string whose UTF-8 encoding takes at most {@code maxBytes}, cut on a character
+   * boundary so that no sequence is left half written.
+   */
+  static String bounded(String value, int maxBytes) {
+    byte[] encoded = value.getBytes(StandardCharsets.UTF_8);
+    if (encoded.length <= maxBytes) {
+      return value;
+    }
+    int end = maxBytes;
+    // Step back over the continuation bytes (10xxxxxx) of a sequence the cut would split.
+    while (end > 0 && (encoded[end] & 0xC0) == 0x80) {
+      end--;
+    }
+    return new String(encoded, 0, end, StandardCharsets.UTF_8);
   }
 
   /** Whether the full stat lists fewer names than it was given. */

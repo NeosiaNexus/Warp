@@ -23,6 +23,7 @@ import dev.warp.proxy.limit.AddressKey;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.LongSupplier;
 
 import io.netty.buffer.ByteBuf;
@@ -30,17 +31,22 @@ import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.socket.DatagramPacket;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * Answers GS4 Query datagrams: a handshake with a challenge token, a stat with the snapshot.
  *
- * <p>Order of checks, each before the next costs anything: the global bucket, the per-address
- * bucket, the length and the magic, the type, then the token for a stat. Whatever fails is dropped
- * without a reply and counted under {@code warp_query_requests_total}; no exception leaves the
- * handler and the channel stays open. The only allocation per datagram besides Netty's envelope is
- * the reply buffer, and a stat reply is a copy of a body encoded once per snapshot.
+ * <p>Order of checks, each before the next costs anything: the per-address bucket, the global
+ * bucket, the length and the magic, the type, then the token for a stat. The per-address bucket
+ * comes first so that one source, spoofed or not, spends at most its own rate of the global budget:
+ * were the global bucket drained first, a single host sending past the global rate would have every
+ * other source dropped as rate limited for as long as it floods. Whatever fails is dropped without
+ * a reply and counted under {@code warp_query_requests_total}; no exception leaves the handler and
+ * the channel stays open. The only allocation per datagram besides Netty's envelope is the reply
+ * buffer, and a stat reply is a copy of a body encoded once per snapshot, except when the snapshot
+ * is stale: the stat then waits for the refresh and is answered on the event loop when it ends.
  *
  * <p>Protocol: magic {@code FE FD}, a type byte ({@code 09} handshake, {@code 00} stat), an int32
  * session id echoed as received. A stat carries the token as a big-endian int32; four more bytes of
@@ -147,10 +153,6 @@ public final class QueryHandler extends SimpleChannelInboundHandler<DatagramPack
   @Override
   protected void channelRead0(ChannelHandlerContext ctx, DatagramPacket packet) {
     long now = nanoClock.getAsLong();
-    if (!global.tryAcquire(0, now)) {
-      requests[UNKNOWN][RATE_LIMITED].inc();
-      return;
-    }
     InetSocketAddress sender = packet.sender();
     InetAddress address = sender == null ? null : sender.getAddress();
     if (address == null) {
@@ -158,7 +160,7 @@ public final class QueryHandler extends SimpleChannelInboundHandler<DatagramPack
       return;
     }
     byte[] addressBytes = address.getAddress();
-    if (!perAddress.tryAcquire(AddressKey.of(addressBytes), now)) {
+    if (!perAddress.tryAcquire(AddressKey.of(addressBytes), now) || !global.tryAcquire(0, now)) {
       requests[UNKNOWN][RATE_LIMITED].inc();
       return;
     }
@@ -170,7 +172,7 @@ public final class QueryHandler extends SimpleChannelInboundHandler<DatagramPack
     }
     byte type = in.getByte(in.readerIndex() + 2);
     int sessionId = in.getInt(in.readerIndex() + 3);
-    long identity = ChallengeTable.identity(addressBytes, sender.getPort());
+    long identity = challenges.identity(addressBytes, sender.getPort());
     switch (type) {
       case TYPE_HANDSHAKE -> {
         if (length != HANDSHAKE_LENGTH) {
@@ -199,18 +201,39 @@ public final class QueryHandler extends SimpleChannelInboundHandler<DatagramPack
           requests[kind][NO_TOKEN].inc();
           return;
         }
-        QuerySnapshot snapshot = status.current(now);
-        if (snapshot == null) {
-          requests[kind][IGNORED].inc();
-          return;
+        CompletableFuture<@Nullable QuerySnapshot> snapshot = status.current(now);
+        if (snapshot.isDone()) {
+          answer(ctx, snapshot.getNow(null), sender, sessionId, kind);
+        } else {
+          // Stale: answered from the refresh, on this event loop, once the plugins have spoken.
+          var _ =
+              snapshot.whenCompleteAsync(
+                  (fresh, failure) -> {
+                    if (ctx.channel().isActive()) {
+                      answer(ctx, fresh, sender, sessionId, kind);
+                    }
+                  },
+                  ctx.executor());
         }
-        byte[] body = kind == BASIC ? snapshot.basicBody() : snapshot.fullBody();
-        ByteBuf reply = ctx.alloc().ioBuffer(QuerySnapshot.HEADER + body.length);
-        reply.writeByte(TYPE_STAT).writeInt(sessionId).writeBytes(body);
-        send(ctx, reply, sender, kind);
       }
       default -> requests[UNKNOWN][MALFORMED].inc();
     }
+  }
+
+  private void answer(
+      ChannelHandlerContext ctx,
+      @Nullable QuerySnapshot snapshot,
+      InetSocketAddress to,
+      int sessionId,
+      int kind) {
+    if (snapshot == null) {
+      requests[kind][IGNORED].inc();
+      return;
+    }
+    byte[] body = kind == BASIC ? snapshot.basicBody() : snapshot.fullBody();
+    ByteBuf reply = ctx.alloc().ioBuffer(QuerySnapshot.HEADER + body.length);
+    reply.writeByte(TYPE_STAT).writeInt(sessionId).writeBytes(body);
+    send(ctx, reply, to, kind);
   }
 
   private void send(ChannelHandlerContext ctx, ByteBuf reply, InetSocketAddress to, int type) {

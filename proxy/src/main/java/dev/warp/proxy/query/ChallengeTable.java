@@ -17,8 +17,8 @@
 package dev.warp.proxy.query;
 
 import java.security.SecureRandom;
-import java.util.SplittableRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.random.RandomGenerator;
 
 /**
  * The challenge tokens handed out to query clients, bound to the endpoint (address and port) that
@@ -31,10 +31,16 @@ import java.util.concurrent.TimeUnit;
  * nothing is allocated per handshake and no eviction runs. A client whose slot was overwritten by a
  * colliding endpoint gets no reply to its stat and asks again, as it does once its token expired.
  *
- * <p>Tokens are positive 31-bit values from a {@link SplittableRandom} seeded by {@link
- * SecureRandom}: unpredictable enough that a source which did not receive the handshake reply
- * cannot guess one, and cheap. A token lives {@value #LIFETIME_SECONDS} seconds, as the protocol
- * specifies.
+ * <p>The hash is keyed with a secret drawn once per table, so that an attacker cannot compute
+ * offline which spoofed endpoints share a slot with a chosen monitor and keep overwriting its
+ * token: collisions are the random 2^-16 events the table is sized for, not a target.
+ *
+ * <p>Tokens are positive 31-bit values from {@link SecureRandom}: the whole design rests on a
+ * source that did not receive the handshake reply being unable to predict the token issued to the
+ * endpoint it spoofs, and a statistical generator such as {@code SplittableRandom} gives its state
+ * away to anyone who collects a few of its outputs, which a handshake hands out to anyone. One call
+ * per handshake, under the rate limits, costs nothing measurable. A token lives {@value
+ * #LIFETIME_SECONDS} seconds, as the protocol specifies.
  *
  * <p>Not thread-safe: the query listener has one channel on one event loop.
  */
@@ -57,20 +63,34 @@ final class ChallengeTable {
   /** When each slot's token expires, in {@link System#nanoTime()} time. */
   private final long[] expiries = new long[SLOTS];
 
-  private final SplittableRandom random;
+  private final RandomGenerator random;
 
-  /** Creates a table whose tokens come from a securely seeded generator. */
+  /** The secret the endpoint hash is keyed with. */
+  private final long key;
+
+  /** Creates a table whose tokens and hash key come from {@link SecureRandom}. */
   ChallengeTable() {
-    this(new SplittableRandom(new SecureRandom().nextLong()));
+    this(new SecureRandom());
   }
 
   /**
-   * Creates a table with a given generator, for tests.
+   * Creates a table whose tokens and hash key come from a given generator, for tests.
+   *
+   * @param random the token generator; its first output becomes the hash key
+   */
+  ChallengeTable(RandomGenerator random) {
+    this(random, random.nextLong());
+  }
+
+  /**
+   * Creates a table with a given generator and hash key, for tests.
    *
    * @param random the token generator
+   * @param key the secret the endpoint hash is keyed with
    */
-  ChallengeTable(SplittableRandom random) {
+  ChallengeTable(RandomGenerator random, long key) {
     this.random = random;
+    this.key = key;
   }
 
   /**
@@ -104,15 +124,17 @@ final class ChallengeTable {
   }
 
   /**
-   * Returns the identity of an endpoint: a 64-bit mix of its address bytes and port. Two endpoints
-   * share an identity with probability 2^-64, and even then a stat needs the other's token.
+   * Returns the identity of an endpoint: a 64-bit keyed mix of its address bytes and port. Two
+   * endpoints share an identity with probability 2^-64, and even then a stat needs the other's
+   * token. The slot an identity maps to depends on this table's key, so identities of one table
+   * mean nothing to another.
    *
    * @param address the source address, 4 or 16 bytes
    * @param port the source port
    * @return the identity
    */
-  static long identity(byte[] address, int port) {
-    long hash = 0x9E37_79B9_7F4A_7C15L ^ address.length;
+  long identity(byte[] address, int port) {
+    long hash = mix(key ^ 0x9E37_79B9_7F4A_7C15L) ^ address.length;
     for (byte b : address) {
       hash = mix(hash ^ (b & 0xFF));
     }
@@ -123,7 +145,7 @@ final class ChallengeTable {
     return (int) (identity ^ (identity >>> 32)) & MASK;
   }
 
-  /** A 64-bit finalizer (Stafford variant 13), as {@link SplittableRandom} uses. */
+  /** A 64-bit finalizer (Stafford variant 13), as {@code SplittableRandom} uses. */
   private static long mix(long value) {
     value = (value ^ (value >>> 30)) * 0xBF58_476D_1CE4_E5B9L;
     value = (value ^ (value >>> 27)) * 0x94D0_49BB_1331_11EBL;

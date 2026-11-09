@@ -21,10 +21,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.security.SecureRandom;
 import java.util.SplittableRandom;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 @DisplayName("ChallengeTable")
@@ -41,7 +43,7 @@ class ChallengeTableTest {
   @Test
   @DisplayName("should accept the token it issued, from the same address and port, before expiry")
   void acceptsOwnToken() {
-    long id = ChallengeTable.identity(A, 40000);
+    long id = table.identity(A, 40000);
 
     int token = table.issue(id, 0);
 
@@ -52,7 +54,7 @@ class ChallengeTableTest {
   @Test
   @DisplayName("should refuse the token once 30 seconds passed")
   void expires() {
-    long id = ChallengeTable.identity(A, 40000);
+    long id = table.identity(A, 40000);
     int token = table.issue(id, 0);
 
     assertFalse(table.matches(id, token, TimeUnit.SECONDS.toNanos(30)));
@@ -61,7 +63,7 @@ class ChallengeTableTest {
   @Test
   @DisplayName("should refuse a wrong token")
   void wrongToken() {
-    long id = ChallengeTable.identity(A, 40000);
+    long id = table.identity(A, 40000);
     int token = table.issue(id, 0);
 
     assertFalse(table.matches(id, token + 1, 0));
@@ -71,18 +73,18 @@ class ChallengeTableTest {
   @Test
   @DisplayName("should bind the token to the port, not the address alone")
   void boundToPort() {
-    long id = ChallengeTable.identity(A, 40000);
+    long id = table.identity(A, 40000);
     int token = table.issue(id, 0);
 
-    assertFalse(table.matches(ChallengeTable.identity(A, 40001), token, 0));
-    assertFalse(table.matches(ChallengeTable.identity(B, 40000), token, 0));
-    assertNotEquals(ChallengeTable.identity(A, 40000), ChallengeTable.identity(A6, 40000));
+    assertFalse(table.matches(table.identity(A, 40001), token, 0));
+    assertFalse(table.matches(table.identity(B, 40000), token, 0));
+    assertNotEquals(table.identity(A, 40000), table.identity(A6, 40000));
   }
 
   @Test
   @DisplayName("should replace the token of an endpoint that shakes hands again")
   void replaces() {
-    long id = ChallengeTable.identity(A, 40000);
+    long id = table.identity(A, 40000);
     int first = table.issue(id, 0);
     int second = table.issue(id, 1);
 
@@ -96,7 +98,7 @@ class ChallengeTableTest {
   void bounded() {
     // Far more endpoints than slots: no growth, just overwritten slots.
     for (int port = 1; port < 3 * ChallengeTable.SLOTS; port++) {
-      table.issue(ChallengeTable.identity(A, port & 0xFFFF), 0);
+      table.issue(table.identity(A, port & 0xFFFF), 0);
     }
     assertEquals(ChallengeTable.SLOTS, 65_536);
   }
@@ -104,12 +106,85 @@ class ChallengeTableTest {
   @Test
   @DisplayName("should survive a wrapping clock")
   void clockWraps() {
-    long id = ChallengeTable.identity(A, 40000);
+    long id = table.identity(A, 40000);
     long now = Long.MAX_VALUE - TimeUnit.SECONDS.toNanos(1);
 
     int token = table.issue(id, now);
 
     assertTrue(table.matches(id, token, now + TimeUnit.SECONDS.toNanos(10)));
     assertFalse(table.matches(id, token, now + TimeUnit.SECONDS.toNanos(31)));
+  }
+
+  @Nested
+  @DisplayName("against a targeted attacker")
+  class Targeted {
+
+    /** Finds a port of A whose slot collides with A:40000 in a table, as an attacker would. */
+    private int colliding(ChallengeTable in) {
+      long victim = in.identity(A, 40000);
+      int token = in.issue(victim, 0);
+      for (int port = 1; port < 65_536; port++) {
+        if (port == 40000) {
+          continue;
+        }
+        in.issue(in.identity(A, port), 0);
+        if (!in.matches(victim, token, 1)) {
+          return port;
+        }
+      }
+      throw new AssertionError("no colliding port among 65 535: the table has 65 536 slots");
+    }
+
+    @Test
+    @DisplayName("should key the slot hash so that a collision found in one table misses another")
+    void keyedSlots() {
+      ChallengeTable one = new ChallengeTable(new SplittableRandom(1), 0x1111L);
+      ChallengeTable two = new ChallengeTable(new SplittableRandom(1), 0x2222L);
+      int port = colliding(one);
+
+      long victim = two.identity(A, 40000);
+      int token = two.issue(victim, 0);
+      two.issue(two.identity(A, port), 0);
+
+      // The attacker's offline computation against another key says nothing about this table.
+      assertTrue(two.matches(victim, token, 1));
+      assertNotEquals(one.identity(A, 40000), two.identity(A, 40000));
+    }
+
+    @Test
+    @DisplayName("should draw a different key for every table by default")
+    void randomKey() {
+      ChallengeTable one = new ChallengeTable();
+      ChallengeTable two = new ChallengeTable();
+
+      assertNotEquals(one.identity(A, 40000), two.identity(A, 40000));
+    }
+
+    @Test
+    @DisplayName("should issue positive tokens from SecureRandom by default, unalike across tables")
+    void secureTokens() {
+      ChallengeTable one = new ChallengeTable();
+      ChallengeTable two = new ChallengeTable();
+      long id = one.identity(A, 40000);
+
+      int first = one.issue(id, 0);
+      int second = two.issue(two.identity(A, 40000), 0);
+
+      assertTrue(first > 0);
+      assertTrue(second > 0);
+      assertNotEquals(first, second);
+    }
+
+    @Test
+    @DisplayName("should take tokens from the generator it was given")
+    void givenGenerator() {
+      SecureRandom tokens = new SecureRandom();
+      ChallengeTable table = new ChallengeTable(tokens, 7);
+
+      int token = table.issue(table.identity(A, 1), 0);
+
+      assertTrue(token > 0);
+      assertTrue(table.matches(table.identity(A, 1), token, 1));
+    }
   }
 }

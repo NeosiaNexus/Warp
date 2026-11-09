@@ -143,6 +143,65 @@ class QuerySnapshotTest {
       assertTrue(new String(body, java.nio.charset.StandardCharsets.UTF_8).contains("plugins\0\0"));
     }
 
+    @Test
+    @DisplayName(
+        "should cut a long MOTD, version and hostip so that both bodies stay under the cap")
+    void longFields() {
+      String motd = "m".repeat(1600);
+      String version = "v".repeat(500);
+      String host = "h".repeat(400);
+
+      QuerySnapshot snapshot =
+          QuerySnapshot.of(motd, version, "Warp 1.0", "world", 0, 20, 25565, host, List.of());
+
+      assertTrue(snapshot.basicBody().length + QuerySnapshot.HEADER <= QuerySnapshot.MAX_REPLY);
+      assertTrue(snapshot.fullBody().length + QuerySnapshot.HEADER <= QuerySnapshot.MAX_REPLY);
+      assertEquals(QuerySnapshot.MAX_MOTD_BYTES, snapshot.motd().length());
+      assertEquals(QuerySnapshot.MAX_VERSION_BYTES, snapshot.version().length());
+      assertEquals(QuerySnapshot.MAX_HOST_BYTES, snapshot.hostIp().length());
+      String text = new String(snapshot.fullBody(), java.nio.charset.StandardCharsets.UTF_8);
+      assertTrue(text.contains("hostname\0" + snapshot.motd() + "\0gametype"));
+      assertTrue(text.contains("hostip\0" + snapshot.hostIp() + "\0"));
+    }
+
+    @Test
+    @DisplayName("should stay under the cap with every field at its bound and 1000 names")
+    void worstCase() {
+      List<String> names = new java.util.ArrayList<>();
+      for (int i = 0; i < QueryConfig.MAX_PLAYER_NAMES; i++) {
+        names.add("Player_" + String.format("%05d", i) + "_xx");
+      }
+
+      QuerySnapshot snapshot =
+          QuerySnapshot.of(
+              "\u00e9".repeat(2000),
+              "x".repeat(2000),
+              "Warp 1.0: " + "plugin 1.0; ".repeat(200),
+              "m".repeat(64),
+              Integer.MIN_VALUE,
+              Integer.MIN_VALUE,
+              65535,
+              "y".repeat(2000),
+              names);
+
+      assertTrue(snapshot.basicBody().length + QuerySnapshot.HEADER <= QuerySnapshot.MAX_REPLY);
+      assertTrue(snapshot.fullBody().length + QuerySnapshot.HEADER <= QuerySnapshot.MAX_REPLY);
+      assertTrue(snapshot.listed() > 0);
+    }
+
+    @Test
+    @DisplayName("should cut a field on a character boundary, never inside a UTF-8 sequence")
+    void characterBoundary() {
+      // Two bytes each: the fifth byte would split the third character.
+      assertEquals("\u00e9\u00e9", QuerySnapshot.bounded("\u00e9\u00e9\u00e9", 5));
+      assertEquals("\u00e9\u00e9", QuerySnapshot.bounded("\u00e9\u00e9\u00e9", 4));
+      // Four bytes: a cut anywhere inside drops the whole character.
+      assertEquals("a", QuerySnapshot.bounded("a\uD83D\uDE00", 4));
+      assertEquals("a\uD83D\uDE00", QuerySnapshot.bounded("a\uD83D\uDE00", 5));
+      assertEquals("abc", QuerySnapshot.bounded("abc", 3));
+      assertEquals("", QuerySnapshot.bounded("\u00e9", 1));
+    }
+
     private QuerySnapshot snapshotWith(int names) {
       List<String> list = new java.util.ArrayList<>();
       for (int i = 0; i < names; i++) {

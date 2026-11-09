@@ -465,15 +465,21 @@ query {
 
 The listener is one datagram channel on the proxy's event loops, built to be hit from the internet:
 
-- The challenge token is bound to the client's address and port, as the protocol specifies, and
-  kept in a fixed table of 65,536 slots; a flood of spoofed handshakes overwrites slots instead of
-  growing a cache, where Velocity and BungeeCord keep every address until it expires.
-- Two token buckets, per source address (one IPv6 /64) and global, are checked before a byte of the
-  datagram is read. Whatever is over the limit, malformed, of an unknown type or without a valid
-  token is dropped without a reply and counted under `warp_query_requests_total`; no exception ever
-  leaves the handler (Velocity issue 1828).
-- A stat is a copy of a body encoded once every 2 seconds, and a reply never exceeds 1,400 bytes:
-  the full stat lists as many player names as fit, then stops (`W-QUERY-001` once). With no valid
+- The challenge token comes from `SecureRandom` and is bound to the client's address and port, as
+  the protocol specifies, in a fixed table of 65,536 slots indexed by a keyed hash: a flood of
+  spoofed handshakes overwrites slots instead of growing a cache, where Velocity and BungeeCord
+  keep every address until it expires, and nobody can compute which endpoints share a monitor's
+  slot.
+- Two token buckets, per source address (one IPv6 /64) then global, are checked before a byte of
+  the datagram is read, in that order so that one host flooding past the global rate spends no more
+  than its own share of it. Whatever is over the limit, malformed, of an unknown type or without a
+  valid token is dropped without a reply and counted under `warp_query_requests_total`; no
+  exception ever leaves the handler (Velocity issue 1828).
+- A stat is a copy of a body encoded once every 2 seconds, through `ProxyPingEvent` when a plugin
+  listens, and a stat that finds it stale is answered from the refresh, so a plugin that hides the
+  proxy is honoured from the first query. A reply never exceeds 1,400 bytes: the MOTD, version and
+  `hostip` are cut to a budget, the plugins list is dropped when it alone does not fit, and the
+  full stat lists as many player names as fit, then stops (`W-QUERY-001` once). With no valid
   token the only reply is the handshake's, about the size of its request, so a spoofed source
   cannot turn the proxy into an amplifier.
 - `hostip` and `hostport` are the address players connect to, not the listener's: `advertise-host`
