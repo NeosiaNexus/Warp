@@ -22,7 +22,7 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 | **Decompresses packets it never reads** | Blind forwarding: in play, Warp decodes only the few packet types it acts on, and relays every other frame undecoded, still compressed when both sides use the same threshold | Available |
 | **Server switches that hang or crash the client** | A switch that does not complete within 30 s is ended instead of hanging on "Reconfiguring", no terminal packet is ever sent inside a bundle, and client settings are replayed to the new server | Available |
 | **Decompression bombs** | Impossible compression ratios are refused before inflating, sizes are capped, and each connection has an inflate budget | Available |
-| **No graceful drain** | Multi-phase drain with Transfer packet support, designed for rolling deployments and Kubernetes | Planned |
+| **No graceful drain** | Multi-phase drain with Transfer packet support, on SIGTERM or through the management API, with a Helm chart whose rolling updates drain each Pod ([docs/deploy/kubernetes.md](docs/deploy/kubernetes.md)) | Available |
 | **Shallow plugin DI** | Full dependency-injection graph via Guice with lifecycle hooks (provision, validate, start, ready, drain, stop) | Planned |
 | **No health probes, no metrics** | Built-in `/livez`, `/readyz`, `/startupz` endpoints and Prometheus metrics with an allocation-free registry ([docs/metrics.md](docs/metrics.md)); OpenTelemetry tracing planned | Available |
 | **Undefined event ordering** | Deterministic, priority-based event dispatch, with no race between handlers | Planned |
@@ -133,7 +133,6 @@ Planned, not implemented yet:
 
 - **Plugin system**: plugin loading, Guice dependency injection, lifecycle hooks, a deterministic
   event bus, commands and a scheduler. Today the API exposes the proxy version and `ServerInfo`.
-- **Graceful drain** with Transfer packets, for rolling deployments and Kubernetes.
 - **Observability**: OpenTelemetry tracing, OTLP metrics push and Grafana dashboards (the probes
   and the Prometheus metrics are available today).
 - **Configurable server list ping** (MOTD, player counts).

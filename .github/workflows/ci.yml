@@ -232,6 +232,22 @@ jobs:
           helm template warp charts/warp --set drain.timeout=10m --set drain.propagationDelay=5s --set drain.gracePeriodMargin=30 \
             | grep -q 'terminationGracePeriodSeconds: 635' || { echo "::error::the grace period is not derived from the drain settings"; exit 1; }
 
+      # The ServiceMonitor verifies the management server's certificate against the TLS Secret's
+      # CA by default; skipping the verification is an opt-in, refused with the bearer token.
+      - name: ServiceMonitor TLS
+        run: |
+          tls=(--set management.tls.enabled=true --set management.tls.secretName=warp-tls
+               --set management.metrics.serviceMonitor.enabled=true --namespace minecraft)
+          rendered=$(helm template warp charts/warp "${tls[@]}" --set management.metrics.requireToken=true)
+          grep -q 'serverName: warp-management.minecraft.svc' <<< "$rendered" || { echo "::error::the ServiceMonitor does not verify the server's name"; exit 1; }
+          grep -q 'key: ca.crt' <<< "$rendered" || { echo "::error::the ServiceMonitor does not use the TLS Secret's CA"; exit 1; }
+          ! grep -q 'insecureSkipVerify' <<< "$rendered" || { echo "::error::the ServiceMonitor skips verification by default"; exit 1; }
+          rendered=$(helm template warp charts/warp "${tls[@]}" --set management.metrics.serviceMonitor.insecureSkipVerify=true)
+          grep -q 'insecureSkipVerify: true' <<< "$rendered" || { echo "::error::the explicit opt-out of verification is ignored"; exit 1; }
+          ! helm template warp charts/warp "${tls[@]}" --set management.metrics.serviceMonitor.insecureSkipVerify=true \
+              --set management.metrics.requireToken=true > /dev/null 2>&1 \
+            || { echo "::error::skipping verification was accepted together with the bearer token"; exit 1; }
+
   # actionlint (syntax, expressions, shellcheck on `run:` scripts) and zizmor (workflow security,
   # strictest persona). Findings show up as annotations on the PR.
   lint-workflows:

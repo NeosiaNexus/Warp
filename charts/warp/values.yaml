@@ -140,6 +140,11 @@ management:
       namespace: ''
       relabelings: []
       metricRelabelings: []
+      # -- With management.tls, Prometheus verifies the certificate against the CA in the TLS
+      # Secret (key ca.crt) for <management service>.<namespace>.svc: issue the certificate for
+      # that name (cert-manager's dnsNames). Setting this to true skips the verification, and is
+      # refused together with requireToken, since the token would go to whoever answers.
+      insecureSkipVerify: false
     # -- Add prometheus.io/scrape annotations to the Pods, for a Prometheus without the operator.
     podAnnotations: false
   console:

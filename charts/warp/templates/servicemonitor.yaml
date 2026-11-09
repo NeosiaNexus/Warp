@@ -27,7 +27,20 @@ spec:
       scrapeTimeout: {{ $m.serviceMonitor.scrapeTimeout }}
       {{- if .Values.management.tls.enabled }}
       tlsConfig:
+        {{- if $m.serviceMonitor.insecureSkipVerify }}
+        {{- if $m.requireToken }}
+        {{- fail "management.metrics.serviceMonitor.insecureSkipVerify would send the management token to an unverified server: verify the certificate (the default) or turn off management.metrics.requireToken" }}
+        {{- end }}
         insecureSkipVerify: true
+        {{- else }}
+        # The certificate is verified against the CA of the TLS Secret (key ca.crt, as cert-manager
+        # writes it), for the management Service's name.
+        ca:
+          secret:
+            name: {{ .Values.management.tls.secretName }}
+            key: ca.crt
+        serverName: {{ printf "%s.%s.svc" (include "warp.managementServiceName" .) .Release.Namespace }}
+        {{- end }}
       {{- end }}
       {{- if $m.requireToken }}
       authorization:

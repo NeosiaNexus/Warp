@@ -131,7 +131,8 @@
                 "labels": { "type": "object" },
                 "namespace": { "type": "string" },
                 "relabelings": { "type": "array" },
-                "metricRelabelings": { "type": "array" }
+                "metricRelabelings": { "type": "array" },
+                "insecureSkipVerify": { "type": "boolean" }
               }
             },
             "podAnnotations": { "type": "boolean" }
