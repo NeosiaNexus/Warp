@@ -17,6 +17,7 @@
 package dev.warp.protocol.compress;
 
 import java.nio.ByteBuffer;
+import java.util.function.Supplier;
 import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
 import java.util.zip.Inflater;
@@ -45,7 +46,8 @@ public final class JavaCompressor implements PacketCompressor {
   /** Growth increment when the output buffer runs out of space during deflation. */
   private static final int DEFLATE_GROW = 8192;
 
-  private final int level;
+  private final Supplier<? extends Deflater> deflaters;
+  private final Supplier<? extends Inflater> inflaters;
   private @Nullable Deflater deflater;
   private @Nullable Inflater inflater;
   private boolean closed;
@@ -56,7 +58,16 @@ public final class JavaCompressor implements PacketCompressor {
    * @param level the compression level (0 to 9), or {@link Deflater#DEFAULT_COMPRESSION}
    */
   public JavaCompressor(int level) {
-    this.level = level;
+    this(() -> new Deflater(level), Inflater::new);
+  }
+
+  /**
+   * Creates a compressor whose streams come from the given factories, each called at most once, on
+   * the first deflate or inflate. Lets tests observe the streams' lifecycle.
+   */
+  JavaCompressor(Supplier<? extends Deflater> deflaters, Supplier<? extends Inflater> inflaters) {
+    this.deflaters = deflaters;
+    this.inflaters = inflaters;
   }
 
   /**
@@ -161,7 +172,7 @@ public final class JavaCompressor implements PacketCompressor {
     ensureOpen();
     Inflater current = inflater;
     if (current == null) {
-      current = new Inflater();
+      current = inflaters.get();
       inflater = current;
     }
     return current;
@@ -171,7 +182,7 @@ public final class JavaCompressor implements PacketCompressor {
     ensureOpen();
     Deflater current = deflater;
     if (current == null) {
-      current = new Deflater(level);
+      current = deflaters.get();
       deflater = current;
     }
     return current;

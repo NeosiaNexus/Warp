@@ -23,8 +23,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
+import java.util.zip.Inflater;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
@@ -133,6 +135,32 @@ class JavaCompressorTest {
         }
       }
     }
+
+    @Test
+    @DisplayName("should not grow a destination that already has room for the output")
+    void keepsDestinationWithRoom() throws DataFormatException {
+      // given: a destination of exactly the bound, which cannot grow
+      byte[] original = new byte[100];
+      try (JavaCompressor compressor = new JavaCompressor(Deflater.DEFAULT_COMPRESSION)) {
+        int bound = compressor.deflateBound(original.length);
+        ByteBuf source = Unpooled.wrappedBuffer(original);
+        ByteBuf compressed = Unpooled.buffer(bound, bound);
+        ByteBuf decompressed = Unpooled.buffer();
+        try {
+          // when
+          compressor.deflate(source, compressed);
+
+          // then: nothing asked it to grow, and the output is intact
+          assertEquals(bound, compressed.capacity());
+          compressor.inflate(compressed, decompressed, original.length);
+          assertArrayEquals(original, ByteBufUtil.getBytes(decompressed));
+        } finally {
+          source.release();
+          compressed.release();
+          decompressed.release();
+        }
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -181,6 +209,54 @@ class JavaCompressorTest {
       assertDoesNotThrow(compressor::close);
       assertDoesNotThrow(compressor::close);
       assertDoesNotThrow(compressor::close);
+    }
+
+    @Test
+    @DisplayName("should release each native stream exactly once, however often it is closed")
+    void releasesStreamsOnce() throws DataFormatException {
+      // given: a compressor whose streams count how often they are ended
+      AtomicInteger deflaterEnds = new AtomicInteger();
+      AtomicInteger inflaterEnds = new AtomicInteger();
+      JavaCompressor compressor =
+          new JavaCompressor(
+              () ->
+                  new Deflater(Deflater.DEFAULT_COMPRESSION) {
+                    @Override
+                    public void end() {
+                      deflaterEnds.incrementAndGet();
+                      super.end();
+                    }
+                  },
+              () ->
+                  new Inflater() {
+                    @Override
+                    public void end() {
+                      inflaterEnds.incrementAndGet();
+                      super.end();
+                    }
+                  });
+      byte[] original = new byte[] {1, 2, 3, 4, 5};
+      ByteBuf source = Unpooled.wrappedBuffer(original);
+      ByteBuf compressed = Unpooled.buffer();
+      ByteBuf decompressed = Unpooled.buffer();
+      try {
+        compressor.deflate(source, compressed);
+        compressor.inflate(compressed, decompressed, original.length);
+        assertEquals(0, deflaterEnds.get());
+        assertEquals(0, inflaterEnds.get());
+
+        // when
+        compressor.close();
+        compressor.close();
+
+        // then
+        assertEquals(1, deflaterEnds.get());
+        assertEquals(1, inflaterEnds.get());
+      } finally {
+        source.release();
+        compressed.release();
+        decompressed.release();
+      }
     }
 
     @Test
