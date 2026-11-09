@@ -173,11 +173,15 @@ public final class VerificationQueue {
         if (bucket == null) {
           return;
         }
-        // Take the slot while holding the lock: tryAcquire yields to the line, so the only race
-        // is with other dispatches, which the lock orders.
+        // Reserve the slot before the waiter leaves the line: tryAcquire yields to the line only
+        // while somebody waits, so once the count of waiters drops it may race for the same slot.
+        // Other dispatches are ordered by the lock; a tryAcquire is beaten by the CAS.
         int current = inFlight.get();
         if (current >= max) {
           return;
+        }
+        if (!inFlight.compareAndSet(current, current + 1)) {
+          continue; // a login took the slot meanwhile: look at the count again
         }
         next = bucket.removeFirst();
         waiting.decrementAndGet();
@@ -187,9 +191,9 @@ public final class VerificationQueue {
           cursor = bucket.nextActive;
         }
         if (!next.state.compareAndSet(WAITING, GRANTED)) {
-          continue; // cancelled meanwhile: its place goes to the next
+          inFlight.decrementAndGet(); // cancelled meanwhile: its slot goes to the next
+          continue;
         }
-        inFlight.incrementAndGet();
       } finally {
         lock.unlock();
       }

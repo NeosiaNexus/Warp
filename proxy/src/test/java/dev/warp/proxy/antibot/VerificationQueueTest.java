@@ -30,9 +30,11 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.util.concurrent.DefaultEventExecutor;
 import io.netty.util.concurrent.EventExecutor;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -121,6 +123,69 @@ class VerificationQueueTest {
       assertEquals(0, queue.waiting());
       assertEquals(1, queue.inFlight());
       assertEquals(1, queue.grantedFromLine());
+    }
+
+    @Test
+    @DisplayName("should never run more verifications than the cap while logins race the line")
+    void capUnderContention() throws Exception {
+      int max = 2;
+      VerificationQueue queue = queue(max, 1_000);
+      EventExecutor executor = new DefaultEventExecutor();
+      AtomicInteger over = new AtomicInteger();
+      AtomicInteger granted = new AtomicInteger();
+      Runnable check =
+          () -> {
+            if (queue.inFlight() > max) {
+              over.incrementAndGet();
+            }
+          };
+      try {
+        List<Thread> threads = new ArrayList<>();
+        for (int t = 0; t < 4; t++) {
+          int network = t;
+          threads.add(
+              Thread.ofPlatform()
+                  .start(
+                      () -> {
+                        for (int i = 0; i < 5_000; i++) {
+                          VerificationQueue.Slot slot = queue.tryAcquire();
+                          if (slot != null) {
+                            check.run();
+                            Thread.onSpinWait();
+                            slot.release();
+                            continue;
+                          }
+                          VerificationQueue.Waiter waiter =
+                              queue.enqueue(
+                                  network,
+                                  executor,
+                                  given -> {
+                                    check.run();
+                                    granted.incrementAndGet();
+                                    given.release();
+                                  },
+                                  () -> {});
+                          if (waiter == null) {
+                            Thread.onSpinWait();
+                          }
+                        }
+                      }));
+        }
+        for (Thread thread : threads) {
+          thread.join(TimeUnit.SECONDS.toMillis(30));
+        }
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while ((queue.waiting() > 0 || queue.inFlight() > 0) && System.nanoTime() < deadline) {
+          Thread.onSpinWait();
+        }
+      } finally {
+        executor.shutdownGracefully(0, 1, TimeUnit.SECONDS).sync();
+      }
+
+      assertEquals(0, over.get(), "verifications over the cap");
+      assertEquals(0, queue.waiting(), "everyone in line was served");
+      assertEquals(0, queue.inFlight());
+      assertEquals(granted.get(), queue.grantedFromLine());
     }
 
     @Test
