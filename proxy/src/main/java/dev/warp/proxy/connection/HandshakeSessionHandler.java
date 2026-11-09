@@ -212,8 +212,16 @@ final class HandshakeSessionHandler implements SessionHandler {
       case FloodgateService.Result.Verified(BedrockIdentity identity) -> {
         if (identity.realAddress() != null) {
           // The Geyser host is trusted to name the player's own address: limits, logs and
-          // forwarding use it from here on, not the Geyser host's.
+          // forwarding use it from here on, not the Geyser host's. Accept admitted the Geyser
+          // host; the player's own address gets the same admission (blocklist, connection rate),
+          // as a PROXY protocol header's client does.
           connection.setProxiedAddress(identity.realAddress());
+          if (!loginContext.limits().admitConnection(identity.realAddress())) {
+            // Counted by the limits, like any connection refused at accept.
+            logger.debug("Refused the Bedrock player at {} in HANDSHAKE", identity.realAddress());
+            connection.reset();
+            return false;
+          }
         }
         connection.setBedrock(identity);
         return true;
