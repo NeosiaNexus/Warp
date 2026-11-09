@@ -119,8 +119,12 @@ jobs:
           PROXY: ${{ matrix.proxy }}
           SCENARIOS: ${{ inputs.scenarios }}
         run: |
-          jar=$(ls "$WARP_DIR"/warp-*.jar | head -1)
-          args=(--smoke --warp-jar "$jar" --proxies "$PROXY")
+          jars=("$WARP_DIR"/warp-*.jar)
+          if [ "${#jars[@]}" -ne 1 ] || [ ! -f "${jars[0]}" ]; then
+            echo "::error::Expected exactly one warp-*.jar in the artifact, found ${#jars[@]}: ${jars[*]}"
+            exit 1
+          fi
+          args=(--smoke --warp-jar "${jars[0]}" --proxies "$PROXY")
           if [ -n "$SCENARIOS" ]; then args+=(--scenarios "$SCENARIOS"); fi
           bench/run.sh "${args[@]}"
 
