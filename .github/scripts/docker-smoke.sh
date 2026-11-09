@@ -61,7 +61,10 @@ step "Probes and metrics from outside"
 curl -sSf "http://127.0.0.1:$mgmt_port/livez" > /dev/null || fail "/livez"
 # Ready: the one backend is registered (reachable or not).
 curl -sSf "http://127.0.0.1:$mgmt_port/readyz" || fail "/readyz"
-curl -sSf "http://127.0.0.1:$mgmt_port/metrics" | grep -q '^warp_players_online ' || fail "/metrics lacks warp_players_online"
+# Captured first: with pipefail, `producer | grep -q` fails whenever grep exits on its first
+# match before the producer wrote everything (SIGPIPE).
+metrics=$(curl -sSf "http://127.0.0.1:$mgmt_port/metrics")
+grep -q '^warp_players_online ' <<< "$metrics" || fail "/metrics lacks warp_players_online"
 curl -sSf "http://127.0.0.1:$mgmt_port/metrics" | grep '^warp_info'
 done_step
 
@@ -94,7 +97,8 @@ fi
 timeout 120 docker wait "$name" > "${RUNNER_TEMP:-/tmp}/warp-smoke-exit.txt" || fail "the proxy did not exit after the drain"
 exit_code=$(cat "${RUNNER_TEMP:-/tmp}/warp-smoke-exit.txt")
 [ "$exit_code" = 0 ] || fail "the proxy exited with $exit_code after the drain"
-docker logs "$name" 2>&1 | grep -qi 'drain' || fail "the log never mentions the drain"
+container_log=$(docker logs "$name" 2>&1)
+grep -qi 'drain' <<< "$container_log" || fail "the log never mentions the drain"
 done_step
 
 step "SIGTERM drains: a fresh container stops cleanly"
