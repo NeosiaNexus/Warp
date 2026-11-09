@@ -39,6 +39,7 @@ import org.spongepowered.configurate.CommentedConfigurationNode;
  * @param readyRequiresServer whether readiness also needs a registered backend server
  * @param tls the certificate and key the HTTP port speaks TLS with, or {@code null} for plain HTTP
  * @param console the remote console
+ * @param metrics the metrics endpoint
  */
 public record ManagementConfig(
     boolean enabled,
@@ -47,7 +48,8 @@ public record ManagementConfig(
     @Nullable String token,
     boolean readyRequiresServer,
     @Nullable Tls tls,
-    RemoteConsoleConfig console) {
+    RemoteConsoleConfig console,
+    MetricsConfig metrics) {
 
   /**
    * The TLS of the management HTTP port, in PEM files that are read again when they change (as
@@ -73,7 +75,29 @@ public record ManagementConfig(
       @Nullable InetSocketAddress agentCheck,
       @Nullable String token,
       boolean readyRequiresServer) {
-    this(enabled, bind, agentCheck, token, readyRequiresServer, null, RemoteConsoleConfig.DISABLED);
+    this(
+        enabled,
+        bind,
+        agentCheck,
+        token,
+        readyRequiresServer,
+        null,
+        RemoteConsoleConfig.DISABLED,
+        MetricsConfig.DEFAULTS);
+  }
+
+  /**
+   * Returns whether {@code GET /metrics} can be read from another machine without a credential: the
+   * bind is not loopback, and neither TLS nor {@code metrics.require-token} is on.
+   *
+   * @return {@code true} when the metrics are open
+   */
+  public boolean metricsExposed() {
+    return enabled
+        && metrics.enabled()
+        && !bind.getAddress().isLoopbackAddress()
+        && tls == null
+        && !metrics.requireToken();
   }
 
   /** The environment variable that holds the token, ahead of {@code token-file}. */
@@ -119,8 +143,9 @@ public record ManagementConfig(
           "management.console.enabled is true but management.enabled is false: the remote"
               + " console lives on the management server; enable both");
     }
+    MetricsConfig metrics = MetricsConfig.parse(node.node("metrics"), token != null);
     return new ManagementConfig(
-        enabled, bind, agentCheck, token, readyRequiresServer, tls, console);
+        enabled, bind, agentCheck, token, readyRequiresServer, tls, console, metrics);
   }
 
   private static @Nullable Tls parseTls(CommentedConfigurationNode node, Path directory)
@@ -191,6 +216,8 @@ public record ManagementConfig(
         + ", tls "
         + (tls == null ? "off" : "on")
         + ", console "
-        + console;
+        + console
+        + ", metrics "
+        + metrics;
   }
 }

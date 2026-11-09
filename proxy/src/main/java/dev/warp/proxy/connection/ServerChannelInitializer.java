@@ -287,6 +287,8 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
         .addLast(MINECRAFT_ENCODER, encoder)
         // Tail: inbound handler that dispatches to SessionHandler
         .addLast(CONNECTION_HANDLER, connection);
+    connection.trackStates(loginContext.metrics());
+    connection.observeTraffic(loginContext.metrics().clientTraffic());
 
     // Start with the handshake handler.
     connection.setSessionHandler(new HandshakeSessionHandler(connection, loginContext));

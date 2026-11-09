@@ -79,6 +79,10 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-LOG-001](#w-log-001) | warning | Log sinks receive nothing |
 | [W-MGMT-001](#w-mgmt-001) | warning | A management request was refused |
 | [W-MGMT-002](#w-mgmt-002) | warning | A renewed management certificate could not be read |
+| [W-MGMT-003](#w-mgmt-003) | warning | GET /metrics is open to other machines |
+| [W-MET-001](#w-met-001) | warning | A metric reached a cardinality cap |
+| [W-MET-002](#w-met-002) | warning | A metrics collector failed |
+| [W-MET-003](#w-met-003) | warning | GET /metrics could not be answered |
 | [W-RCON-001](#w-rcon-001) | warning | The remote console streams nothing |
 | [W-RCON-002](#w-rcon-002) | warning | A remote console token lacks a scope |
 | [W-RCON-003](#w-rcon-003) | warning | A remote command arrived without TLS from an untrusted address |
@@ -706,6 +710,40 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** The files of management.tls changed, but the new certificate or key could not be read: a renewal caught halfway, a key not in PKCS#8, or a certificate that does not match the key. Warp keeps serving the previous certificate.
 
 **Fix.** Check the files the message names: PEM, the key in PKCS#8 (openssl pkcs8 -topk8 -nocrypt, or privateKey.encoding: PKCS8 in cert-manager). Warp reads them again when they next change.
+
+### W-MGMT-003
+
+**GET /metrics is open to other machines** (warning)
+
+**Cause.** management.bind is not a loopback address, and neither management.tls nor management.metrics.require-token is on: anyone who reaches the port reads the metrics (players online, servers, versions).
+
+**Fix.** Bind the management server to loopback or a private network, enable management.tls, or set management.metrics.require-token = true and give Prometheus the token.
+
+## Metrics
+
+### W-MET-001
+
+**A metric reached a cardinality cap** (warning)
+
+**Cause.** A label of the metric had its 33rd distinct value (256th for the proxy's own metrics), or a plugin reached 2000 series, or the registry 10000. Further values are recorded as 'other' and counted in warp_metrics_label_overflow_total, so the series stay bounded; the metric loses detail, not correctness. Logged once per metric.
+
+**Fix.** If a plugin's metric is named, report it to its author: a label must take values from a closed set (an outcome, a state), never a player, address or item name.
+
+### W-MET-002
+
+**A metrics collector failed** (warning)
+
+**Cause.** A collector threw while GET /metrics was answered. It is skipped for that scrape and counted in warp_metrics_collector_errors_total; the other metrics are served. Logged once per collector.
+
+**Fix.** If a plugin's collector is named, report it with the stack trace to its author.
+
+### W-MET-003
+
+**GET /metrics could not be answered** (warning)
+
+**Cause.** Writing the metrics failed with an exception, so the scraper got a 500. The metrics are still collected; the next scrape is tried afresh.
+
+**Fix.** Report it with the stack trace.
 
 ## Remote console
 

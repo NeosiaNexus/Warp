@@ -25,6 +25,7 @@ import dev.warp.api.event.proxy.ProxyDrainEvent;
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
 import dev.warp.api.player.InboundConnection;
+import dev.warp.api.player.TransferResult;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.proxy.config.DrainConfig;
 import dev.warp.proxy.connection.ConnectedPlayer;
@@ -87,6 +88,15 @@ public final class ProxyDrain implements DrainHost<PlayerCandidate> {
     this.own = new PluginEventBus(events, "warp", null, subscription -> {});
     this.shutdown = shutdown;
     this.controller = new DrainController<>(config, scheduler, this);
+  }
+
+  /**
+   * Sets who counts each transfer's result, for metrics.
+   *
+   * @param observer receives every {@link TransferResult}
+   */
+  public void onTransfer(Consumer<TransferResult> observer) {
+    controller.onTransfer(observer);
   }
 
   /**

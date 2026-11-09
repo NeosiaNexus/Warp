@@ -87,6 +87,7 @@ public final class WarpEventBus implements AutoCloseable {
       CompletableFuture.completedFuture(null);
 
   private final Executor executor;
+  private volatile HandlerObserver observer = HandlerObserver.NONE;
   private final ScheduledExecutorService timer;
   private final Map<Class<?>, List<Handler>> registered = new ConcurrentHashMap<>();
   private final Map<Class<?>, Handler[]> resolved = new ConcurrentHashMap<>();
@@ -131,6 +132,15 @@ public final class WarpEventBus implements AutoCloseable {
     this.timer =
         Executors.newSingleThreadScheduledExecutor(
             Thread.ofPlatform().name("warp-event-timer").daemon().factory());
+  }
+
+  /**
+   * Sets who watches the handlers run: the proxy's metrics.
+   *
+   * @param observer the observer; {@link HandlerObserver#NONE} to watch nothing
+   */
+  public void observe(HandlerObserver observer) {
+    this.observer = observer;
   }
 
   /**
@@ -336,6 +346,7 @@ public final class WarpEventBus implements AutoCloseable {
     }
 
     private void failed(Handler handler, Throwable error) {
+      observer.failed(handler.owner);
       logger.error(
           LogCode.EVENT_HANDLER_FAILED.marker(),
           "{} failed on {}",
@@ -346,6 +357,7 @@ public final class WarpEventBus implements AutoCloseable {
 
     private void reportIfSlow(Handler handler, long start) {
       long elapsed = System.nanoTime() - start;
+      observer.handled(event, elapsed);
       if (elapsed > SLOW_HANDLER_NANOS) {
         logger.warn(
             LogCode.EVENT_HANDLER_SLOW.marker(),

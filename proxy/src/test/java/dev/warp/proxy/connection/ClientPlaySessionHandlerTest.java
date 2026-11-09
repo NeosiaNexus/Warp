@@ -47,6 +47,8 @@ import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.i18n.Message;
 import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.metrics.MetricRegistry;
+import dev.warp.proxy.metrics.ProxyMetrics;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.BackendServer;
@@ -460,6 +462,7 @@ class ClientPlaySessionHandlerTest {
     EmbeddedChannel backend = channel(PacketDirection.CLIENTBOUND, version);
 
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
+    when(loginContext.metrics()).thenReturn(new ProxyMetrics(new MetricRegistry(0)));
 
     when(loginContext.messages()).thenReturn(dev.warp.proxy.i18n.PlayerMessages.bundled());
 

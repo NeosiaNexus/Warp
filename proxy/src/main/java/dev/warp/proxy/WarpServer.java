@@ -27,6 +27,7 @@ import dev.warp.api.lifecycle.DrainOutcome;
 import dev.warp.api.lifecycle.DrainPhase;
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
+import dev.warp.api.metrics.Metrics;
 import dev.warp.api.player.Player;
 import dev.warp.api.plugin.PluginContainer;
 import dev.warp.api.plugin.PluginManager;
@@ -72,6 +73,14 @@ import dev.warp.proxy.management.ReadinessHolds;
 import dev.warp.proxy.management.console.RemoteConsole;
 import dev.warp.proxy.messaging.BungeeCordChannel;
 import dev.warp.proxy.messaging.ChannelRegistry;
+import dev.warp.proxy.metrics.AntiBotCollector;
+import dev.warp.proxy.metrics.BackendHealthProbe;
+import dev.warp.proxy.metrics.EventLoopLagProbe;
+import dev.warp.proxy.metrics.JvmCollector;
+import dev.warp.proxy.metrics.LoopIndex;
+import dev.warp.proxy.metrics.MetricRegistry;
+import dev.warp.proxy.metrics.ProxyCollector;
+import dev.warp.proxy.metrics.ProxyMetrics;
 import dev.warp.proxy.network.CidrRanges;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.pipeline.PipelineRegistry;
@@ -115,7 +124,9 @@ import io.netty.channel.socket.ServerSocketChannel;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.util.NettyRuntime;
 import io.netty.util.concurrent.Future;
+import io.netty.util.internal.SystemPropertyUtil;
 import net.kyori.adventure.text.Component;
 import org.apache.logging.log4j.LogManager;
 import org.jspecify.annotations.Nullable;
@@ -221,6 +232,13 @@ public final class WarpServer implements Warp {
 
   /** The event bus plugins subscribe to. */
   private final WarpEventBus events = new WarpEventBus();
+
+  /** The metric registry, striped for as many loops as Netty's default worker group has. */
+  private final MetricRegistry metrics = new MetricRegistry(defaultEventLoopThreads());
+
+  private final ProxyMetrics proxyMetrics = new ProxyMetrics(metrics);
+  private final EventLoopLagProbe lagProbe = new EventLoopLagProbe(proxyMetrics);
+  private final BackendHealthProbe healthProbe;
 
   /** The plugin message channels plugins own. */
   private final ChannelRegistry channels;
@@ -384,10 +402,55 @@ public final class WarpServer implements Warp {
             readinessHolds,
             pipelines,
             logSinks,
+            metrics,
             directory.resolve("plugins"));
     this.drain =
         new ProxyDrain(
             config.drain(), playerRegistry, events, drainScheduler, this::stopAfterDrain);
+    drain.onTransfer(proxyMetrics::drainTransfer);
+    events.observe(
+        new dev.warp.proxy.event.HandlerObserver() {
+          @Override
+          public void handled(Object event, long nanos) {
+            proxyMetrics.eventHandled(event, nanos);
+          }
+
+          @Override
+          public void failed(String owner) {
+            proxyMetrics.handlerFailed(owner);
+          }
+        });
+    metrics.collector(
+        "warp_proxy",
+        new ProxyCollector(this::playerCount, serverRegistry, drain::status, () -> workerGroup));
+    metrics.collector(
+        "warp_antibot",
+        new AntiBotCollector(
+            () -> {
+              AntiBotService bots = antiBot;
+              return bots == null ? null : bots.status();
+            }));
+    JvmCollector.install(metrics);
+    this.healthProbe =
+        new BackendHealthProbe(
+            proxyMetrics, serverRegistry, config.management().metrics().serverPingInterval());
+  }
+
+  /** Netty's default worker count, as {@code MultiThreadIoEventLoopGroup} sizes itself. */
+  private static int defaultEventLoopThreads() {
+    return Math.max(
+        1,
+        SystemPropertyUtil.getInt(
+            "io.netty.eventLoopThreads", NettyRuntime.availableProcessors() * 2));
+  }
+
+  /**
+   * Returns the metric registry: the proxy's metrics, and the plugins'.
+   *
+   * @return the registry
+   */
+  public Metrics metrics() {
+    return metrics;
   }
 
   // ---------------------------------------------------------------------------
@@ -449,6 +512,9 @@ public final class WarpServer implements Warp {
     mark = lap("anti-bot", mark);
     this.bossGroup = new MultiThreadIoEventLoopGroup(1, transport.ioFactory());
     this.workerGroup = new MultiThreadIoEventLoopGroup(transport.ioFactory());
+    var _ = LoopIndex.assignAll(workerGroup);
+    lagProbe.start(workerGroup);
+    healthProbe.start(workerGroup);
     long reportMillis = limits.reportInterval().toMillis();
     var _ =
         workerGroup.scheduleAtFixedRate(
@@ -763,6 +829,13 @@ public final class WarpServer implements Warp {
     if (remote != null) {
       remote.start();
     }
+    if (config.management().metricsExposed()) {
+      logger.warn(
+          LogCode.METRICS_EXPOSED.marker(),
+          "GET /metrics on {} can be read without a token or TLS: set"
+              + " management.metrics.require-token or management.tls, or bind to loopback",
+          config.management().bind());
+    }
     ManagementServer server = new ManagementServer(config.management(), new Health(), remote);
     try {
       server.start();
@@ -851,6 +924,8 @@ public final class WarpServer implements Warp {
    * wait twice as long. Safe to call multiple times.
    */
   private void shutdownEventLoops() {
+    lagProbe.stop();
+    healthProbe.stop();
     MultiThreadIoEventLoopGroup bosses = bossGroup;
     MultiThreadIoEventLoopGroup workers = workerGroup;
     long quiet = shutdownQuietPeriod.toMillis();
@@ -1062,6 +1137,11 @@ public final class WarpServer implements Warp {
     public @Nullable AntiBotService antiBot() {
       return antiBot;
     }
+
+    @Override
+    public Metrics metrics() {
+      return metrics;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1151,7 +1231,8 @@ public final class WarpServer implements Warp {
         config.tcpFastOpen() && transport.tcpFastOpen(),
         bots,
         pipelines,
-        config.messages());
+        config.messages(),
+        proxyMetrics);
   }
 
   /**

@@ -23,6 +23,7 @@ import dev.warp.api.event.Subscription;
 import dev.warp.api.lifecycle.ReadinessHold;
 import dev.warp.api.logging.LogSinks;
 import dev.warp.api.messaging.Messaging;
+import dev.warp.api.metrics.Metrics;
 import dev.warp.api.network.NetworkPipelines;
 import dev.warp.api.permission.Permissions;
 import dev.warp.api.plugin.Capability;
@@ -38,6 +39,8 @@ import dev.warp.proxy.logging.PluginLogSinks;
 import dev.warp.proxy.management.ReadinessHolds;
 import dev.warp.proxy.messaging.ChannelRegistry;
 import dev.warp.proxy.messaging.PluginMessaging;
+import dev.warp.proxy.metrics.MetricRegistry;
+import dev.warp.proxy.metrics.ScopedMetrics;
 import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.permission.PluginPermissions;
 import dev.warp.proxy.pipeline.PipelineRegistry;
@@ -78,6 +81,7 @@ final class WarpPluginContext implements PluginContext {
   private final PluginPermissions permissions;
   private final @Nullable PluginNetworkPipelines network;
   private final PluginLogSinks logSinks;
+  private final ScopedMetrics metrics;
 
   /** Set once the plugin is gone: nothing more may be registered. */
   private volatile boolean closed;
@@ -91,7 +95,8 @@ final class WarpPluginContext implements PluginContext {
       PermissionRegistry permissionRegistry,
       ReadinessHolds readinessHolds,
       PipelineRegistry pipelines,
-      LogSinkRegistry logSinkRegistry) {
+      LogSinkRegistry logSinkRegistry,
+      MetricRegistry metricRegistry) {
     this.plugin = plugin;
     this.proxy = proxy;
     this.pluginLogger = LoggerFactory.getLogger(plugin.description().id());
@@ -110,6 +115,8 @@ final class WarpPluginContext implements PluginContext {
     this.logSinks =
         new PluginLogSinks(
             logSinkRegistry, plugin.description().id(), plugin.classLoader(), this::track);
+    this.metrics = metricRegistry.scoped(plugin.description().id());
+    track(metrics::close, metrics::isActive);
   }
 
   @Override
@@ -168,6 +175,11 @@ final class WarpPluginContext implements PluginContext {
   @Override
   public LogSinks logSinks() {
     return logSinks;
+  }
+
+  @Override
+  public Metrics metrics() {
+    return metrics;
   }
 
   @Override

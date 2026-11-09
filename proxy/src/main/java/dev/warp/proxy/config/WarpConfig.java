@@ -1589,6 +1589,7 @@ public final class WarpConfig {
         #   GET /drain     where the drain stands
         #   POST /drain    starts the drain (Authorization: Bearer <token>); add ?wait=true to
         #                  answer only once every player left
+        #   GET /metrics   Prometheus metrics (see metrics below)
         management {
           enabled = false
           # Keep it off the internet. In Kubernetes, bind 0.0.0.0 so that the kubelet reaches it.
@@ -1627,6 +1628,18 @@ public final class WarpConfig {
             # Wrong tokens from one address (IPv6: its /64) before it is locked out, and how long.
             lockout-after = 5
             lockout-duration = 15m
+          }
+          # Metrics for Prometheus on GET /metrics (OpenMetrics when the Accept header asks for
+          # it; ?filter=warp_server_ for one prefix). The catalogue is in docs/metrics.md.
+          metrics {
+            enabled = true
+            # Require Authorization: Bearer <token> (the token above) to read the metrics. Off by
+            # default because the default bind is loopback; Warp warns when the bind is not and
+            # neither this nor tls is on.
+            require-token = false
+            # How often each backend is pinged for warp_server_rtt_seconds and warp_server_health.
+            # 0 turns the pings off.
+            server-ping-interval = 15s
           }
         }
 

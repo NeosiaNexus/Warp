@@ -24,7 +24,7 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 | **Decompression bombs** | Impossible compression ratios are refused before inflating, sizes are capped, and each connection has an inflate budget | Available |
 | **No graceful drain** | Multi-phase drain with Transfer packet support, designed for rolling deployments and Kubernetes | Planned |
 | **Shallow plugin DI** | Full dependency-injection graph via Guice with lifecycle hooks (provision, validate, start, ready, drain, stop) | Planned |
-| **No health probes** | Built-in `/livez`, `/readyz`, `/startupz` endpoints, Prometheus metrics and OpenTelemetry tracing | Planned |
+| **No health probes, no metrics** | Built-in `/livez`, `/readyz`, `/startupz` endpoints and Prometheus metrics with an allocation-free registry ([docs/metrics.md](docs/metrics.md)); OpenTelemetry tracing planned | Available |
 | **Undefined event ordering** | Deterministic, priority-based event dispatch, with no race between handlers | Planned |
 
 ## Status
@@ -109,8 +109,8 @@ Planned, not implemented yet:
 - **Plugin system**: plugin loading, Guice dependency injection, lifecycle hooks, a deterministic
   event bus, commands and a scheduler. Today the API exposes the proxy version and `ServerInfo`.
 - **Graceful drain** with Transfer packets, for rolling deployments and Kubernetes.
-- **Observability**: `/livez`, `/readyz` and `/startupz` health probes, Prometheus metrics,
-  OpenTelemetry tracing.
+- **Observability**: OpenTelemetry tracing, OTLP metrics push and Grafana dashboards (the probes
+  and the Prometheus metrics are available today).
 - **Configurable server list ping** (MOTD, player counts).
 - **Native compression and cryptography** (libdeflate, AES): `jni/` is a placeholder today.
 - **Plugin API on Maven Central.**
@@ -377,6 +377,31 @@ The endpoints are plain HTTP for other tools: `GET /console/logs` (Server-Sent E
 `?tags=`, `?grep=`, `?replay=N`, `Last-Event-ID` to resume), `POST /console/command` (the command as
 the body, or `{"command": ...}`; answers its output as JSON), `POST /console/suggest` and
 `GET /console/commands`, each with `Authorization: Bearer <token>`.
+
+### Metrics
+
+`GET /metrics` on the management server answers in the Prometheus text format, or in OpenMetrics
+when the `Accept` header asks for it, with the proxy's metrics, every plugin's and the JVM's.
+Connections by state, logins by outcome, blind versus decoded packets and bytes, compression
+passthrough, each backend's connects, round trip, health and bytes, event loop lag, the drain and
+plugin handler time: the catalogue, with the cardinality rules, is in
+[docs/metrics.md](docs/metrics.md).
+
+```hocon
+management {
+  enabled = true
+  metrics {
+    enabled = true
+    require-token = false        # Authorization: Bearer <management token> to read them
+    server-ping-interval = 15s   # backend pings for warp_server_rtt_seconds and warp_server_health
+  }
+}
+```
+
+The registry is Warp's own, with no dependency: a counter resolved once by a handler is a slot per
+event loop, so an increment on the forwarding path allocates nothing and contends with nothing.
+Plugins register their metrics through `PluginContext.metrics()`, under their id as a prefix, and a
+label per player or address is refused at registration.
 
 ## Project Structure
 
