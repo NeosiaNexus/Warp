@@ -51,10 +51,18 @@ LABEL org.opencontainers.image.title="Warp" \
       org.opencontainers.image.vendor="Warp Contributors" \
       org.opencontainers.image.licenses="AGPL-3.0-only"
 
-# One user, uid and gid 1000, on both Ubuntu (useradd, after removing the `ubuntu` user Noble ships
-# at 1000) and Alpine (busybox adduser). /data holds what Warp writes: warp.conf on first start,
-# forwarding.secret, logs/, anti-bot/, plugins/.
+# The base image's security fixes published since its last rebuild (Trivy fails the build on a
+# fixed critical or high vulnerability in it), then one user, uid and gid 1000, on both Ubuntu
+# (useradd, after removing the `ubuntu` user Noble ships at 1000) and Alpine (busybox adduser).
+# /data holds what Warp writes: warp.conf on first start, forwarding.secret, logs/, anti-bot/,
+# plugins/.
 RUN set -eu; \
+    if command -v apt-get > /dev/null; then \
+      apt-get update && apt-get upgrade -y --no-install-recommends \
+      && apt-get clean && rm -rf /var/lib/apt/lists/*; \
+    else \
+      apk upgrade --no-cache; \
+    fi; \
     if command -v useradd > /dev/null; then \
       if id ubuntu > /dev/null 2>&1; then userdel --remove ubuntu; fi; \
       groupadd --gid 1000 warp && useradd --uid 1000 --gid warp --home-dir /data --no-create-home --shell /sbin/nologin warp; \
