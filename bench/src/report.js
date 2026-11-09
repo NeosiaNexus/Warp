@@ -48,7 +48,10 @@ ${bars}
 }
 
 function escape(s) {
-  return String(s).replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]);
+  return String(s).replace(
+    /[<>&"']/g,
+    (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' })[c],
+  );
 }
 
 /** A time series of one sampler column, one line per proxy. Used for the traffic CPU/RSS trace. */
@@ -254,7 +257,7 @@ export function buildReport({ results, env, versions, profileName, date, cpuNote
   out.push('| Component | Version | SHA-256 |');
   out.push('|---|---|---|');
   out.push(`| Backend | Paper ${versions.backend.version} build ${versions.backend.build} | \`${versions.backend.sha256.slice(0, 16)}...\` |`);
-  for (const [id, p] of Object.entries(versions.proxies)) {
+  for (const p of Object.values(versions.proxies)) {
     out.push(`| ${p.label} | ${p.version}${p.build ? ` build ${p.build}` : ''} | \`${p.sha256.slice(0, 16)}...\` |`);
   }
   out.push('');
