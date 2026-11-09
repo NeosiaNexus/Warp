@@ -1025,7 +1025,8 @@ public final class ConnectedPlayer {
     }
   }
 
-  private void uncountVersion() {
+  /** Undoes {@link #countVersion()} for a player refused after registration, or disconnected. */
+  void uncountVersion() {
     if (versionCounted.compareAndSet(true, false)) {
       loginContext.metrics().playerVersion(protocolVersion(), -1);
     }

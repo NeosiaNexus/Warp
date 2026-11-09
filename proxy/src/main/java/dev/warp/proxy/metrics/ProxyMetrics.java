@@ -78,6 +78,7 @@ public final class ProxyMetrics {
   private final Histogram pluginEventDuration;
   private final ClassValue<Histogram.Child> eventChildren;
   private final Counter pluginHandlerErrors;
+  private final Metrics registry;
 
   /**
    * Registers the proxy's metrics.
@@ -85,6 +86,7 @@ public final class ProxyMetrics {
    * @param metrics the registry
    */
   public ProxyMetrics(Metrics metrics) {
+    this.registry = metrics;
     Counter accepted =
         metrics.counter(
             "warp_connections_accepted_total",
@@ -241,6 +243,15 @@ public final class ProxyMetrics {
   // ---------------------------------------------------------------------------
   // Downstream
   // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the registry the proxy's metrics live in.
+   *
+   * @return the registry
+   */
+  public Metrics registry() {
+    return registry;
+  }
 
   /**
    * Counts a handshake.

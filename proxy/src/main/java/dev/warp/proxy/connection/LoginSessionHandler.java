@@ -981,6 +981,7 @@ final class LoginSessionHandler implements SessionHandler {
                     // No session started: no disconnect event for this player.
                     this.player = null;
                     loginContext.playerRegistry().unregister(joining);
+                    joining.uncountVersion();
                     deny(
                         proposed instanceof LoginEvent.Denied
                             ? Refusal.SERVER_FULL
@@ -997,6 +998,7 @@ final class LoginSessionHandler implements SessionHandler {
   private void refuseFull(ConnectedPlayer joining) {
     this.player = null;
     loginContext.playerRegistry().unregister(joining);
+    joining.uncountVersion();
     deny(Refusal.SERVER_FULL, SERVER_FULL);
   }
 

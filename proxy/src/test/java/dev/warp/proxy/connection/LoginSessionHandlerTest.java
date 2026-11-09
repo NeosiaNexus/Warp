@@ -40,6 +40,8 @@ import dev.warp.api.event.player.LoginEvent;
 import dev.warp.api.event.player.PostLoginEvent;
 import dev.warp.api.event.player.PreLoginEvent;
 import dev.warp.api.logging.LogRecord;
+import dev.warp.api.metrics.MetricType;
+import dev.warp.api.metrics.SampleVisitor;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McString;
@@ -1595,6 +1597,7 @@ class LoginSessionHandlerTest {
             jsonString("{\"translate\":\"multiplayer.disconnect.server_full\"}"), reason);
         assertClosed(channel);
         assertEquals(1, context.playerRegistry().count());
+        assertEquals(0, playersByVersion(context, VERSION));
       } finally {
         channel.finishAndReleaseAll();
       }
@@ -1657,6 +1660,7 @@ class LoginSessionHandlerTest {
         assertArrayEquals(
             jsonString(ComponentCodec.json(Message.SERVER_FULL.of(), VERSION)), reason);
         assertEquals(1, context.playerRegistry().count());
+        assertEquals(0, playersByVersion(context, VERSION));
       } finally {
         channel.finishAndReleaseAll();
       }
@@ -1734,6 +1738,29 @@ class LoginSessionHandlerTest {
         when(player.username()).thenReturn("Player" + i);
         context.playerRegistry().register(player, false);
       }
+    }
+
+    /** Reads {@code warp_client_protocol_version} for a version: a refused login leaves none. */
+    private double playersByVersion(ServerLoginContext context, ProtocolVersion version) {
+      double[] found = {0};
+      context
+          .metrics()
+          .registry()
+          .collect(
+              new SampleVisitor() {
+                @Override
+                public void family(String name, MetricType type, String help) {}
+
+                @Override
+                public void sample(
+                    String name, List<String> labelNames, List<String> labelValues, double value) {
+                  if (name.equals("warp_client_protocol_version")
+                      && labelValues.equals(List.of(Integer.toString(version.protocol())))) {
+                    found[0] = value;
+                  }
+                }
+              });
+      return found[0];
     }
   }
 
