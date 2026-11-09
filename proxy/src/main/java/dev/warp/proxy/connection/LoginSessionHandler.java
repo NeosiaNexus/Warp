@@ -163,6 +163,11 @@ final class LoginSessionHandler implements SessionHandler {
     AWAITING_ENCRYPTION_RESPONSE,
     AUTHENTICATING,
     AWAITING_LOGIN_ACKNOWLEDGED,
+    /**
+     * Logged in, Login Success held: the client negotiates with its first server through login
+     * queries, which the proxy relays, until that server's Login Success (Forge 1.13 to 1.20.1).
+     */
+    HELD_FOR_SERVER,
     COMPLETE,
     /**
      * Refused by the limits, or timed out: closing, and whatever the client still sends is dropped.
@@ -327,8 +332,7 @@ final class LoginSessionHandler implements SessionHandler {
       case LoginStart start -> handleLoginStart(start);
       case EncryptionResponse response -> handleEncryptionResponse(response);
       case LoginAcknowledged _ -> handleLoginAcknowledged();
-      // Warp sends the client no login plugin request (yet), so a response answers nothing.
-      case LoginPluginResponse _ -> {}
+      case LoginPluginResponse response -> handleLoginPluginResponse(response);
       // Clientbound packets must never arrive from a client.
       case EncryptionRequest _,
           LoginSuccess _,
@@ -725,6 +729,19 @@ final class LoginSessionHandler implements SessionHandler {
     }
   }
 
+  /**
+   * Routes the client's answer to a login query. The proxy asks none of its own: an answer is for a
+   * backend's query relayed to a client held in its login state, and answers nothing otherwise.
+   */
+  private void handleLoginPluginResponse(LoginPluginResponse response) {
+    ConnectedPlayer held = this.player;
+    if (state != LoginState.HELD_FOR_SERVER || held == null) {
+      logger.debug("Dropped a login query answer from {} that answers nothing", username);
+      return;
+    }
+    var _ = held.loginQueries().answered(response);
+  }
+
   private void handleLoginAcknowledged() {
     logger.debug("LoginAcknowledged received from {}, state={}", username, state);
     if (state != LoginState.AWAITING_LOGIN_ACKNOWLEDGED) {
@@ -999,7 +1016,17 @@ final class LoginSessionHandler implements SessionHandler {
             profile.properties(),
             strictErrorHandling,
             joinPlaySession());
-    if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
+    ConnectedPlayer joined = this.player;
+    boolean held =
+        joined != null
+            && HandshakeMarkers.hasLoginQueries(connection.clientPlatform(), clientVersion());
+    if (joined != null && held) {
+      // A Forge client of 1.13 to 1.20.1 negotiates its mods with its server through login
+      // queries before Login Success. The proxy is its server: Login Success waits until the first
+      // backend has logged the player in, with the queries relayed in between.
+      ConnectedPlayer holding = joined;
+      holding.loginQueries().hold(() -> releaseLogin(holding, loginSuccess));
+    } else if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
       // The client reads what follows in the configuration state, before it acknowledges: what the
       // proxy sends of its own (a cookie request) waits for the acknowledgement.
       connection.writeTerminal(loginSuccess);
@@ -1007,7 +1034,6 @@ final class LoginSessionHandler implements SessionHandler {
       connection.writeAndFlush(loginSuccess);
     }
 
-    ConnectedPlayer joined = this.player;
     if (joined != null
         && loginContext.logging().connections()
         && loginContext.antiBot().logs(RoutineLine.CONNECTION)) {
@@ -1025,7 +1051,11 @@ final class LoginSessionHandler implements SessionHandler {
     // Refreshes what the anti-bot knows of the player, or learns it outside attacks.
     loginContext.antiBot().joined(recognition(), onlineMode ? profile.uuid() : null, escalated);
 
-    if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
+    if (held) {
+      // Still in the login state, on both sides: the backend's login queries go through here.
+      state = LoginState.HELD_FOR_SERVER;
+      initiateBackendConnection();
+    } else if (clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_2)) {
       // The client reads configuration packets from Login Success on, though it is still read in
       // the login state until it acknowledges: anything sent to it from now on, a disconnect above
       // all, is a configuration packet (BungeeCord #3525).
@@ -1038,6 +1068,20 @@ final class LoginSessionHandler implements SessionHandler {
       connection.setState(ProtocolState.PLAY);
       initiateBackendConnection();
     }
+  }
+
+  /**
+   * Sends a held Login Success: the first backend has logged the player in, and the client, done
+   * with its login queries, moves to the play state, where that backend's Join Game follows.
+   */
+  private void releaseLogin(ConnectedPlayer joined, LoginSuccess loginSuccess) {
+    if (state != LoginState.HELD_FOR_SERVER || !connection.channel().isActive()) {
+      return;
+    }
+    connection.writeAndFlush(loginSuccess);
+    state = LoginState.COMPLETE;
+    connection.setState(ProtocolState.PLAY);
+    joined.startKeepAliveTask();
   }
 
   /**

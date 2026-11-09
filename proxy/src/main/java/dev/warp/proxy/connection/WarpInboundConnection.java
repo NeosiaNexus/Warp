@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.player.ClientPlatform;
 import dev.warp.api.player.InboundConnection;
 
 import java.net.InetSocketAddress;
@@ -70,6 +71,11 @@ final class WarpInboundConnection implements InboundConnection {
   @Override
   public int protocolVersion() {
     return protocol == DECODER_PROTOCOL ? connection.decoder().version().protocol() : protocol;
+  }
+
+  @Override
+  public ClientPlatform platform() {
+    return connection.clientPlatform();
   }
 
   @Override

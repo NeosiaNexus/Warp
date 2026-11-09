@@ -861,6 +861,25 @@ public enum LogCode {
       "A packet waiting for a protocol phase that the connection never reached was dropped.",
       "Report it with the client's and the backend's versions if it repeats."),
 
+  /** A backend's login query was too large for a client. */
+  LOGIN_QUERY_TOO_LARGE(
+      "W-BACK-010",
+      false,
+      "A backend's login query was too large for a client",
+      "A backend sent a login plugin request over 1 MiB, the most a client accepts; Warp answered"
+          + " it as not understood instead of relaying it to the client, which would have dropped"
+          + " the connection.",
+      "Check the mods of that backend: Forge splits its registries into messages under the limit."),
+
+  /** A backend left too many login queries unanswered. */
+  LOGIN_QUERIES_UNANSWERED(
+      "W-BACK-011",
+      false,
+      "A backend left too many login queries unanswered",
+      "A backend sent more than 256 login plugin requests before the client answered any; Warp"
+          + " dropped the connection to that backend, and the player falls back or is kicked.",
+      "Check the mods of that backend: a login-phase mod that floods queries is misbehaving."),
+
   // ---------------------------------------------------------------------------
   // Authentication and login
   // ---------------------------------------------------------------------------

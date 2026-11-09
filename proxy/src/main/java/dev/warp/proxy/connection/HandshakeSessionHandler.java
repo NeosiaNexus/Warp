@@ -142,6 +142,9 @@ final class HandshakeSessionHandler implements SessionHandler {
     }
 
     connection.setVirtualHost(handshake.serverAddress());
+    // The marker a modded client appends is kept apart from the host: routes match the host, the
+    // marker goes to the backend.
+    connection.setHandshakeMarker(HandshakeMarkers.detect(handshake.serverAddress(), version));
 
     HandshakeIntent intent = HandshakeIntent.byId(handshake.nextState());
     if (intent == null) {

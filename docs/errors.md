@@ -106,6 +106,8 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-BACK-007](#w-back-007) | warning | No server available for a player |
 | [W-BACK-008](#w-back-008) | warning | A server switch timed out |
 | [W-BACK-009](#w-back-009) | warning | A held packet was dropped |
+| [W-BACK-010](#w-back-010) | warning | A backend's login query was too large for a client |
+| [W-BACK-011](#w-back-011) | warning | A backend left too many login queries unanswered |
 | [W-AUTH-001](#w-auth-001) | warning | Players authenticate against a custom server |
 | [W-AUTH-002](#w-auth-002) | warning | Profile keys are checked against a custom key |
 | [W-AUTH-003](#w-auth-003) | error | Encryption could not be enabled |
@@ -928,6 +930,22 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** A packet waiting for a protocol phase that the connection never reached was dropped.
 
 **Fix.** Report it with the client's and the backend's versions if it repeats.
+
+### W-BACK-010
+
+**A backend's login query was too large for a client** (warning)
+
+**Cause.** A backend sent a login plugin request over 1 MiB, the most a client accepts; Warp answered it as not understood instead of relaying it to the client, which would have dropped the connection.
+
+**Fix.** Check the mods of that backend: Forge splits its registries into messages under the limit.
+
+### W-BACK-011
+
+**A backend left too many login queries unanswered** (warning)
+
+**Cause.** A backend sent more than 256 login plugin requests before the client answered any; Warp dropped the connection to that backend, and the player falls back or is kicked.
+
+**Fix.** Check the mods of that backend: a login-phase mod that floods queries is misbehaving.
 
 ## Authentication and login
 

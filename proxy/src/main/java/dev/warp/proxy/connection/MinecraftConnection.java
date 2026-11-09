@@ -17,6 +17,7 @@
 package dev.warp.proxy.connection;
 
 import dev.warp.api.network.PipelinePosition;
+import dev.warp.api.player.ClientPlatform;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.compress.FrameDecompressor;
@@ -128,6 +129,12 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
 
   /** Why the client connected, once its handshake is read; always {@code null} for a backend. */
   private @Nullable HandshakeIntent handshakeIntent;
+
+  /** What the markers of the client's handshake said it is; {@link ClientPlatform#JAVA} until. */
+  private volatile ClientPlatform clientPlatform = ClientPlatform.JAVA;
+
+  /** The marker of the client's handshake to forward to a backend, normalized; empty without. */
+  private volatile String handshakeMarker = "";
 
   /**
    * Whether a packet that moves the peer to another state was written ({@link #writeTerminal}) and
@@ -923,6 +930,34 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
    */
   void setHandshakeIntent(HandshakeIntent intent) {
     this.handshakeIntent = intent;
+  }
+
+  /**
+   * Returns what kind of client this is, as the markers of its handshake declared.
+   *
+   * @return the platform, {@link ClientPlatform#JAVA} without a marker or before the handshake
+   */
+  public ClientPlatform clientPlatform() {
+    return clientPlatform;
+  }
+
+  /**
+   * Returns the handshake marker to append to a backend's host name on this client's behalf.
+   *
+   * @return the marker, normalized as {@link HandshakeMarkers} writes it, or an empty string
+   */
+  public String handshakeMarker() {
+    return handshakeMarker;
+  }
+
+  /**
+   * Records what the client's handshake said of its platform. Called once, by the handshake.
+   *
+   * @param detected the platform and the marker to forward
+   */
+  void setHandshakeMarker(HandshakeMarkers.Detected detected) {
+    this.clientPlatform = detected.platform();
+    this.handshakeMarker = detected.marker();
   }
 
   // ---------------------------------------------------------------------------

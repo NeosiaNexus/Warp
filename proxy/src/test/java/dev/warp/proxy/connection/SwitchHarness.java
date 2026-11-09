@@ -398,7 +398,10 @@ final class SwitchHarness implements AutoCloseable {
             FinishConfiguration.class,
             CookieRequest.class,
             StoreCookie.class,
-            Transfer.class)) {
+            Transfer.class,
+            dev.warp.protocol.packet.login.LoginPluginRequest.class,
+            dev.warp.protocol.packet.login.LoginSuccess.class,
+            dev.warp.protocol.packet.login.SetCompression.class)) {
       try {
         if (registry.packetId(version, type) == packetId) {
           return type;
