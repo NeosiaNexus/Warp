@@ -40,6 +40,9 @@ import io.netty.channel.EventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.ssl.SslContext;
+import io.netty.handler.timeout.IdleState;
+import io.netty.handler.timeout.IdleStateEvent;
+import io.netty.handler.timeout.IdleStateHandler;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,6 +56,11 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Bounded: at most {@value #MAX_PENDING} commands wait for a reply; beyond that a command fails
  * at once rather than growing the heap while the server stalls.
+ *
+ * <p>Watched: when nothing arrives for the idle interval the connection sends {@code PING}, and
+ * when another idle interval passes without a reply it closes itself, fails what waited and
+ * reconnects. A peer that vanished without a reset (a failed-over VIP, a dropped NAT entry) is
+ * noticed within two idle intervals, not after the kernel gives up retransmitting.
  */
 final class ValkeyConnection {
 
@@ -62,6 +70,9 @@ final class ValkeyConnection {
   static final long BACKOFF_MIN_MILLIS = 200;
   static final long BACKOFF_MAX_MILLIS = 10_000;
   private static final int CONNECT_TIMEOUT_MILLIS = 5_000;
+
+  /** The idle interval of the watchdog: a {@code PING} after one, closed after two. */
+  static final long IDLE_PING_MILLIS = 3_000;
 
   /** Thrown when the server answers a command with an error, or the connection is down. */
   static final class ValkeyException extends RuntimeException {
@@ -91,6 +102,7 @@ final class ValkeyConnection {
   private final Function<ValkeyConnection, CompletableFuture<?>> onReady;
   private final Consumer<Boolean> onState;
   private final Consumer<Throwable> onFailure;
+  private final long idlePingMillis;
 
   private final Queue<CompletableFuture<RespValue>> pending = new ArrayDeque<>();
   private final AtomicBoolean closed = new AtomicBoolean();
@@ -119,6 +131,7 @@ final class ValkeyConnection {
    *     gates readiness (loading functions, subscribing again)
    * @param onState told {@code true} once ready, {@code false} when the connection drops
    * @param onFailure told why a connection attempt or the handshake failed
+   * @param idlePingMillis the watchdog's idle interval, see {@link #IDLE_PING_MILLIS}
    */
   ValkeyConnection(
       String name,
@@ -132,7 +145,8 @@ final class ValkeyConnection {
       Consumer<RespValue> onPush,
       Function<ValkeyConnection, CompletableFuture<?>> onReady,
       Consumer<Boolean> onState,
-      Consumer<Throwable> onFailure) {
+      Consumer<Throwable> onFailure,
+      long idlePingMillis) {
     this.name = name;
     this.address = address;
     this.ssl = ssl;
@@ -145,6 +159,7 @@ final class ValkeyConnection {
     this.onReady = onReady;
     this.onState = onState;
     this.onFailure = onFailure;
+    this.idlePingMillis = idlePingMillis;
   }
 
   /** Opens the connection; reconnects by itself until {@link #close}. */
@@ -157,6 +172,14 @@ final class ValkeyConnection {
   /** Whether commands can be sent now. */
   boolean isReady() {
     return ready;
+  }
+
+  /**
+   * Whether the socket takes commands: ready, or between {@code HELLO} and readiness. A {@code
+   * SUBSCRIBE} sent then reaches the server, so the owner need not wait for the next connection.
+   */
+  boolean acceptsCommands() {
+    return ready || handshaking;
   }
 
   /** Closes for good. */
@@ -268,7 +291,12 @@ final class ValkeyConnection {
                               ssl.newHandler(
                                   ch.alloc(), address.getHostString(), address.getPort()));
                     }
-                    ch.pipeline().addLast("resp", new Decoder()).addLast("handler", new Handler());
+                    ch.pipeline()
+                        .addLast(
+                            "idle",
+                            new IdleStateHandler(idlePingMillis, 0, 0, TimeUnit.MILLISECONDS))
+                        .addLast("resp", new Decoder())
+                        .addLast("handler", new Handler());
                   }
                 });
     ChannelFuture connecting = bootstrap.connect(address);
@@ -369,8 +397,31 @@ final class ValkeyConnection {
     }
   }
 
-  /** Pairs replies with the commands that wait, and hands pushes over. */
+  /**
+   * Pairs replies with the commands that wait, hands pushes over, and watches the silence: a {@code
+   * PING} when nothing came in for an idle interval, the socket closed when the ping goes
+   * unanswered for another.
+   */
   private final class Handler extends SimpleChannelInboundHandler<RespValue> {
+    /** Whether the watchdog's ping is out, on the loop only. */
+    private boolean pingOutstanding;
+
+    @Override
+    public void userEventTriggered(ChannelHandlerContext ctx, Object event) {
+      if (!(event instanceof IdleStateEvent idle) || !idle.state().equals(IdleState.READER_IDLE)) {
+        ctx.fireUserEventTriggered(event);
+        return;
+      }
+      if (pingOutstanding) {
+        logger.debug(
+            "{}: no reply from {} in {} ms, closing the connection", name, address, idlePingMillis);
+        ctx.close();
+        return;
+      }
+      pingOutstanding = true;
+      var _ = handshake(ctx.channel(), "PING").whenComplete((_, _) -> pingOutstanding = false);
+    }
+
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, RespValue value) {
       if (value instanceof RespValue.Push push) {

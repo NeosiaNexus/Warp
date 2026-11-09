@@ -140,7 +140,8 @@ public final class ValkeyFleetStore implements FleetStore {
               lastFailure = failure;
               logger.debug("valkey: {}", failure.toString());
               first.complete(null);
-            });
+            },
+            ValkeyConnection.IDLE_PING_MILLIS);
     ValkeyConnection sub =
         new ValkeyConnection(
             "valkey-sub",
@@ -163,7 +164,8 @@ public final class ValkeyFleetStore implements FleetStore {
             failure -> {
               lastFailure = failure;
               first.complete(null);
-            });
+            },
+            ValkeyConnection.IDLE_PING_MILLIS);
     this.commands = command;
     this.subscriber = sub;
     command.start();
@@ -463,8 +465,11 @@ public final class ValkeyFleetStore implements FleetStore {
         subscribers.computeIfAbsent(
             channel,
             c -> {
+              // Sent while the connection is up or handshaking: resubscribe() replays the map
+              // after HELLO, but a channel added between that replay and readiness would wait for
+              // the next connection; a second SUBSCRIBE is harmless.
               ValkeyConnection sub = subscriber;
-              if (sub != null && sub.isReady()) {
+              if (sub != null && sub.acceptsCommands()) {
                 sub.fireAndForget("SUBSCRIBE", c);
               }
               return new CopyOnWriteArrayList<>();
