@@ -20,10 +20,14 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.warp.api.player.ClientPlatform;
+import dev.warp.api.player.ClientPlatform.Forge;
+import dev.warp.api.player.ClientPlatform.ForgeEra;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McString;
@@ -266,6 +270,107 @@ class HandshakeSessionHandlerTest {
   // ---------------------------------------------------------------------------
 
   /** A client connection on an offline proxy that accepts transfers or not. */
+  // ---------------------------------------------------------------------------
+  // Modded clients
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("modded markers")
+  class ModdedMarkers {
+
+    @Test
+    @DisplayName("should keep the Forge marker apart from the virtual host and expose the platform")
+    void fml2Marker() {
+      EmbeddedChannel channel = channel(false);
+      try {
+        writeHandshake(
+            channel,
+            ProtocolVersion.MINECRAFT_1_20_1.protocol(),
+            "Play.PrimeMC.net\0FML2\0",
+            LOGIN);
+        MinecraftConnection connection = connection(channel);
+        assertEquals("Play.PrimeMC.net", connection.virtualHost());
+        assertEquals(new Forge(ForgeEra.FML2, 2), connection.clientPlatform());
+        assertEquals("\0FML2\0", connection.handshakeMarker());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should detect the modern Forge marker on 1.21 and the legacy one on 1.12.2")
+    void otherEras() {
+      EmbeddedChannel modern = channel(false);
+      EmbeddedChannel legacy = channel(false);
+      try {
+        writeHandshake(
+            modern, ProtocolVersion.MINECRAFT_1_21.protocol(), "play.primemc.net\0FORGE4", LOGIN);
+        assertEquals(new Forge(ForgeEra.MODERN, 4), connection(modern).clientPlatform());
+        assertEquals("\0FORGE4", connection(modern).handshakeMarker());
+        writeHandshake(
+            legacy, ProtocolVersion.MINECRAFT_1_12_2.protocol(), "play.primemc.net\0FML\0", LOGIN);
+        assertEquals(new Forge(ForgeEra.LEGACY, 0), connection(legacy).clientPlatform());
+        assertEquals("\0FML\0", connection(legacy).handshakeMarker());
+      } finally {
+        modern.finishAndReleaseAll();
+        legacy.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should give a vanilla client the Java platform and no marker")
+    void vanilla() {
+      EmbeddedChannel channel = channel(false);
+      try {
+        handshake(channel, ProtocolVersion.MINECRAFT_1_20_1, LOGIN);
+        assertEquals(ClientPlatform.JAVA, connection(channel).clientPlatform());
+        assertEquals("", connection(channel).handshakeMarker());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should hold a Forge 1.20.1 client's Login Success until its server logs it in")
+    void holdsFml2Login() {
+      EmbeddedChannel channel = channel(false);
+      try {
+        writeHandshake(
+            channel,
+            ProtocolVersion.MINECRAFT_1_20_1.protocol(),
+            "play.primemc.net\0FML2\0",
+            LOGIN);
+        ByteBuf body = Unpooled.buffer();
+        VarInt.write(body, 0x00);
+        McString.write(body, "Steve");
+        body.writeBoolean(false); // no UUID
+        writeFrame(channel, body);
+        channel.runPendingTasks();
+
+        int loginSuccessId =
+            StateRegistry.get(ProtocolState.LOGIN, PacketDirection.CLIENTBOUND)
+                .packetId(ProtocolVersion.MINECRAFT_1_20_1, LoginSuccess.class);
+        for (ByteBuf frame = channel.readOutbound();
+            frame != null;
+            frame = channel.readOutbound()) {
+          try {
+            VarInt.read(frame);
+            assertNotEquals(
+                loginSuccessId, VarInt.read(frame), "no Login Success before the server's");
+          } finally {
+            frame.release();
+          }
+        }
+        // Set Compression went out and, no server being reachable from an embedded channel, a Login
+        // Disconnect: the connection is closed by now, never with a Login Success of the proxy's
+        // own.
+        assertFalse(channel.isOpen());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+  }
+
   private EmbeddedChannel channel(boolean acceptsTransfers) {
     EmbeddedChannel channel = new ClientChannel();
     channel
@@ -302,10 +407,14 @@ class HandshakeSessionHandlerTest {
   }
 
   private void writeHandshake(EmbeddedChannel channel, int protocol, int nextState) {
+    writeHandshake(channel, protocol, "play.primemc.net", nextState);
+  }
+
+  private void writeHandshake(EmbeddedChannel channel, int protocol, String host, int nextState) {
     ByteBuf body = Unpooled.buffer();
     VarInt.write(body, 0x00);
     VarInt.write(body, protocol);
-    McString.write(body, "play.primemc.net");
+    McString.write(body, host);
     body.writeShort(25577);
     VarInt.write(body, nextState);
     writeFrame(channel, body);

@@ -66,6 +66,16 @@ public interface InboundConnection {
   int protocolVersion();
 
   /**
+   * Returns what kind of client this is, as the markers of its handshake declared: a Forge client
+   * of one of its three eras, otherwise {@link ClientPlatform#JAVA} until a later phase says more
+   * (NeoForge is recognized in the configuration phase, Bedrock from Floodgate's data). A platform
+   * is a claim, not a proof: anything can send a Forge marker.
+   *
+   * @return the platform, {@link ClientPlatform#JAVA} when nothing marks the client
+   */
+  ClientPlatform platform();
+
+  /**
    * Returns whether the client is still connected.
    *
    * @return {@code true} while connected

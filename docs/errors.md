@@ -111,6 +111,8 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-BACK-009](#w-back-009) | warning | A held packet was dropped |
 | [W-BACK-010](#w-back-010) | warning | A server group has no server available |
 | [W-BACK-011](#w-back-011) | warning | A server is skipped by the balancers |
+| [W-BACK-012](#w-back-012) | warning | A backend's login query was too large for a client |
+| [W-BACK-013](#w-back-013) | warning | A backend left too many login queries unanswered |
 | [W-AUTH-001](#w-auth-001) | warning | Players authenticate against a custom server |
 | [W-AUTH-002](#w-auth-002) | warning | Profile keys are checked against a custom key |
 | [W-AUTH-003](#w-auth-003) | error | Encryption could not be enabled |
@@ -973,6 +975,22 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** The server did not answer its last ping within timeouts.ping, a player could not connect to it, or it refused the logins of three players in a row (a single refusal is taken as aimed at that player: a ban, a whitelist). Groups and fallbacks skip it for a cool-down, then let one player through to find out whether it is back; a successful ping brings it back at once.
 
 **Fix.** Check that the server runs, is reachable from Warp and accepts logins from it (forwarding secret, whitelist). Raise timeouts.ping if it answers pings slowly under load. Nothing to do if it was restarting.
+
+### W-BACK-012
+
+**A backend's login query was too large for a client** (warning)
+
+**Cause.** A backend sent a login plugin request over 1 MiB, the most a client accepts; Warp answered it as not understood instead of relaying it to the client, which would have dropped the connection.
+
+**Fix.** Check the mods of that backend: Forge splits its registries into messages under the limit.
+
+### W-BACK-013
+
+**A backend left too many login queries unanswered** (warning)
+
+**Cause.** A backend sent more than 256 login plugin requests before the client answered any; Warp dropped the connection to that backend, and the player falls back or is kicked.
+
+**Fix.** Check the mods of that backend: a login-phase mod that floods queries is misbehaving.
 
 ## Authentication and login
 

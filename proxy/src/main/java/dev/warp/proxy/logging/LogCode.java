@@ -911,6 +911,25 @@ public enum LogCode {
           + " secret, whitelist). Raise timeouts.ping if it answers pings slowly under load. Nothing"
           + " to do if it was restarting."),
 
+  /** A backend's login query was too large for a client. */
+  LOGIN_QUERY_TOO_LARGE(
+      "W-BACK-012",
+      false,
+      "A backend's login query was too large for a client",
+      "A backend sent a login plugin request over 1 MiB, the most a client accepts; Warp answered"
+          + " it as not understood instead of relaying it to the client, which would have dropped"
+          + " the connection.",
+      "Check the mods of that backend: Forge splits its registries into messages under the limit."),
+
+  /** A backend left too many login queries unanswered. */
+  LOGIN_QUERIES_UNANSWERED(
+      "W-BACK-013",
+      false,
+      "A backend left too many login queries unanswered",
+      "A backend sent more than 256 login plugin requests before the client answered any; Warp"
+          + " dropped the connection to that backend, and the player falls back or is kicked.",
+      "Check the mods of that backend: a login-phase mod that floods queries is misbehaving."),
+
   // ---------------------------------------------------------------------------
   // Authentication and login
   // ---------------------------------------------------------------------------

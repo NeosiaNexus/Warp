@@ -47,9 +47,10 @@ import org.slf4j.LoggerFactory;
  * Handles the backend login dance from the proxy's perspective (proxy acts as a client).
  *
  * <p>The proxy connects to the backend, sends Handshake + LoginStart, and handles the backend's
- * login sequence: optional SetCompression, optional LoginPluginRequest (Velocity forwarding),
- * optional Cookie Requests (1.20.5+, relayed to the client, whose answers come back), LoginSuccess,
- * and LoginAcknowledged.
+ * login sequence: optional SetCompression, optional LoginPluginRequest (Velocity forwarding,
+ * answered here; anything else relayed to a client held in its login state for it, see {@link
+ * LoginQueryRelay}, or refused), optional Cookie Requests (1.20.5+, relayed to the client, whose
+ * answers come back), LoginSuccess, and LoginAcknowledged.
  *
  * <p>This handler has no explicit state machine with crossed futures — it simply reacts to packets
  * as they arrive. The protocol guarantees ordering (SetCompression before LoginSuccess,
@@ -95,7 +96,9 @@ final class BackendLoginSessionHandler implements SessionHandler {
   public void activated() {
     // Send Handshake + LoginStart to initiate login with the backend.
     ProtocolVersion version = player.protocolVersion();
-    String host = serverAddress.getHostString();
+    // A modded client's marker (\0FML2\0, \0FORGE...) travels with the host: a Forge backend
+    // treats a player without it as vanilla.
+    String host = serverAddress.getHostString() + player.clientConnection().handshakeMarker();
     int port = serverAddress.getPort();
 
     if (forwardingSecret.length > 0 && backendConnection.isPacketLevel()) {
@@ -164,6 +167,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
     }
     refused = true;
     logger.info("Backend disconnected during login for player {}", player.username());
+    player.loginQueries().backendGone(backendConnection);
     player.backendRefusedLogin(backendConnection, server, null);
   }
 
@@ -227,14 +231,19 @@ final class BackendLoginSessionHandler implements SessionHandler {
       // Velocity modern forwarding — build and sign the forwarding payload.
       byte[] payload = PlayerForwarding.buildVelocityForwardingData(player, forwardingSecret);
       backendConnection.writeAndFlush(new LoginPluginResponse(request.messageId(), true, payload));
-    } else {
-      // Unknown plugin channel or forwarding disabled — respond with failure.
+    } else if (!player.loginQueries().relay(backendConnection, request)) {
+      // Nobody can answer: the client is past its login (a vanilla client, or a server switch), or
+      // this login is one the switch abandoned for a later connect. "Not understood", as a vanilla
+      // client would say. A replay of the first login's answers on a switch is a later milestone.
       backendConnection.writeAndFlush(new LoginPluginResponse(request.messageId(), false, null));
     }
   }
 
   private void handleLoginSuccess() {
     adviseIfBackendUncompressed();
+    // A client held in its login state for the backend's queries gets its own Login Success now,
+    // before anything of the play state reaches it.
+    player.loginQueries().backendLoggedIn(backendConnection);
     // The configuration phase from 1.20.2, straight to PLAY before: the server switch strategy
     // knows which, and installs the next handler.
     player.backendAccepted(server);
@@ -242,6 +251,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
   }
 
   private void handleLoginDisconnect(LoginDisconnect packet) {
+    player.loginQueries().backendGone(backendConnection);
     logger.info(
         "Backend {} rejected login for player {}: {}",
         serverAddress,

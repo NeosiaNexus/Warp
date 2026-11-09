@@ -248,6 +248,9 @@ public final class ConnectedPlayer {
   /** The client's cookie traffic, begun during its login (1.20.5+). */
   private final ClientCookies cookies;
 
+  /** The backend's login queries relayed to a client held in its login state for them. */
+  private final LoginQueryRelay loginQueries;
+
   // ---------------------------------------------------------------------------
   // Mutable state
   // ---------------------------------------------------------------------------
@@ -362,6 +365,7 @@ public final class ConnectedPlayer {
     this.resourcePacks = new ResourcePacks(this);
     this.transferred = clientConnection.handshakeIntent() == HandshakeIntent.TRANSFER;
     this.cookies = cookies;
+    this.loginQueries = new LoginQueryRelay(this);
   }
 
   // ---------------------------------------------------------------------------
@@ -702,7 +706,11 @@ public final class ConnectedPlayer {
    */
   void join() {
     startSession();
-    startKeepAliveTask();
+    if (!loginQueries.isHeld()) {
+      // A client held in its login state for a backend's login queries reads no keep-alive: the
+      // release of its Login Success starts them.
+      startKeepAliveTask();
+    }
     if (clientConnection.decoder().state() == ProtocolState.CONFIGURATION) {
       clientConnection.setSessionHandler(new SwitchWaitSessionHandler(this));
     }
@@ -2493,6 +2501,15 @@ public final class ConnectedPlayer {
     return cookies;
   }
 
+  /**
+   * Returns the relay of backend login queries to the client.
+   *
+   * @return the relay
+   */
+  LoginQueryRelay loginQueries() {
+    return loginQueries;
+  }
+
   // ---------------------------------------------------------------------------
   // Disconnect
   // ---------------------------------------------------------------------------
@@ -2559,6 +2576,7 @@ public final class ConnectedPlayer {
     onEventLoop(
         () -> {
           serverSwitch.close();
+          loginQueries.close();
           bossBars.clear();
           resourcePacks.close();
           leaveServer();

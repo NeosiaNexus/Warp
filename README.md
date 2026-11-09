@@ -67,6 +67,14 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
   ping or a player's connection is skipped for a cool-down, then probed with one player (circuit
   breaker); the player's current server is never picked. `/warp groups` shows the balancer's
   view, and plugins supply their own `Balancer` or register groups at runtime.
+- **Forge and NeoForge clients, joining**: the handshake marker of every Forge era (`\0FML\0`,
+  `\0FML2\0`, `\0FML3\0`, `\0FORGE[n]`) reaches the backend, and a Forge 1.13 to 1.20.1 client
+  negotiates its mods with its first server through the proxy: the server's login queries are
+  relayed to the client and answered back, and the proxy's Login Success waits for the server's.
+  NeoForge and Forge 1.20.2+ negotiate in the configuration phase, which Warp relays untouched.
+  Plugins read the platform with `InboundConnection.platform()`. Switching between modded servers
+  before 1.20.2 and a `modded = false` option for vanilla backends in a mixed network are the
+  next milestones of [the modded clients design](docs/research/modded-and-bedrock.md).
 - **BungeeCord plugin messaging channel** (`BungeeCord`, `bungeecord:main`): all 18 sub-channels
   Paper and Spigot plugins use to move players and query the network, answered byte for byte as
   BungeeCord and Velocity answer them. Connect goes through Warp's own switch and events; each

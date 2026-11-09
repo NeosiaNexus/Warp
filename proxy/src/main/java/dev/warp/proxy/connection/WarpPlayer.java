@@ -19,6 +19,7 @@ package dev.warp.proxy.connection;
 import dev.warp.api.messaging.ChannelIdentifier;
 import dev.warp.api.permission.Tristate;
 import dev.warp.api.player.AudienceFeature;
+import dev.warp.api.player.ClientPlatform;
 import dev.warp.api.player.ConnectionResult;
 import dev.warp.api.player.GameProfile;
 import dev.warp.api.player.Player;
@@ -99,6 +100,11 @@ public final class WarpPlayer implements Player {
   @Override
   public Optional<Route> route() {
     return Optional.ofNullable(player.clientConnection().route());
+  }
+
+  @Override
+  public ClientPlatform platform() {
+    return player.clientConnection().clientPlatform();
   }
 
   @Override
