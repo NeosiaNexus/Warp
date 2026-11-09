@@ -380,6 +380,19 @@ class FrameForwarderTest {
   }
 
   @Test
+  @DisplayName("should release a bare packet when the connection is closed")
+  void releasesBarePacketWhenClosed() {
+    Sink sink = Sink.uncompressed();
+    sink.channel.close().syncUninterruptibly();
+    ByteBuf packet = Unpooled.wrappedBuffer(packet(10));
+
+    sink.forwarder.forwardPacket(packet);
+
+    assertEquals(0, packet.refCnt());
+    assertFalse(sink.channel.finish());
+  }
+
+  @Test
   @DisplayName("should release the frame when the connection is closed")
   void releasesWhenClosed() {
     Sink sink = Sink.uncompressed();

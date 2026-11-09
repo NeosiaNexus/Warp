@@ -28,6 +28,7 @@ import dev.warp.protocol.compress.FrameDecompressor;
 import dev.warp.protocol.compress.JavaCompressor;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.handshake.Handshake;
+import dev.warp.protocol.packet.play.KeepAlive;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Random;
@@ -41,6 +42,8 @@ import org.junit.jupiter.api.Test;
 
 @DisplayName("TrafficObserver")
 class TrafficObserverTest {
+
+  private static final int KEEP_ALIVE_ID_1_21_4 = 0x27;
 
   /** Counts every call. */
   private static final class Counting implements TrafficObserver {
@@ -180,6 +183,101 @@ class TrafficObserverTest {
 
     forwarder.forward(accepted, sameThreshold, null);
     forwarder.forward(refused, lowerThreshold, null);
+
+    assertEquals(1, counting.passthroughFrames());
+    assertEquals(1, counting.reencodedFrames());
+    assertEquals(acceptedWire + refusedWire, counting.wireBytes());
+    assertEquals(big.length + small.length, counting.rawBytes());
+    channel.flushOutbound();
+    assertTrue(channel.releaseOutbound());
+    assertFalse(channel.finish());
+  }
+
+  @Test
+  @DisplayName("should see a compressed packet it inflates and decodes with its wire size")
+  void decoderCompressed() {
+    MinecraftDecoder decoder =
+        new MinecraftDecoder(
+            PacketDirection.CLIENTBOUND, ProtocolVersion.MINECRAFT_1_21_4, ProtocolState.PLAY);
+    decoder.enableCompression(
+        new FrameDecompressor(
+            256, false, FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE, new JavaCompressor(6)),
+        true);
+    Counting counting = new Counting();
+    decoder.observer(counting);
+    EmbeddedChannel ch = new EmbeddedChannel(decoder);
+    byte[] keepAlive = Frames.packet(KEEP_ALIVE_ID_1_21_4, new byte[] {0, 0, 0, 0, 0, 0, 0, 42});
+    ByteBuf frame = Frames.compressed(keepAlive, 6);
+    int wire = frame.readableBytes();
+
+    assertTrue(ch.writeInbound(frame));
+
+    assertInstanceOf(KeepAlive.class, ch.readInbound());
+    assertEquals(1, counting.decodedFrames());
+    assertEquals(wire, counting.decodedBytesSeen());
+    assertEquals(0, counting.blindFrames());
+    assertFalse(ch.finish());
+  }
+
+  @Test
+  @DisplayName("should report the packet size of an uncompressed frame passed verbatim")
+  void uncompressedPassthrough() {
+    JavaCompressor compressor = new JavaCompressor(6);
+    EmbeddedChannel channel =
+        new EmbeddedChannel(
+            new CompressionEncoder(256, compressor),
+            new MinecraftEncoder(
+                PacketDirection.CLIENTBOUND, ProtocolVersion.MINECRAFT_1_21_4, ProtocolState.PLAY));
+    FrameForwarder forwarder = new FrameForwarder(channel);
+    forwarder.compressionEnabled(256);
+    Counting counting = new Counting();
+    forwarder.observer(counting);
+    FrameDecompressor source =
+        new FrameDecompressor(
+            256, false, FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE, compressor);
+    byte[] small = packet(100);
+    ByteBuf frame = Frames.uncompressed(small); // below both thresholds: Data Length 0
+    int wire = frame.readableBytes();
+
+    forwarder.forward(frame, source, null);
+
+    assertEquals(1, counting.passthroughFrames());
+    assertEquals(0, counting.reencodedFrames());
+    assertEquals(wire, counting.wireBytes());
+    assertEquals(small.length, counting.rawBytes());
+    channel.flushOutbound();
+    assertTrue(channel.releaseOutbound());
+    assertFalse(channel.finish());
+  }
+
+  @Test
+  @DisplayName("should count frames the source already inflated the same way")
+  void forwarderWithInflatedPackets() {
+    JavaCompressor compressor = new JavaCompressor(6);
+    EmbeddedChannel channel =
+        new EmbeddedChannel(
+            new CompressionEncoder(256, compressor),
+            new MinecraftEncoder(
+                PacketDirection.CLIENTBOUND, ProtocolVersion.MINECRAFT_1_21_4, ProtocolState.PLAY));
+    FrameForwarder forwarder = new FrameForwarder(channel);
+    forwarder.compressionEnabled(256);
+    Counting counting = new Counting();
+    forwarder.observer(counting);
+    FrameDecompressor sameThreshold =
+        new FrameDecompressor(
+            256, false, FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE, compressor);
+    FrameDecompressor lowerThreshold =
+        new FrameDecompressor(
+            64, false, FrameDecompressor.DEFAULT_MAX_UNCOMPRESSED_SIZE, compressor);
+    byte[] big = packet(1000);
+    byte[] small = packet(100);
+    ByteBuf accepted = Frames.compressed(big, 6);
+    int acceptedWire = accepted.readableBytes();
+    ByteBuf refused = Frames.compressed(small, 6);
+    int refusedWire = refused.readableBytes();
+
+    forwarder.forward(accepted, sameThreshold, Unpooled.wrappedBuffer(big.clone()));
+    forwarder.forward(refused, lowerThreshold, Unpooled.wrappedBuffer(small.clone()));
 
     assertEquals(1, counting.passthroughFrames());
     assertEquals(1, counting.reencodedFrames());
