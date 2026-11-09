@@ -1,0 +1,93 @@
+name: Edge images
+
+# ghcr.io/neosianexus/warp:edge and :edge-alpine from every push to main: the four Linux builds of
+# libdeflate (.github/workflows/_natives.yml), the shadow jar with them, then the images, tested,
+# scanned (.github/workflows/_container.yml), then signed and pushed (_container-publish.yml).
+# Releases publish their own tags from release.yml.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'charts/**'
+  workflow_dispatch:
+
+permissions: {}
+
+# A newer push supersedes the edge build in progress.
+concurrency:
+  group: edge-images
+  cancel-in-progress: true
+
+jobs:
+  natives:
+    name: Natives
+    permissions:
+      contents: read # check out the code
+    uses: $/.github/workflows/_natives.yml
+    with:
+      platforms: linux
+
+  jar:
+    name: Shadow jar
+    needs: natives
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read # check out the code
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up build
+        uses: $/.github/actions/setup-build
+
+      - name: Download the native libraries
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: natives
+          path: ${{ runner.temp }}/natives
+
+      # The Linux libraries only (-Pwarp.natives.required would ask for every platform's).
+      - name: Build shadow jar
+        run: ./gradlew shadowJar -Pwarp.natives.dir="$RUNNER_TEMP/natives"
+
+      - name: Upload the jar
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: edge-jar
+          path: proxy/build/libs/warp-*.jar
+          if-no-files-found: error
+          retention-days: 1
+
+  # Built for the runner, started, probed, pinged, drained and scanned (_container.yml)...
+  test:
+    name: Test
+    needs: jar
+    permissions:
+      contents: read # check out the code
+    uses: $/.github/workflows/_container.yml
+    with:
+      ref: ${{ github.sha }}
+      version: edge
+      jar-artifact: edge-jar
+
+  # ...then built for linux/amd64 and linux/arm64, pushed, signed and attested
+  # (_container-publish.yml).
+  images:
+    name: Images
+    needs: [jar, test]
+    permissions:
+      contents: read # check out the code
+      packages: write # push the images to GHCR
+      id-token: write # sign the images and their provenance (Sigstore)
+      attestations: write # store the attestations on the repository
+    uses: $/.github/workflows/_container-publish.yml
+    with:
+      ref: ${{ github.sha }}
+      version: edge
+      jar-artifact: edge-jar
