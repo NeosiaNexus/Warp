@@ -165,6 +165,12 @@ final class RespawnSwitch implements ServerSwitch {
   }
 
   @Override
+  public boolean isJoining(MinecraftConnection backend) {
+    BackendConnection joining = pending;
+    return joining != null && joining.connection() == backend;
+  }
+
+  @Override
   public void connectFailed(ServerInfo target) {
     pendingFailed(target, null, KickedFromServerEvent.Cause.UNREACHABLE);
   }

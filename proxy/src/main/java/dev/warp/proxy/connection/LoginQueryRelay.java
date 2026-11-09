@@ -57,7 +57,13 @@ import org.slf4j.LoggerFactory;
  * <p>Bounds: at most {@value #MAX_PENDING} queries in flight, each at most {@value #MAX_PAYLOAD}
  * bytes (the client's own limit; Forge splits bigger registries), at most {@value #MAX_RECORDED}
  * exchanges recorded. A backend that goes (disconnects, or refuses the login) takes its pending
- * queries with it: a late answer from the client is then dropped as unknown.
+ * queries and its recorded exchanges with it: a late answer from the client is then dropped as
+ * unknown, and the record is the next server's alone.
+ *
+ * <p>Only the backend the player's login goes through ({@link ServerSwitch#isJoining}) is relayed
+ * and recorded, and only its Login Success releases the client. A connect a plugin makes during the
+ * join opens a second login, which the switch abandons: its queries are answered "not understood"
+ * and its Login Success changes nothing on the client.
  *
  * <p>All methods run on the client's event loop, which the backend connection shares.
  */
@@ -88,7 +94,11 @@ final class LoginQueryRelay {
 
   private int nextId;
 
+  /** The exchanges of {@link #recordedBackend}, in the order it asked. */
   private final List<RecordedQuery> recorded = new ArrayList<>();
+
+  /** The backend whose exchanges {@link #recorded} holds; {@code null} while it holds none. */
+  private @Nullable MinecraftConnection recordedBackend;
 
   /** {@code false} once an exchange went unrecorded: a replay from the record is impossible. */
   private boolean recordingComplete = true;
@@ -124,13 +134,27 @@ final class LoginQueryRelay {
   }
 
   /**
-   * The backend logged the player in: nothing more to relay, the client's Login Success goes out.
-   * Pending queries are those the backend did not wait for; its login is over, so they are dropped.
+   * The backend logged the player in. If it is the one the player's login goes through, nothing
+   * more is relayed and the client's Login Success goes out: the pending queries are those no
+   * backend waited for, and are dropped. A backend the switch abandoned leaves the client held for
+   * the one it is joining, and its queries and exchanges go with it.
    *
    * @param backend the backend that sent Login Success
    */
   void backendLoggedIn(MinecraftConnection backend) {
-    backendGone(backend);
+    if (!player.serverSwitch().isJoining(backend)) {
+      logger.debug(
+          "Backend {} logged {} in, but the player is joining another server: left where it is",
+          backend.remoteAddress(),
+          player.username());
+      backendGone(backend);
+      return;
+    }
+    pending.clear();
+    if (recordedBackend != backend) {
+      // The exchanges of a login the player did not follow through.
+      clearRecord();
+    }
     Runnable held = this.release;
     if (held != null) {
       this.release = null;
@@ -147,12 +171,21 @@ final class LoginQueryRelay {
    *
    * @param backend the backend that asked
    * @param request its query
-   * @return {@code false} if the client is not held in its login state, which leaves the query for
-   *     the caller to answer; {@code true} if it was relayed, or refused here for its size or
-   *     because too many are in flight, in which case the backend got its answer or was closed
+   * @return {@code false} if the client is not held in its login state, or the player's login does
+   *     not go through this backend, which leaves the query for the caller to answer; {@code true}
+   *     if it was relayed, or refused here for its size or because too many are in flight, in which
+   *     case the backend got its answer or was closed
    */
   boolean relay(MinecraftConnection backend, LoginPluginRequest request) {
     if (closed || !isHeld() || !client.channel().isActive()) {
+      return false;
+    }
+    if (!player.serverSwitch().isJoining(backend)) {
+      logger.debug(
+          "Not relaying a login query on {} from {} for {}: the player is joining another server",
+          request.channel(),
+          backend.remoteAddress(),
+          player.username());
       return false;
     }
     if (request.data().length > MAX_PAYLOAD) {
@@ -193,12 +226,16 @@ final class LoginQueryRelay {
   }
 
   /**
-   * Drops the queries of a backend that left, or whose login is over.
+   * Drops the queries and the recorded exchanges of a backend that left, refused the login, or
+   * whose login the player did not follow through: the record is the next server's alone.
    *
    * @param backend the backend
    */
   void backendGone(MinecraftConnection backend) {
     pending.values().removeIf(query -> query.backend == backend);
+    if (recordedBackend == backend) {
+      clearRecord();
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -239,6 +276,15 @@ final class LoginQueryRelay {
     if (!FML_LOGIN_WRAPPER.equals(query.channel)) {
       return;
     }
+    if (recordedBackend != query.backend) {
+      // The record follows the login the player goes through: a backend the switch abandoned adds
+      // nothing, and the record of one it abandoned makes way for the joining one's first exchange.
+      if (!player.serverSwitch().isJoining(query.backend)) {
+        return;
+      }
+      clearRecord();
+      recordedBackend = query.backend;
+    }
     if (recorded.size() >= MAX_RECORDED) {
       recordingComplete = false;
       return;
@@ -261,9 +307,16 @@ final class LoginQueryRelay {
     recorded.add(at, exchange);
   }
 
+  private void clearRecord() {
+    recorded.clear();
+    recordedBackend = null;
+    recordingComplete = true;
+  }
+
   /**
    * Returns the {@code fml:loginwrapper} exchanges of the first login, in order, for a replay to a
-   * server with the same mods.
+   * server with the same mods: those of the backend that logged the player in, or that is logging
+   * it in. Nothing of a server that failed or was abandoned on the way remains.
    *
    * @return the exchanges, unmodifiable
    */

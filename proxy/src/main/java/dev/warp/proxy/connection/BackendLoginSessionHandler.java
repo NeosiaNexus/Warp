@@ -222,9 +222,9 @@ final class BackendLoginSessionHandler implements SessionHandler {
       byte[] payload = PlayerForwarding.buildVelocityForwardingData(player, forwardingSecret);
       backendConnection.writeAndFlush(new LoginPluginResponse(request.messageId(), true, payload));
     } else if (!player.loginQueries().relay(backendConnection, request)) {
-      // The client is past its login (a vanilla client, or a server switch), so nobody can answer:
-      // "not understood", as a vanilla client would say. A replay of the first login's answers on
-      // a switch is a later milestone.
+      // Nobody can answer: the client is past its login (a vanilla client, or a server switch), or
+      // this login is one the switch abandoned for a later connect. "Not understood", as a vanilla
+      // client would say. A replay of the first login's answers on a switch is a later milestone.
       backendConnection.writeAndFlush(new LoginPluginResponse(request.messageId(), false, null));
     }
   }

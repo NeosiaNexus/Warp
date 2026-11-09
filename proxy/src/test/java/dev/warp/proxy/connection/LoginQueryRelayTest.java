@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.warp.api.server.ServerInfo;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McString;
@@ -31,6 +32,7 @@ import dev.warp.protocol.packet.PacketCodec;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.PacketRegistry;
 import dev.warp.protocol.packet.StateRegistry;
+import dev.warp.protocol.packet.login.LoginDisconnect;
 import dev.warp.protocol.packet.login.LoginPluginRequest;
 import dev.warp.protocol.packet.login.LoginPluginResponse;
 import dev.warp.protocol.packet.login.LoginSuccess;
@@ -58,7 +60,9 @@ class LoginQueryRelayTest {
 
   @BeforeEach
   void setUp() {
-    harness = new SwitchHarness(VERSION, List.of(), ProtocolState.LOGIN);
+    // The lobby's loss falls back to survival, whose connection a test plays with connectAnother.
+    harness = new SwitchHarness(VERSION, List.of("survival"), ProtocolState.LOGIN);
+    harness.holdConnections();
     harness.client.setHandshakeMarker(HandshakeMarkers.detect("play.example.com\0FML2\0", VERSION));
     // What the login handler does with a client's answer while it holds the client.
     harness.client.setSessionHandler(
@@ -78,16 +82,41 @@ class LoginQueryRelayTest {
   /** Holds the client in its login state and logs in to the backend, as the first join does. */
   private void connect(byte[] forwardingSecret) {
     harness.player.loginQueries().hold(() -> released.set(true));
-    backend.setSessionHandler(
+    login(backend, SwitchHarness.LOBBY, forwardingSecret);
+  }
+
+  /** Opens a login to {@code server}, which the switch takes as the one the player is joining. */
+  private MinecraftConnection connectAnother(ServerInfo server) {
+    MinecraftConnection another = harness.backend(ProtocolState.LOGIN);
+    login(another, server, new byte[0]);
+    return another;
+  }
+
+  private void login(MinecraftConnection connection, ServerInfo server, byte[] forwardingSecret) {
+    harness.player.serverSwitch().connected(new BackendConnection(connection, server));
+    connection.setSessionHandler(
         new BackendLoginSessionHandler(
-            harness.player, backend, SwitchHarness.LOBBY.address(), forwardingSecret));
+            harness.player, connection, server.address(), forwardingSecret));
     harness.runPendingTasks();
     // The Handshake (in the handshake state) and the Login Start (in the login state).
-    assertEquals(2, harness.framesSentOn(backend).size());
+    assertEquals(2, harness.framesSentOn(connection).size());
   }
 
   private void fromBackend(Packet packet) {
-    harness.receive(backend, SwitchHarness.frame(VERSION, ProtocolState.LOGIN, packet));
+    fromBackend(backend, packet);
+  }
+
+  private void fromBackend(MinecraftConnection connection, Packet packet) {
+    harness.receive(connection, SwitchHarness.frame(VERSION, ProtocolState.LOGIN, packet));
+  }
+
+  private LoginSuccess loginSuccess() {
+    return new LoginSuccess(harness.player.uuid(), "Steve", List.of(), false, null);
+  }
+
+  private static LoginPluginRequest fmlQuery(int id, int innerId) {
+    return new LoginPluginRequest(
+        id, "fml:loginwrapper", wrapped("fml:handshake", innerId, new byte[0]));
   }
 
   private void fromClient(LoginPluginResponse response) {
@@ -126,9 +155,19 @@ class LoginQueryRelayTest {
   }
 
   private List<LoginPluginResponse> answersToBackend() {
-    return harness.packetsSentToBackend(backend).stream()
+    return answersTo(backend);
+  }
+
+  private List<LoginPluginResponse> answersTo(MinecraftConnection connection) {
+    return harness.packetsSentToBackend(connection).stream()
         .filter(LoginPluginResponse.class::isInstance)
         .map(LoginPluginResponse.class::cast)
+        .toList();
+  }
+
+  private List<Integer> recordedInnerIds() {
+    return harness.player.loginQueries().recorded().stream()
+        .map(LoginQueryRelay.RecordedQuery::innerPacketId)
         .toList();
   }
 
@@ -330,6 +369,178 @@ class LoginQueryRelayTest {
           harness.player.loginQueries().isHeld(), "the client stays held for the next server");
       fromClient(new LoginPluginResponse(0, true, new byte[] {1}));
       assertTrue(harness.client.channel().isActive());
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Several logins on one held client
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("several logins")
+  class SeveralLogins {
+
+    @BeforeEach
+    void connectWithoutForwarding() {
+      connect(new byte[0]);
+    }
+
+    @Test
+    @DisplayName(
+        "should keep the client held when a backend the switch abandoned logs the player in")
+    void ignoresLoginSuccessOfAbandonedBackend() {
+      fromBackend(fmlQuery(1, 1));
+      harness.sentToClient();
+      MinecraftConnection joining = connectAnother(SwitchHarness.SURVIVAL);
+
+      fromBackend(loginSuccess());
+
+      assertFalse(released.get(), "the first login is not the one the player follows");
+      assertTrue(harness.player.loginQueries().isHeld());
+      assertEquals(0, harness.player.loginQueries().pendingCount(), "its queries went with it");
+      assertEquals(
+          ProtocolState.PLAY, backend.encoder().state(), "it still moves on, to be abandoned");
+
+      fromBackend(joining, fmlQuery(1, 1));
+      LoginPluginRequest relayed = harness.sentToClient().getFirst().as(LoginPluginRequest.class);
+      assertEquals(1, relayed.messageId(), "the joining backend's query still reaches the client");
+      fromClient(new LoginPluginResponse(1, true, wrapped("fml:handshake", 2, new byte[0])));
+      assertEquals(1, answersTo(joining).size());
+
+      fromBackend(joining, loginSuccess());
+
+      assertTrue(released.get(), "the joining backend's Login Success releases the client");
+      assertFalse(harness.player.loginQueries().isHeld());
+    }
+
+    @Test
+    @DisplayName("should answer not understood to a backend the switch abandoned, not the client")
+    void refusesQueriesOfAbandonedBackend() {
+      connectAnother(SwitchHarness.SURVIVAL);
+
+      fromBackend(fmlQuery(3, 1));
+
+      assertTrue(harness.sentToClient().isEmpty());
+      LoginPluginResponse answer = answersToBackend().getFirst();
+      assertEquals(3, answer.messageId());
+      assertFalse(answer.successful());
+      assertEquals(0, harness.player.loginQueries().pendingCount());
+    }
+
+    @Test
+    @DisplayName("should drop every pending query once the joining backend logs the player in")
+    void dropsAllPendingOnRelease() {
+      fromBackend(fmlQuery(1, 1));
+      MinecraftConnection joining = connectAnother(SwitchHarness.SURVIVAL);
+      fromBackend(joining, fmlQuery(1, 1));
+      assertEquals(2, harness.sentToClient().size());
+
+      fromBackend(joining, loginSuccess());
+
+      assertTrue(released.get());
+      assertEquals(0, harness.player.loginQueries().pendingCount());
+      fromClient(new LoginPluginResponse(0, true, new byte[] {1}));
+      assertTrue(answersToBackend().isEmpty(), "the abandoned backend gets no late answer");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // The record across logins
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("record")
+  class Record {
+
+    @BeforeEach
+    void connectWithoutForwarding() {
+      connect(new byte[0]);
+    }
+
+    @Test
+    @DisplayName(
+        "should forget the exchanges of a backend that disconnects, so the record is the fallback's alone")
+    void forgetsRecordOfBackendThatLeft() {
+      fromBackend(fmlQuery(1, 1));
+      fromBackend(fmlQuery(2, 3));
+      harness.sentToClient();
+      fromClient(new LoginPluginResponse(0, true, wrapped("fml:handshake", 2, new byte[0])));
+      fromClient(new LoginPluginResponse(1, true, wrapped("fml:handshake", 3, new byte[0])));
+      assertEquals(List.of(1, 3), recordedInnerIds());
+
+      backend.channel().close();
+      harness.runPendingTasks();
+
+      assertTrue(harness.player.loginQueries().recorded().isEmpty());
+      assertTrue(harness.player.loginQueries().recordingComplete());
+
+      MinecraftConnection fallback = connectAnother(SwitchHarness.SURVIVAL);
+      fromBackend(fallback, fmlQuery(1, 1));
+      fromBackend(fallback, fmlQuery(2, 4));
+      harness.sentToClient();
+      fromClient(new LoginPluginResponse(2, true, wrapped("fml:handshake", 2, new byte[0])));
+      fromClient(new LoginPluginResponse(3, true, wrapped("fml:handshake", 4, new byte[0])));
+
+      assertEquals(List.of(1, 4), recordedInnerIds(), "the fallback's exchanges only");
+      assertTrue(harness.player.loginQueries().recordingComplete());
+    }
+
+    @Test
+    @DisplayName("should forget the exchanges of a backend that refuses the login")
+    void forgetsRecordOnLoginDisconnect() {
+      fromBackend(fmlQuery(1, 1));
+      harness.sentToClient();
+      fromClient(new LoginPluginResponse(0, true, wrapped("fml:handshake", 2, new byte[0])));
+      assertEquals(1, harness.player.loginQueries().recorded().size());
+
+      fromBackend(LoginDisconnect.ofPlainText("whitelist"));
+
+      assertTrue(harness.player.loginQueries().recorded().isEmpty());
+      assertTrue(harness.player.loginQueries().recordingComplete());
+    }
+
+    @Test
+    @DisplayName("should start the record over, complete, after a cut record's backend leaves")
+    void resetsCompletenessWhenBackendLeaves() {
+      for (int id = 0; id <= LoginQueryRelay.MAX_RECORDED; id++) {
+        fromBackend(fmlQuery(id, 3));
+        harness.sentToClient();
+        fromClient(new LoginPluginResponse(id, true, new byte[0]));
+      }
+      assertEquals(LoginQueryRelay.MAX_RECORDED, harness.player.loginQueries().recorded().size());
+      assertFalse(harness.player.loginQueries().recordingComplete());
+
+      backend.channel().close();
+      harness.runPendingTasks();
+
+      assertTrue(harness.player.loginQueries().recorded().isEmpty());
+      assertTrue(harness.player.loginQueries().recordingComplete());
+    }
+
+    @Test
+    @DisplayName("should record only the exchanges of the backend the player is joining")
+    void recordsJoiningBackendOnly() {
+      fromBackend(fmlQuery(1, 1));
+      harness.sentToClient();
+      fromClient(new LoginPluginResponse(0, true, wrapped("fml:handshake", 2, new byte[0])));
+      assertEquals(
+          List.of(1), recordedInnerIds(), "the first login's record, while it is the only one");
+
+      MinecraftConnection joining = connectAnother(SwitchHarness.SURVIVAL);
+      fromBackend(joining, fmlQuery(1, 1));
+      fromBackend(joining, fmlQuery(2, 3));
+      harness.sentToClient();
+      fromClient(new LoginPluginResponse(1, true, wrapped("fml:handshake", 2, new byte[0])));
+      assertEquals(
+          List.of(1), recordedInnerIds(), "the joining backend's first exchange replaces it");
+
+      fromBackend(loginSuccess());
+      fromClient(new LoginPluginResponse(2, true, wrapped("fml:handshake", 3, new byte[0])));
+      fromBackend(joining, loginSuccess());
+
+      assertTrue(released.get());
+      assertEquals(List.of(1, 3), recordedInnerIds(), "the joining backend's exchanges only");
+      assertTrue(harness.player.loginQueries().recordingComplete());
     }
   }
 
