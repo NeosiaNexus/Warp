@@ -93,10 +93,10 @@ import org.slf4j.LoggerFactory;
  * other proxies and their players, the presence of its own players in the store, the duplicate
  * login policy across proxies, and the bus.
  *
- * <p>Threads: everything the store does is asynchronous; the heartbeat and reconcile loop runs on a
- * virtual thread, store listeners and the bus run on virtual threads from {@link #executor}. The
- * API answers from the replica without I/O, so a connection's event loop never waits. The replica
- * is changed under {@link #lock}, never on an event loop.
+ * <p>Threads: everything the store does is asynchronous; the heartbeat runs on a virtual thread of
+ * its own, the refresh and reconcile loop on another, store listeners and the bus on virtual
+ * threads from {@link #executor}. The API answers from the replica without I/O, so a connection's
+ * event loop never waits. The replica is changed under {@link #lock}, never on an event loop.
  */
 public final class FleetService implements Fleet, AutoCloseable {
 
@@ -178,6 +178,7 @@ public final class FleetService implements Fleet, AutoCloseable {
   private final AtomicBoolean closed = new AtomicBoolean();
   private volatile StoreState state;
   private volatile @Nullable Thread loop;
+  private volatile @Nullable Thread refresher;
   private volatile boolean conflicted;
 
   /**
@@ -287,9 +288,9 @@ public final class FleetService implements Fleet, AutoCloseable {
   // ---------------------------------------------------------------------------
 
   /**
-   * Connects the store, takes an incarnation, reaps this node's previous lives, writes the first
-   * heartbeat, subscribes to the notices and starts the heartbeat loop. An unreachable store leaves
-   * the fleet degraded, to resync when the store is back.
+   * Subscribes to the notices, connects the store, takes an incarnation, reaps this node's previous
+   * lives, writes the first heartbeat and starts the heartbeat and refresh loops. An unreachable
+   * store leaves the fleet degraded, to resync when the store is back.
    *
    * @return completed once the first heartbeat is written, or once the store is known to be down
    */
@@ -310,15 +311,18 @@ public final class FleetService implements Fleet, AutoCloseable {
     CompletableFuture<Void> started = new CompletableFuture<>();
     executor.execute(
         () -> {
+          CompletableFuture<Void> connected =
+              store.connect(new FleetStoreContext(config.network(), nodeId, executor));
+          // Subscribed before the store answers: a store that is down at boot (a Service with no
+          // endpoints yet) subscribes when it connects, instead of leaving this node deaf to the
+          // notices and its inbox until a restart.
+          synchronized (lock) {
+            subscriptions.add(store.subscribe(key("players"), this::onPlayerNotice));
+            subscriptions.add(store.subscribe(key("nodes"), this::onNodeNotice));
+            subscriptions.add(bus.openInbox());
+          }
           try {
-            store
-                .connect(new FleetStoreContext(config.network(), nodeId, executor))
-                .get(STORE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
-            synchronized (lock) {
-              subscriptions.add(store.subscribe(key("players"), this::onPlayerNotice));
-              subscriptions.add(store.subscribe(key("nodes"), this::onNodeNotice));
-              subscriptions.add(bus.openInbox());
-            }
+            connected.get(STORE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
             if (store.state() != StoreState.DEGRADED) {
               resync();
             } else {
@@ -333,9 +337,14 @@ public final class FleetService implements Fleet, AutoCloseable {
                 cause(e));
             degraded();
           }
-          Thread thread = Thread.ofVirtual().name("warp-fleet-heartbeat").unstarted(this::loop);
-          this.loop = thread;
-          thread.start();
+          Thread beat =
+              Thread.ofVirtual().name("warp-fleet-heartbeat").unstarted(this::heartbeatLoop);
+          Thread refresh =
+              Thread.ofVirtual().name("warp-fleet-refresh").unstarted(this::refreshLoop);
+          this.loop = beat;
+          this.refresher = refresh;
+          beat.start();
+          refresh.start();
           started.complete(null);
         });
     return started;
@@ -352,9 +361,10 @@ public final class FleetService implements Fleet, AutoCloseable {
       return;
     }
     running.set(false);
-    Thread thread = loop;
-    if (thread != null) {
-      thread.interrupt();
+    for (Thread thread : new Thread[] {loop, refresher}) {
+      if (thread != null) {
+        thread.interrupt();
+      }
     }
     long inc = incarnation;
     if (inc != 0 && state != StoreState.DEGRADED) {
@@ -381,29 +391,63 @@ public final class FleetService implements Fleet, AutoCloseable {
     executor.shutdownNow();
   }
 
-  /** The heartbeat loop, on a virtual thread: a heartbeat every interval, a reconcile every n. */
-  private void loop() {
+  /**
+   * The heartbeat loop, on a virtual thread of its own: one heartbeat every interval and nothing
+   * else, so that a slow store never delays it past {@code heartbeat-ttl} while the refresh loop
+   * reads the other nodes. The peers reap a node whose heartbeat is late, players and all.
+   */
+  private void heartbeatLoop() {
+    while (running.get() && !conflicted) {
+      if (!pause()) {
+        return;
+      }
+      try {
+        heartbeat();
+      } catch (RuntimeException e) {
+        logger.warn(
+            LogCode.FLEET_STORE_UNAVAILABLE.marker(), "Fleet heartbeat failed: {}", cause(e));
+      }
+    }
+  }
+
+  /** The refresh loop, on a virtual thread: the nodes every interval, the players every n. */
+  private void refreshLoop() {
     long every = Math.max(1, config.reconcile().toMillis() / config.heartbeat().toMillis());
     long tick = 0;
     while (running.get() && !conflicted) {
-      try {
-        Thread.sleep(config.heartbeat());
-      } catch (InterruptedException e) {
+      if (!pause()) {
         return;
-      }
-      if (!running.get() || state == StoreState.DEGRADED) {
-        continue;
       }
       tick++;
       try {
-        heartbeat();
         refreshNodes();
         if (tick % every == 0) {
           reconcilePlayers();
         }
       } catch (RuntimeException e) {
-        logger.warn(
-            LogCode.FLEET_STORE_UNAVAILABLE.marker(), "Fleet heartbeat failed: {}", cause(e));
+        logger.warn(LogCode.FLEET_STORE_UNAVAILABLE.marker(), "Fleet refresh failed: {}", cause(e));
+      }
+    }
+  }
+
+  /**
+   * Sleeps one heartbeat interval, then says whether the loop's work is due: not while stopping,
+   * degraded or interrupted.
+   *
+   * @return {@code false} when the loop must end
+   */
+  private boolean pause() {
+    while (true) {
+      try {
+        Thread.sleep(config.heartbeat());
+      } catch (InterruptedException e) {
+        return false;
+      }
+      if (!running.get()) {
+        return false;
+      }
+      if (state != StoreState.DEGRADED) {
+        return true;
       }
     }
   }
@@ -420,10 +464,15 @@ public final class FleetService implements Fleet, AutoCloseable {
       logger.info("The fleet store is back: resynchronising");
       executor.execute(this::resync);
     } else if (now == StoreState.DEGRADED) {
+      Throwable failure =
+          store instanceof dev.warp.proxy.fleet.valkey.ValkeyFleetStore valkey
+              ? valkey.lastFailure()
+              : null;
       logger.warn(
           LogCode.FLEET_STORE_UNAVAILABLE.marker(),
-          "The fleet store is unreachable: the view of the other proxies is frozen, logins follow"
-              + " fleet.on-store-down = {}",
+          "The fleet store is unreachable{}: the view of the other proxies is frozen, logins"
+              + " follow fleet.on-store-down = {}",
+          failure == null ? "" : " (" + cause(failure) + ")",
           config.onStoreDown().name().toLowerCase(Locale.ROOT).replace('_', '-'));
     }
   }
@@ -450,17 +499,7 @@ public final class FleetService implements Fleet, AutoCloseable {
       for (PlayerRecord record : local.values()) {
         PlayerRecord mine = record.incarnation() == incarnation ? record : withIncarnation(record);
         local.put(mine.uuid(), mine);
-        ClaimResult result = await("claim", store.claim(mine));
-        if (result instanceof ClaimResult.Owned(String owner, long inc) && !owner.equals(nodeId)) {
-          logger.warn(
-              LogCode.FLEET_PRESENCE_CONFLICT.marker(),
-              "{} is connected here and claimed by {} (incarnation {}): the store lost a write;"
-                  + " both stay until one leaves",
-              mine.name(),
-              owner,
-              inc);
-        }
-        metrics.corrected(FleetMetrics.Correction.OWN_REPLAYED);
+        replayClaim(mine);
       }
       if (state != StoreState.CONNECTED && store.state() != StoreState.SINGLE_NODE) {
         onStoreState(StoreState.CONNECTED);
@@ -662,12 +701,31 @@ public final class FleetService implements Fleet, AutoCloseable {
     }
     for (PlayerRecord record : local.values()) {
       if (!stored.contains(record.uuid())) {
-        var _ = await("claim", store.claim(record));
-        metrics.corrected(FleetMetrics.Correction.OWN_REPLAYED);
+        replayClaim(record);
       }
     }
     synchronized (lock) {
       updateGauges();
+    }
+  }
+
+  /**
+   * Claims one of this node's players again, after a resync or a record the store lost: a claim
+   * another node holds is a duplicate session the store did not prevent, said out loud.
+   */
+  private void replayClaim(PlayerRecord mine) {
+    ClaimResult result = await("claim", store.claim(mine));
+    if (result instanceof ClaimResult.Owned(String owner, long inc) && !owner.equals(nodeId)) {
+      metrics.corrected(FleetMetrics.Correction.OWN_CONFLICT);
+      logger.warn(
+          LogCode.FLEET_PRESENCE_CONFLICT.marker(),
+          "{} is connected here and claimed by {} (incarnation {}): the store lost a write;"
+              + " both stay until one leaves",
+          mine.name(),
+          owner,
+          inc);
+    } else {
+      metrics.corrected(FleetMetrics.Correction.OWN_REPLAYED);
     }
   }
 
@@ -1019,6 +1077,15 @@ public final class FleetService implements Fleet, AutoCloseable {
           && incarnation != 0
           && (kind.equals(NODE_JOIN) || kind.equals(NODE_DRAIN))) {
         conflict(new NodeRecord(id, inc, null, NodeState.READY, 0, "", Instant.now()));
+      } else if (kind.equals(NODE_REAPED) && inc == incarnation && incarnation != 0) {
+        // A peer saw this heartbeat expire (a store stall, a pause) and dropped this node's
+        // player records: back at once, players claimed again, rather than at the next reconcile.
+        logger.warn(
+            LogCode.FLEET_NODE_EXPIRED.marker(),
+            "Another proxy reaped this node (incarnation {}) while it runs: the heartbeat was late,"
+                + " resynchronising",
+            inc);
+        executor.execute(this::resync);
       }
       return;
     }

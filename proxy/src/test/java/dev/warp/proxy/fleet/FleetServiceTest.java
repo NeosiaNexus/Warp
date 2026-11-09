@@ -41,6 +41,9 @@ import dev.warp.api.fleet.FleetPlayer;
 import dev.warp.api.fleet.NodeState;
 import dev.warp.api.fleet.SendResult;
 import dev.warp.api.fleet.StoreState;
+import dev.warp.api.fleet.spi.PlayerRecord;
+import dev.warp.api.metrics.MetricType;
+import dev.warp.api.metrics.SampleVisitor;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.proxy.config.DrainConfig;
 import dev.warp.proxy.config.DuplicateLoginPolicy;
@@ -56,6 +59,7 @@ import dev.warp.proxy.server.ServerRegistry;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -63,6 +67,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 import net.kyori.adventure.text.Component;
 import org.jspecify.annotations.Nullable;
@@ -95,6 +100,7 @@ class FleetServiceTest {
     final WarpEventBus events = new WarpEventBus();
     final SharedMemoryStore.Handle handle = (SharedMemoryStore.Handle) store.handle();
     final List<Object> seen = new CopyOnWriteArrayList<>();
+    final MetricRegistry metrics = new MetricRegistry(0);
     final FleetService fleet;
     private volatile boolean draining;
 
@@ -103,7 +109,18 @@ class FleetServiceTest {
         @Nullable String publicAddress,
         DuplicateLoginPolicy policy,
         FleetConfig.OnStoreDown onStoreDown) {
+      this(id, publicAddress, policy, onStoreDown, Duration.ofMillis(200), _ -> {});
+    }
+
+    Node(
+        String id,
+        @Nullable String publicAddress,
+        DuplicateLoginPolicy policy,
+        FleetConfig.OnStoreDown onStoreDown,
+        Duration reconcile,
+        Consumer<SharedMemoryStore.Handle> prepare) {
       this.id = id;
+      prepare.accept(handle);
       FleetConfig config =
           new FleetConfig(
               new FleetConfig.Store(
@@ -114,7 +131,7 @@ class FleetServiceTest {
               publicAddress,
               Duration.ofMillis(50),
               Duration.ofMillis(200),
-              Duration.ofMillis(200),
+              reconcile,
               Duration.ofSeconds(2),
               onStoreDown,
               true);
@@ -132,16 +149,7 @@ class FleetServiceTest {
       BooleanSupplier drainingNow = () -> draining;
       this.fleet =
           new FleetService(
-              config,
-              handle,
-              players,
-              servers,
-              events,
-              new MetricRegistry(0),
-              policy,
-              true,
-              "t",
-              drainingNow);
+              config, handle, players, servers, events, metrics, policy, true, "t", drainingNow);
       fleet.start().join();
       nodes.add(this);
     }
@@ -171,6 +179,39 @@ class FleetServiceTest {
       await(() -> seen.stream().anyMatch(type::isInstance));
       return seen.stream().filter(type::isInstance).map(type::cast).findFirst().orElseThrow();
     }
+
+    /** Reads one reconcile correction counter. */
+    double corrections(String kind) {
+      double[] value = new double[1];
+      metrics.collect(
+          new SampleVisitor() {
+            @Override
+            public void family(String name, MetricType type, String help) {}
+
+            @Override
+            public void sample(
+                String name, List<String> labelNames, List<String> labelValues, double sample) {
+              if (name.equals("warp_fleet_reconcile_corrections_total")
+                  && labelValues.equals(List.of(kind))) {
+                value[0] = sample;
+              }
+            }
+          });
+      return value[0];
+    }
+  }
+
+  /**
+   * A node whose store is slow to reconcile: a long reconcile, so that notices must do the work.
+   */
+  Node slowReconciler(String id, Consumer<SharedMemoryStore.Handle> prepare) {
+    return new Node(
+        id,
+        null,
+        DuplicateLoginPolicy.KICK_EXISTING,
+        FleetConfig.OnStoreDown.ALLOW,
+        Duration.ofSeconds(30),
+        prepare);
   }
 
   Node node(String id) {
@@ -246,6 +287,97 @@ class FleetServiceTest {
       assertEquals(FleetNodeLeaveEvent.Reason.EXPIRED, b.event(FleetNodeLeaveEvent.class).reason());
       assertTrue(b.fleet.player(STEVE).isEmpty());
       assertTrue(b.handle.players("a").join().isEmpty(), "reaped");
+    }
+
+    @Test
+    @DisplayName("should hear the notices once a store that was down at boot comes back")
+    void subscribedWhileDown() {
+      Node a = slowReconciler("a", SharedMemoryStore.Handle::failConnect);
+      Node b = node("b");
+      assertEquals(StoreState.DEGRADED, a.fleet.storeState());
+
+      a.handle.become(StoreState.CONNECTED);
+      await(() -> a.fleet.storeState() == StoreState.CONNECTED);
+      b.login(STEVE, "Steve");
+
+      // Only the players notice can tell a: its reconcile is far away.
+      await(() -> a.fleet.player(STEVE).isPresent());
+      assertEquals("b", a.fleet.player(STEVE).orElseThrow().proxyId());
+
+      // And a's inbox is open: a request to a is answered.
+      UUID alex = UUID.nameUUIDFromBytes("alex".getBytes(StandardCharsets.UTF_8));
+      ConnectedPlayer player = a.login(alex, "Alex");
+      await(() -> b.fleet.player(alex).isPresent());
+      assertTrue(b.fleet.message(alex, Component.text("hi")).join());
+      verify(player, timeout(TIMEOUT.toMillis())).sendMessage(Component.text("hi"));
+    }
+
+    @Test
+    @DisplayName("should resynchronise at once when a peer reaped this node while it runs")
+    void reapedWhileAlive() {
+      Node a = slowReconciler("a", _ -> {});
+      Node b = node("b");
+      a.login(STEVE, "Steve");
+      await(() -> b.fleet.player(STEVE).isPresent());
+      long inc = a.fleet.local().incarnation();
+
+      // a's heartbeat is lost (a store stall), b sees it expire and reaps a's records.
+      a.handle.loseHeartbeats(true);
+      store.kill("a");
+      await(() -> b.fleet.node("a").isEmpty());
+      a.handle.loseHeartbeats(false);
+
+      // Far from a's next reconcile, the reaped notice brings it back, players claimed again.
+      await(() -> !a.handle.players("a").join().isEmpty());
+      assertEquals(inc, a.fleet.local().incarnation());
+      await(() -> b.fleet.node("a").isPresent() && b.fleet.player(STEVE).isPresent());
+      assertTrue(a.corrections("own_replayed") >= 1.0);
+    }
+
+    @Test
+    @DisplayName("should say when another node claimed a player connected here")
+    void ownConflict() {
+      Node a = node("a");
+      Node b = node("b");
+      a.login(STEVE, "Steve");
+      await(() -> b.fleet.player(STEVE).isPresent());
+      long aInc = a.fleet.local().incarnation();
+      long bInc = b.fleet.local().incarnation();
+
+      // While a cannot reach the store, its record is lost and b takes the player: the replay of
+      // a's claims when the store is back must say so.
+      a.handle.become(StoreState.DEGRADED);
+      await(() -> a.fleet.storeState() == StoreState.DEGRADED);
+      b.handle.release(STEVE, "a", aInc).join();
+      var _ =
+          b.handle.claim(new PlayerRecord(STEVE, "Steve", "b", bInc, null, Instant.now())).join();
+      a.handle.become(StoreState.CONNECTED);
+
+      await(() -> a.corrections("own_conflict") >= 1.0);
+      assertEquals(0.0, a.corrections("own_replayed"), "not counted as a plain replay");
+      assertEquals("b", b.handle.players("b").join().iterator().next().nodeId());
+    }
+
+    @Test
+    @DisplayName("should heartbeat on schedule while the store answers its reads slowly")
+    void slowReads() {
+      Node b = node("b");
+      Node a = slowReconciler("a", _ -> {});
+      a.handle.slowReads(Duration.ofMillis(300)); // > heartbeat-ttl with the refresh in the loop
+      int before = a.handle.heartbeats.size();
+
+      await(() -> a.handle.heartbeats.size() >= before + 12);
+
+      List<Long> stamps = List.copyOf(a.handle.heartbeats).subList(before, before + 12);
+      long worst = 0;
+      for (int i = 1; i < stamps.size(); i++) {
+        worst = Math.max(worst, stamps.get(i) - stamps.get(i - 1));
+      }
+      assertTrue(
+          worst < Duration.ofMillis(200).toNanos(),
+          "the longest gap between two heartbeats was " + worst / 1_000_000 + " ms");
+      assertTrue(a.fleet.node("b").isPresent());
+      assertTrue(b.fleet.node("a").isPresent());
     }
 
     @Test
