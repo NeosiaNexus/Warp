@@ -16,8 +16,10 @@
  */
 package dev.warp.proxy.connection;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -29,6 +31,7 @@ import dev.warp.api.antibot.VerificationFailure;
 import dev.warp.api.antibot.VerificationMethod;
 import dev.warp.api.event.Subscribe;
 import dev.warp.api.event.antibot.VerificationFailedEvent;
+import dev.warp.api.event.player.PlayerChooseInitialServerEvent;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McString;
@@ -51,6 +54,7 @@ import dev.warp.protocol.packet.login.EncryptionRequest;
 import dev.warp.protocol.packet.login.LoginAcknowledged;
 import dev.warp.protocol.packet.login.LoginDisconnect;
 import dev.warp.protocol.packet.login.LoginSuccess;
+import dev.warp.protocol.packet.login.SetCompression;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.Transfer;
@@ -77,10 +81,14 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
+import java.util.function.UnaryOperator;
+import java.util.zip.DataFormatException;
+import java.util.zip.Inflater;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
@@ -117,7 +125,17 @@ class VerificationLoginTest {
   private final AtomicLong nanos = new AtomicLong(TimeUnit.HOURS.toNanos(1));
   private final List<VerificationFailedEvent> failures = new CopyOnWriteArrayList<>();
   private @Nullable AntiBotService antiBot;
+
+  /** Another proxy of the fleet, which the client connects to instead when set. */
+  private @Nullable AntiBotService peer;
+
+  private UnaryOperator<@Nullable String> env = _ -> null;
   private boolean onlineMode;
+  private AntiBotConfig.@Nullable Verification verification;
+  private int compressionThreshold = -1;
+
+  /** Whether frames carry the data-length prefix of compressed framing, from Set Compression on. */
+  private boolean compressed;
 
   VerificationLoginTest() {}
 
@@ -125,6 +143,9 @@ class VerificationLoginTest {
   void close() {
     if (antiBot != null) {
       bots().close();
+    }
+    if (peer != null) {
+      peer.close();
     }
   }
 
@@ -138,8 +159,8 @@ class VerificationLoginTest {
 
     @Test
     @DisplayName(
-        "should ask a ping, a keep-alive, the known packs and a cookie, and trust a client that"
-            + " answers as vanilla does")
+        "should ask a ping, a keep-alive and a cookie, and trust a client that answers as vanilla"
+            + " does")
     void vanillaPasses() throws Exception {
       start(false, AntiBotConfig.Verification.DEFAULTS);
       EmbeddedChannel channel = login("Steve", "203.0.113.9", MODERN);
@@ -157,6 +178,39 @@ class VerificationLoginTest {
       assertEquals(1, bots().status().verifications().passed());
       assertEquals(0, bots().status().verifications().escalated());
       // Verified: the player goes on to its first server (which this test has none of).
+      assertNotRefused();
+    }
+
+    @Test
+    @DisplayName("should keep the brand the client sent while probed, for its first server")
+    void brandHeldForServer() throws Exception {
+      start(false, AntiBotConfig.Verification.DEFAULTS);
+      // Plugins hold the choice of its first server: the client waits in the configuration phase.
+      new PluginEventBus(events, "test", null, _ -> {})
+          .subscribeAsync(
+              PlayerChooseInitialServerEvent.class,
+              Subscribe.NORMAL,
+              30,
+              _ -> new CompletableFuture<>());
+      EmbeddedChannel channel = login("Steve", "203.0.113.9", MODERN);
+      nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, MODERN);
+      send(channel, ProtocolState.LOGIN, new LoginAcknowledged(), MODERN);
+      Asked asked = asked(channel, MODERN);
+      ConfigPluginMessage brand = brand("fabric");
+      byte[] brandFrame =
+          ByteBufUtil.getBytes(frame(body(ProtocolState.CONFIGURATION, brand, MODERN)));
+
+      answerAsVanilla(channel, asked, MODERN, brand);
+
+      MinecraftConnection connection = channel.pipeline().get(MinecraftConnection.class);
+      SwitchWaitSessionHandler waiting =
+          assertInstanceOf(
+              SwitchWaitSessionHandler.class,
+              connection.sessionHandler(),
+              "waiting for its first server");
+      List<ByteBuf> held = waiting.heldFrames();
+      assertEquals(1, held.size(), "the brand, and nothing the probe read");
+      assertArrayEquals(brandFrame, ByteBufUtil.getBytes(held.get(0)));
       assertNotRefused();
     }
 
@@ -409,6 +463,72 @@ class VerificationLoginTest {
     }
 
     @Test
+    @DisplayName("should read the acknowledgement of a client it compresses, and probe it")
+    void compressedAcknowledgement() throws Exception {
+      compressionThreshold = 256;
+      start(true, AntiBotConfig.Verification.DEFAULTS);
+      attackWaves();
+
+      EmbeddedChannel channel = login("Newbie", "198.51.100.7", MODERN);
+      SetCompression compression =
+          nextPacket(channel, ProtocolState.LOGIN, SetCompression.class, MODERN);
+      assertEquals(256, compression.threshold());
+      compressed = true;
+      nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, MODERN);
+      // Two bytes once framed, which the login's frame limits would refuse as a Login Start.
+      send(channel, ProtocolState.LOGIN, new LoginAcknowledged(), MODERN);
+
+      assertTrue(channel.isOpen(), "acknowledged");
+      assertEquals(0, limits.refusals(Refusal.INVALID_FRAME));
+      Asked asked = asked(channel, MODERN);
+      answerAsVanilla(channel, asked, MODERN);
+      StoreCookie stored =
+          nextPacket(channel, ProtocolState.CONFIGURATION, StoreCookie.class, MODERN);
+      assertEquals(VerificationTokens.COOKIE_KEY, stored.key());
+      nextPacket(channel, ProtocolState.CONFIGURATION, Transfer.class, MODERN);
+      assertNotRefused();
+    }
+
+    @Test
+    @DisplayName(
+        "should let another proxy of the fleet, which issued no token itself, accept the transfer"
+            + " back with the token")
+    void fleetPeerAcceptsTransfer() throws Exception {
+      env =
+          name ->
+              switch (name) {
+                case AntiBotConfig.ENV_SECRET -> "the fleet's identity secret";
+                case AntiBotConfig.ENV_TOKEN_SECRET -> "the fleet's token secret";
+                default -> null;
+              };
+      start(true, AntiBotConfig.Verification.DEFAULTS);
+      attackWaves();
+      EmbeddedChannel channel = login("Newbie", "198.51.100.7", MODERN);
+      nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class, MODERN);
+      send(channel, ProtocolState.LOGIN, new LoginAcknowledged(), MODERN);
+      answerAsVanilla(channel, asked(channel, MODERN), MODERN);
+      StoreCookie stored =
+          nextPacket(channel, ProtocolState.CONFIGURATION, StoreCookie.class, MODERN);
+
+      // The load balancer lands the transfer on a calm peer, which accepts no transfers of its own
+      // accord and never issued a token.
+      AntiBotService other = service(online(), verificationConfig());
+      peer = other;
+      EmbeddedChannel back = transferLogin("Newbie", "198.51.100.7", MODERN);
+      CookieRequest request = nextPacket(back, ProtocolState.LOGIN, CookieRequest.class, MODERN);
+      assertEquals(VerificationTokens.COOKIE_KEY, request.key());
+      send(
+          back,
+          ProtocolState.LOGIN,
+          new CookieResponse(VerificationTokens.COOKIE_KEY, stored.payload()),
+          MODERN);
+
+      nextPacket(back, ProtocolState.LOGIN, EncryptionRequest.class, MODERN);
+      assertEquals(1, other.status().verifications().tokensAccepted());
+      assertEquals(0, limits.refusals(Refusal.TRANSFER_REFUSED));
+    }
+
+    @Test
     @DisplayName("should refuse a transfer back without a valid token")
     void forgedToken() throws Exception {
       start(true, AntiBotConfig.Verification.DEFAULTS);
@@ -467,11 +587,19 @@ class VerificationLoginTest {
 
     @Test
     @DisplayName(
-        "should refuse a transfer when the proxy accepts none and no verified player is due")
+        "should ask a transferred client for its token even when it issued none itself, and refuse"
+            + " it without one when the proxy accepts no transfers")
     void noTransferExpected() throws Exception {
       start(true, AntiBotConfig.Verification.DEFAULTS);
 
       EmbeddedChannel channel = transferLogin("Newbie", "198.51.100.7", MODERN);
+      CookieRequest request = nextPacket(channel, ProtocolState.LOGIN, CookieRequest.class, MODERN);
+      assertEquals(VerificationTokens.COOKIE_KEY, request.key());
+      send(
+          channel,
+          ProtocolState.LOGIN,
+          new CookieResponse(VerificationTokens.COOKIE_KEY, null),
+          MODERN);
 
       nextPacket(channel, ProtocolState.LOGIN, LoginDisconnect.class, MODERN);
       assertEquals(1, limits.refusals(Refusal.TRANSFER_REFUSED));
@@ -547,36 +675,42 @@ class VerificationLoginTest {
 
   private void start(boolean online, AntiBotConfig.Verification verification) throws IOException {
     this.onlineMode = online;
+    this.verification = verification;
+    antiBot = service(online, verificationConfig());
+    new PluginEventBus(events, "test", null, _ -> {}).register(new FailureListener());
+  }
+
+  private boolean online() {
+    return onlineMode;
+  }
+
+  /** The configuration {@link #start} was given, with its verification settings. */
+  private AntiBotConfig verificationConfig() {
     AntiBotConfig d = AntiBotConfig.DEFAULTS;
     AntiBotConfig.Verified v = d.verified();
-    AntiBotConfig config =
-        new AntiBotConfig(
-            true,
-            CidrRanges.none(),
-            new AntiBotConfig.Verified(
-                v.expireAfterLastJoin(),
-                1_000,
-                24,
-                48,
-                false,
-                v.secretFile(),
-                v.sharedStoreTimeout()),
-            d.attack(),
-            d.blocklist(),
-            d.checkTimeout(),
-            verification);
-    antiBot =
-        new AntiBotService(
-            config,
-            online,
-            limits,
-            events,
-            LoggingConfig.DEFAULTS,
-            directory,
-            _ -> null,
-            millis::get,
-            nanos::get);
-    new PluginEventBus(events, "test", null, _ -> {}).register(new FailureListener());
+    return new AntiBotConfig(
+        true,
+        CidrRanges.none(),
+        new AntiBotConfig.Verified(
+            v.expireAfterLastJoin(), 1_000, 24, 48, false, v.secretFile(), v.sharedStoreTimeout()),
+        d.attack(),
+        d.blocklist(),
+        d.checkTimeout(),
+        Objects.requireNonNull(verification, "start() first"));
+  }
+
+  /** An anti-bot on this test's clocks and secrets: the proxy's, or a fleet peer's. */
+  private AntiBotService service(boolean online, AntiBotConfig config) throws IOException {
+    return new AntiBotService(
+        config,
+        online,
+        limits,
+        events,
+        LoggingConfig.DEFAULTS,
+        directory,
+        env,
+        millis::get,
+        nanos::get);
   }
 
   /** Hears of failed verifications. */
@@ -665,8 +799,10 @@ class VerificationLoginTest {
   }
 
   private EmbeddedChannel connect(String address) {
+    AntiBotService reached = peer != null ? peer : bots();
     ServerLoginContext context =
-        TestLoginContexts.withAntiBot(onlineMode, new MojangSessionService(), limits, bots());
+        TestLoginContexts.withAntiBot(
+            onlineMode, compressionThreshold, new MojangSessionService(), events, limits, reached);
     EmbeddedChannel channel =
         new ProxyProtocolTest.PeerChannel(new InetSocketAddress(address(address), 40000));
     channel.pipeline().addLast(new ServerChannelInitializer(context));
@@ -696,8 +832,13 @@ class VerificationLoginTest {
 
   /** Answers as a vanilla client does: settings and brand first, then each request in order. */
   private void answerAsVanilla(EmbeddedChannel channel, Asked asked, ProtocolVersion version) {
+    answerAsVanilla(channel, asked, version, brand("vanilla"));
+  }
+
+  private void answerAsVanilla(
+      EmbeddedChannel channel, Asked asked, ProtocolVersion version, ConfigPluginMessage brand) {
     send(channel, ProtocolState.CONFIGURATION, SETTINGS, version);
-    send(channel, ProtocolState.CONFIGURATION, brand("vanilla"), version);
+    send(channel, ProtocolState.CONFIGURATION, brand, version);
     send(channel, ProtocolState.CONFIGURATION, new ConfigPong(asked.ping), version);
     send(channel, ProtocolState.CONFIGURATION, new KeepAlive(asked.keepAlive), version);
     if (asked.cookie != null) {
@@ -752,39 +893,72 @@ class VerificationLoginTest {
   // Helpers: frames
   // ---------------------------------------------------------------------------
 
-  @SuppressWarnings("unchecked")
-  private static <T extends Packet> void send(
+  private <T extends Packet> void send(
       EmbeddedChannel channel, ProtocolState state, T packet, ProtocolVersion version) {
+    channel.writeInbound(frame(body(state, packet, version)));
+    channel.runPendingTasks();
+  }
+
+  /** A serverbound packet's body: its id and fields, what a frame carries. */
+  @SuppressWarnings("unchecked")
+  private static <T extends Packet> ByteBuf body(
+      ProtocolState state, T packet, ProtocolVersion version) {
     PacketRegistry.Encoding encoding =
         StateRegistry.get(state, PacketDirection.SERVERBOUND).encoding(version, packet.getClass());
     ByteBuf body = Unpooled.buffer();
     VarInt.write(body, encoding.packetId());
     ((PacketCodec<T>) encoding.codec()).encode(packet, body, version);
-    channel.writeInbound(frame(body));
-    channel.runPendingTasks();
+    return body;
   }
 
   @SuppressWarnings("unchecked")
-  private static <T extends Packet> T nextPacket(
+  private <T extends Packet> T nextPacket(
       EmbeddedChannel channel, ProtocolState state, Class<T> type, ProtocolVersion version) {
     channel.runPendingTasks();
     ByteBuf frame = channel.readOutbound();
     assertNotNull(frame, "expected a " + type.getSimpleName());
     try {
       assertEquals(VarInt.read(frame), frame.readableBytes(), "frame length");
-      PacketRegistry registry = StateRegistry.get(state, PacketDirection.CLIENTBOUND);
-      int id = VarInt.read(frame);
-      assertEquals(
-          registry.packetId(version, type),
-          id,
-          type.getSimpleName() + " packet id (got " + id + ")");
-      return ((PacketCodec<T>) registry.encoding(version, type).codec()).decode(frame, version);
+      ByteBuf packet = compressed ? inflated(frame) : frame;
+      try {
+        PacketRegistry registry = StateRegistry.get(state, PacketDirection.CLIENTBOUND);
+        int id = VarInt.read(packet);
+        assertEquals(
+            registry.packetId(version, type),
+            id,
+            type.getSimpleName() + " packet id (got " + id + ")");
+        return ((PacketCodec<T>) registry.encoding(version, type).codec()).decode(packet, version);
+      } finally {
+        if (packet != frame) {
+          packet.release();
+        }
+      }
     } finally {
       frame.release();
     }
   }
 
-  private static ByteBuf handshake(ProtocolVersion version, int nextState) {
+  /** The packet of a frame in compressed framing: as is below the threshold, inflated above. */
+  private static ByteBuf inflated(ByteBuf frame) {
+    int dataLength = VarInt.read(frame);
+    if (dataLength == 0) {
+      return frame;
+    }
+    Inflater inflater = new Inflater();
+    try {
+      inflater.setInput(ByteBufUtil.getBytes(frame));
+      byte[] data = new byte[dataLength];
+      assertEquals(dataLength, inflater.inflate(data), "inflated size");
+      frame.skipBytes(frame.readableBytes());
+      return Unpooled.wrappedBuffer(data);
+    } catch (DataFormatException e) {
+      throw new AssertionError(e);
+    } finally {
+      inflater.end();
+    }
+  }
+
+  private ByteBuf handshake(ProtocolVersion version, int nextState) {
     ByteBuf body = Unpooled.buffer();
     VarInt.write(body, 0x00);
     VarInt.write(body, version.protocol());
@@ -794,7 +968,7 @@ class VerificationLoginTest {
     return frame(body);
   }
 
-  private static ByteBuf loginStart(String name, ProtocolVersion version) {
+  private ByteBuf loginStart(String name, ProtocolVersion version) {
     ByteBuf body = Unpooled.buffer();
     VarInt.write(body, 0x00);
     McString.write(body, name);
@@ -808,9 +982,13 @@ class VerificationLoginTest {
     return frame(body);
   }
 
-  private static ByteBuf frame(ByteBuf body) {
+  /** Frames a body as the client does: with a zero data length once the connection compresses. */
+  private ByteBuf frame(ByteBuf body) {
     ByteBuf frame = Unpooled.buffer();
-    VarInt.write(frame, body.readableBytes());
+    VarInt.write(frame, body.readableBytes() + (compressed ? 1 : 0));
+    if (compressed) {
+      VarInt.write(frame, 0);
+    }
     frame.writeBytes(body);
     body.release();
     return frame;

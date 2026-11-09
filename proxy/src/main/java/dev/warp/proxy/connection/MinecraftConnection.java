@@ -659,6 +659,16 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
       guard = null;
       watching.end();
     }
+    liftFrameLimits();
+  }
+
+  /**
+   * Lifts the frame limits of the login for good, while the connection stays among those not logged
+   * in, under their deadlines and guard: for a client told its login succeeded without being logged
+   * in (verified before authentication), which answers in compressed frames from then on, as {@link
+   * #loggedIn} describes.
+   */
+  void liftFrameLimits() {
     frameLimitsLifted = true;
     FrameDecoder frames = frameDecoder();
     if (frames != null) {

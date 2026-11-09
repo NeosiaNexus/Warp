@@ -136,9 +136,8 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
   private volatile boolean lockdown;
 
   /** When a token was last issued: transfers back are expected for a token's lifetime after. */
-  private volatile long lastTokenIssuedMillis = Long.MIN_VALUE;
-
   private final LongAdder verificationsPassed = new LongAdder();
+
   private final LongAdder verificationsEscalated = new LongAdder();
   private final EnumMap<VerificationFailure, LongAdder> verificationsFailed =
       new EnumMap<>(VerificationFailure.class);
@@ -695,23 +694,20 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
     if (signing == null) {
       throw new IllegalStateException("the anti-bot is off (anti-bot.enabled = false)");
     }
-    lastTokenIssuedMillis = millisClock.getAsLong();
     return signing.issue(recognition.key(), trusted);
   }
 
   /**
-   * Returns whether transfers back from a verification are expected now: within a token's lifetime
-   * of the last token issued. The handshake handler accepts a transfer intent then even when {@code
-   * accepts-transfers} is off; the login then has to present its token.
+   * Returns whether transfers back from a verification may arrive: whenever tokens are issued,
+   * since the proxy that verified the client and the one its transfer lands on need not be the same
+   * (the fleet shares the signing key, and a load balancer the address). The handshake handler
+   * accepts a transfer intent then even when {@code accepts-transfers} is off; the login then has
+   * to present a valid token, or it is refused as any other transfer.
    *
-   * @return {@code true} while verified clients may be coming back
+   * @return {@code true} while verified clients may be coming back, here or from another proxy
    */
   public boolean acceptsVerificationTransfers() {
-    VerificationTokens signing = tokens;
-    long issued = lastTokenIssuedMillis;
-    return signing != null
-        && issued != Long.MIN_VALUE
-        && millisClock.getAsLong() - issued <= signing.lifetime().toMillis();
+    return tokens != null;
   }
 
   /**

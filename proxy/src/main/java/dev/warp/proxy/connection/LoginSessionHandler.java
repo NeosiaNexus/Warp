@@ -90,6 +90,7 @@ import java.util.regex.Pattern;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelPipeline;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import io.netty.util.concurrent.ScheduledFuture;
@@ -1323,7 +1324,8 @@ final class LoginSessionHandler implements SessionHandler {
    * Success under its offline profile, without a player being registered or any plugin hearing of
    * it, and is probed in the configuration state (1.20.2+) or the play state. A pass ends in a
    * transfer back with a signed token, or a disconnect asking to reconnect; never in a backend. The
-   * login's limits stay on the connection: it is not logged in.
+   * login's deadlines and guard stay on the connection: it is not logged in. Its frame limits go,
+   * as the client answers in compressed frames from now on.
    */
   private void beginUnauthenticatedVerification() {
     String name = this.username;
@@ -1332,6 +1334,7 @@ final class LoginSessionHandler implements SessionHandler {
       return;
     }
     enableCompression();
+    connection.liftFrameLimits();
     UUID offlineUuid =
         UUID.nameUUIDFromBytes(("OfflinePlayer:" + name).getBytes(StandardCharsets.UTF_8));
     LoginSuccess loginSuccess =
@@ -1389,10 +1392,13 @@ final class LoginSessionHandler implements SessionHandler {
     }
 
     @Override
-    public void passed(Probe.Outcome.Passed outcome, @Nullable ClientInformation settings) {
+    public void passed(
+        Probe.Outcome.Passed outcome, @Nullable ClientInformation settings, List<ByteBuf> held) {
       release();
       ConnectedPlayer joined = player;
       if (plan == Plan.BEFORE_AUTHENTICATION || joined == null) {
+        // Never admitted from this path: nothing it sent is for a server.
+        held.forEach(ByteBuf::release);
         verifiedBeforeAuthentication(outcome);
         return;
       }
@@ -1407,6 +1413,13 @@ final class LoginSessionHandler implements SessionHandler {
         waiting.waitFor(joined);
       }
       joined.join();
+      // What the client sent while probed (its brand, a mod's channels) now waits for its first
+      // server with the rest, as it would have without the probe.
+      if (connection.sessionHandler() instanceof SwitchWaitSessionHandler waitingForServer) {
+        held.forEach(waitingForServer::hold);
+      } else {
+        held.forEach(ByteBuf::release);
+      }
     }
 
     @Override

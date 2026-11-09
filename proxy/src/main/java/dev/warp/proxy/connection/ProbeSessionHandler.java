@@ -29,6 +29,10 @@ import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.proxy.antibot.Probe;
 
 import java.time.Duration;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Queue;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
@@ -46,7 +50,11 @@ import org.slf4j.LoggerFactory;
  * while the probe runs: whatever replaces it, the client gets the pipeline it would have had
  * without the anti-bot (section 9.12 of the research).
  *
- * <p>The client's settings are kept for its first server, as the switch handlers keep them.
+ * <p>The client's settings are kept for its first server, as the switch handlers keep them, and so
+ * is everything else it sends that no probe reads (its brand, a mod's channel registrations): held,
+ * in order, within the bounds of {@link SwitchWaitSessionHandler}, and handed to the listener with
+ * the pass, for the handler that waits for the first server. A client that floods the proxy
+ * meanwhile is no longer read, and times out.
  */
 final class ProbeSessionHandler implements SessionHandler {
 
@@ -60,8 +68,11 @@ final class ProbeSessionHandler implements SessionHandler {
      *
      * @param outcome the pass, with its flags and the measured round trip
      * @param settings the client's settings, if it sent them (it did unless the probe is pre-join)
+     * @param held the frames the client sent for its first server meanwhile, in order, which the
+     *     listener now owns: forwarded or released by it
      */
-    void passed(Probe.Outcome.Passed outcome, @Nullable ClientInformation settings);
+    void passed(
+        Probe.Outcome.Passed outcome, @Nullable ClientInformation settings, List<ByteBuf> held);
 
     /**
      * The client did what no real client does, or answered nothing.
@@ -82,6 +93,18 @@ final class ProbeSessionHandler implements SessionHandler {
   private @Nullable ClientInformation settings;
   private @Nullable ScheduledFuture<?> deadline;
   private boolean ended;
+
+  /** Frames the client sent for its first server, which no probe reads. */
+  private final Queue<ByteBuf> held = new ArrayDeque<>();
+
+  /** Bytes of {@link #held}. */
+  private long heldBytes;
+
+  /**
+   * Whether the next frame is the one of a watched packet just answered to the probe (a pong),
+   * which the decoder passes on after the packet: for no server, since none asked.
+   */
+  private boolean dropNextFrame;
 
   /**
    * Creates the handler; the probe starts when the handler is activated.
@@ -142,7 +165,10 @@ final class ProbeSessionHandler implements SessionHandler {
       return;
     }
     switch (packet) {
-      case ConfigPong pong -> judge(probe.pong(pong.id()));
+      case ConfigPong pong -> {
+        dropNextFrame = true; // watched: its frame follows, and answers the probe's ping only
+        judge(probe.pong(pong.id()));
+      }
       case KeepAlive keepAlive -> judge(probe.keepAlive(keepAlive.id()));
       case ClientInformation information -> {
         settings = information;
@@ -171,19 +197,40 @@ final class ProbeSessionHandler implements SessionHandler {
 
   @Override
   public void handleBlind(ByteBuf buf) {
-    // Ignored and counted, never a silent close (rule 4): modded clients send their own messages.
+    if (dropNextFrame) {
+      dropNextFrame = false;
+      buf.release();
+      return;
+    }
+    // Counted, never a silent close (rule 4): modded clients send their own messages. Held for the
+    // first server, as a client waiting for it has its frames held: nothing of a client that passes
+    // is lost, its brand first of all.
     probe.unknownPacket();
-    buf.release();
+    held.add(buf);
+    heldBytes += buf.readableBytes();
+    if (held.size() >= SwitchWaitSessionHandler.MAX_HELD_FRAMES
+        || heldBytes >= SwitchWaitSessionHandler.MAX_HELD_BYTES) {
+      if (connection.channel().config().isAutoRead()) {
+        logger.debug(
+            "{} sent {} frames ({} bytes) while probed: no longer read",
+            connection.remoteAddress(),
+            held.size(),
+            heldBytes);
+      }
+      connection.setAutoRead(false);
+    }
   }
 
   @Override
   public void deactivated() {
     cancelDeadline();
+    releaseHeld();
   }
 
   @Override
   public void disconnected() {
     cancelDeadline();
+    releaseHeld();
     if (!ended) {
       ended = true;
       listener.left();
@@ -224,6 +271,21 @@ final class ProbeSessionHandler implements SessionHandler {
     }
   }
 
+  /** Hands the frames held over, in order; whatever replaces this handler finds none to release. */
+  private List<ByteBuf> takeHeld() {
+    List<ByteBuf> frames = new ArrayList<>(held);
+    held.clear();
+    heldBytes = 0;
+    return frames;
+  }
+
+  private void releaseHeld() {
+    for (ByteBuf frame = held.poll(); frame != null; frame = held.poll()) {
+      frame.release();
+    }
+    heldBytes = 0;
+  }
+
   private void judge(Probe.Outcome outcome) {
     if (ended) {
       return;
@@ -236,7 +298,7 @@ final class ProbeSessionHandler implements SessionHandler {
         ended = true;
         cancelDeadline();
         logger.trace("Probe passed for {}: {}", connection.remoteAddress(), passed);
-        listener.passed(passed, settings);
+        listener.passed(passed, settings, takeHeld());
       }
       case Probe.Outcome.Failed failed -> {
         ended = true;

@@ -22,6 +22,7 @@ import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.proxy.antibot.Probe;
 
+import java.util.List;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
@@ -170,7 +171,7 @@ final class PreJoinProbeSessionHandler implements SessionHandler {
       case Probe.Outcome.Passed passed -> {
         ended = true;
         cancelDeadline();
-        listener.passed(passed, null);
+        listener.passed(passed, null, List.of());
       }
       case Probe.Outcome.Failed failed -> {
         ended = true;
