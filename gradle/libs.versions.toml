@@ -49,7 +49,7 @@ pitest-plugin = "1.19.0"
 
 # Benchmarking
 jmh = "1.37"
-jmh-plugin = "0.7.3"
+jmh-plugin = "0.7.4"
 velocity-native = "4.3.0"
 
 # Build plugins
