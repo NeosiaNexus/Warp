@@ -157,7 +157,6 @@ jobs:
       ref: ${{ github.sha }}
       version: ci
       jar-artifact: warp-jar
-      push: false
       # The jar `build` assembled has this runner's libdeflate (glibc, x86_64) only: the Alpine
       # image falls back to Java's zlib here. Release and edge jars carry every platform's.
       require-natives: false

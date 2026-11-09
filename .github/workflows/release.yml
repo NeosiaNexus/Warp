@@ -143,22 +143,34 @@ jobs:
           retention-days: 1
 
   # ghcr.io/neosianexus/warp:<version> and :<version>-alpine, for linux/amd64 and linux/arm64,
-  # from the released jar: tested, scanned, signed and attested (.github/workflows/_container.yml).
+  # from the released jar: tested and scanned (.github/workflows/_container.yml), then pushed,
+  # signed and attested (.github/workflows/_container-publish.yml).
+  container-test:
+    name: Container images (test)
+    needs: [release-please, publish]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    permissions:
+      contents: read # check out the code
+    uses: $/.github/workflows/_container.yml
+    with:
+      ref: ${{ needs.release-please.outputs.tag_name }}
+      version: ${{ needs.release-please.outputs.version }}
+      jar-artifact: release-jar
+
   container:
     name: Container images
-    needs: [release-please, publish]
+    needs: [release-please, container-test]
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     permissions:
       contents: read # check out the code
       packages: write # push the images to GHCR
       id-token: write # sign the images and their provenance (Sigstore)
       attestations: write # store the attestations on the repository
-    uses: $/.github/workflows/_container.yml
+    uses: $/.github/workflows/_container-publish.yml
     with:
       ref: ${{ needs.release-please.outputs.tag_name }}
       version: ${{ needs.release-please.outputs.version }}
       jar-artifact: release-jar
-      push: true
 
   # The Helm chart, oci://ghcr.io/neosianexus/charts/warp:<version>, signed with cosign (keyless).
   # Its version and appVersion are version.txt's: release-please bumps them (extra-files).

@@ -2,8 +2,8 @@ name: Edge images
 
 # ghcr.io/neosianexus/warp:edge and :edge-alpine from every push to main: the four Linux builds of
 # libdeflate (.github/workflows/_natives.yml), the shadow jar with them, then the images, tested,
-# scanned, signed and pushed (.github/workflows/_container.yml). Releases publish their own tags
-# from release.yml.
+# scanned (.github/workflows/_container.yml), then signed and pushed (_container-publish.yml).
+# Releases publish their own tags from release.yml.
 
 on:
   push:
@@ -64,17 +64,30 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  images:
-    name: Images
+  # Built for the runner, started, probed, pinged, drained and scanned (_container.yml)...
+  test:
+    name: Test
     needs: jar
     permissions:
       contents: read # check out the code
-      packages: write # push the images to GHCR
-      id-token: write # sign the images and their provenance (Sigstore)
-      attestations: write # store the attestations on the repository
     uses: $/.github/workflows/_container.yml
     with:
       ref: ${{ github.sha }}
       version: edge
       jar-artifact: edge-jar
-      push: true
+
+  # ...then built for linux/amd64 and linux/arm64, pushed, signed and attested
+  # (_container-publish.yml).
+  images:
+    name: Images
+    needs: [jar, test]
+    permissions:
+      contents: read # check out the code
+      packages: write # push the images to GHCR
+      id-token: write # sign the images and their provenance (Sigstore)
+      attestations: write # store the attestations on the repository
+    uses: $/.github/workflows/_container-publish.yml
+    with:
+      ref: ${{ github.sha }}
+      version: edge
+      jar-artifact: edge-jar

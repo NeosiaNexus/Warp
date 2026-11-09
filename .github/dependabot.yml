@@ -107,8 +107,8 @@ updates:
 
   - package-ecosystem: docker
     # The Dockerfile's base images (eclipse-temurin, by digest). The alpine digest also lives in
-    # .github/workflows/_container.yml, which the github-actions entry does not track: update it
-    # with the Dockerfile's.
+    # .github/workflows/_container.yml and _container-publish.yml, which the github-actions entry
+    # does not track: update both with the Dockerfile's.
     directory: /
     schedule:
       interval: weekly
