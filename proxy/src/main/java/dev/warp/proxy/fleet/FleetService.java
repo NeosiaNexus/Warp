@@ -420,10 +420,15 @@ public final class FleetService implements Fleet, AutoCloseable {
       logger.info("The fleet store is back: resynchronising");
       executor.execute(this::resync);
     } else if (now == StoreState.DEGRADED) {
+      Throwable failure =
+          store instanceof dev.warp.proxy.fleet.valkey.ValkeyFleetStore valkey
+              ? valkey.lastFailure()
+              : null;
       logger.warn(
           LogCode.FLEET_STORE_UNAVAILABLE.marker(),
-          "The fleet store is unreachable: the view of the other proxies is frozen, logins follow"
-              + " fleet.on-store-down = {}",
+          "The fleet store is unreachable{}: the view of the other proxies is frozen, logins"
+              + " follow fleet.on-store-down = {}",
+          failure == null ? "" : " (" + cause(failure) + ")",
           config.onStoreDown().name().toLowerCase(Locale.ROOT).replace('_', '-'));
     }
   }

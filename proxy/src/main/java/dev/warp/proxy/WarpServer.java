@@ -68,6 +68,7 @@ import dev.warp.proxy.drain.ProxyDrain;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.fleet.FleetService;
 import dev.warp.proxy.fleet.SingleNodeStore;
+import dev.warp.proxy.fleet.valkey.ValkeyFleetStore;
 import dev.warp.proxy.limit.Blocklist;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.logging.LogCode;
@@ -1138,12 +1139,10 @@ public final class WarpServer implements Warp {
   }
 
   /** The store {@code fleet.store.type} names. */
-  private static FleetStore createStore(FleetConfig config) {
+  private FleetStore createStore(FleetConfig config) {
     return switch (config.store().type()) {
       case NONE -> new SingleNodeStore();
-      case VALKEY ->
-          throw new IllegalStateException(
-              "fleet.store.type = valkey is not available in this build yet: set it to none");
+      case VALKEY -> new ValkeyFleetStore(config, this::workerGroup, this::clientChannelClass);
     };
   }
 
