@@ -1414,6 +1414,71 @@ Stops: headless bots without physics (A8, A9). Tests: raw clients and mineflayer
 mineflayer with physics passes (documented limit), real vanilla clients pass on every version family;
 JMH for the cost per verification; a soak test at the bounds of §9.11.
 
+**Delivered** (`feat(proxy): virtual world with the anti-bot world check, the hold for players
+without a server and a plugin API`):
+
+- The world (`dev.warp.proxy.world`, `WorldLayouts`): a void with one 3x3 stone platform in the chunk
+  at (0, 0), for every version from 1.7.2 to 26.3. Registries as §9.8.2 decided, with one change of
+  source: no generated table per release. From 1.20.5 the proxy offers Select Known Packs with
+  `minecraft:core` at every release of the client's protocol (1.21.7 and 1.21.8 share one; the
+  client acknowledges the one that is its own) and sends three Registry Data packets whose entries
+  are ids without data: `minecraft:overworld`, `minecraft:plains`, and the damage types the client
+  resolves when it creates its level (the 23 of 1.19.4, `campfire` from 1.21), which must exist or
+  the client crashes on join (the LimboAPI 1.19.4 lesson). The client's built-in pack supplies the
+  data, so a release adds nothing until Mojang adds an eagerly resolved entry. 1.16 to 1.20.4 get
+  a hand-written minimal codec (one dimension, one biome, chat types from 1.19, the eager damage
+  types and empty trim registries from 1.19.4), inside Join Game until 1.20.1 and as one nameless
+  Registry Data in 1.20.2 to 1.20.4. 1.7 to 1.15 need nothing. A client that acknowledges none of
+  the offered packs (a version-translating mod) is let through without the world, flagged.
+- Packets (`protocol`): the 1.20.2+ Join Game body is built verbatim per layout (1.20.2, 1.20.5,
+  1.21.2 sea level, 26.2 online mode); encode-only clientbound `SyncPlayerPosition`,
+  `SetDefaultSpawnPosition`, `GameEvent`, `EmptyChunk` (fourteen layouts, 1.7 to 1.21.5),
+  `BlockUpdate`, `PlayPing`, `WindowConfirmation`, config `RegistryData` and `KnownPacks`; the
+  serverbound `TeleportConfirm`, the four `ClientMovement` packets, `PlayPong`, `TickEnd` and the
+  client's Known Packs live in a separate registry (`StateRegistry.world`) that a decoder reads only
+  while its client stands in the world (`MinecraftDecoder.useRegistry`): nothing is registered for
+  players on servers, so the PLAY path is untouched. Every id is checked against Mojang's reports
+  (1.21 to 26.3) and minecraft-data (1.7.6 to 26.1) by `StateRegistryTest`.
+- The check (`WorldCheck`, `WorldSessionHandler`, `WorldConfigSessionHandler`): teleport to a random
+  height over a platform at a random height, Default Spawn Position (1.19.3+), Game Event 13
+  (1.20.3+), one empty chunk (Sonar's nine were not needed: the client waits for the chunk under
+  it only), nine Block Updates, a Ping (1.17+) or Confirm Transaction (1.7 to 1.16.5). Expected: the
+  confirmation (1.9+), a first position exactly at the target and off the ground, `v' = (v - 0.08)
+  * 0.98f` per position within 1e-6 (1.8 multiplied by 0.98 as a double), a landing exactly on the
+  platform 8 to 12 ticks later, the echo. Only one block type: a slab, carpet or snow layer has a
+  different block state id in every release since 1.13, so the platform is stone (state 1 in every
+  version) and the random heights carry the entropy. Verdicts per §10: a wrong id, a packet illegal
+  in the state or a first position elsewhere fail and strike; a wrong fall gets one retry from a new
+  height and then fails under `Refusal.WORLD_CHECK_FAILED`, which never strikes; a time-out never
+  strikes; a late echo or the retry are flags, two flags across probe and world let the player in
+  without trusting it. Deadlines are `probe-timeout + 4 RTT` per stage, 30 s in all. Tick End is
+  counted only. Modded and Bedrock platforms skip the world (`anti-bot.world.check` for listeners
+  whose backends are modded). The identity is trusted only after the world, so a probe pass alone
+  no longer stores it when the check is on.
+- The hand-off: the player's first server is a switch from the world. A 1.20.2+ client goes through
+  `ReconfigurationSwitch` (Start Configuration from the world, the acknowledgement read by the
+  world's handler, then the server's configuration); an older client through `RespawnSwitch`, whose
+  Join Game and Respawn replace the world. The backend is opened only after the pass.
+- The hold (`anti-bot.world.hold`): a player with no server left (none at login, every fallback
+  failed) is put in the world instead of being disconnected, from the configuration phase, from a
+  game (Start Configuration, then the world's registries) or as a respawn before 1.20.2. It is told
+  once in chat, sees the time left in its action bar every second (chat every 15 s on 1.7), keeps
+  the proxy's commands, and the proxy tries its route's or the default server again every
+  `retry-every` (5 s) while it is healthy, up to `max-wait` (5 min), then disconnects it with its
+  own reason. `warp_antibot_holds_total` and `warp_antibot_world_players` count them.
+- The API (`dev.warp.api.world.VirtualWorld`, `Warp.world()`): `supports`, `hold` (from anywhere,
+  the proxy's own retries stop), `holds`, `players`, `release(player, server)` and `release(player)`
+  (the server the player would have joined). A held player is a full `Player`: messages, titles,
+  boss bars and sounds reach it.
+
+**Left for later**: pre-compressing the static packets per version (they are pre-encoded and go
+through the connection's compressor like any packet; the chunk is about 300 bytes before 1.18 and
+under 1 KiB after); Update Tags for 26.1+ (Sonar sends them; the e2e matrix will say whether the
+client needs any without a server); a Bedrock proof (`ClientPlatform.Bedrock` exists and skips the
+world, nothing sets it yet); the e2e scenario with real clients on every version family, which is
+the verification of the 26.x layouts and of the known-packs path against real clients; the JMH cost
+measurement; events for the world (none in §9.14, none added).
+
 ### Phase 4: escalation and fleets
 
 - Map captcha (Map Data, Set Container Slot, Set Held Item per version), the "bots passing" level, the

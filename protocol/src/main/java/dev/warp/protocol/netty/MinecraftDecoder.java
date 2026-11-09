@@ -113,6 +113,12 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
   /** Registry for the current (state, direction) pair, recomputed on {@link #setState}. */
   private PacketRegistry registry;
 
+  /**
+   * A registry read in place of the state's, while a session asks for one; see {@link
+   * #useRegistry}.
+   */
+  private @Nullable PacketRegistry override;
+
   /** Compression state, or {@code null} while the connection is uncompressed. */
   private @Nullable FrameDecompressor decompressor;
 
@@ -448,7 +454,29 @@ public final class MinecraftDecoder extends MessageToMessageDecoder<ByteBuf> {
    */
   public void setState(ProtocolState state) {
     this.state = state;
+    this.override = null;
     this.registry = StateRegistry.get(state, direction);
+  }
+
+  /**
+   * Reads packets with {@code registry} instead of the state's own, until the state changes or
+   * {@code null} is given: how the anti-bot's virtual world decodes the movement packets a backend
+   * reads from the client otherwise, without registering them for every player.
+   *
+   * @param registry the registry to read with, or {@code null} for the state's own
+   */
+  public void useRegistry(@Nullable PacketRegistry registry) {
+    this.override = registry;
+    this.registry = registry != null ? registry : StateRegistry.get(state, direction);
+  }
+
+  /**
+   * Returns whether a registry other than the state's own is in use.
+   *
+   * @return {@code true} after {@link #useRegistry} with a registry, until the state changes
+   */
+  public boolean usesOwnRegistry() {
+    return override != null;
   }
 
   /**

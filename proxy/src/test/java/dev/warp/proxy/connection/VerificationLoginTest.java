@@ -137,6 +137,8 @@ class VerificationLoginTest {
   private UnaryOperator<@Nullable String> env = _ -> null;
   private boolean onlineMode;
   private AntiBotConfig.@Nullable Verification verification;
+  private AntiBotConfig.World world =
+      new AntiBotConfig.World(false, false, Duration.ofSeconds(5), Duration.ofMinutes(5));
   private int compressionThreshold = -1;
 
   /** Whether frames carry the data-length prefix of compressed framing, from Set Compression on. */
@@ -819,7 +821,8 @@ class VerificationLoginTest {
         d.attack(),
         d.blocklist(),
         d.checkTimeout(),
-        Objects.requireNonNull(verification, "start() first"));
+        Objects.requireNonNull(verification, "start() first"),
+        world);
   }
 
   /** An anti-bot on this test's clocks and secrets: the proxy's, or a fleet peer's. */

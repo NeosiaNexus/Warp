@@ -51,6 +51,7 @@ import org.jspecify.annotations.Nullable;
  * @param checks how many plugin checks are registered
  * @param sharedStore whether a plugin shares the trusted identities
  * @param verifications the verification of unknown identities
+ * @param world the virtual world: its checks and its holds
  * @param now when the snapshot was taken
  */
 public record AntiBotStatus(
@@ -74,7 +75,30 @@ public record AntiBotStatus(
     int checks,
     boolean sharedStore,
     Verifications verifications,
+    World world,
     Instant now) {
+
+  /**
+   * The virtual world: its checks and its holds.
+   *
+   * @param holding players in the world right now, whatever for
+   * @param checks world checks started
+   * @param checksPassed world checks passed
+   * @param checksRetried world checks that needed their retry (a physics mismatch once)
+   * @param checksFailed world checks failed, every reason
+   * @param holds players held for want of a server
+   * @param holdsReleased holds that ended on a server
+   * @param holdsExpired holds that ran out of time
+   */
+  public record World(
+      int holding,
+      long checks,
+      long checksPassed,
+      long checksRetried,
+      long checksFailed,
+      long holds,
+      long holdsReleased,
+      long holdsExpired) {}
 
   /**
    * The verification of unknown identities: the probes running and waiting, their outcomes since

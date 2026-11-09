@@ -79,6 +79,7 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-BOT-010](#w-bot-010) | warning | The anti-bot journal was cut short |
 | [W-BOT-011](#w-bot-011) | warning | The anti-bot token key cannot be rotated |
 | [W-BOT-012](#w-bot-012) | warning | A verified player could not be transferred back |
+| [W-BOT-013](#w-bot-013) | warning | A player could not be put in the virtual world |
 | [W-LOG-001](#w-log-001) | warning | Log sinks receive nothing |
 | [W-MGMT-001](#w-mgmt-001) | warning | A management request was refused |
 | [W-MGMT-002](#w-mgmt-002) | warning | A renewed management certificate could not be read |
@@ -713,6 +714,14 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** A player verified before authentication during an attack must be transferred back to the proxy, but its handshake named no usable host and anti-bot.verification.transfer is not set. The player was asked to reconnect instead.
 
 **Fix.** Set anti-bot.verification.transfer.host and port to the address players connect to.
+
+### W-BOT-013
+
+**A player could not be put in the virtual world** (warning)
+
+**Cause.** The proxy tried to hold a player in its virtual world (the anti-bot's world check, or a wait for a server that is down), but the world has no layout for the client's version or platform, or the client left meanwhile. The world check was skipped, or the player was disconnected as it would have been without the world.
+
+**Fix.** Report the client version named in the message if it is one Warp supports; modded clients are expected here, set anti-bot.world.check = false for listeners whose backends are modded.
 
 ## Logging
 

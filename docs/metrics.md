@@ -121,6 +121,9 @@ backend towards the client. The blind ratio of a proxy is
 | `warp_antibot_queue_wait_seconds` | summary | | How long logins granted a verification from the line waited. |
 | `warp_antibot_verifications_total` | counter | `result` | Verifications by result: `passed`, `escalated`, `busy`, or `failed_<reason>`. |
 | `warp_antibot_tokens_total` | counter | `result` | Verification tokens `issued` to transferred clients, and `accepted` or `rejected` on return. |
+| `warp_antibot_world_players` | gauge | | Players in the virtual world right now: being checked, held for a server, or held by a plugin. |
+| `warp_antibot_world_checks_total` | counter | `result` | World checks by result: `passed`, `retried` (a physics mismatch given its second fall), `failed`. |
+| `warp_antibot_holds_total` | counter | `result` | Players held in the world for want of a server: `started`, `released` to a server, `expired`. |
 
 ### The JVM and the process
 

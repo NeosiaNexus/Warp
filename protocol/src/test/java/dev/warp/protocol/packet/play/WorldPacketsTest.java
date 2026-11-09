@@ -1,0 +1,122 @@
+/*
+ * Copyright (C) 2026 Warp Contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+package dev.warp.protocol.packet.play;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import dev.warp.protocol.ProtocolVersion;
+import dev.warp.protocol.codec.VarInt;
+
+import java.util.stream.Stream;
+
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+
+/** The codecs of the virtual world's packets. */
+@DisplayName("world packets")
+class WorldPacketsTest {
+
+  static Stream<ProtocolVersion> everyVersion() {
+    return ProtocolVersion.values().stream();
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("everyVersion")
+  @DisplayName("should round-trip the client's movement packets")
+  void movementRoundTrip(ProtocolVersion version) {
+    roundTrip(
+        ClientMovement.PositionRotation.CODEC,
+        new ClientMovement.PositionRotation(8.5, 72.25, 3.5, 90f, -10f, false),
+        version);
+    roundTrip(
+        ClientMovement.Position.CODEC, new ClientMovement.Position(8.5, 71.9, 3.5, true), version);
+    roundTrip(ClientMovement.Rotation.CODEC, new ClientMovement.Rotation(1f, 2f, true), version);
+    roundTrip(ClientMovement.Flags.CODEC, new ClientMovement.Flags(true), version);
+  }
+
+  @Test
+  @DisplayName("should read 1.7's stance and write 1.21.2's flag byte")
+  void layoutEdges() {
+    ByteBuf buf = Unpooled.buffer();
+    try {
+      ClientMovement.Position.CODEC.encode(
+          new ClientMovement.Position(1, 64, 2, true), buf, ProtocolVersion.MINECRAFT_1_7_6);
+      assertEquals(8 * 4 + 1, buf.readableBytes(), "x, feet, stance, z and on ground");
+      buf.skipBytes(16);
+      assertEquals(64 + ClientMovement.LEGACY_STANCE, buf.readDouble());
+      buf.clear();
+      ClientMovement.Flags.CODEC.encode(
+          new ClientMovement.Flags(true), buf, ProtocolVersion.MINECRAFT_1_21_4);
+      assertEquals(ClientMovement.ON_GROUND_BIT, buf.readByte());
+    } finally {
+      buf.release();
+    }
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("everyVersion")
+  @DisplayName("should encode the world's clientbound packets for every version")
+  void clientboundEncode(ProtocolVersion version) {
+    ByteBuf buf = Unpooled.buffer();
+    try {
+      EmptyChunk.CODEC.encode(new EmptyChunk(0, 0), buf, version);
+      assertTrue(buf.readableBytes() > 12, "a chunk column");
+      buf.clear();
+      SyncPlayerPosition.CODEC.encode(new SyncPlayerPosition(7, 8.5, 72, 3.5, 0, 0), buf, version);
+      assertTrue(buf.readableBytes() >= 33);
+      buf.clear();
+      BlockUpdate.CODEC.encode(new BlockUpdate(8, 64, 3, BlockUpdate.STONE), buf, version);
+      if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_8)) {
+        buf.readLong();
+        int block = VarInt.read(buf);
+        assertEquals(version.isAtLeast(ProtocolVersion.MINECRAFT_1_13) ? 1 : 16, block);
+      }
+      buf.clear();
+      SetDefaultSpawnPosition.CODEC.encode(new SetDefaultSpawnPosition(8, 65, 3), buf, version);
+      GameEvent.CODEC.encode(new GameEvent(GameEvent.START_WAITING_FOR_CHUNKS, 0), buf, version);
+    } finally {
+      buf.release();
+    }
+  }
+
+  @Test
+  @DisplayName("should pack block positions with y in the middle before 1.14 and at the end after")
+  void positionPacking() {
+    long old = BlockUpdate.packPosition(8, 64, 3, ProtocolVersion.MINECRAFT_1_13_2);
+    long modern = BlockUpdate.packPosition(8, 64, 3, ProtocolVersion.MINECRAFT_1_14);
+
+    assertEquals((8L << 38) | (64L << 26) | 3L, old);
+    assertEquals((8L << 38) | (3L << 12) | 64L, modern);
+  }
+
+  private static <T extends dev.warp.protocol.packet.Packet> void roundTrip(
+      dev.warp.protocol.packet.PacketCodec<T> codec, T packet, ProtocolVersion version) {
+    ByteBuf buf = Unpooled.buffer();
+    try {
+      codec.encode(packet, buf, version);
+      assertEquals(packet, codec.decode(buf, version), version.toString());
+      assertEquals(0, buf.readableBytes());
+    } finally {
+      buf.release();
+    }
+  }
+}

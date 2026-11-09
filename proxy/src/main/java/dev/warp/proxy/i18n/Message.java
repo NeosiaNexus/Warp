@@ -98,6 +98,7 @@ public enum Message {
   VERIFICATION_TIMED_OUT("warp.login.verification-timed-out", Kind.DISCONNECT),
   /** A player verified before authentication, on a version without transfers. */
   VERIFIED_RECONNECT("warp.login.verified-reconnect", Kind.DISCONNECT),
+  WORLD_CHECK_FAILED("warp.login.world-check-failed", Kind.DISCONNECT),
   /** A username no vanilla client sends. */
   INVALID_USERNAME("warp.login.invalid-username", Kind.DISCONNECT),
   /** A login packet sent out of order: a broken or modified client. */
@@ -131,6 +132,7 @@ public enum Message {
   FALLBACK_DENIED("warp.disconnect.fallback-denied", Kind.DISCONNECT, "server"),
   /** A server switch took too long. */
   SWITCH_TIMED_OUT("warp.disconnect.switch-timed-out", Kind.DISCONNECT),
+  HOLD_EXPIRED("warp.disconnect.hold-expired", Kind.DISCONNECT),
   /** Plugins took too long to decide where the player goes. */
   WAIT_TIMED_OUT("warp.disconnect.wait-timed-out", Kind.DISCONNECT),
   /** A reason too large for the client, replaced by this one. */
@@ -154,6 +156,9 @@ public enum Message {
   ALREADY_ON_SERVER("warp.connect.already-on-server", Kind.CHAT, "server"),
   /** The player is moved to a fallback server. */
   CONNECTING("warp.connect.connecting", Kind.CHAT, "server"),
+  HOLD_ENTERED("warp.hold.entered", Kind.CHAT),
+  HOLD_WAITING("warp.hold.waiting", Kind.CHAT, "seconds"),
+  HOLD_RETRYING("warp.hold.retrying", Kind.CHAT, "server"),
   /** The player was moved to a fallback after its server disconnected it with a reason. */
   FALLBACK_KICKED("warp.fallback.kicked", Kind.CHAT, "server", "fallback", "reason"),
   /** The player was moved to a fallback after its server went away. */

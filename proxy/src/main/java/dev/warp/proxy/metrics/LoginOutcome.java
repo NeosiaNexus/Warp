@@ -68,6 +68,7 @@ public enum LoginOutcome {
           BLOCKLISTED,
           LOCKDOWN,
           CHECK_FAILED,
+          WORLD_CHECK_FAILED,
           CONNECTION_RATE,
           PENDING_CONNECTIONS ->
           REFUSED_ANTIBOT;

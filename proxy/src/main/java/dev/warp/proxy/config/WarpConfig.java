@@ -1958,6 +1958,24 @@ public final class WarpConfig {
               port = 0
             }
           }
+
+          # The virtual world: a void with one platform inside the proxy, for every version.
+          # `check` makes unknown players fall through it after the probe (a teleport to echo,
+          # the vanilla gravity over a few ticks, a landing on the platform, a ping): what tells a
+          # game from a script in offline mode. Physics mismatches get one retry and never count
+          # against the address. Turn it off for listeners whose backends are modded: Forge and
+          # NeoForge clients refuse a vanilla-looking world. `hold` keeps players in the world
+          # when their server is down or no server of their group is healthy, with a countdown
+          # in the action bar, and tries again every `retry-every` for up to `max-wait`, instead
+          # of disconnecting them.
+          world {
+            check = true
+            hold {
+              enabled = true
+              retry-every = 5s
+              max-wait = 5m
+            }
+          }
         }
 
         # BungeeCord's plugin messaging channel ("BungeeCord" before 1.13, "bungeecord:main"

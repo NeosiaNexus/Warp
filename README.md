@@ -100,6 +100,12 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
   never pay again; during an attack in online mode, unknown players are verified before the proxy
   asks Mojang about them, so fake authentications never reach the session server. Nothing stays in
   the pipeline after verification, and the PLAY path is untouched.
+- **Virtual world**: a void with one platform inside the proxy, for every version from 1.7.10.
+  Unknown players fall through it after the probe (a teleport to confirm, the vanilla gravity over
+  a few ticks, a landing, a ping to echo): what tells a game from a script in offline mode, with
+  one retry and no strike for a stumble. Players whose server is down wait there with a countdown
+  instead of being disconnected, and plugins can hold a player there and release it to a server;
+  the player reaches its server in the same session, as any server switch.
 - **Blind forwarding**: frames Warp does not inspect are never deserialized; they go from one
   connection to the other as raw bytes.
 - **Compression passthrough**: Warp reads the packet id of a compressed frame without inflating it.
