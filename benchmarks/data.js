@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794069978012,
+  "lastUpdate": 1794220041990,
   "repoUrl": "https://github.com/NeosiaNexus/Warp",
   "entries": {
     "Hot path on AMD EPYC 9V45 96-Core Processor (4 CPUs)": [
@@ -400,6 +400,156 @@ window.BENCHMARK_DATA = {
             "range": "± 17.5",
             "unit": "ns/packet",
             "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.4.1, 3 forks × 10 iterations of 2 s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "63867369+NeosiaNexus@users.noreply.github.com",
+            "name": "NeosiaNexus",
+            "username": "NeosiaNexus"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "37b18b8f0b496a79a2202dfe14085984d862b390",
+          "message": "fix(e2e): root-cause the 1.16 keep-alive timeout, Paper boot hangs and the drain exit-code capture (#180)\n\n## Why\n\nThe E2E matrix must be green for real reasons. This PR root-causes the flakes still on the list, fixes the one that is a Warp bug, and records the evidence for the ones the epoll change (#157, merged in #158) already removed.\n\nEvidence base: the `result.json` artifacts of the last 8 complete runs of the E2E matrix on main (42471569717, 42390368181, 42387943603, 42363483634, 42206866397, 42015535700, 41818076748, 41642155382): 467 version results, 16,902 scenario runs. One scenario failure in all of them: `drain` on 1.14.3 in run 42363483634 (`warp-drain never logged its exit code`). No boot retry, no setup failure, no other flaky scenario.\n\n## The drain flake (fixed, a Warp bug)\n\n`warp-drain` exited with 0 and logged the drain summary and `Stopped in 2.02 s`, but not `Exiting with code 0`. The line is logged by `WarpServer.stopAfterDrain`, right before `System.exit`, on the drain's thread, which is a daemon (`ExecutorDrainScheduler`). By then `stop()` has ended the event loops, the management server runs on daemon threads too, and no non-daemon thread is left: the JVM starts exiting on its own, with 0, and runs the shutdown hooks. The hook stops Log4j; a log call that comes after it is dropped, and the `System.exit` of the drain's thread arrives during a shutdown already in progress. Under load the daemon thread loses that race: the exit line is missing, and a drain that timed out would have ended with 0 instead of `EXIT_DRAIN_TIMED_OUT`.\n\nFix: phase 3 runs on a `warp-stop` platform thread with `daemon(false)` set explicitly (the daemon status is inherited from the creating thread, which is why the `Thread.ofPlatform()` alone was not enough; the test caught it). `WarpServerDrainTest` now asserts that the exit consumer runs on a non-daemon thread; it fails on main. The harness check stays: the exit line is the proof that Warp chose the exit code, and `expectExit` now says so.\n\nNot reproduced locally in 100 drains (60 idle, 40 under 6 busy loops), as expected of a race the CI runner loses once in several hundred drains.\n\n## #110, a 1.16 crowd bot timed out by the lobby (fixed by #157, evidence here)\n\nThe lobby dropped `e2e_crowd8` with `Timed out` 15 s after it joined, and Warp logged `Backend kicked player`: vanilla 1.16 drops a player whose first keep-alive is unanswered after 15 s. Warp answers backend keep-alives itself, so the server never read the answer: the autoRead race of vanilla servers 1.12+ on NIO (#132), where the server stops reading a player right after login. #157 moved backends from 1.12 to the epoll transport. Since then: `crowd` on 1.16, 1.16.1, 1.16.2, 1.16.3 and 1.16.5 passed in all 8 runs (40 of 40), and `player-chat` and `chat` likewise. Nothing in Warp's keep-alive path to fix.\n\n## #97, Paper 1.16 boot hangs (not reproduced)\n\nZero boot retries in the 8 runs (`bootRetries` is empty in every `result.json`; about 80 boots of Paper 1.16 backends). The harness already boots a backend that hangs once more, after dumping its threads with SIGQUIT into its log, annotates it and lists it in the reports; scenarios never retry, so no Warp bug can hide behind it. Without a thread dump of an occurrence the cause stays open; the issue stays open until one is captured.\n\n## BackendPingerTest.invalidAnswer\n\nFixed on main by #173 (the pinger read before its handler was in place). The remaining dependence was the 5 s ping deadline of tests that expect another failure than a time-out, which a stalled worker could turn into `TIMED_OUT`: those tests now use a 30 s deadline (`GENEROUS`) and wait 60 s for the future, so the deadline cannot fire first. No sleeps, no wall-clock assertions.\n\n## Tests\n\n- `./gradlew :proxy:test --tests '*BackendPingerTest*' --tests '*WarpServerDrainTest*' --max-workers=3`: green (the drain test is red on main).\n- `./gradlew spotlessApply` and `./gradlew build --max-workers=3`: green.\n- The full E2E matrix runs on this PR (it changes the proxy and the harness).\n\nCloses #110\n\nhttps://claude.ai/code/session_01KfTqMJisRZjhNrngHtziGy\n\nhttps://claude.ai/code/session_01KfTqMJisRZjhNrngHtziGy",
+          "timestamp": "2026-11-09T10:56:27+01:00",
+          "tree_id": "069d434d4d172ef9b1714512f078ba858e1fa9e4",
+          "url": "https://github.com/NeosiaNexus/Warp/commit/37b18b8f0b496a79a2202dfe14085984d862b390"
+        },
+        "date": 1794220041396,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "CipherBenchmark.decrypt[buffer=DIRECT,frameSize=1024]",
+            "value": 15934.6,
+            "range": "± 194.3",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "CipherBenchmark.decrypt[buffer=HEAP,frameSize=1024]",
+            "value": 16521.7,
+            "range": "± 374.4",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "CipherBenchmark.encrypt[buffer=DIRECT,frameSize=1024]",
+            "value": 16745.2,
+            "range": "± 322.0",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "CipherBenchmark.encrypt[buffer=HEAP,frameSize=1024]",
+            "value": 15924.5,
+            "range": "± 120.5",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "CodecCostBenchmark.deflate[connections=1,implementation=WARP_NATIVE,level=6,workload=CHUNK]",
+            "value": 174508.8,
+            "range": "± 3396.2",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "CodecCostBenchmark.deflate[connections=1,implementation=WARP_NATIVE,level=6,workload=MIXED]",
+            "value": 6964.9,
+            "range": "± 40.5",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "CodecCostBenchmark.deflate[connections=1,implementation=WARP_NATIVE,level=6,workload=SMALL]",
+            "value": 8386.3,
+            "range": "± 76.5",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "CodecCostBenchmark.inflate[connections=1,implementation=WARP_NATIVE,level=6,workload=CHUNK]",
+            "value": 15573.8,
+            "range": "± 442.4",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "CodecCostBenchmark.inflate[connections=1,implementation=WARP_NATIVE,level=6,workload=MIXED]",
+            "value": 656.7,
+            "range": "± 16.0",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "CodecCostBenchmark.inflate[connections=1,implementation=WARP_NATIVE,level=6,workload=SMALL]",
+            "value": 2914.7,
+            "range": "± 12.5",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 1485.1,
+            "range": "± 56.2",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 105.4,
+            "range": "± 0.7",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=false,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 257,
+            "range": "± 3.2",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=CHUNK]",
+            "value": 62377.9,
+            "range": "± 264.5",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=ENTITY_MOVE]",
+            "value": 423.4,
+            "range": "± 5",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "ForwardingPathBenchmark.relayClientbound[encrypted=true,mode=PASSTHROUGH,workload=MIXED]",
+            "value": 4456.5,
+            "range": "± 49.4",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=CHUNK]",
+            "value": 1095.8,
+            "range": "± 13.7",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
+          },
+          {
+            "name": "PacketIdPeekBenchmark.peek[workload=MIXED]",
+            "value": 808.1,
+            "range": "± 8.2",
+            "unit": "ns/packet",
+            "extra": "AMD EPYC 9V45 96-Core Processor (4 CPUs)\nJDK 25.0.5, 3 forks × 10 iterations of 2 s"
           }
         ]
       }
