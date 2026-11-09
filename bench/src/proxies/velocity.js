@@ -14,11 +14,19 @@ export class VelocityProxy extends Proxy {
     return 'modern';
   }
 
-  async spawnSpec() {
-    this.nativeChecks = [
+  // One line: "Connections will use epoll channels, libdeflate (Linux x86_64) compression, OpenSSL
+  // 3.x.x (Linux x86_64) ciphers". The fallback reads "Java compression, Java ciphers", so the
+  // compression pattern must name libdeflate: matching the word "compression" alone would confirm
+  // the fallback. Ciphers are reported but not required: offline mode never encrypts a connection.
+  get nativeChecks() {
+    return [
       { label: 'transport', pattern: /will use \{?epoll/, required: true },
-      { label: 'compression', pattern: /compression/i, required: false },
+      { label: 'compression', pattern: /libdeflate[^,]*compression/, required: true },
+      { label: 'cipher', pattern: /OpenSSL[^,]*ciphers?|native[^,]*ciphers?/, required: false },
     ];
+  }
+
+  async spawnSpec() {
     this.stopCommand = 'shutdown';
     this.failurePatterns = [/Unable to start Velocity/i];
     const dir = this.freshWorkDir();

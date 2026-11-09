@@ -14,11 +14,19 @@ export class BungeeProxy extends Proxy {
     return 'legacy';
   }
 
-  async spawnSpec() {
-    this.nativeChecks = [
-      { label: 'compression', pattern: /native (zlib|compression|code)/i, required: false },
-      { label: 'cipher', pattern: /native (cipher|mbed)/i, required: false },
+  // BungeeCord logs "Using zlib based native compressor." (or libdeflate in newer builds) and
+  // "Using mbed TLS based native cipher." when its natives load, and "Epoll is working, utilising
+  // it!" for the transport. No compressor line means Java zlib: the run is marked unfair, not
+  // compared. The cipher is reported only: offline mode never encrypts a connection.
+  get nativeChecks() {
+    return [
+      { label: 'transport', pattern: /Epoll is working/i, required: true },
+      { label: 'compression', pattern: /native compressor/i, required: true },
+      { label: 'cipher', pattern: /native cipher/i, required: false },
     ];
+  }
+
+  async spawnSpec() {
     this.failurePatterns = [/Could not (bind|start)/i];
     this.stopCommand = 'end';
     const dir = this.freshWorkDir();

@@ -14,7 +14,7 @@ export class WarpProxy extends Proxy {
     return 'modern';
   }
 
-  nativeCheckDefs() {
+  get nativeChecks() {
     return [
       { label: 'compression', pattern: /Compression: libdeflate/, required: true },
       { label: 'transport', pattern: /Using epoll native transport/, required: true },
@@ -22,7 +22,6 @@ export class WarpProxy extends Proxy {
   }
 
   async spawnSpec() {
-    this.nativeChecks = this.nativeCheckDefs();
     this.stopCommand = null;
     const dir = this.freshWorkDir();
     const jar = this.localJar ?? (await download(this.spec.url, join(this.cacheDir, 'proxies', `warp-${this.spec.version}.jar`), { sha256: this.spec.sha256 }));

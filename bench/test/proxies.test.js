@@ -75,3 +75,43 @@ describe('BungeeCord config', () => {
     assert.equal(make('bungeecord').forwarding, 'legacy');
   });
 });
+
+// The natives check reads the start-up log: the fallback line must not pass as "confirmed".
+describe('natives check', () => {
+  const withLines = (id, lines) => {
+    const p = make(id);
+    p.process = { lines };
+    return p.verifyNatives();
+  };
+
+  it('Velocity: confirms libdeflate and epoll from the connections line', () => {
+    const r = withLines('velocity', ['[INFO]: Connections will use epoll channels, libdeflate (Linux x86_64) compression, OpenSSL 3.x.x (Linux x86_64) ciphers']);
+    assert.equal(r.ok, true);
+    assert.equal(r.checked, true);
+  });
+
+  it('Velocity: marks the Java compression fallback unfair even with epoll', () => {
+    const r = withLines('velocity', ['[INFO]: Connections will use epoll channels, Java compression, Java ciphers']);
+    assert.equal(r.ok, false);
+    assert.ok(r.notes.some((n) => /^compression: NOT CONFIRMED/.test(n)), r.notes.join('\n'));
+  });
+
+  it('BungeeCord: requires the native compressor and epoll, reports the cipher', () => {
+    const ok = withLines('bungeecord', ['Using mbed TLS based native cipher.', 'Using zlib based native compressor.', 'Epoll is working, utilising it!']);
+    assert.equal(ok.ok, true);
+    const javaZlib = withLines('bungeecord', ['Using mbed TLS based native cipher.', 'Epoll is working, utilising it!']);
+    assert.equal(javaZlib.ok, false);
+  });
+
+  it('Warp: requires libdeflate and the epoll transport', () => {
+    const r = withLines('warp', ['Compression: libdeflate 1.26', 'Using epoll native transport']);
+    assert.equal(r.ok, true);
+    assert.equal(withLines('warp', ['Compression: java.util.zip', 'Using epoll native transport']).ok, false);
+  });
+
+  it('Gate: has nothing native to check', () => {
+    const r = withLines('gate', ['INFO listening on 0.0.0.0:25565']);
+    assert.equal(r.checked, false);
+    assert.equal(r.ok, true);
+  });
+});

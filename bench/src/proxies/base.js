@@ -71,13 +71,27 @@ export class Proxy {
   }
 
   /**
+   * The start-up lines that prove natives and the right transport loaded, each a
+   * `{label, pattern, required}`. A required check that finds no line marks the run unfair; an
+   * optional one is reported for the record. Adapters override this.
+   * @returns {{label: string, pattern: RegExp, required: boolean}[]}
+   */
+  get nativeChecks() {
+    return [];
+  }
+
+  /**
    * Checks the start-up log for the lines that prove natives and the right transport loaded.
-   * @returns {{ok: boolean, notes: string[]}}
+   * `checked` is false when the adapter requires nothing (a Go proxy has no natives to load), so the
+   * report can say "none to check" instead of "confirmed".
+   * @returns {{ok: boolean, checked: boolean, notes: string[]}}
    */
   verifyNatives() {
     const notes = [];
     let ok = true;
-    for (const { label, pattern, required } of this.nativeChecks ?? []) {
+    const checks = this.nativeChecks;
+    const checked = checks.some((c) => c.required);
+    for (const { label, pattern, required } of checks) {
       const line = this.process?.lines.find((l) => pattern.test(l));
       if (line) notes.push(`${label}: ${line.trim()}`);
       else {
@@ -85,7 +99,7 @@ export class Proxy {
         if (required) ok = false;
       }
     }
-    return { ok, notes };
+    return { ok, checked, notes };
   }
 
   /** The PID the sampler watches. For a JVM proxy under taskset this is still the JVM. */

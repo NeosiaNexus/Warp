@@ -23,8 +23,12 @@ export class GateProxy extends Proxy {
     return this.lite ? 'none' : 'modern';
   }
 
+  // Nothing native to confirm: the report prints "none to check" for a proxy with no required line.
+  get nativeChecks() {
+    return [{ label: 'listening', pattern: /listening|Serving|bind/i, required: false }];
+  }
+
   async spawnSpec() {
-    this.nativeChecks = [{ label: 'listening', pattern: /listening|Serving|bind/i, required: false }];
     this.failurePatterns = [/panic:/, /FATAL/];
     this.stopCommand = null;
     const dir = this.freshWorkDir();
