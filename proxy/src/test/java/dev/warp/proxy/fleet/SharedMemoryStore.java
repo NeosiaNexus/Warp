@@ -24,12 +24,14 @@ import dev.warp.api.fleet.spi.FleetStoreContext;
 import dev.warp.api.fleet.spi.NodeRecord;
 import dev.warp.api.fleet.spi.PlayerRecord;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 import org.jspecify.annotations.Nullable;
@@ -76,6 +78,28 @@ final class SharedMemoryStore {
     private volatile Consumer<StoreState> listener = _ -> {};
     private final List<Subscription> subscriptions = new ArrayList<>();
     private volatile @Nullable FleetStoreContext context;
+    private volatile boolean connectFails;
+    private volatile Duration readDelay = Duration.ZERO;
+    private volatile boolean heartbeatsLost;
+
+    /** When each heartbeat was written, in nanoseconds. */
+    final List<Long> heartbeats = new CopyOnWriteArrayList<>();
+
+    /** Makes {@link #connect} fail, as a store that is down when the proxy boots. */
+    void failConnect() {
+      connectFails = true;
+      state = StoreState.DEGRADED;
+    }
+
+    /** Delays every read (nodes, players) by that much, as a slow but live store. */
+    void slowReads(Duration delay) {
+      readDelay = delay;
+    }
+
+    /** Drops heartbeats on the floor, as a stalled store that still answers everything else. */
+    void loseHeartbeats(boolean lost) {
+      heartbeatsLost = lost;
+    }
 
     /** Simulates the backend going away or coming back. */
     void become(StoreState now) {
@@ -91,6 +115,9 @@ final class SharedMemoryStore {
     @Override
     public CompletableFuture<Void> connect(FleetStoreContext context) {
       this.context = context;
+      if (connectFails) {
+        return CompletableFuture.failedFuture(new IllegalStateException("connection refused"));
+      }
       return CompletableFuture.completedFuture(null);
     }
 
@@ -108,6 +135,17 @@ final class SharedMemoryStore {
       return call;
     }
 
+    private <T> CompletableFuture<T> slow(CompletableFuture<T> call) {
+      Duration delay = readDelay;
+      if (delay.isZero()) {
+        return guard(call);
+      }
+      return guard(call)
+          .thenApplyAsync(
+              value -> value,
+              CompletableFuture.delayedExecutor(delay.toMillis(), TimeUnit.MILLISECONDS));
+    }
+
     @Override
     public CompletableFuture<Long> nextIncarnation(String nodeId) {
       return guard(shared.nextIncarnation(nodeId));
@@ -115,17 +153,23 @@ final class SharedMemoryStore {
 
     @Override
     public CompletableFuture<Void> heartbeat(NodeRecord node) {
+      if (state != StoreState.DEGRADED) {
+        heartbeats.add(System.nanoTime());
+      }
+      if (heartbeatsLost) {
+        return guard(CompletableFuture.completedFuture(null));
+      }
       return guard(shared.heartbeat(node));
     }
 
     @Override
     public CompletableFuture<Collection<NodeRecord>> nodes() {
-      return guard(shared.nodes());
+      return slow(shared.nodes());
     }
 
     @Override
     public CompletableFuture<Collection<PlayerRecord>> players(String nodeId) {
-      return guard(shared.players(nodeId));
+      return slow(shared.players(nodeId));
     }
 
     @Override

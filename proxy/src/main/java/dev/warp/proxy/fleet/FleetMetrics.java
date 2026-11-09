@@ -47,7 +47,8 @@ public final class FleetMetrics {
     PLAYER_REMOVED,
     PLAYER_MOVED,
     OWN_REPLAYED,
-    OWN_RELEASED
+    OWN_RELEASED,
+    OWN_CONFLICT
   }
 
   private final Gauge.Child storeUp;

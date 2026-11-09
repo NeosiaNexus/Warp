@@ -134,7 +134,7 @@ Present always; on a single node the store is up, there is one node and nothing 
 | `warp_fleet_claims_total` | counter | `outcome` (`claimed`, `owned_kicked`, `owned_refused`, `timeout`, `store_down`) | Logins settled against the fleet: the account was free, held elsewhere and kicked, held elsewhere and refused, not settled in `claim-timeout`, or settled locally because the store was down. |
 | `warp_fleet_bus_messages_total` | counter | `direction` (`in`, `out`) | Messages on the fleet's channels: presence notices, requests and replies, plugin messages. |
 | `warp_fleet_reaped_players_total` | counter | | Player records this proxy removed for a proxy whose heartbeat expired, or for its own previous life. |
-| `warp_fleet_reconcile_corrections_total` | counter | `kind` (`node_added`, `node_removed`, `player_added`, `player_removed`, `player_moved`, `own_replayed`, `own_released`) | What a refresh or a reconcile repaired: non-zero means a notice was lost or a node died without a goodbye. |
+| `warp_fleet_reconcile_corrections_total` | counter | `kind` (`node_added`, `node_removed`, `player_added`, `player_removed`, `player_moved`, `own_replayed`, `own_released`, `own_conflict`) | What a refresh or a reconcile repaired: non-zero means a notice was lost or a node died without a goodbye; `own_conflict` counts a player connected here whose record another node holds, a duplicate session the store did not prevent. |
 | `warp_fleet_store_commands_total` | counter | `command`, `outcome` (`ok`, `failed`) | Calls to the store: `heartbeat`, `nodes`, `players`, `claim`, `release`, `move`, `reap`, `incr`. |
 | `warp_fleet_store_latency_seconds` | histogram | `command` | How long the store takes to answer each command. |
 
