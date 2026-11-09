@@ -173,18 +173,7 @@ final class ManagementHttpHandler extends SimpleChannelInboundHandler<FullHttpRe
           }
         }
       }
-      case "/metrics" -> {
-        if (!metrics.enabled()) {
-          respond(
-              ctx,
-              head,
-              HttpResponseStatus.NOT_FOUND,
-              error("metrics are off; see management.metrics.enabled in warp.conf"));
-        } else if ((!metrics.requireToken() || authorize(ctx, request, "GET /metrics"))
-            && readOnly(ctx, method, head)) {
-          metrics(ctx, request, head, uri);
-        }
-      }
+      case "/metrics" -> metricsEndpoint(ctx, request, method, head, uri);
       case "/antibot/lockdown" -> lockdown(ctx, request, method, uri);
       default ->
           respond(
@@ -202,6 +191,30 @@ final class ManagementHttpHandler extends SimpleChannelInboundHandler<FullHttpRe
    * Accept} asks for it, gzipped when {@code Accept-Encoding} allows, restricted to one prefix with
    * {@code ?filter=}. The scrape runs on a virtual thread, never on this loop.
    */
+  /** {@code GET /metrics}: off by configuration, then the token when required, then the method. */
+  private void metricsEndpoint(
+      ChannelHandlerContext ctx,
+      FullHttpRequest request,
+      HttpMethod method,
+      boolean head,
+      QueryStringDecoder uri) {
+    if (!metrics.enabled()) {
+      respond(
+          ctx,
+          head,
+          HttpResponseStatus.NOT_FOUND,
+          error("metrics are off; see management.metrics.enabled in warp.conf"));
+      return;
+    }
+    if (metrics.requireToken() && !authorize(ctx, request, "GET /metrics")) {
+      return;
+    }
+    if (!readOnly(ctx, method, head)) {
+      return;
+    }
+    metrics(ctx, request, head, uri);
+  }
+
   private void metrics(
       ChannelHandlerContext ctx, FullHttpRequest request, boolean head, QueryStringDecoder uri) {
     PrometheusText.Format format =
