@@ -29,7 +29,6 @@ import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
 import org.jspecify.annotations.Nullable;
@@ -42,13 +41,10 @@ import org.jspecify.annotations.Nullable;
 final class SharedMemoryStore {
 
   private final SingleNodeStore shared = new SingleNodeStore();
-  private final List<Handle> handles = new CopyOnWriteArrayList<>();
 
   /** Returns a handle for one node. */
   FleetStore handle() {
-    Handle handle = new Handle();
-    handles.add(handle);
-    return handle;
+    return new Handle();
   }
 
   /** Drops a node's heartbeat, as if it expired. */
