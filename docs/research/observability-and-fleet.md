@@ -424,7 +424,7 @@ Rules:
 
 | Phase | Content | Size |
 |-------|---------|------|
-| Q1 | Datagram handler, bounded challenge table, rate limits, basic and full stat from the status snapshot, config, metrics, unit tests with `EmbeddedChannel` and golden datagrams from the wiki. | S (2 days) |
+| Q1 | Datagram handler, bounded challenge table, rate limits, basic and full stat from the status snapshot, config, metrics, unit tests with `EmbeddedChannel` and golden datagrams from the wiki. Shipped in `proxy/.../query` (`feat/query`): the per-address bucket applies to every datagram, not handshakes alone, since a stat without a token costs a table lookup too; the fixed-size buckets replace the Caffeine `RateLimiter`, whose cache allocates per key. | S (2 days) |
 | Q2 | E2E check with `mcstatus` style query client in the testbed, fleet-wide counts when section 4 lands. | S |
 
 Risk: hosts behind a UDP-unaware load balancer see `hostip` as the proxy's

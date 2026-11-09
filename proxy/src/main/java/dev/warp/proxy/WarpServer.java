@@ -89,6 +89,9 @@ import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.pipeline.PipelineRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.plugin.WarpPluginManager;
+import dev.warp.proxy.query.QueryHandler;
+import dev.warp.proxy.query.QueryServer;
+import dev.warp.proxy.query.QueryStatus;
 import dev.warp.proxy.server.Balancers;
 import dev.warp.proxy.server.HostRoutes;
 import dev.warp.proxy.server.ServerGroupRegistry;
@@ -128,8 +131,10 @@ import io.netty.channel.IoHandlerFactory;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.WriteBufferWaterMark;
 import io.netty.channel.nio.NioIoHandler;
+import io.netty.channel.socket.DatagramChannel;
 import io.netty.channel.socket.ServerSocketChannel;
 import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.util.NettyRuntime;
@@ -306,6 +311,9 @@ public final class WarpServer implements Warp {
 
   /** The management server, when enabled. */
   private @Nullable ManagementServer management;
+
+  /** The GS4 query listener, when enabled. */
+  private @Nullable QueryServer query;
 
   /** The remote console on the management server, when enabled. */
   private final @Nullable RemoteConsole remoteConsole;
@@ -601,6 +609,8 @@ public final class WarpServer implements Warp {
       throw StartupException.cannotBind(config.bind(), "bind", e);
     }
 
+    startQuery(transport, loginContext);
+
     Runtime.getRuntime().addShutdownHook(new Thread(this::onJvmShutdown, "warp-shutdown"));
     if (config.drain().onSigterm()) {
       catchSigterm();
@@ -718,6 +728,7 @@ public final class WarpServer implements Warp {
             .close()
             .awaitUninterruptibly(LISTENER_CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
       }
+      stopQuery();
       int disconnected = disconnectPlayers(reason);
       awaitShutdownHandlers();
       // Before the plugins: a disconnect is asynchronous, and a backend still decoding through a
@@ -880,6 +891,61 @@ public final class WarpServer implements Warp {
       throw e;
     }
     this.management = server;
+  }
+
+  /**
+   * Binds the GS4 query listener, if enabled, once the players' port is bound: a query answers for
+   * a proxy that listens. A bind failure stops the proxy like one of the players' port.
+   */
+  private void startQuery(TransportInfo transport, ServerLoginContext loginContext) {
+    if (!config.query().enabled()) {
+      return;
+    }
+    MultiThreadIoEventLoopGroup workers = workerGroup;
+    if (workers == null) {
+      return;
+    }
+    DrainConfig.Target publicAddress = config.drain().transferTo();
+    InetSocketAddress playersAddress =
+        publicAddress != null
+            ? InetSocketAddress.createUnresolved(publicAddress.host(), publicAddress.port())
+            : config.bind();
+    QueryStatus status =
+        new QueryStatus(
+            config.query(),
+            loginContext.serverList(),
+            events,
+            playerRegistry,
+            pluginManager::plugins,
+            config.query().bind(),
+            playersAddress,
+            System::nanoTime);
+    QueryServer server =
+        new QueryServer(
+            config.query(),
+            workers,
+            transport.datagramChannelClass(),
+            new QueryHandler(config.query(), status, metrics, System::nanoTime));
+    try {
+      server.start();
+    } catch (RuntimeException e) {
+      Channel listener = serverChannel;
+      if (listener != null) {
+        listener.close().awaitUninterruptibly(LISTENER_CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+      }
+      shutdownEventLoops();
+      stopManagement();
+      throw e;
+    }
+    this.query = server;
+  }
+
+  private void stopQuery() {
+    QueryServer server = query;
+    if (server != null) {
+      server.stop();
+      query = null;
+    }
   }
 
   private void stopManagement() {
@@ -1361,7 +1427,10 @@ public final class WarpServer implements Warp {
         Class<? extends SocketChannel> clientClass =
             (Class<? extends SocketChannel>)
                 Class.forName("io.netty.channel.epoll.EpollSocketChannel");
-        return new TransportInfo("epoll", factory, serverClass, clientClass, true);
+        Class<? extends DatagramChannel> datagramClass =
+            (Class<? extends DatagramChannel>)
+                Class.forName("io.netty.channel.epoll.EpollDatagramChannel");
+        return new TransportInfo("epoll", factory, serverClass, clientClass, datagramClass, true);
       }
     } catch (ReflectiveOperationException | UnsatisfiedLinkError e) {
       logger.trace("Epoll not available", e);
@@ -1382,7 +1451,10 @@ public final class WarpServer implements Warp {
         Class<? extends SocketChannel> clientClass =
             (Class<? extends SocketChannel>)
                 Class.forName("io.netty.channel.kqueue.KQueueSocketChannel");
-        return new TransportInfo("kqueue", factory, serverClass, clientClass, false);
+        Class<? extends DatagramChannel> datagramClass =
+            (Class<? extends DatagramChannel>)
+                Class.forName("io.netty.channel.kqueue.KQueueDatagramChannel");
+        return new TransportInfo("kqueue", factory, serverClass, clientClass, datagramClass, false);
       }
     } catch (ReflectiveOperationException | UnsatisfiedLinkError e) {
       logger.trace("KQueue not available", e);
@@ -1394,6 +1466,7 @@ public final class WarpServer implements Warp {
         NioIoHandler.newFactory(),
         NioServerSocketChannel.class,
         NioSocketChannel.class,
+        NioDatagramChannel.class,
         false);
   }
 
@@ -1528,5 +1601,6 @@ public final class WarpServer implements Warp {
       IoHandlerFactory ioFactory,
       Class<? extends ServerSocketChannel> serverChannelClass,
       Class<? extends SocketChannel> clientChannelClass,
+      Class<? extends DatagramChannel> datagramChannelClass,
       boolean tcpFastOpen) {}
 }
