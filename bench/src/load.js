@@ -233,24 +233,45 @@ export class SwitchPool {
     this.running = true;
     const deadline = Date.now() + durationMs;
     const loops = this.bots.map(async (handle, idx) => {
-      let next = idx % this.servers.length;
+      // Every bot joined the first (default) server, so its first hop must go anywhere but there:
+      // the proxy answers a /server to the current server with "already connected", not a switch.
+      let next = idx % (this.servers.length - 1);
       while (this.running && Date.now() < deadline && !handle.stats.ended) {
         next = (next + 1) % this.servers.length;
         const target = this.servers[next];
         const t0 = Date.now();
+        // Only chunks that follow the new backend's Join Game count. The old backend is usually
+        // still streaming its world when the command is sent (a bot switches again long before
+        // its whole view distance has arrived), and those chunks keep reaching the bot until the
+        // proxy cuts over: counting them would time the old backend's tail, not the switch.
+        // Arrival times are taken in the packet listener, so they are not rounded to a poll.
+        const seen = { joined: false, chunks: 0, firstAt: 0, sixthAt: 0 };
+        const onPacket = (data, meta) => {
+          if (meta.name === 'login') {
+            seen.joined = true;
+            seen.chunks = 0;
+          } else if (seen.joined && meta.name === 'map_chunk') {
+            seen.chunks++;
+            if (seen.chunks === 1) seen.firstAt = Date.now();
+            else if (seen.chunks === 6) seen.sixthAt = Date.now();
+          }
+        };
+        const client = handle.bot._client;
+        client.on('packet', onPacket);
         try {
-          const chunks = handle.stats.chunks;
           await handle.command(`server ${target}`);
           // First chunk: the proxy has connected the bot to the new backend and the backend has
-          // logged it in and started sending its world. Five chunks: the world is arriving.
-          await handle.waitFor(() => handle.stats.chunks > chunks, `first chunk after switch to ${target}`, 15_000);
-          this.firstChunkLatencies.push(Date.now() - t0);
-          await handle.waitFor(() => handle.stats.chunks > chunks + 5, `chunks after switch to ${target}`, 15_000);
+          // logged it in and started sending its world. Five more chunks: the world is arriving.
+          await handle.waitFor(() => seen.firstAt > 0, `first chunk after switch to ${target}`, 15_000);
+          await handle.waitFor(() => seen.sixthAt > 0, `chunks after switch to ${target}`, 15_000);
+          this.firstChunkLatencies.push(seen.firstAt - t0);
           this.switches++;
-          this.latencies.push(Date.now() - t0);
+          this.latencies.push(seen.sixthAt - t0);
         } catch {
           this.switchFailures++;
           await sleep(500);
+        } finally {
+          client.removeListener('packet', onPacket);
         }
         await sleep(250);
       }

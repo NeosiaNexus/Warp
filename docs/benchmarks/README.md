@@ -118,20 +118,33 @@ updating a proxy version:
 
 ### Switch latency: where the time goes
 
-The first Warp smoke run reported a 510 ms median switch, which looked slow. The harness measured a
-switch from the `/server` command to five chunks of the new backend reaching the bot. Warp's own
-millisecond log for the same run shows steady-state switches ("Switching" to "Server switch
-complete") taking 80 to 180 ms, with one 1 s outlier when every bot switched at once on cold
-backends. The remaining time is Paper logging the player in on the new backend and sending its first
-chunks, plus the bot parsing them. The scenario now reports two numbers: time to the first chunk (proxy hand-off plus backend login) and
-time to five chunks. Re-run with that split, the proxies agree on the hand-off: Warp 110 ms, Velocity
-101 ms, BungeeCord 101 ms, Gate 301 ms to the first chunk (medians, smoke profile, WSL2). So the 510 ms
-was not Warp's switch. The tail from the first to the fifth chunk differs (Warp 615 ms and Gate 502 ms
-to five chunks against about 105 ms for Velocity and BungeeCord) and is governed by Paper's chunk
-batching since 1.20.2, which paces chunk sends on the client's batch acknowledgements; why that pacing
-lands differently behind different proxies is an open question for a tier T1 run, not something a WSL
-smoke can settle. Compare the first-chunk column across proxies for the proxy's own cost, and treat
-the five-chunk column as a backend-plus-client figure.
+The scenario reports two numbers per switch, both measured from the `/server` command: the first
+chunk of the new backend reaching the bot (proxy hand-off plus backend login) and five more chunks
+(the world is arriving).
+
+An earlier version of the harness counted any chunk received after the command, and its first smoke
+runs showed a gap that was not real: about 105 ms to five chunks behind Velocity and BungeeCord
+against 615 ms behind Warp. A per-packet timeline of the bot explained it. A bot switches again
+about 250 ms after its sixth chunk, long before the previous backend has sent its whole view
+distance, so that backend is still streaming chunks when the command goes out, and they keep
+arriving until the proxy cuts over (about 40 to 60 ms later, behind Warp and Velocity alike). Those were the chunks
+being counted. A run reported about 100 ms when most of its switches caught six leftover chunks
+and about 500 ms when they did not, which made the median flip between two modes on timing noise
+alone; the same harness, re-run, gave Warp 109 / 504 ms and Velocity 102 / 507 ms. The same flaw
+counted a `/server` to the server a bot was already on (every third bot's first hop) as a
+successful switch.
+
+The harness now counts only chunks that follow the new backend's Join Game, takes arrival times in
+the packet listener instead of a 100 ms poll, and never targets the current server. Measured that
+way (medians per run, smoke profile, WSL2, five runs per proxy), Warp and Velocity are
+indistinguishable: 334 to 405 ms to the first chunk behind Warp and 323 to 393 ms behind Velocity,
+570 to 650 ms to the sixth chunk behind both, with the run-to-run spread larger than any
+difference between them. The timeline splits the first figure in two: 40 to 60 ms from the command
+to the proxy telling the client to reconfigure and 70 to 135 ms to the new backend's Join Game
+(the proxy's share, the same on both), then a constant 245 to 260 ms before Paper sends its first
+chunk, whatever the proxy. The bot received no chunk batch packet from Paper 1.21.4 in any trace, behind
+either proxy, so the client's batch acknowledgements play no part in the pacing. Read the first-chunk
+column as hand-off plus backend login, and expect most of it to be the backend.
 
 ## Publishing
 
