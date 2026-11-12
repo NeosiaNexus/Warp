@@ -3,7 +3,7 @@
 // Subclasses provide the artifact, the config, the launch command and the start-up lines that prove
 // natives loaded.
 import { mkdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { ManagedProcess, waitForPort } from '../reuse.js';
 
@@ -22,12 +22,47 @@ export class Proxy {
    * @param {string} options.workDir this proxy's working directory (wiped)
    * @param {string} options.logDir
    * @param {string[]} [options.cpus] CPU ids to pin the proxy to with taskset, or null
+   * @param {string} [options.logName] base name of the log file (default: the proxy id)
    */
   constructor(options) {
     Object.assign(this, options);
     this.process = null;
     this.jar = null;
     this.bin = null;
+    this.javaPath = null; // set by the JVM adapters: the java executable that runs the proxy
+  }
+
+  /** The jcmd of the JDK that runs the proxy, or null for a proxy that is not a JVM. */
+  get jcmd() {
+    return this.javaPath ? join(dirname(this.javaPath), 'jcmd') : null;
+  }
+
+  /**
+   * Log lines that mean the proxy engaged a protection or took a routing decision of its own (a
+   * circuit breaker, an anti-bot, a rate limit): the load then differs from what the other proxies
+   * carried, so the validity gate rejects the measurement. Adapters override this.
+   * @returns {RegExp[]}
+   */
+  get protectionPatterns() {
+    return [];
+  }
+
+  /** A point in the proxy's log; pass it to {@link protections} to look only at what follows. */
+  mark() {
+    return this.process?.mark() ?? 0;
+  }
+
+  /** How many protection lines the proxy logged since `mark`, with the first as a sample. */
+  protections(mark = 0) {
+    const found = { protections: 0, protectionSample: null, dead: !this.process?.alive };
+    const lines = this.process?.lines ?? [];
+    const patterns = this.protectionPatterns;
+    for (let i = mark; i < lines.length; i++) {
+      if (!patterns.some((p) => p.test(lines[i]))) continue;
+      found.protections++;
+      found.protectionSample ??= lines[i].trim().slice(0, 160);
+    }
+    return found;
   }
 
   /** 'modern', 'legacy' or 'none': the forwarding this proxy uses (backends are configured to match). */
@@ -58,7 +93,7 @@ export class Proxy {
     this.process = new ManagedProcess(this.id, pinned.command, pinned.args, {
       cwd: this.workDir,
       env,
-      logFile: join(this.logDir, `${this.id}.log`),
+      logFile: join(this.logDir, `${this.logName ?? this.id}.log`),
       failures: this.failurePatterns ?? [],
     }).start();
     await Promise.race([

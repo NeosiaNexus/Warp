@@ -26,6 +26,10 @@ export class VelocityProxy extends Proxy {
     ];
   }
 
+  get protectionPatterns() {
+    return [/rate.?limit/i];
+  }
+
   async spawnSpec() {
     this.stopCommand = 'shutdown';
     this.failurePatterns = [/Unable to start Velocity/i];
@@ -37,6 +41,7 @@ export class VelocityProxy extends Proxy {
     mkdirSync(join(dir, 'plugins', 'bStats'), { recursive: true });
     writeFileSync(join(dir, 'plugins', 'bStats', 'config.txt'), 'enabled=false\nserverUuid=00000000-0000-0000-0000-000000000000\nlogFailedRequests=false\n');
     const java = await findJava(this.spec.java, this.cacheDir);
+    this.javaPath = java;
     return {
       command: java,
       // Decode failures name the packet instead of a generic error: diagnostics only, no cost otherwise.

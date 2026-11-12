@@ -26,6 +26,10 @@ export class BungeeProxy extends Proxy {
     ];
   }
 
+  get protectionPatterns() {
+    return [/throttle/i];
+  }
+
   async spawnSpec() {
     this.failurePatterns = [/Could not (bind|start)/i];
     this.stopCommand = 'end';
@@ -34,6 +38,7 @@ export class BungeeProxy extends Proxy {
     mkdirSync(join(dir, 'plugins'), { recursive: true });
     writeFileSync(join(dir, 'config.yml'), this.config());
     const java = await findJava(this.spec.java, this.cacheDir);
+    this.javaPath = java;
     return {
       command: java,
       args: [...JVM_HEADLINE_FLAGS, '-jar', jar],

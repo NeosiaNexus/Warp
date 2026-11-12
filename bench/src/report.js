@@ -2,8 +2,12 @@
 // scenario, a few inline SVG charts, the exact versions and configuration used, and a fairness
 // section stating what the harness did and did not control. Charts are plain inline SVG so the
 // report renders on GitHub with no assets. Nothing is invented: every cell comes from a measured row
-// or is left blank, and a proxy whose natives could not be confirmed is marked in the table.
+// or is left blank, and a proxy whose natives could not be confirmed is marked in the table. A
+// measurement the validity gate rejected (validity.js) is printed as INVALID with its reasons, never
+// as a figure, and is left out of the charts and of the slopes.
+import { slope } from './heap.js';
 import { percentile } from './stats.js';
+import { THRESHOLDS } from './validity.js';
 
 const FG = '#1f2933';
 const GRID = '#d7dce2';
@@ -92,6 +96,29 @@ function fairnessRow(r) {
   return `**${r.label}** (forwarding: ${r.forwarding}) - natives ${flag}\n` + r.natives.notes.map((n) => `  - ${n}`).join('\n');
 }
 
+const ok = (m) => Boolean(m) && m.validity?.valid !== false;
+const mib = (v) => (v === null || v === undefined ? '-' : `${num(v, 0)} MiB`);
+const ms = (v, digits = 3) => (v === null || v === undefined ? '-' : `${num(v, digits)} ms`);
+const minTps = (backends = []) => {
+  const values = backends.map((b) => b.tps).filter((v) => typeof v === 'number');
+  return values.length ? num(Math.min(...values), 1) : '-';
+};
+
+/** A table row for a measurement the gate rejected: INVALID, then empty cells. */
+function invalidRow(lead, columns) {
+  return `| ${lead.join(' | ')} | **INVALID** |${' - |'.repeat(columns - lead.length - 1)}`;
+}
+
+/** The list of rejected measurements of one section, with their reasons. */
+function invalidNotes(out, entries) {
+  const bad = entries.filter((e) => e.validity && !e.validity.valid);
+  if (!bad.length) return;
+  out.push('Rejected by the validity gate (not comparable, figures withheld):');
+  out.push('');
+  for (const e of bad) out.push(`- **${e.what}**: ${e.validity.reasons.join('; ')}`);
+  out.push('');
+}
+
 /**
  * Builds the Markdown report.
  * @param {object} input
@@ -100,21 +127,30 @@ function fairnessRow(r) {
  * @param {object} input.versions parsed versions.json
  * @param {string} input.profileName 'full' or 'smoke'
  * @param {string} input.date folder date
+ * @param {string} input.cpuNote the CPU pinning plan, in words
+ * @param {object} [input.profile] the scenario sizes the run used
+ * @param {string[]} [input.pending] proxies of the run that have not finished (a partial report)
  * @returns {string} Markdown
  */
-export function buildReport({ results, env, versions, profileName, date, cpuNote }) {
+export function buildReport({ results, env, versions, profileName, date, cpuNote, profile = null, pending = [] }) {
   const out = [];
   out.push(`# Warp macro benchmark - ${date}`);
   out.push('');
   out.push(`Profile: **${profileName}**. Proxies: ${results.map((r) => r.label).join(', ')}.`);
   out.push('');
+  if (pending.length) {
+    out.push(`> Partial report: ${pending.join(', ')} had not finished when this was written.`);
+    out.push('');
+  }
   if (env.isWsl) {
     out.push('> This run was on WSL2. Timing numbers are not credible here (no CPU isolation, hypervisor scheduling noise). Treat this as a functional run only. See docs/benchmarks/README.md, hardware tiers.');
     out.push('');
   }
   out.push('## How to read this');
   out.push('');
-  out.push('Every number is measured from outside the proxy (the kernel\'s view in /proc and bot-side timing), never from the proxy\'s own metrics. Latency is measured from the intended send time to guard against coordinated omission. Each scenario warmed up before measuring and was repeated; tables show the median. Raw per-second samples are in the CSV files next to this report, and the exact configs under `configs/`.');
+  out.push('Every number is measured from outside the proxy (the kernel\'s view in /proc, the JVM\'s own heap accounting through jcmd, and client-side timing), never from the proxy\'s own metrics. Each scenario warmed up before measuring and was repeated; tables show the median of the repetitions. Raw per-second samples are in the CSV files next to this report, the full per-repetition records in `metrics/`, and the exact configs under `configs/`.');
+  out.push('');
+  out.push(`A figure is printed only when the measurement passed the validity gate: at least ${THRESHOLDS.minAchievedRatio * 100}% of the offered connections established and kept, every Paper backend at ${THRESHOLDS.minBackendTps} TPS or more with no overload warning and no error, the stub backend and the load generators not saturated (event loop at most ${THRESHOLDS.maxLoadgenLagP99Ms} ms late at p99), and no proxy protection engaged. Otherwise the cell says INVALID and the reasons are listed under the table.`);
   out.push('');
 
   // --- Fairness / natives ---
@@ -122,52 +158,72 @@ export function buildReport({ results, env, versions, profileName, date, cpuNote
   out.push('');
   out.push(results.map(fairnessRow).join('\n\n'));
   out.push('');
+  out.push('Every proxy runs with equivalent protections, which means none: per-address rate limits and quotas are off for all of them and Warp\'s anti-bot (verification and attack detection, which no other proxy here has) is off. Each scenario starts a fresh proxy process.');
+  out.push('');
   out.push(`CPU pinning: ${cpuNote}`);
   out.push('');
+  if (profile) {
+    out.push(`Sizes: \`${JSON.stringify(profile)}\``);
+    out.push('');
+  }
 
   // --- Idle ---
   if (results.some((r) => r.metrics.idle)) {
     out.push('## Idle connections');
     out.push('');
-    out.push('Resident memory, open file descriptors and CPU with N idle connections held in the PLAY state. This isolates the per-connection cost.');
+    out.push('N connections held in the PLAY state against the stub backend, which sends each of them one keep-alive every 15 seconds and nothing else: the connections are really idle, so this isolates what a connection at rest costs the proxy. "Connected" is the lowest count still connected at the end of a window, over the repetitions.');
     out.push('');
-    out.push('> Note: the JVM proxies run with `-Xms2g -Xmx2g -XX:+AlwaysPreTouch` (the identical headline flags), so their resident memory is pinned near 2 GiB from start-up regardless of load. For the JVM proxies, read the growth between levels, not the absolute RSS; the absolute figure is meaningful only for the Go proxy (Gate), which sizes its heap to the live set. A later revision measures heap-live for the JVM proxies.');
+    out.push('The JVM proxies run with `-Xms2g -Xmx2g -XX:+AlwaysPreTouch` (the identical headline flags), so their resident memory sits near 2.3 GiB from start-up whatever they hold: for them, read the live heap (heap in use after a forced full collection, taken after each window). A Go proxy has no fixed heap: its resident memory is the figure to read.');
     out.push('');
-    const levels = [...new Set(results.flatMap((r) => (r.metrics.idle?.levels ?? []).map((l) => l.level)))].sort((a, b) => a - b);
-    out.push(`| Proxy | ${levels.map((l) => `RSS @ ${l}`).join(' | ')} | FDs @ ${levels.at(-1)} | fail |`);
-    out.push(`|---|${levels.map(() => '--:').join('|')}|--:|--:|`);
+    out.push('| Proxy | offered | connected | RSS | live heap | FDs | CPU % |');
+    out.push('|---|--:|--:|--:|--:|--:|--:|');
     for (const r of results) {
-      const byLevel = Object.fromEntries((r.metrics.idle?.levels ?? []).map((l) => [l.level, l]));
-      const cells = levels.map((l) => (byLevel[l] ? `${num(byLevel[l].rssMiB, 0)} MiB` : '-'));
-      const top = byLevel[levels.at(-1)];
-      out.push(`| ${r.label} | ${cells.join(' | ')} | ${top ? num(top.fds, 0) : '-'} | ${top ? top.failures : '-'} |`);
+      for (const l of r.metrics.idle?.levels ?? []) {
+        if (!ok(l)) out.push(invalidRow([r.label, l.level, l.online], 7));
+        else out.push(`| ${r.label} | ${l.level} | ${l.online} | ${mib(l.rssMiB)} | ${mib(l.heapMiB)} | ${num(l.fds, 0)} | ${num(l.cpuPct, 0)} |`);
+      }
     }
     out.push('');
-    const topLevel = levels.at(-1);
-    out.push(barChart(`RSS at ${topLevel} idle connections (MiB)`, results.map((r) => ({ label: r.label, value: (r.metrics.idle?.levels ?? []).find((l) => l.level === topLevel)?.rssMiB })), { unit: ' MiB', digits: 0 }));
+    invalidNotes(out, results.flatMap((r) => (r.metrics.idle?.levels ?? []).map((l) => ({ what: `${r.label} @ ${l.level}`, validity: l.validity }))));
+    out.push('Memory per connection, as the slope between the lowest and the highest valid level (one absolute figure would mostly show the fixed cost of the runtime):');
+    out.push('');
+    out.push('| Proxy | levels | RSS per connection | live heap per connection |');
+    out.push('|---|--:|--:|--:|');
+    const kib = (v) => (v === null ? '-' : `${num(v * 1024, 1)} KiB`);
+    const slopes = results.map((r) => {
+      const valid = (r.metrics.idle?.levels ?? []).filter(ok);
+      return {
+        label: r.label,
+        levels: valid.length >= 2 ? `${valid[0].level} to ${valid.at(-1).level}` : '-',
+        rss: slope(valid.map((l) => ({ x: l.level, y: l.rssMiB }))),
+        heap: slope(valid.map((l) => ({ x: l.level, y: l.heapMiB }))),
+      };
+    });
+    for (const s of slopes) out.push(`| ${s.label} | ${s.levels} | ${kib(s.rss)} | ${kib(s.heap)} |`);
+    out.push('');
+    out.push(barChart('Memory per idle connection (KiB): live heap for a JVM, RSS for a Go proxy', slopes.map((s) => ({ label: s.label, value: s.heap !== null ? s.heap * 1024 : s.rss !== null ? s.rss * 1024 : null })), { unit: ' KiB', digits: 1 }));
     out.push('');
   }
 
   // --- Traffic ---
   if (results.some((r) => r.metrics.traffic)) {
-    out.push('## Heavy traffic (moving bots, loading chunks)');
+    out.push('## Heavy traffic (movers streaming chunks)');
     out.push('');
-    out.push('Bots walk and load chunks so the proxy forwards a real clientbound stream. Throughput is the proxy\'s bytes written per second at the syscall boundary (writes alone: every forwarded byte is written exactly once by every proxy, while read accounting differs between a JVM and a Go runtime); CPU per MB is proxy CPU-seconds divided by MB written in the window.');
+    out.push('Raw clients walk back and forth at sprint speed on one Paper backend, so the backend streams chunks through the proxy for the whole window. Throughput is the proxy\'s bytes written per second at the syscall boundary (writes alone: every forwarded byte is written exactly once by every proxy, while read accounting differs between a JVM and a Go runtime); "delivered" is what the clients received, counted on their sockets; CPU per MB is proxy CPU-seconds divided by MB written in the window. The comparison only holds because every proxy carried the same number of bots: a proxy that did not is INVALID.');
     out.push('');
-    out.push('| Proxy | bots | throughput | CPU % | CPU-s/MB | RSS |');
-    out.push('|---|--:|--:|--:|--:|--:|');
+    out.push('| Proxy | offered | connected | throughput | delivered | CPU % | CPU-s/MB | RSS | live heap | backend TPS |');
+    out.push('|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|');
     for (const r of results) {
       const m = r.metrics.traffic;
-      if (!m) {
-        out.push(`| ${r.label} | - | - | - | - | - |`);
-        continue;
-      }
-      out.push(`| ${r.label} | ${m.online} | ${bytesHuman(m.bytesPerSec)} | ${num(m.cpuPct, 0)} | ${num(m.cpuPerMb, 3)} | ${num(m.rssMiB, 0)} MiB |`);
+      if (!m) out.push(`| ${r.label} | - | - | - | - | - | - | - | - | - |`);
+      else if (!ok(m)) out.push(invalidRow([r.label, m.bots, m.online], 10));
+      else out.push(`| ${r.label} | ${m.bots} | ${m.online} | ${bytesHuman(m.bytesPerSec)} | ${bytesHuman(m.deliveredBytesPerSec)} | ${num(m.cpuPct, 0)} | ${num(m.cpuPerMb, 3)} | ${mib(m.rssMiB)} | ${mib(m.heapMiB)} | ${num(m.backendTps, 1)} |`);
     }
     out.push('');
-    out.push(barChart('CPU seconds per MB forwarded (lower is better)', results.map((r) => ({ label: r.label, value: r.metrics.traffic?.cpuPerMb })), { digits: 3 }));
+    invalidNotes(out, results.map((r) => ({ what: r.label, validity: r.metrics.traffic?.validity })));
+    out.push(barChart('CPU seconds per MB forwarded (lower is better)', results.map((r) => ({ label: r.label, value: ok(r.metrics.traffic) ? r.metrics.traffic.cpuPerMb : null })), { digits: 3 }));
     out.push('');
-    out.push(lineChart('Proxy CPU during traffic', results.filter((r) => r.rows?.length).map((r) => ({ label: r.label, rows: (r.rows ?? []).filter((x) => x.scenario === 'traffic') })), 'cpuPct', { unit: '%' }));
+    out.push(lineChart('Proxy CPU during traffic', results.filter((r) => r.rows?.length && ok(r.metrics.traffic)).map((r) => ({ label: r.label, rows: (r.rows ?? []).filter((x) => x.scenario === 'traffic') })), 'cpuPct', { unit: '%' }));
     out.push('');
   }
 
@@ -176,20 +232,19 @@ export function buildReport({ results, env, versions, profileName, date, cpuNote
     out.push('## Added latency at low load');
     out.push('');
     const lat = results.map((r) => r.metrics.latency).find(Boolean);
-    out.push(`Tab-complete round-trip (a request-response the backend answers, not chat) through the proxy versus straight to a forwarding-free clone backend, with the same background bots on both. Added latency is the difference; it is the proxy\'s own cost on the path. The probe waits for its join burst to end, discards ${lat?.warmup ?? 0} warm-up rounds, and counts a round slower than ${lat?.timeoutMs ?? 8000} ms at that value (the timeouts column). n is the number of counted rounds.`);
+    out.push(`Round trip of the PLAY ping request (which the server answers from its network thread, without waiting for a game tick), timed by a raw client with the monotonic nanosecond clock, through the proxy versus straight to a forwarding-free clone backend, with the same ${lat?.backgroundBots ?? 0} background movers on both. The probe runs alone in its own process on its own core. Added latency is the difference of the percentiles; it is the proxy's own cost on the path. The probe waits for its join burst to end, discards ${lat?.warmup ?? 0} warm-up rounds, and counts a round slower than ${lat?.timeoutMs ?? 2000} ms at that value (the timeouts column, through the proxy / direct). A direct median above ${THRESHOLDS.maxDirectP50Ms} ms means the path itself was loaded and the result is INVALID.`);
     out.push('');
-    out.push('| Proxy | via proxy p50 | via proxy p99 | direct p50 | added p50 | added p99 | n | timeouts |');
-    out.push('|---|--:|--:|--:|--:|--:|--:|--:|');
+    out.push('| Proxy | via proxy p50 | via proxy p99 | direct p50 | direct p99 | added p50 | added p99 | n | timeouts |');
+    out.push('|---|--:|--:|--:|--:|--:|--:|--:|--:|');
     for (const r of results) {
       const m = r.metrics.latency;
-      if (!m) {
-        out.push(`| ${r.label} | - | - | - | - | - | - | - |`);
-        continue;
-      }
-      out.push(`| ${r.label} | ${num(m.viaProxy.p50, 1)} ms | ${num(m.viaProxy.p99, 1)} ms | ${num(m.direct.p50, 1)} ms | ${num(m.added.p50, 1)} ms | ${num(m.added.p99, 1)} ms | ${m.viaProxy.n ?? '-'} | ${m.viaProxy.timeouts ?? '-'} / ${m.direct.timeouts ?? '-'} |`);
+      if (!m) out.push(`| ${r.label} | - | - | - | - | - | - | - | - |`);
+      else if (!ok(m)) out.push(invalidRow([r.label], 9));
+      else out.push(`| ${r.label} | ${ms(m.viaProxy.p50)} | ${ms(m.viaProxy.p99)} | ${ms(m.direct.p50)} | ${ms(m.direct.p99)} | ${ms(m.added.p50)} | ${ms(m.added.p99)} | ${m.viaProxy.n} | ${m.viaProxy.timeouts} / ${m.direct.timeouts} |`);
     }
     out.push('');
-    out.push(barChart('Added p99 latency (ms, lower is better)', results.map((r) => ({ label: r.label, value: r.metrics.latency?.added.p99 })), { unit: ' ms', digits: 1 }));
+    invalidNotes(out, results.map((r) => ({ what: r.label, validity: r.metrics.latency?.validity })));
+    out.push(barChart('Added p50 latency (ms, lower is better)', results.map((r) => ({ label: r.label, value: ok(r.metrics.latency) ? r.metrics.latency.added.p50 : null })), { unit: ' ms', digits: 3 }));
     out.push('');
   }
 
@@ -197,30 +252,26 @@ export function buildReport({ results, env, versions, profileName, date, cpuNote
   if (results.some((r) => r.metrics.switch)) {
     out.push('## Switch storm');
     out.push('');
-    out.push('Bots repeatedly run /server to change backend. Reports sustained switches per second, failures, and how long a switch took: from the command to the first chunk of the new backend (proxy hand-off plus backend login), and to five chunks (world arriving).');
+    out.push('Bots repeatedly run /server to change backend, resting between two switches so that the backends (a switch is a full login and a view distance of chunks for one of them) are not the limit. Reports sustained switches per second, failures, and how long a switch took: from the command to the first chunk of the new backend (proxy hand-off plus backend login), and to six chunks (world arriving). "Backend TPS" is the lowest of the three backends.');
     out.push('');
-    out.push('| Proxy | bots | switches | /s | failures | first chunk p50 | 5 chunks p50 | 5 chunks p99 |');
-    out.push('|---|--:|--:|--:|--:|--:|--:|--:|');
+    out.push('| Proxy | offered | connected | switches | /s | failures | first chunk p50 | first chunk p99 | 6 chunks p50 | 6 chunks p99 | backend TPS |');
+    out.push('|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|');
     for (const r of results) {
       const m = r.metrics.switch;
-      if (!m) {
-        out.push(`| ${r.label} | - | - | - | - | - | - | - |`);
-        continue;
-      }
-      if (m.skipped) {
-        out.push(`| ${r.label} | - | - | - | - | - | - | ${m.skipped} |`);
-        continue;
-      }
-      out.push(`| ${r.label} | ${m.online} | ${m.switches} | ${num(m.switchesPerSec, 1)} | ${m.failures} | ${num(m.firstChunkP50Ms, 0)} ms | ${num(m.p50Ms, 0)} ms | ${num(m.p99Ms, 0)} ms |`);
+      if (!m) out.push(`| ${r.label} | - | - | - | - | - | - | - | - | - | - |`);
+      else if (m.skipped) out.push(`| ${r.label} | - | - | - | - | - | - | - | - | - | ${m.skipped} |`);
+      else if (!ok(m)) out.push(invalidRow([r.label, m.bots, m.online], 11));
+      else out.push(`| ${r.label} | ${m.bots} | ${m.online} | ${m.switches} | ${num(m.switchesPerSec, 1)} | ${m.failures} | ${ms(m.firstChunkP50Ms, 0)} | ${ms(m.firstChunkP99Ms, 0)} | ${ms(m.p50Ms, 0)} | ${ms(m.p99Ms, 0)} | ${minTps(m.backends)} |`);
     }
     out.push('');
+    invalidNotes(out, results.map((r) => ({ what: r.label, validity: r.metrics.switch?.validity })));
   }
 
   // --- Storm ---
   if (results.some((r) => r.metrics.storm)) {
     out.push('## Connection / status storm');
     out.push('');
-    out.push('Hostile connections at a rising rate while a genuine player tries to join. The key question is whether the real player still gets in, and at what CPU and memory cost.');
+    out.push('Hostile connections (a handshake and a status request each) at a rising rate while a genuine player tries to join. The key question is whether the real player still gets in, and at what CPU cost. The flood and the player come from the same loopback address, so the per-address protections of every proxy are off here as in the other scenarios (with them on, each proxy would throttle the genuine player together with the flood); what this measures is the cost of the connections themselves.');
     out.push('');
     const rates = [...new Set(results.flatMap((r) => (r.metrics.storm?.rates ?? []).map((x) => x.rate)))].sort((a, b) => a - b);
     out.push('Median CPU is the highest per-rate median over the flood; peak CPU is the highest one-second sample in any flood window.');
@@ -230,14 +281,15 @@ export function buildReport({ results, env, versions, profileName, date, cpuNote
     for (const r of results) {
       const stormRates = r.metrics.storm?.rates ?? [];
       const byRate = Object.fromEntries(stormRates.map((x) => [x.rate, x]));
-      const cells = rates.map((x) => (byRate[x] ? (byRate[x].joined ? 'yes' : 'NO') : '-'));
+      const cells = rates.map((x) => (byRate[x] ? (ok(byRate[x]) ? (byRate[x].joined ? 'yes' : 'NO') : '**INVALID**') : '-'));
       const maxOf = (key) => {
-        const vals = stormRates.map((x) => x[key]).filter((v) => typeof v === 'number');
+        const vals = stormRates.filter(ok).map((x) => x[key]).filter((v) => typeof v === 'number');
         return vals.length ? Math.max(...vals) : null;
       };
       out.push(`| ${r.label} | ${cells.join(' | ')} | ${num(maxOf('cpuPct'), 0)} | ${num(maxOf('cpuPeakPct'), 0)} |`);
     }
     out.push('');
+    invalidNotes(out, results.flatMap((r) => (r.metrics.storm?.rates ?? []).map((x) => ({ what: `${r.label} @ ${x.rate}/s`, validity: x.validity }))));
   }
 
   // --- Errors ---

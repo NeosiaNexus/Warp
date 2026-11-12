@@ -2,6 +2,15 @@
 // --warp-jar), launched on Java 25 with the identical headline JVM flags, modern (Velocity) player
 // forwarding, and its compression and transport loggers raised to debug so the start-up log states
 // which compressor and transport actually loaded (the fairness check in base.js reads those lines).
+//
+// Warp ships with an anti-bot that is on by default: it verifies every unknown identity with a probe
+// before the login reaches a backend, and a detector treats a burst of unknown logins as an attack.
+// No other proxy here has an equivalent, and a benchmark ramp is exactly such a burst, so with the
+// defaults Warp would do work the others do not and could refuse or delay bots. The comparison runs
+// every proxy with equivalent protections, which means none: the anti-bot is off and verification is
+// set to never (the per-address limits already exempt loopback by default, like the rate limits
+// turned off for the other proxies). The circuit breaker of the balancers stays at its default: it
+// only acts when a backend refuses logins, which the validity gate reports as an invalid result.
 import { copyFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -12,6 +21,15 @@ import { download, findJava } from '../reuse.js';
 export class WarpProxy extends Proxy {
   get forwarding() {
     return 'modern';
+  }
+
+  get protectionPatterns() {
+    return [
+      /skipped by the balancers/, // the circuit breaker ejected a backend
+      /Bot attack detected/,
+      /verifications? timed out/i,
+      /Anti-bot: .*(lockdown|refus)/i,
+    ];
   }
 
   get nativeChecks() {
@@ -28,6 +46,7 @@ export class WarpProxy extends Proxy {
     copyFileSync(jar, join(dir, 'warp.jar'));
     writeFileSync(join(dir, 'warp.conf'), this.config());
     const java = await findJava(this.spec.java, this.cacheDir);
+    this.javaPath = java;
     return {
       command: java,
       args: [
@@ -55,6 +74,13 @@ default-server = "${this.defaultBackend}"
 fallback-order = [${order.map((s) => `"${s}"`).join(', ')}]
 forwarding {
   mode = "velocity"
+}
+anti-bot {
+  enabled = false
+  verification {
+    offline-mode = "never"
+    online-mode = "never"
+  }
 }
 compression {
   threshold = ${this.compressionThreshold}

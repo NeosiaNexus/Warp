@@ -22,3 +22,24 @@ export function harnessFailures(results) {
   }
   return out;
 }
+
+/**
+ * The measurements the validity gate rejected, one line each, for the console.
+ * @param {object[]} results per-proxy results from runProxy
+ * @returns {string[]}
+ */
+export function invalidResults(results) {
+  const out = [];
+  for (const r of results) {
+    const m = r.metrics ?? {};
+    const add = (what, validity) => {
+      if (validity && !validity.valid) out.push(`${r.id}: ${what}: ${validity.reasons.join('; ')}`);
+    };
+    for (const level of m.idle?.levels ?? []) add(`idle @ ${level.level}`, level.validity);
+    add('traffic', m.traffic?.validity);
+    add('latency', m.latency?.validity);
+    add('switch', m.switch?.validity);
+    for (const rate of m.storm?.rates ?? []) add(`storm @ ${rate.rate}/s`, rate.validity);
+  }
+  return out;
+}

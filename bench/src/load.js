@@ -1,16 +1,22 @@
-// Load generators, all driven at a fixed offered rate so the proxy, not the generator, sets the
-// pace. Idle connections use the dependency-free raw client (thousands per process); traffic, probe
-// and switch bots reuse the e2e mineflayer client so they move, load chunks and run the /server
-// command exactly as a player would. The storm generator opens raw hostile connections while a real
-// bot tries to join, to check that genuine players still get in.
+// Load generators. They run inside the worker processes of the fleet (fleet.js, worker.js), never in
+// the orchestrating process: one Node.js thread cannot drive hundreds of connections and time them
+// honestly, so the load is split over several processes, each pinned to its own core, and each
+// reports how late its event loop ran so the validity gate can tell when the generator, not the
+// proxy, was the limit.
+//
+// Idle connections and movers use the dependency-free raw client (thousands per process). A mover
+// walks back and forth along its own line at sprint speed, which makes the backend stream chunks
+// through the proxy continuously. Switch bots reuse the e2e mineflayer client, which runs the
+// /server command and parses every packet exactly as a player's client would. The latency probe is a
+// raw client timing the PLAY ping round trip. The storm generator opens raw hostile connections
+// while a real bot tries to join, to check that genuine players still get in.
 import { connect as netConnect } from 'node:net';
 
-import { connect as connectBot } from '../../e2e/src/clients/mineflayer.js';
 import { probeRounds, settle } from './probe.js';
-import { sleep } from './reuse.js';
-import { connectIdle, frameHandshake, frameStatusRequest } from './rawclient.js';
+import { connectIdle, frameHandshake, frameStatusRequest, MOVER_TICKS_PER_SEC } from './rawclient.js';
 
 const HOST = '127.0.0.1';
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Packets a client may still send while it is back in the configuration phase. Everything else a
@@ -30,7 +36,15 @@ function guardConfigPhase(handle) {
   const write = client.write.bind(client);
   let reconfiguring = false;
   client.on('start_configuration', () => { reconfiguring = true; });
-  client.on('state', (state) => { if (state === 'play') reconfiguring = false; });
+  client.on('state', (state) => {
+    if (state !== 'play') return;
+    reconfiguring = false;
+    // The client library arms a one-shot listener for the code of conduct packet at every
+    // configuration phase. A 1.21.4 server never sends that packet, so the listener of each past
+    // phase would stay armed for good and a bot that switches servers would pile them up (Node
+    // warns from the eleventh on). The phase is over: drop it.
+    client.removeAllListeners('code_of_conduct');
+  });
   client.write = (name, params) => {
     if (reconfiguring && !CONFIG_PHASE_PACKETS.has(name)) return;
     write(name, params);
@@ -39,159 +53,129 @@ function guardConfigPhase(handle) {
 }
 
 /** Connects a mineflayer bot with the configuration-phase guard installed. */
-function connectGuarded(options) {
-  return connectBot(options).then(guardConfigPhase);
+async function connectGuarded(options) {
+  // Imported on first use: a worker that only drives raw clients never loads the bot library.
+  const { connect } = await import('../../e2e/src/clients/mineflayer.js');
+  return guardConfigPhase(await connect(options));
 }
 
 /** Spreads `count` actions over `count/ratePerSec` seconds, calling `fn(i)` for each. */
-async function ramp(count, ratePerSec, fn) {
-  const gap = 1000 / Math.max(1, ratePerSec);
+export async function ramp(count, ratePerSec, fn) {
+  const gap = 1000 / Math.max(0.001, ratePerSec);
   const started = [];
+  const begin = Date.now();
   for (let i = 0; i < count; i++) {
+    const wait = begin + i * gap - Date.now();
+    if (wait > 0) await sleep(wait);
     started.push(fn(i));
-    if (i < count - 1) await sleep(gap);
   }
   return started;
 }
 
 // ---------------------------------------------------------------------------
-// Idle connections (raw client)
+// Raw clients: idle connections and movers
 // ---------------------------------------------------------------------------
 
-export class IdlePool {
-  constructor({ port, prefix = 'idle' }) {
+/** The line a mover walks: out to `max` blocks from its spawn point, back to `min`, and again. */
+export function moverPath(index) {
+  // The golden angle spreads consecutive movers around the circle; leg lengths differ so that the
+  // movers do not all turn, or all come back near the spawn point, at the same moment.
+  return { heading: (index * 2.399963229728653) % (2 * Math.PI), min: 64, max: 160 + ((index * 37) % 96) };
+}
+
+export class RawPool {
+  /**
+   * @param {object} options
+   * @param {number} options.port
+   * @param {boolean} options.movers whether the clients walk (traffic) or stand still (idle)
+   */
+  constructor({ port, movers = false }) {
     this.port = port;
-    this.prefix = prefix;
+    this.movers = movers;
     this.clients = [];
     this.failures = [];
+    this.ticker = null;
   }
 
-  /** Ramps `count` idle connections in at `ratePerSec`, resolving once all have spawned or failed. */
-  async fill(count, ratePerSec) {
-    const pending = await ramp(count, ratePerSec, (i) =>
-      connectIdle({ host: HOST, port: this.port, username: `${this.prefix}_${i}` }, 30_000)
+  /**
+   * Ramps the clients named `names` in at `ratePerSec`, resolving once each has reached PLAY or
+   * failed. `indexes` are the clients' positions in the whole fleet (they pick each mover's path).
+   */
+  async fill(names, indexes, ratePerSec, timeoutMs = 30_000) {
+    if (this.movers && !this.ticker) {
+      this.ticker = setInterval(() => {
+        for (const c of this.clients) c.tick();
+      }, 1000 / MOVER_TICKS_PER_SEC);
+    }
+    const pending = await ramp(names.length, ratePerSec, (i) =>
+      connectIdle({ host: HOST, port: this.port, username: names[i], path: this.movers ? moverPath(indexes[i]) : null }, timeoutMs)
         .then((c) => this.clients.push(c))
         .catch((e) => this.failures.push(e.message)),
     );
     await Promise.all(pending);
-    return this;
   }
 
-  get online() {
-    return this.clients.filter((c) => !c.closed && !c.error).length;
+  status() {
+    const sum = (key) => this.clients.reduce((s, c) => s + c[key], 0);
+    return {
+      online: this.clients.filter((c) => !c.closed && !c.error).length,
+      failed: this.failures.length,
+      failureSamples: this.failures.slice(0, 3),
+      bytesIn: sum('bytesIn'),
+      frames: sum('frames'),
+      compressedFrames: sum('compressedFrames'),
+      teleports: sum('teleports'),
+      kicked: this.clients.filter((c) => c.kicked).length,
+    };
   }
 
   async drain() {
+    clearInterval(this.ticker);
+    this.ticker = null;
     for (const c of this.clients) c.destroy();
     this.clients = [];
-    await sleep(200);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Traffic bots (mineflayer, moving)
-// ---------------------------------------------------------------------------
-
-export class TrafficPool {
-  constructor({ port, version, prefix = 'move' }) {
-    this.port = port;
-    this.version = version;
-    this.prefix = prefix;
-    this.bots = [];
     this.failures = [];
-    this.movers = [];
-    this.moving = false;
-  }
-
-  async fill(count, ratePerSec) {
-    const pending = await ramp(count, ratePerSec, (i) =>
-      connectGuarded({ host: HOST, port: this.port, version: this.version, username: `${this.prefix}_${i}` })
-        .then((b) => this.bots.push(b))
-        .catch((e) => this.failures.push(e.message)),
-    );
-    await Promise.all(pending);
-    return this;
-  }
-
-  /** Starts every bot walking and turning, which sends position packets and loads chunks. */
-  startMoving() {
-    this.moving = true;
-    for (const handle of this.bots) {
-      const bot = handle.bot;
-      const mover = (async () => {
-        let yaw = 0;
-        while (this.moving && !handle.stats.ended) {
-          try {
-            bot.setControlState('forward', true);
-            yaw += Math.PI / 4;
-            await bot.look(yaw, 0, true);
-            bot.setControlState('jump', Math.random() < 0.2);
-          } catch {
-            break;
-          }
-          await sleep(500);
-        }
-      })();
-      this.movers.push(mover);
-    }
-  }
-
-  /** Chunks loaded across all bots so far: a proxy that forwards more does more work. */
-  get chunks() {
-    return this.bots.reduce((sum, b) => sum + b.stats.chunks, 0);
-  }
-
-  get online() {
-    return this.bots.filter((b) => !b.stats.ended).length;
-  }
-
-  async drain() {
-    this.moving = false;
-    await Promise.allSettled(this.movers);
-    await Promise.allSettled(this.bots.map((b) => b.quit()));
-    this.bots = [];
-    this.movers = [];
     await sleep(200);
   }
 }
 
 // ---------------------------------------------------------------------------
-// Latency probe (tab-complete round-trip through the proxy vs direct to the backend)
+// Latency probe (PLAY ping round trip through the proxy vs direct to the backend)
 // ---------------------------------------------------------------------------
 
-/** The join burst has ended once no chunk has arrived for this long. */
+/** The join burst has ended once no compressed frame (a chunk) has arrived for this long. */
 const BURST_QUIET_MS = 1_500;
 /** Never wait longer than this for the join burst to end. */
 const BURST_MAX_MS = 20_000;
 
 /**
- * One probe bot asks the server to complete a command prefix at a fixed cadence and times the reply.
- * A tab completion is a request-response that travels client to proxy to backend and back, like a
- * keep-alive but on demand and at a controlled rate, and crucially it is not chat or a command: a
- * modern server answers it without the signing that makes it disconnect an offline bot's chat or
- * command packet. The prefix must match at least one command, because a server sends no response for
- * a prefix with no suggestions; `/he` matches `help` on every server. The probe waits for the bot's
- * join burst (its chunks) to end, runs `warmup` rounds it discards, then `samples` rounds it keeps;
- * latency is measured from the intended send time, not the actual one, so a slow round does not
- * hide behind the next (the coordinated-omission guard), and a round slower than `timeoutMs` counts
- * as `timeoutMs` (see probe.js).
+ * One raw client sends the PLAY ping request at a fixed cadence and times the pong. The ping is a
+ * request-response that travels client to proxy to backend and back, and the server answers it from
+ * its network thread without waiting for a game tick, so the round trip is the path and not the
+ * backend's tick phase. The probe stands still (it loads no chunk after its join burst), waits for
+ * that burst to end, runs `warmup` rounds it discards, then `samples` rounds it keeps. Times come
+ * from the monotonic clock in fractional milliseconds. A round slower than `timeoutMs`, or cut by a
+ * disconnect, counts as `timeoutMs` (see probe.js).
  * @returns {Promise<{latencies: number[], timeouts: number, warmup: number, settled: boolean}>}
  */
-export async function probeLatency({ port, version, samples, intervalMs, warmup = 0, timeoutMs = 8_000, username = 'probe' }) {
-  const bot = await connectGuarded({ host: HOST, port, version, username });
+export async function probeLatency({ port, samples, intervalMs, warmup = 0, timeoutMs = 8_000, username = 'probe' }) {
+  const client = await connectIdle({ host: HOST, port, username }, 30_000);
   try {
-    const settled = await settle(() => bot.stats.chunks, { quietMs: BURST_QUIET_MS, maxMs: BURST_MAX_MS, sleep });
+    const settled = await settle(() => client.compressedFrames, { quietMs: BURST_QUIET_MS, maxMs: BURST_MAX_MS, sleep });
     const result = await probeRounds({
-      round: () => bot.bot.tabComplete('/he', false),
+      round: async () => {
+        if ((await client.ping()) === null) throw new Error('connection closed');
+      },
       samples,
       warmup,
       intervalMs,
       timeoutMs,
       sleep,
+      now: () => performance.now(),
     });
     return { ...result, settled };
   } finally {
-    await bot.quit();
+    client.destroy();
   }
 }
 
@@ -200,11 +184,10 @@ export async function probeLatency({ port, version, samples, intervalMs, warmup 
 // ---------------------------------------------------------------------------
 
 export class SwitchPool {
-  constructor({ port, version, servers, prefix = 'sw' }) {
+  constructor({ port, version, servers }) {
     this.port = port;
     this.version = version;
     this.servers = servers; // ordered backend names
-    this.prefix = prefix;
     this.bots = [];
     this.failures = [];
     this.switches = 0;
@@ -214,37 +197,51 @@ export class SwitchPool {
     this.running = false;
   }
 
-  async fill(count, ratePerSec) {
-    const pending = await ramp(count, ratePerSec, (i) =>
-      connectGuarded({ host: HOST, port: this.port, version: this.version, username: `${this.prefix}_${i}` })
-        .then((b) => this.bots.push(b))
+  async fill(names, indexes, ratePerSec) {
+    this.indexes = indexes;
+    const pending = await ramp(names.length, ratePerSec, (i) =>
+      connectGuarded({ host: HOST, port: this.port, version: this.version, username: names[i] })
+        .then((b) => this.bots.push(Object.assign(b, { fleetIndex: indexes[i] })))
         .catch((e) => this.failures.push(e.message)),
     );
     await Promise.all(pending);
-    return this;
   }
 
-  get online() {
-    return this.bots.filter((b) => !b.stats.ended).length;
+  status() {
+    return {
+      online: this.bots.filter((b) => !b.stats.ended).length,
+      failed: this.failures.length,
+      failureSamples: this.failures.slice(0, 3),
+      bytesIn: 0,
+      frames: 0,
+      compressedFrames: 0,
+      teleports: 0,
+      kicked: this.bots.filter((b) => b.stats.kicked).length,
+    };
   }
 
-  /** Each bot cycles through the backends with /server, measuring how long the switch takes. */
-  async storm(durationMs) {
+  /**
+   * Each bot cycles through the backends with /server, measuring how long the switch takes, and
+   * rests `pauseMs` between two switches: the pause sets the offered switch rate, so the backends
+   * (each switch is a full login and a view distance of chunks for one of them) are not the limit.
+   */
+  async storm(durationMs, pauseMs) {
     this.running = true;
     const deadline = Date.now() + durationMs;
-    const loops = this.bots.map(async (handle, idx) => {
+    const loops = this.bots.map(async (handle) => {
+      // Bots start their first switch spread over one pause, not all in the same instant.
+      await sleep((handle.fleetIndex * 137) % Math.max(1, pauseMs));
       // Every bot joined the first (default) server, so its first hop must go anywhere but there:
       // the proxy answers a /server to the current server with "already connected", not a switch.
-      let next = idx % (this.servers.length - 1);
+      let next = handle.fleetIndex % (this.servers.length - 1);
       while (this.running && Date.now() < deadline && !handle.stats.ended) {
         next = (next + 1) % this.servers.length;
         const target = this.servers[next];
-        const t0 = Date.now();
+        const t0 = performance.now();
         // Only chunks that follow the new backend's Join Game count. The old backend is usually
-        // still streaming its world when the command is sent (a bot switches again long before
-        // its whole view distance has arrived), and those chunks keep reaching the bot until the
-        // proxy cuts over: counting them would time the old backend's tail, not the switch.
-        // Arrival times are taken in the packet listener, so they are not rounded to a poll.
+        // still streaming its world when the command is sent, and those chunks keep reaching the
+        // bot until the proxy cuts over: counting them would time the old backend's tail, not the
+        // switch. Arrival times are taken in the packet listener, so they are not rounded to a poll.
         const seen = { joined: false, chunks: 0, firstAt: 0, sixthAt: 0 };
         const onPacket = (data, meta) => {
           if (meta.name === 'login') {
@@ -252,8 +249,8 @@ export class SwitchPool {
             seen.chunks = 0;
           } else if (seen.joined && meta.name === 'map_chunk') {
             seen.chunks++;
-            if (seen.chunks === 1) seen.firstAt = Date.now();
-            else if (seen.chunks === 6) seen.sixthAt = Date.now();
+            if (seen.chunks === 1) seen.firstAt = performance.now();
+            else if (seen.chunks === 6) seen.sixthAt = performance.now();
           }
         };
         const client = handle.bot._client;
@@ -269,21 +266,27 @@ export class SwitchPool {
           this.latencies.push(seen.sixthAt - t0);
         } catch {
           this.switchFailures++;
-          await sleep(500);
         } finally {
           client.removeListener('packet', onPacket);
         }
-        await sleep(250);
+        await sleep(pauseMs);
       }
     });
     await Promise.allSettled(loops);
     this.running = false;
+    return {
+      switches: this.switches,
+      failures: this.switchFailures,
+      latencies: this.latencies,
+      firstChunkLatencies: this.firstChunkLatencies,
+    };
   }
 
   async drain() {
     this.running = false;
     await Promise.allSettled(this.bots.map((b) => b.quit()));
     this.bots = [];
+    this.failures = [];
     await sleep(200);
   }
 }
@@ -293,23 +296,19 @@ export class SwitchPool {
 // ---------------------------------------------------------------------------
 
 /**
- * Opens raw connections at `ratePerSec` for `durationMs`, mixing full status pings and half-open
- * handshakes, while a real bot joins partway through. Reports whether the real bot got in and how
- * many connections the proxy accepted.
+ * Opens raw connections at `ratePerSec` for `durationMs`, each a handshake to the status state and
+ * a status request: a cheap, well-formed hostile connection. Returns how many connected.
  */
-export async function connectionStorm({ port, version, ratePerSec, durationMs }) {
+export async function flood({ port, ratePerSec, durationMs }) {
   let opened = 0;
-  let joinedDuringStorm = false;
-  let joinError = null;
-  const deadline = Date.now() + durationMs;
+  let attempted = 0;
   const sockets = new Set();
-
   const open = () => {
+    attempted++;
     const socket = netConnect(port, HOST);
     sockets.add(socket);
     socket.on('error', () => {});
     socket.on('close', () => sockets.delete(socket));
-    // Handshake to status, then a status request: a cheap, well-formed hostile connection.
     socket.on('connect', () => {
       opened++;
       socket.write(frameHandshake(port, 1));
@@ -317,31 +316,26 @@ export async function connectionStorm({ port, version, ratePerSec, durationMs })
     });
     setTimeout(() => socket.destroy(), 3_000);
   };
-
-  const flood = (async () => {
-    const gap = 1000 / Math.max(1, ratePerSec);
-    while (Date.now() < deadline) {
-      open();
-      await sleep(gap);
-    }
-  })();
-
-  // Halfway through, a genuine player tries to join and play.
-  const join = (async () => {
-    await sleep(durationMs / 2);
-    try {
-      const bot = await connectGuarded({ host: HOST, port, version, username: 'storm_survivor' });
-      joinedDuringStorm = true;
-      await sleep(1_000);
-      await bot.quit();
-    } catch (e) {
-      joinError = e.message;
-    }
-  })();
-
-  await Promise.all([flood, join]);
+  // Scheduled against the clock, several per timer tick when the rate is above the timer's
+  // resolution, so the offered rate does not sag to what one timer per connection can deliver.
+  const begin = Date.now();
+  while (Date.now() - begin < durationMs) {
+    const due = Math.floor(((Date.now() - begin) / 1000) * ratePerSec);
+    while (attempted < due) open();
+    await sleep(2);
+  }
   for (const s of sockets) s.destroy();
-  return { opened, joinedDuringStorm, joinError };
+  return { opened, attempted };
 }
 
-export { ramp };
+/** A genuine player joins and plays for a second. Resolves with whether it got in. */
+export async function joinOnce({ port, version, username }) {
+  try {
+    const bot = await connectGuarded({ host: HOST, port, version, username });
+    await sleep(1_000);
+    await bot.quit();
+    return { joined: true, error: null };
+  } catch (e) {
+    return { joined: false, error: e.message };
+  }
+}

@@ -3,17 +3,19 @@
 // configs each proxy actually used, the host fingerprint and the Markdown report under
 // bench/results/<date>/. One command, reproducible: see docs/benchmarks/README.md.
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { cpus as osCpus } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { cpuPlan, fingerprint } from './env.js';
-import { FULL, SMOKE, ALL_SCENARIOS, BACKEND_HEAP_MB } from './profiles.js';
-import { buildReport } from './report.js';
+import { Fleet, killFleets } from './fleet.js';
+import { FULL, SMOKE, ALL_SCENARIOS, BACKEND_HEAP_MB, applyOverrides } from './profiles.js';
 import { killAll } from './reuse.js';
 import { runProxy } from './run.js';
-import { harnessFailures } from './verdict.js';
+import { saveResult, saveRun, writeReport } from './store.js';
+import { THRESHOLDS } from './validity.js';
+import { harnessFailures, invalidResults } from './verdict.js';
 import { PROXY_IDS } from './proxies/index.js';
 
 const BENCH_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -31,6 +33,8 @@ function parseArgs(argv) {
     out: null,
     proxyPort: 25565,
     backendBase: 25700,
+    set: [],
+    reportOnly: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -45,6 +49,8 @@ function parseArgs(argv) {
       case '--pin': opts.pin = true; break;
       case '--load-host': opts.loadHost = next(); break;
       case '--out': opts.out = next(); break;
+      case '--set': opts.set.push(next()); break;
+      case '--report-only': opts.reportOnly = next(); break;
       case '--proxy-port': opts.proxyPort = Number(next()); break;
       case '--backend-base': opts.backendBase = Number(next()); break;
       case '--help': case '-h': opts.help = true; break;
@@ -67,16 +73,29 @@ Usage: bench/run.sh [options]
   --no-pin                Do not pin proxy/backends/bots to separate cores (taskset).
   --load-host host        Reserved: run the bots from another machine (single-machine is the default).
   --out dir               Where to write results (default: bench/results/<date>).
+  --set scenario.key=v    Override one size of the profile, e.g. --set idle.levels=1000,2000
+                          --set traffic.bots=150 (repeatable; recorded in the report).
+  --report-only dir       Rebuild README.md from the files of an earlier run and exit.
   --help                  This text.
 
 Every download is checked against the sha256 in bench/versions.json. Results, raw CSVs, the exact
 configs and the host fingerprint are written under the results directory.`;
 
+/** The harness commit, or "unknown" when this is not a git checkout (an archive, a tarball). */
 function gitSha() {
   try {
-    return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: BENCH_DIR, encoding: 'utf8' }).trim();
+    return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: BENCH_DIR, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || 'unknown';
   } catch {
     return 'unknown';
+  }
+}
+
+/** Moves this process (the orchestrator and its sampler) onto the load cores, off the proxy's. */
+function pinSelf(cpus) {
+  try {
+    execFileSync('taskset', ['-cp', cpus.join(','), String(process.pid)], { stdio: 'ignore' });
+  } catch {
+    console.error('note: could not pin the harness itself (taskset failed); it floats over all cores.');
   }
 }
 
@@ -99,9 +118,15 @@ async function main() {
     console.log(`note: --load-host ${opts.loadHost} is reserved; this run uses single-machine mode.`);
   }
 
+  if (opts.reportOnly) {
+    const found = writeReport(opts.reportOnly);
+    console.log(`Report rebuilt from ${found.length} proxies: ${join(opts.reportOnly, 'README.md')}`);
+    return 0;
+  }
+
   const versions = JSON.parse(readFileSync(join(BENCH_DIR, 'versions.json'), 'utf8'));
-  const profile = opts.smoke ? SMOKE : FULL;
   const profileName = opts.smoke ? 'smoke' : 'full';
+  const profile = applyOverrides(opts.smoke ? SMOKE : FULL, opts.set);
   const scenarios = opts.scenarios ?? ALL_SCENARIOS;
   const defaultProxies = opts.smoke ? ['warp'] : PROXY_IDS;
   const proxies = opts.proxies ?? defaultProxies;
@@ -120,50 +145,54 @@ async function main() {
 
   const cores = osCpus().length;
   const plan = cpuPlan(cores, opts.pin);
+  if (plan.bots) pinSelf(plan.bots);
   const env = fingerprint({ harnessSha: gitSha(), proxies: Object.fromEntries(Object.entries(versions.proxies).map(([k, v]) => [k, `${v.version}${v.build ? `-${v.build}` : ''}`])) });
   writeFileSync(join(resultsDir, 'env.json'), JSON.stringify(env, null, 2));
+  saveRun(resultsDir, { date, profileName, profile, overrides: opts.set, scenarios, proxies, cpuNote: plan.note, cpuPlan: plan, thresholds: THRESHOLDS, versions });
 
   console.log(`Warp macro benchmark (${profileName}) on ${cores} cores. ${plan.note}`);
   console.log(`Proxies: ${proxies.join(', ')} | scenarios: ${scenarios.join(', ')}`);
+  if (opts.set.length) console.log(`Overrides: ${opts.set.join(' ')}`);
   console.log(`Results: ${resultsDir}\n`);
 
+  const fleet = new Fleet({ workerCpus: plan.workers, probeCpu: plan.probe });
   const results = [];
-  for (const proxyId of shuffle(proxies)) {
-    console.log(`=== ${proxyId} ===`);
-    const started = Date.now();
-    const result = await runProxy({
-      proxyId,
-      versions,
-      profile,
-      scenarios,
-      ports: { proxy: opts.proxyPort, backendBase: opts.backendBase },
-      dirs,
-      cpus: { proxy: plan.proxy, backends: plan.backends, bots: plan.bots },
-      warpJar: opts.warpJar,
-      mcVersion: opts.mc,
-      backendHeapMb: BACKEND_HEAP_MB[profileName],
-    });
-    results.push(result);
-    // Raw CSV and the config the proxy used, for the record.
-    writeFileSync(join(resultsDir, 'csv', `${proxyId}.csv`), result.csv);
-    const workConf = join(dirs.work, proxyId);
-    if (existsSync(workConf)) {
-      for (const f of ['warp.conf', 'velocity.toml', 'config.yml', 'config.toml']) {
-        if (existsSync(join(workConf, f))) cpSync(join(workConf, f), join(resultsDir, 'configs', `${proxyId}-${f}`));
-      }
+  try {
+    for (const proxyId of shuffle(proxies)) {
+      console.log(`=== ${proxyId} ===`);
+      const started = Date.now();
+      const result = await runProxy({
+        proxyId,
+        versions,
+        profile,
+        scenarios,
+        ports: { proxy: opts.proxyPort, backendBase: opts.backendBase },
+        dirs,
+        cpus: { proxy: plan.proxy, backends: plan.backends },
+        fleet,
+        warpJar: opts.warpJar,
+        mcVersion: opts.mc,
+        backendHeapMb: BACKEND_HEAP_MB[profileName],
+      });
+      results.push(result);
+      // Metrics, raw samples and the report so far, on disk before the next proxy starts: a run
+      // that dies later keeps everything measured up to here.
+      saveResult(resultsDir, result);
+      writeReport(resultsDir);
+      const secs = Math.round((Date.now() - started) / 1000);
+      console.log(`    done in ${secs}s, ${result.errors.length} errors, natives ${result.natives?.ok ? 'ok' : 'unconfirmed'}`);
+      for (const line of invalidResults([result])) console.log(`    INVALID ${line}`);
+      console.log('');
     }
-    const secs = Math.round((Date.now() - started) / 1000);
-    console.log(`    done in ${secs}s, ${result.errors.length} errors, natives ${result.natives?.ok ? 'ok' : 'unconfirmed'}\n`);
+  } finally {
+    fleet.stop();
   }
-
-  // Report in the proxy order given (stable), not the shuffled run order.
-  const ordered = proxies.map((id) => results.find((r) => r.id === id)).filter(Boolean);
-  const report = buildReport({ results: ordered, env, versions, profileName, date, cpuNote: plan.note });
-  writeFileSync(join(resultsDir, 'README.md'), report);
   console.log(`Report written: ${join(resultsDir, 'README.md')}`);
 
   // A non-zero exit when a proxy did not launch, a scenario threw, or no bot got through, so CI
-  // notices a broken adapter or bot path even when the report was written.
+  // notices a broken adapter or bot path even when the report was written. A measurement the
+  // validity gate rejected is a finding about the machine or the sizes, stated in the report, not
+  // a failure of the harness.
   const failures = harnessFailures(results);
   if (failures.length) {
     console.error(`FAILED:\n  ${failures.join('\n  ')}`);
@@ -180,6 +209,7 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     if (interrupted) process.exit(130);
     interrupted = true;
     console.error(`\n${signal}: stopping the proxy and backends...`);
+    killFleets();
     killAll('SIGTERM');
     setTimeout(() => { killAll('SIGKILL'); process.exit(130); }, 15_000).unref();
   });
@@ -187,9 +217,10 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 
 // killAll on the way out: a child that survived its stop() would otherwise keep the process alive.
 main().then(
-  (code) => { killAll(); process.exit(code ?? 0); },
+  (code) => { killFleets(); killAll(); process.exit(code ?? 0); },
   (e) => {
     console.error(e.stack ?? e.message);
+    killFleets();
     killAll();
     process.exit(1);
   },
