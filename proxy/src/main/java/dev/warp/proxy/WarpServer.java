@@ -23,6 +23,8 @@ import dev.warp.api.antibot.AttackLevel;
 import dev.warp.api.antibot.Signal;
 import dev.warp.api.event.proxy.ProxyReadyEvent;
 import dev.warp.api.event.proxy.ProxyShutdownEvent;
+import dev.warp.api.fleet.Fleet;
+import dev.warp.api.fleet.spi.FleetStore;
 import dev.warp.api.lifecycle.DrainOutcome;
 import dev.warp.api.lifecycle.DrainPhase;
 import dev.warp.api.lifecycle.DrainStatus;
@@ -45,6 +47,7 @@ import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.compression.Compression;
 import dev.warp.proxy.config.AntiBotConfig;
 import dev.warp.proxy.config.DrainConfig;
+import dev.warp.proxy.config.FleetConfig;
 import dev.warp.proxy.config.GroupConfig;
 import dev.warp.proxy.config.WarpConfig;
 import dev.warp.proxy.connection.BackendPinger;
@@ -63,6 +66,9 @@ import dev.warp.proxy.console.WarpConsole;
 import dev.warp.proxy.drain.ExecutorDrainScheduler;
 import dev.warp.proxy.drain.ProxyDrain;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.fleet.FleetService;
+import dev.warp.proxy.fleet.SingleNodeStore;
+import dev.warp.proxy.fleet.valkey.ValkeyFleetStore;
 import dev.warp.proxy.limit.Blocklist;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.logging.LogCode;
@@ -300,6 +306,9 @@ public final class WarpServer implements Warp {
   /** Empties the proxy before it stops. */
   private final ProxyDrain drain;
 
+  /** The fleet: this proxy alone without a store, the network with one. */
+  private final FleetService fleet;
+
   /** Ends the process once a drain stopped the proxy: {@link System#exit} outside tests. */
   private final IntConsumer exit;
 
@@ -396,6 +405,18 @@ public final class WarpServer implements Warp {
       registerGroup(serverRegistry.groups(), group);
     }
     this.serverChecks = new ServerChecks(serverRegistry.health());
+    this.fleet =
+        new FleetService(
+            config.fleet(),
+            createStore(config.fleet()),
+            playerRegistry,
+            serverRegistry,
+            events,
+            metrics,
+            config.duplicateLoginPolicy(),
+            config.onlineMode(),
+            WarpBuildInfo.VERSION,
+            this::isDraining);
     this.channels =
         new ChannelRegistry(
             new BungeeCordChannel(config.bungeeCord(), playerRegistry, serverRegistry));
@@ -426,6 +447,7 @@ public final class WarpServer implements Warp {
         new ProxyDrain(
             config.drain(), playerRegistry, events, drainScheduler, this::stopAfterDrain);
     drain.onTransfer(proxyMetrics::drainTransfer);
+    drain.transferTargets(fleet::transferTarget);
     events.observe(
         new dev.warp.proxy.event.HandlerObserver() {
           @Override
@@ -440,7 +462,12 @@ public final class WarpServer implements Warp {
         });
     metrics.collector(
         "warp_proxy",
-        new ProxyCollector(this::playerCount, serverRegistry, drain::status, () -> workerGroup));
+        new ProxyCollector(
+            this::playerCount,
+            fleet::playerCount,
+            serverRegistry,
+            drain::status,
+            () -> workerGroup));
     metrics.collector(
         "warp_antibot",
         new AntiBotCollector(
@@ -528,6 +555,9 @@ public final class WarpServer implements Warp {
     AntiBotService bots = startAntiBot(limits);
     ServerLoginContext loginContext = createLoginContext(transport, limits, bots);
     mark = lap("anti-bot", mark);
+    // Joins the fleet (or stays alone): bounded, a store down leaves the fleet degraded.
+    fleet.start().join();
+    mark = lap("fleet", mark);
     this.bossGroup = new MultiThreadIoEventLoopGroup(1, transport.ioFactory());
     this.workerGroup = new MultiThreadIoEventLoopGroup(transport.ioFactory());
     var _ = LoopIndex.assignAll(workerGroup);
@@ -735,6 +765,7 @@ public final class WarpServer implements Warp {
       // plugin's handlers once its class loader closed fails with a NoClassDefFoundError.
       awaitConnectionsClosed();
       pluginManager.disableAll();
+      fleet.close(); // says goodbye, so that the other proxies drop this node at once
       logSinks.close();
       sinkAppender.uninstall();
       events.close();
@@ -1169,6 +1200,19 @@ public final class WarpServer implements Warp {
   }
 
   @Override
+  public Fleet fleet() {
+    return fleet;
+  }
+
+  /** The store {@code fleet.store.type} names. */
+  private FleetStore createStore(FleetConfig config) {
+    return switch (config.store().type()) {
+      case NONE -> new SingleNodeStore();
+      case VALKEY -> new ValkeyFleetStore(config, this::workerGroup, this::clientChannelClass);
+    };
+  }
+
+  @Override
   public CompletableFuture<DrainStatus> drain() {
     return startDrain(DrainTrigger.PLUGIN);
   }
@@ -1346,6 +1390,10 @@ public final class WarpServer implements Warp {
           MojangSessionService.SESSION_SERVER_PROPERTY);
     }
 
+    ServerList serverList = new ServerList(config.status(), playerRegistry);
+    if (config.fleet().networkCount()) {
+      serverList.networkCount(fleet::playerCount);
+    }
     return new ServerLoginContext(
         rsaKeyPair,
         config.onlineMode(),
@@ -1357,7 +1405,7 @@ public final class WarpServer implements Warp {
         new PlaySession(),
         serverRegistry,
         playerRegistry,
-        new ServerList(config.status(), playerRegistry),
+        serverList,
         config.duplicateLoginPolicy(),
         events,
         channels,
@@ -1374,7 +1422,8 @@ public final class WarpServer implements Warp {
         bots,
         pipelines,
         config.messages(),
-        proxyMetrics);
+        proxyMetrics,
+        fleet);
   }
 
   /**

@@ -62,6 +62,7 @@ import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.event.player.GameProfileRequestEventImpl;
 import dev.warp.proxy.event.player.LoginEventImpl;
 import dev.warp.proxy.event.player.PreLoginEventImpl;
+import dev.warp.proxy.fleet.FleetService;
 import dev.warp.proxy.i18n.Message;
 import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.limit.AuthenticationLane;
@@ -1125,6 +1126,39 @@ final class LoginSessionHandler implements SessionHandler {
     this.player = joining;
     joining.countVersion();
 
+    // The fleet settles the account across proxies: at once on a single node, within
+    // fleet.claim-timeout otherwise, on a fleet thread.
+    CompletableFuture<FleetService.Claim> claim = loginContext.fleet().claim(joining);
+    if (claim.isDone()) {
+      claimed(joining, profile, place, claim.join());
+      return;
+    }
+    var _ =
+        claim.whenCompleteAsync(
+            (outcome, _) -> {
+              if (!connection.channel().isActive()) {
+                this.player = null;
+                loginContext.playerRegistry().unregister(joining);
+                joining.uncountVersion();
+                loginContext.fleet().release(joining);
+                return;
+              }
+              claimed(joining, profile, place, outcome);
+            },
+            connection.channel().eventLoop());
+  }
+
+  /** Goes on with the login once the fleet settled who owns the account. */
+  private void claimed(
+      ConnectedPlayer joining, GameProfile profile, int place, FleetService.Claim claim) {
+    if (claim instanceof FleetService.Claim.Refused(Message message)) {
+      this.player = null;
+      loginContext.playerRegistry().unregister(joining);
+      joining.uncountVersion();
+      deny(Refusal.DUPLICATE_LOGIN, message.of());
+      return;
+    }
+
     // The place is taken atomically at registration: of two logins racing for the last place,
     // exactly one gets it. A session replacing a duplicate takes the place it frees.
     LoginEvent.Result proposed =
@@ -1156,6 +1190,7 @@ final class LoginSessionHandler implements SessionHandler {
                     this.player = null;
                     loginContext.playerRegistry().unregister(joining);
                     joining.uncountVersion();
+                    loginContext.fleet().release(joining);
                     deny(
                         proposed instanceof LoginEvent.Denied
                             ? Refusal.SERVER_FULL
@@ -1173,6 +1208,7 @@ final class LoginSessionHandler implements SessionHandler {
     this.player = null;
     loginContext.playerRegistry().unregister(joining);
     joining.uncountVersion();
+    loginContext.fleet().release(joining);
     deny(Refusal.SERVER_FULL, SERVER_FULL);
   }
 
