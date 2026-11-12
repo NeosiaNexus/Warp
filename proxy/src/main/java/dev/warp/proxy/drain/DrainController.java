@@ -328,7 +328,7 @@ public final class DrainController<P extends DrainCandidate> {
     logger.info(
         "Drain phase 2: {} transferred, {} kept, {} kicked; waiting up to {} for the {} "
             + Plural.of(left, "player", "players")
-            + " left",
+            + " still connected",
         transferred.get(),
         kept,
         kicked.get(),
@@ -355,7 +355,7 @@ public final class DrainController<P extends DrainCandidate> {
       logger.info(
           "Drain: {} "
               + Plural.of(left, "player", "players")
-              + " left after {} ({} transferred, {} kept, {} kicked)",
+              + " still connected after {} ({} transferred, {} kept, {} kicked)",
           left,
           formatElapsed(now - startNanos),
           transferred.get(),
@@ -403,9 +403,9 @@ public final class DrainController<P extends DrainCandidate> {
     } else {
       logger.warn(
           LogCode.DRAIN_TIMED_OUT.marker(),
-          "Drain timed out after {}: "
-              + Plural.of(status.players(), "the {} player left is", "the {} players left are")
-              + " disconnected ({} transferred, {} kept, {} kicked, {} logins refused)",
+          "Drain timed out after {}: disconnecting the {} "
+              + Plural.of(status.players(), "player", "players")
+              + " still connected ({} transferred, {} kept, {} kicked, {} logins refused)",
           elapsed,
           status.players(),
           status.transferred(),

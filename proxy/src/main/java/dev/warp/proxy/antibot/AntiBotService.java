@@ -324,7 +324,9 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
             env.apply(AntiBotConfig.ENV_TOKEN_SECRET),
             millisClock);
     if (tokens.generated()) {
-      logger.info("Anti-bot: generated the key that signs verification tokens, in {}", directory);
+      logger.info(
+          "Anti-bot: generated the key that signs verification tokens, in {}",
+          directory.resolve(verification.tokenSecretFile()));
     }
     this.store =
         new IdentityStore(
@@ -1353,7 +1355,7 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
     } catch (UnsupportedOperationException e) {
       // Not a POSIX file system: the platform's defaults apply.
     }
-    logger.info("Anti-bot: generated the secret identities are hashed under in {}", file);
+    logger.info("Anti-bot: generated the secret that hashes identities, in {}", file);
     return secret;
   }
 
