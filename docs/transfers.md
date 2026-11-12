@@ -84,8 +84,8 @@ transfers {
 The address of a peer must be the one clients connect to and name in their handshake: the ticket is
 bound to it. A transfer to an IP address also matches the local address the client reached.
 
-The key is never the forwarding secret (backends hold that one; Warp refuses to start if
-`WARP_TRANSFER_SECRET` equals it). The AES key is derived from the secret with HMAC-SHA256 and a
+The key is never the forwarding secret (backends hold that one; Warp refuses to start if the
+handoff secret, from the environment or the file, equals it). The AES key is derived from the secret with HMAC-SHA256 and a
 fixed label, so the secret is not used raw.
 
 With a generated key that was not copied, a proxy only accepts tickets it wrote itself: the other
@@ -103,6 +103,7 @@ the client and the network between client and proxies are hostile.
 | A client that never came from a peer wants a ticket | Tickets are written only before a transfer this proxy sends to a configured peer, for the player on that connection, as this proxy authenticated it. |
 | Someone reads the ticket on the wire (it is requested before encryption) and replays it | The ticket alone grants nothing: the proof is stored and read over encrypted connections only, and a ticket without its proof is refused. The ticket is also single-use, expires within `max-age`, and is bound to the client's address. |
 | The legitimate ticket is replayed (same proxy) | Each proxy remembers the nonces of the tickets it used until they expire, in a bounded lock-free table (100 000 entries). When the table is full, new tickets are refused (full login) rather than old ones forgotten. |
+| A ticket is replayed after the receiving proxy restarted and forgot what it used | A proxy refuses every ticket written before it started (5 s of clock skew included): for the first seconds after a start, transferred players log in normally (`reason="restart"`). |
 | A ticket is taken to another machine | `bind-address`: the receiving proxy only takes the ticket from the address the writer saw. |
 | A ticket is presented under another name, UUID or client version, or at another address than the transfer's | Each is compared; a mismatch is a full login. |
 | A player authenticated by an offline-mode proxy is handed to an online-mode one | The ticket says the writer did not authenticate the player and carries no proof: the receiving proxy authenticates with Mojang, and the ticket only names the server. |
@@ -150,7 +151,7 @@ the session in clear, and would leave nothing to protect the ticket against a pa
 | Metric | Meaning |
 |---|---|
 | `warp_transfers_total{direction,handoff}` | Transfers sent (`out`) and transferred logins (`in`), with a ticket `used`, `absent` or `invalid`. |
-| `warp_transfer_handoffs_rejected_total{reason}` | Tickets not used: `malformed`, `version`, `key`, `tampered`, `expired`, `clock`, `target`, `protocol`, `address`, `name`, `uuid`, `replayed`, `busy`, `proof`. |
+| `warp_transfer_handoffs_rejected_total{reason}` | Tickets not used: `malformed`, `version`, `key`, `tampered`, `expired`, `clock`, `restart`, `target`, `protocol`, `address`, `name`, `uuid`, `replayed`, `busy`, `proof`. |
 | `warp_transfer_handoff_login_duration_seconds` | Handshake to Login Success for handed-off logins; compare with `warp_login_duration_seconds`. |
 
 The connection log line of a handed-off player ends with `handed off by <node> without Mojang`.

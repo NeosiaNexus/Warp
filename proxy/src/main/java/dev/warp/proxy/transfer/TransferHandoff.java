@@ -98,6 +98,13 @@ public final class TransferHandoff {
   private final Set<String> peers;
   private final String nodeId;
   private final LongSupplier millisClock;
+
+  /**
+   * Tickets written before this instant are refused: the memory of the tickets already used does
+   * not outlive the process, so one used just before a restart would otherwise open again.
+   */
+  private final long acceptsFromMillis;
+
   private final SingleUse used = new SingleUse(SINGLE_USE_CAPACITY);
 
   private TransferHandoff(
@@ -106,13 +113,15 @@ public final class TransferHandoff {
       boolean bindAddress,
       Set<String> peers,
       String nodeId,
-      LongSupplier millisClock) {
+      LongSupplier millisClock,
+      long acceptsFromMillis) {
     this.seal = seal;
     this.maxAge = maxAge;
     this.bindAddress = bindAddress;
     this.peers = Set.copyOf(peers);
     this.nodeId = nodeId;
     this.millisClock = millisClock;
+    this.acceptsFromMillis = acceptsFromMillis;
   }
 
   /**
@@ -121,41 +130,53 @@ public final class TransferHandoff {
    * @return the disabled handoff
    */
   public static TransferHandoff disabled() {
-    return new TransferHandoff(null, HandoffConfig.DEFAULTS.maxAge(), true, Set.of(), "", () -> 0L);
+    return new TransferHandoff(
+        null, HandoffConfig.DEFAULTS.maxAge(), true, Set.of(), "", () -> 0L, Long.MIN_VALUE);
   }
 
   /**
-   * Loads the handoff as configured: its key from {@value HandoffConfig#ENV_SECRET} or the key file
-   * (generated when absent, logged once at INFO), and its peers.
+   * Loads the handoff as configured: its key from {@value HandoffConfig#ENV_VARIABLE} or the key
+   * file (generated when absent, logged once at INFO), and its peers. Tickets written before this
+   * call, {@link #MAX_CLOCK_SKEW} included, are refused: see {@link
+   * HandoffRejection#PREDATES_START}.
    *
    * @param config the {@code transfers.handoff} section
    * @param drainTarget {@code drain.transfer-to}, a peer, or {@code null}
    * @param directory the proxy's directory, which a relative {@code secret-file} is resolved in
    * @param env the environment
+   * @param forwardingSecret the secret backends hold, which the handoff must not be sealed under
+   *     (one of them could then write tickets); empty if there is none
    * @param nodeId what names this proxy in the tickets it writes, for the logs of their readers
    * @param millisClock the wall clock
    * @return the handoff, disabled if the configuration says so
-   * @throws IOException if the key file cannot be read or created
+   * @throws IOException if the key file cannot be read or created, or if the key is the forwarding
+   *     secret
    */
   public static TransferHandoff load(
       HandoffConfig config,
       DrainConfig.@Nullable Target drainTarget,
       Path directory,
       UnaryOperator<@Nullable String> env,
+      byte[] forwardingSecret,
       String nodeId,
       LongSupplier millisClock)
       throws IOException {
     if (!config.enabled()) {
       return disabled();
     }
-    Path file = directory.resolve(config.secretFile());
-    HandoffSeal seal = HandoffSeal.load(file, env.apply(HandoffConfig.ENV_SECRET));
+    Path file = directory.resolve(config.sealFile());
+    HandoffSeal seal = HandoffSeal.load(file, env.apply(HandoffConfig.ENV_VARIABLE));
+    if (forwardingSecret.length > 0 && seal.sealsUnder(forwardingSecret)) {
+      throw new IOException(
+          "the transfer handoff is sealed under the forwarding secret, which backends hold: give"
+              + " it a secret of its own");
+    }
     if (seal.generated()) {
       logger.info(
           "Transfers: generated the handoff key in {}. Only this proxy accepts its tickets until"
               + " the others share it (copy the file, or set {} on each)",
           file,
-          HandoffConfig.ENV_SECRET);
+          HandoffConfig.ENV_VARIABLE);
     }
     Set<String> peers = new HashSet<>();
     if (drainTarget != null) {
@@ -165,11 +186,18 @@ public final class TransferHandoff {
       peers.add(peerKey(peer.host(), peer.port()));
     }
     return new TransferHandoff(
-        seal, config.maxAge(), config.bindAddress(), peers, nodeId, millisClock);
+        seal,
+        config.maxAge(),
+        config.bindAddress(),
+        peers,
+        nodeId,
+        millisClock,
+        millisClock.getAsLong() + MAX_CLOCK_SKEW.toMillis());
   }
 
   /**
-   * A handoff under {@code secret}, for tests.
+   * A handoff under {@code secret} that accepts tickets of any age within their validity, for
+   * tests.
    *
    * @param secret the shared secret
    * @param maxAge how long tickets stay valid
@@ -192,7 +220,7 @@ public final class TransferHandoff {
       keys.add(peerKey(peer.substring(0, colon), Integer.parseInt(peer.substring(colon + 1))));
     }
     return new TransferHandoff(
-        HandoffSeal.of(secret), maxAge, bindAddress, keys, nodeId, millisClock);
+        HandoffSeal.of(secret), maxAge, bindAddress, keys, nodeId, millisClock, Long.MIN_VALUE);
   }
 
   /**
@@ -361,9 +389,9 @@ public final class TransferHandoff {
   /**
    * Opens a transferred client's ticket and checks it against its login, then spends it: a ticket
    * is used once on this proxy. Checked in that order, so that a ticket refused for another reason
-   * is not spent: version, key, seal, content, times, the transfer's address, the client's protocol
-   * version and address (with {@code bind-address}), name, UUID (for an authenticated ticket:
-   * offline, the client's UUID is its own), single use.
+   * is not spent: version, key, seal, content, times, this proxy's start, the transfer's address,
+   * the client's protocol version and address (with {@code bind-address}), name, UUID (for an
+   * authenticated ticket: offline, the client's UUID is its own), single use.
    *
    * @param payload the cookie's payload
    * @param arrival the login
@@ -398,6 +426,10 @@ public final class TransferHandoff {
     }
     if (now > expiresAt + skew) {
       return rejected(HandoffRejection.EXPIRED, arrival);
+    }
+    if (ticket.issuedAtMillis() < acceptsFromMillis) {
+      // Possibly used before this proxy restarted and forgot it: the full login instead.
+      return rejected(HandoffRejection.PREDATES_START, arrival);
     }
     if (!targets(ticket, arrival)) {
       return rejected(HandoffRejection.WRONG_TARGET, arrival);

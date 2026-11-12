@@ -34,6 +34,11 @@ public enum HandoffRejection {
   EXPIRED("expired"),
   /** Written further in the future than the clock skew tolerated between proxies. */
   CLOCK("clock"),
+  /**
+   * Written before this proxy started, clock skew included: the tickets used before a restart are
+   * forgotten with it, so none from before is accepted.
+   */
+  PREDATES_START("restart"),
   /** Written for another address than the one the client connected to. */
   WRONG_TARGET("target"),
   /** Written for a client of another protocol version than the one that presents it. */

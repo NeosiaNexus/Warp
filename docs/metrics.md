@@ -110,7 +110,7 @@ backend towards the client. The blind ratio of a proxy is
 | `warp_drain_duration_seconds` | gauge | | How long the current or last drain has run. |
 | `warp_drain_transfers_total` | counter | `outcome` (`sent`, `unsupported`, `not_ready`, `disconnected`) | Transfers the drain attempted, by `TransferResult`. |
 | `warp_transfers_total` | counter | `direction` (`out`, `in`), `handoff` (`used`, `absent`, `invalid`) | Transfers sent to another server (out) and logins that arrived by one (in), by whether a handoff ticket went with them. See [transfers](transfers.md). |
-| `warp_transfer_handoffs_rejected_total` | counter | `reason` (`malformed`, `version`, `key`, `tampered`, `expired`, `clock`, `target`, `protocol`, `address`, `name`, `uuid`, `replayed`, `busy`, `proof`) | Handoff tickets a transferred client presented and the proxy did not use. |
+| `warp_transfer_handoffs_rejected_total` | counter | `reason` (`malformed`, `version`, `key`, `tampered`, `expired`, `clock`, `restart`, `target`, `protocol`, `address`, `name`, `uuid`, `replayed`, `busy`, `proof`) | Handoff tickets a transferred client presented and the proxy did not use. |
 | `warp_transfer_handoff_login_duration_seconds` | histogram (`network`) | | From the handshake to Login Success, for the logins a handoff ticket carried. |
 | `warp_plugin_event_duration_seconds` | histogram (`fast`) | `event` (the API event's name) | Time one handler took on one event. |
 | `warp_plugin_handler_errors_total` | counter | `plugin` | Uncaught exceptions from event handlers. |

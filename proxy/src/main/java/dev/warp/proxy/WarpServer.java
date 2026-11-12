@@ -105,7 +105,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
-import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.spec.InvalidKeySpecException;
 import java.time.Duration;
@@ -909,7 +908,7 @@ public final class WarpServer implements Warp {
     if (token != null) {
       secrets.add(token);
     }
-    String handoffSecret = System.getenv(HandoffConfig.ENV_SECRET);
+    String handoffSecret = System.getenv(HandoffConfig.ENV_VARIABLE);
     if (handoffSecret != null && !handoffSecret.isBlank()) {
       secrets.add(handoffSecret.strip());
     }
@@ -1327,17 +1326,6 @@ public final class WarpServer implements Warp {
    *     forwarding secret
    */
   private TransferHandoff loadHandoff() {
-    String secret = System.getenv(HandoffConfig.ENV_SECRET);
-    byte[] forwarding = config.forwardingSecret();
-    if (config.handoff().enabled()
-        && secret != null
-        && forwarding.length > 0
-        && MessageDigest.isEqual(secret.strip().getBytes(StandardCharsets.UTF_8), forwarding)) {
-      // Backends hold the forwarding secret: with it, one of them could write tickets.
-      throw new IllegalStateException(
-          HandoffConfig.ENV_SECRET
-              + " is the forwarding secret: give the transfer handoff a secret of its own");
-    }
     try {
       TransferHandoff handoff =
           TransferHandoff.load(
@@ -1345,6 +1333,7 @@ public final class WarpServer implements Warp {
               config.drain().transferTo(),
               directory,
               System::getenv,
+              config.forwardingSecret(),
               nodeId(),
               System::currentTimeMillis);
       if (handoff.enabled()) {

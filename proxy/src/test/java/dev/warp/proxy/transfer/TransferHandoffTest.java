@@ -32,6 +32,7 @@ import dev.warp.proxy.transfer.TransferHandoff.Arrival;
 import dev.warp.proxy.transfer.TransferHandoff.Issued;
 import dev.warp.proxy.transfer.TransferHandoff.Subject;
 
+import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
@@ -41,6 +42,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
@@ -211,6 +213,7 @@ class TransferHandoffTest {
               new DrainConfig.Target(HOST, PORT),
               directory,
               _ -> "a-shared-secret-of-the-network",
+              new byte[0],
               "n",
               millis::get);
 
@@ -234,7 +237,13 @@ class TransferHandoffTest {
 
       TransferHandoff loaded =
           TransferHandoff.load(
-              config, new DrainConfig.Target(HOST, PORT), directory, _ -> null, "n", millis::get);
+              config,
+              new DrainConfig.Target(HOST, PORT),
+              directory,
+              _ -> null,
+              new byte[0],
+              "n",
+              millis::get);
 
       assertTrue(loaded.enabled());
       assertTrue(loaded.isPeer(HOST, PORT));
@@ -254,9 +263,11 @@ class TransferHandoffTest {
               null,
               directory,
               name ->
-                  name.equals(HandoffConfig.ENV_SECRET) ? "a-shared-secret-of-the-network" : null,
+                  name.equals(HandoffConfig.ENV_VARIABLE) ? "a-shared-secret-of-the-network" : null,
+              new byte[0],
               "n",
               millis::get);
+      millis.addAndGet(SKEW);
 
       assertFalse(loaded.isPeer(HOST, PORT));
       assertFalse(Files.exists(directory.resolve("transfer.secret")));
@@ -274,8 +285,10 @@ class TransferHandoffTest {
               new DrainConfig.Target(HOST, PORT),
               directory,
               _ -> "a-shared-secret-of-the-network",
+              "a-forwarding-secret".getBytes(StandardCharsets.UTF_8),
               "warp-3",
               millis::get);
+      millis.addAndGet(SKEW);
 
       Issued issued = loaded.issue(steve(true), HOST, PORT);
       assertNotNull(issued);
@@ -286,6 +299,65 @@ class TransferHandoffTest {
 
       assertEquals(2_000, ticket.expiresAtMillis() - ticket.issuedAtMillis());
       assertEquals("warp-3", ticket.sourceNode());
+    }
+
+    private TransferHandoff loaded(@Nullable String secret, String forwardingSecret)
+        throws IOException {
+      return TransferHandoff.load(
+          new HandoffConfig(true, "transfer.secret", MAX_AGE, true, List.of()),
+          new DrainConfig.Target(HOST, PORT),
+          directory,
+          _ -> secret,
+          forwardingSecret.getBytes(StandardCharsets.UTF_8),
+          "warp-2",
+          millis::get);
+    }
+
+    @Test
+    @DisplayName("should refuse a ticket written before it started: it may have been used before")
+    void predatesStart() throws Exception {
+      byte[] before = issued().ticket();
+      TransferHandoff restarted = loaded(new String(SECRET, StandardCharsets.UTF_8), "");
+
+      millis.addAndGet(SKEW - 1);
+      byte[] withinSkew = issued().ticket();
+      millis.addAndGet(1);
+      byte[] after = issued().ticket();
+
+      assertEquals(HandoffRejection.PREDATES_START, rejected(restarted.open(before, arrival())));
+      assertEquals(
+          HandoffRejection.PREDATES_START, rejected(restarted.open(withinSkew, arrival())));
+      assertEquals("survival", accepted(restarted.open(after, arrival())).server());
+    }
+
+    @Test
+    @DisplayName("should refuse to seal under the forwarding secret, from the environment")
+    void forwardingSecretFromEnvironment() {
+      IOException refused =
+          assertThrows(
+              IOException.class,
+              () -> loaded("the-secret-backends-hold", "the-secret-backends-hold"));
+
+      String message = String.valueOf(refused.getMessage());
+      assertTrue(message.contains("forwarding secret"), message);
+      assertFalse(message.contains("the-secret-backends-hold"), message);
+    }
+
+    @Test
+    @DisplayName("should refuse to seal under the forwarding secret, from the key file")
+    void forwardingSecretFromFile() throws Exception {
+      byte[] forwarding = "the-secret-backends-hold".getBytes(StandardCharsets.UTF_8);
+      Files.writeString(
+          directory.resolve("transfer.secret"), Base64.getEncoder().encodeToString(forwarding));
+
+      assertThrows(IOException.class, () -> loaded(null, "the-secret-backends-hold"));
+    }
+
+    @Test
+    @DisplayName("should seal under a secret that is not the forwarding secret")
+    void anotherSecret() throws Exception {
+      assertTrue(loaded("a-shared-secret-of-the-network", "the-secret-backends-hold").enabled());
+      assertTrue(loaded("a-shared-secret-of-the-network", "").enabled());
     }
   }
 

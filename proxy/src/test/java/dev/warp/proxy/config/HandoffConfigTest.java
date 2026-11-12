@@ -57,7 +57,7 @@ class HandoffConfigTest {
       HandoffConfig handoff = load("");
 
       assertFalse(handoff.enabled());
-      assertEquals("transfer.secret", handoff.secretFile());
+      assertEquals("transfer.secret", handoff.sealFile());
       assertEquals(Duration.ofSeconds(15), handoff.maxAge());
       assertTrue(handoff.bindAddress());
       assertEquals(List.of(), handoff.peers());
@@ -101,7 +101,7 @@ class HandoffConfigTest {
               """);
 
       assertTrue(handoff.enabled());
-      assertEquals("keys/handoff.key", handoff.secretFile());
+      assertEquals("keys/handoff.key", handoff.sealFile());
       assertEquals(Duration.ofSeconds(5), handoff.maxAge());
       assertFalse(handoff.bindAddress());
       assertEquals(

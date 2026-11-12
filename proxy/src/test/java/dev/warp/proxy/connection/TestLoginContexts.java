@@ -379,7 +379,7 @@ final class TestLoginContexts {
       ServerRegistry servers,
       TimeoutsConfig timeouts,
       LoggingConfig logging) {
-    return with(base, servers, timeouts, logging, base.acceptsTransfers(), base.handoff());
+    return rebuild(base, servers, timeouts, logging, base.acceptsTransfers(), base.handoff());
   }
 
   /**
@@ -424,7 +424,7 @@ final class TestLoginContexts {
    * @return the context
    */
   static ServerLoginContext acceptingHandoffs(ServerLoginContext base, TransferHandoff handoff) {
-    return with(base, base.serverRegistry(), base.timeouts(), base.logging(), true, handoff);
+    return rebuild(base, base.serverRegistry(), base.timeouts(), base.logging(), true, handoff);
   }
 
   /**
@@ -437,10 +437,11 @@ final class TestLoginContexts {
    */
   static ServerLoginContext withHandoff(
       ServerLoginContext base, ServerRegistry servers, TransferHandoff handoff) {
-    return with(base, servers, base.timeouts(), base.logging(), base.acceptsTransfers(), handoff);
+    return rebuild(
+        base, servers, base.timeouts(), base.logging(), base.acceptsTransfers(), handoff);
   }
 
-  private static ServerLoginContext with(
+  private static ServerLoginContext rebuild(
       ServerLoginContext base,
       ServerRegistry servers,
       TimeoutsConfig timeouts,

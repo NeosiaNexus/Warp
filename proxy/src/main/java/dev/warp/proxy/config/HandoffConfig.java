@@ -30,8 +30,8 @@ import org.spongepowered.configurate.CommentedConfigurationNode;
  *
  * @param enabled whether tickets are written before transfers and read from transferred logins; off
  *     unless the operator turns it on: a ticket stands in for Mojang's authentication
- * @param secretFile the file the sealing key is read from, generated when absent, relative to the
- *     proxy's directory; {@value #ENV_SECRET} takes precedence
+ * @param sealFile the file the sealing key is read from, generated when absent, relative to the
+ *     proxy's directory; {@value #ENV_VARIABLE} takes precedence
  * @param maxAge how long a ticket stays valid after it was written
  * @param bindAddress whether a ticket is only valid from the address its player had on the proxy
  *     that wrote it; turned off where the proxies do not see the same client address
@@ -40,13 +40,13 @@ import org.spongepowered.configurate.CommentedConfigurationNode;
  */
 public record HandoffConfig(
     boolean enabled,
-    String secretFile,
+    String sealFile,
     Duration maxAge,
     boolean bindAddress,
     List<DrainConfig.Target> peers) {
 
   /** The environment variable that holds the key, ahead of {@code secret-file}. */
-  public static final String ENV_SECRET = "WARP_TRANSFER_SECRET";
+  public static final String ENV_VARIABLE = "WARP_TRANSFER_SECRET";
 
   /** The longest {@code max-age}: a ticket is a credential, and a transfer takes seconds. */
   public static final Duration MAX_MAX_AGE = Duration.ofSeconds(60);
@@ -73,8 +73,8 @@ public record HandoffConfig(
   static HandoffConfig parse(CommentedConfigurationNode root) throws ConfigurationException {
     CommentedConfigurationNode node = root.node("transfers", "handoff");
     boolean enabled = WarpConfig.booleanValue(node.node("enabled"), false);
-    String secretFile = WarpConfig.stringValue(node.node("secret-file"), DEFAULT_SECRET_FILE);
-    if (secretFile.isBlank()) {
+    String sealFile = WarpConfig.stringValue(node.node("secret-file"), DEFAULT_SECRET_FILE);
+    if (sealFile.isBlank()) {
       throw ConfigurationException.invalid(
           "transfers.handoff.secret-file", "a file name, such as \"transfer.secret\"", "''");
     }
@@ -86,7 +86,7 @@ public record HandoffConfig(
     }
     boolean bindAddress = WarpConfig.booleanValue(node.node("bind-address"), true);
     return new HandoffConfig(
-        enabled, secretFile.strip(), maxAge, bindAddress, parsePeers(node.node("peers")));
+        enabled, sealFile.strip(), maxAge, bindAddress, parsePeers(node.node("peers")));
   }
 
   private static List<DrainConfig.Target> parsePeers(CommentedConfigurationNode node)
