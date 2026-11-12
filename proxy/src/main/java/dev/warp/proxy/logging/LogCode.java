@@ -1032,6 +1032,26 @@ public enum LogCode {
       "Match the reference the player reports with this line."),
 
   // ---------------------------------------------------------------------------
+  // Bedrock
+  // ---------------------------------------------------------------------------
+
+  /** A handshake carried Floodgate data that did not verify. */
+  FLOODGATE_DATA_REFUSED(
+      "W-BEDROCK-001",
+      false,
+      "Floodgate data was refused",
+      "A connection announced a Bedrock player with Floodgate data Warp could not verify: it was"
+          + " not encrypted with the key in bedrock.floodgate.key-file, was already used (a"
+          + " replay), named another address than the connection's from a Geyser host not in"
+          + " bedrock.geyser.trusted, or carried an identity that cannot log in. The connection"
+          + " was refused, and the player told the data did not verify. Logged once, then at most"
+          + " every five minutes with the count of refusals in between: the counts are in the"
+          + " limits report and the metrics.",
+      "If the connection is your Geyser: copy its key.pem over Warp's (the two must be the same"
+          + " file), and list the address Geyser connects from in bedrock.geyser.trusted. If it is"
+          + " not, nothing to do: someone tried to log in as a Bedrock player without the key."),
+
+  // ---------------------------------------------------------------------------
   // Connections
   // ---------------------------------------------------------------------------
 

@@ -100,6 +100,8 @@ public enum Message {
   VERIFIED_RECONNECT("warp.login.verified-reconnect", Kind.DISCONNECT),
   /** A username no vanilla client sends. */
   INVALID_USERNAME("warp.login.invalid-username", Kind.DISCONNECT),
+  /** Floodgate data that did not verify: a Bedrock player Warp cannot vouch for. */
+  FLOODGATE_REFUSED("warp.login.floodgate-refused", Kind.DISCONNECT),
   /** A login packet sent out of order: a broken or modified client. */
   UNEXPECTED_PACKET("warp.login.unexpected-packet", Kind.DISCONNECT),
   /** The encryption handshake failed. */

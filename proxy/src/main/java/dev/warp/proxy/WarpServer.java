@@ -41,6 +41,7 @@ import dev.warp.jni.Natives;
 import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
+import dev.warp.proxy.bedrock.FloodgateService;
 import dev.warp.proxy.command.ProxyCommands;
 import dev.warp.proxy.command.ProxyControl;
 import dev.warp.proxy.command.WarpCommandManager;
@@ -1423,7 +1424,8 @@ public final class WarpServer implements Warp {
         pipelines,
         config.messages(),
         proxyMetrics,
-        fleet);
+        fleet,
+        new FloodgateService(config.bedrock()));
   }
 
   /**

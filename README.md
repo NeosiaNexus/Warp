@@ -75,6 +75,11 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
   Plugins read the platform with `InboundConnection.platform()`. Switching between modded servers
   before 1.20.2 and a `modded = false` option for vanilla backends in a mixed network are the
   next milestones of [the modded clients design](docs/research/modded-and-bedrock.md).
+- **Bedrock players through Geyser, natively**: Warp reads and verifies Floodgate's encrypted
+  handshake data with the shared `key.pem` (no Floodgate plugin on the proxy), refuses what does not
+  decrypt, was replayed or names a foreign address, logs the player in under Floodgate's UUID and
+  prefixed name (or the linked Java account), exposes `ClientPlatform.Bedrock` to plugins and
+  routes, and re-emits the data to backends running Floodgate. See [docs/bedrock.md](docs/bedrock.md).
 - **BungeeCord plugin messaging channel** (`BungeeCord`, `bungeecord:main`): all 18 sub-channels
   Paper and Spigot plugins use to move players and query the network, answered byte for byte as
   BungeeCord and Velocity answer them. Connect goes through Warp's own switch and events; each

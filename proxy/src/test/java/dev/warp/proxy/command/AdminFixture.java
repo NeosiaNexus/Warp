@@ -29,6 +29,7 @@ import dev.warp.api.fleet.ProxyNode;
 import dev.warp.api.fleet.StoreState;
 import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.permission.Tristate;
+import dev.warp.api.player.ClientPlatform;
 import dev.warp.api.player.ConnectionResult;
 import dev.warp.api.player.Player;
 import dev.warp.api.plugin.PluginContainer;
@@ -186,6 +187,7 @@ final class AdminFixture {
         .when(player.uniqueId())
         .thenReturn(UUID.nameUUIDFromBytes(name.getBytes(StandardCharsets.UTF_8)));
     lenient().when(player.ping()).thenReturn(34L);
+    lenient().when(player.platform()).thenReturn(ClientPlatform.JAVA);
     lenient()
         .when(player.protocolVersion())
         .thenReturn(ProtocolVersion.MINECRAFT_1_21_4.protocol());

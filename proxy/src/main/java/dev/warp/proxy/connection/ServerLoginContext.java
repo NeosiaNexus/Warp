@@ -20,6 +20,7 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
+import dev.warp.proxy.bedrock.FloodgateService;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.config.DuplicateLoginPolicy;
 import dev.warp.proxy.config.ForwardingMode;
@@ -83,6 +84,8 @@ import io.netty.channel.Channel;
  * @param messages what the proxy tells players, rendered in each player's language
  * @param metrics the proxy's metrics, which the handlers update
  * @param fleet the fleet, which settles who owns an account across proxies
+ * @param floodgate reads and verifies the Floodgate data of Bedrock players sent through Geyser,
+ *     and re-emits it to backends running Floodgate
  */
 @SuppressWarnings("ArrayRecordComponent") // forwardingSecret is treated as immutable
 public record ServerLoginContext(
@@ -114,7 +117,8 @@ public record ServerLoginContext(
     PipelineRegistry pipelines,
     PlayerMessages messages,
     ProxyMetrics metrics,
-    FleetService fleet) {
+    FleetService fleet,
+    FloodgateService floodgate) {
 
   /** Validates configuration invariants. */
   public ServerLoginContext {

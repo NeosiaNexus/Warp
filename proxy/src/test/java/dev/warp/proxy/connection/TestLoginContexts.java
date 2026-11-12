@@ -19,6 +19,7 @@ package dev.warp.proxy.connection;
 import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
+import dev.warp.proxy.bedrock.FloodgateService;
 import dev.warp.proxy.command.ProxyCommands;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.config.DuplicateLoginPolicy;
@@ -143,6 +144,53 @@ final class TestLoginContexts {
         events,
         false,
         status);
+  }
+
+  /**
+   * Returns an offline context reading Floodgate data with the given service.
+   *
+   * @param floodgate the Floodgate service
+   * @param registry the servers
+   * @return the context
+   */
+  static ServerLoginContext offline(FloodgateService floodgate, ServerRegistry registry) {
+    ClientLimits limits = ClientLimits.unlimited();
+    return floodgate(false, floodgate, registry, limits, AntiBotService.disabled(limits, EVENTS));
+  }
+
+  /**
+   * Returns a context without compression whose Bedrock players log in through {@code floodgate},
+   * with the given servers, limits and anti-bot.
+   *
+   * @param onlineMode whether Java players authenticate with Mojang
+   * @param floodgate the Floodgate service
+   * @param registry the servers
+   * @param limits the limits, which the anti-bot must share
+   * @param antiBot the anti-bot
+   * @return the context
+   */
+  static ServerLoginContext floodgate(
+      boolean onlineMode,
+      FloodgateService floodgate,
+      ServerRegistry registry,
+      ClientLimits limits,
+      AntiBotService antiBot) {
+    return context(
+        onlineMode,
+        -1,
+        new MojangSessionService(),
+        ProfileKeys.mojang(),
+        DuplicateLoginPolicy.AUTO,
+        EVENTS,
+        false,
+        StatusSettings.defaults(),
+        limits,
+        registry,
+        ForwardingMode.NONE,
+        new byte[0],
+        NioSocketChannel.class,
+        antiBot,
+        floodgate);
   }
 
   /**
@@ -288,6 +336,41 @@ final class TestLoginContexts {
       byte[] forwardingSecret,
       Class<? extends io.netty.channel.Channel> channelClass,
       AntiBotService antiBot) {
+    return context(
+        onlineMode,
+        compressionThreshold,
+        sessionService,
+        profileKeys,
+        policy,
+        events,
+        acceptsTransfers,
+        status,
+        limits,
+        registry,
+        forwardingMode,
+        forwardingSecret,
+        channelClass,
+        antiBot,
+        FloodgateService.DISABLED);
+  }
+
+  @SuppressWarnings("ParameterNumber") // every knob of the context, for the factories above
+  private static ServerLoginContext context(
+      boolean onlineMode,
+      int compressionThreshold,
+      MojangSessionService sessionService,
+      ProfileKeys profileKeys,
+      DuplicateLoginPolicy policy,
+      WarpEventBus events,
+      boolean acceptsTransfers,
+      StatusSettings status,
+      ClientLimits limits,
+      ServerRegistry registry,
+      ForwardingMode forwardingMode,
+      byte[] forwardingSecret,
+      Class<? extends io.netty.channel.Channel> channelClass,
+      AntiBotService antiBot,
+      FloodgateService floodgate) {
     PlayerRegistry players = new PlayerRegistry();
     MetricRegistry metrics = new MetricRegistry(0);
     return new ServerLoginContext(
@@ -319,7 +402,8 @@ final class TestLoginContexts {
         new PipelineRegistry(),
         PlayerMessages.bundled(),
         new ProxyMetrics(metrics),
-        FleetService.singleNode(players, registry, events, metrics, policy, onlineMode));
+        FleetService.singleNode(players, registry, events, metrics, policy, onlineMode),
+        floodgate);
   }
 
   /**
@@ -419,7 +503,8 @@ final class TestLoginContexts {
         base.pipelines(),
         base.messages(),
         base.metrics(),
-        base.fleet());
+        base.fleet(),
+        base.floodgate());
   }
 
   /**

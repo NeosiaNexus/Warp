@@ -123,6 +123,7 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-AUTH-003](#w-auth-003) | error | Encryption could not be enabled |
 | [W-AUTH-004](#w-auth-004) | warning | The session server failed |
 | [W-AUTH-005](#w-auth-005) | warning | A login was refused |
+| [W-BEDROCK-001](#w-bedrock-001) | warning | Floodgate data was refused |
 | [W-NET-001](#w-net-001) | error | A connection failed |
 | [W-NET-002](#w-net-002) | warning | A trusted proxy's connection was refused |
 | [W-NET-003](#w-net-003) | warning | A connection from an untrusted address |
@@ -1089,6 +1090,16 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** A player was disconnected during login for the reason the message gives, with a reference the player also sees.
 
 **Fix.** Match the reference the player reports with this line.
+
+## Bedrock
+
+### W-BEDROCK-001
+
+**Floodgate data was refused** (warning)
+
+**Cause.** A connection announced a Bedrock player with Floodgate data Warp could not verify: it was not encrypted with the key in bedrock.floodgate.key-file, was already used (a replay), named another address than the connection's from a Geyser host not in bedrock.geyser.trusted, or carried an identity that cannot log in. The connection was refused, and the player told the data did not verify. Logged once, then at most every five minutes with the count of refusals in between: the counts are in the limits report and the metrics.
+
+**Fix.** If the connection is your Geyser: copy its key.pem over Warp's (the two must be the same file), and list the address Geyser connects from in bedrock.geyser.trusted. If it is not, nothing to do: someone tried to log in as a Bedrock player without the key.
 
 ## Connections
 

@@ -38,8 +38,15 @@ import io.netty.buffer.ByteBuf;
 public record Handshake(int protocolVersion, String serverAddress, int serverPort, int nextState)
     implements HandshakePacket {
 
-  /** Maximum hostname length per protocol spec. */
-  private static final int MAX_SERVER_ADDRESS = 255;
+  /**
+   * The longest server address read or written. A host name is at most 255 characters, vanilla's
+   * cap, but the field also carries what proxies append to it: FML markers, and Floodgate's
+   * encrypted Bedrock data (header, IV, and the Base64 of a plaintext that names the device, the
+   * client's address and a linked account), which runs past 255 for a linked player. Spigot reads
+   * the field up to {@code Short.MAX_VALUE} for that reason; this bound is well above the longest
+   * Floodgate host and keeps the handshake frame small for connections nothing has verified yet.
+   */
+  public static final int MAX_SERVER_ADDRESS = 1024;
 
   /** Codec for reading and writing handshake packets. */
   public static final PacketCodec<Handshake> CODEC =

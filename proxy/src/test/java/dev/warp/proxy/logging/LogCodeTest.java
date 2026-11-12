@@ -84,6 +84,7 @@ class LogCodeTest {
     CATEGORIES.put("MSG", "BungeeCord channel");
     CATEGORIES.put("BACK", "Backends");
     CATEGORIES.put("AUTH", "Authentication and login");
+    CATEGORIES.put("BEDROCK", "Bedrock");
     CATEGORIES.put("NET", "Connections");
     CATEGORIES.put("FLEET", "Fleet");
   }

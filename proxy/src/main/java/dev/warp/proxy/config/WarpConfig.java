@@ -133,6 +133,7 @@ public final class WarpConfig {
   private final StatusSettings status;
   private final QueryConfig query;
   private final ProxyProtocolConfig proxyProtocol;
+  private final BedrockConfig bedrock;
   private final LimitsConfig limits;
   private final AntiBotConfig antiBot;
   private final TimeoutsConfig timeouts;
@@ -166,7 +167,8 @@ public final class WarpConfig {
           "groups.*.weights",
           "groups.*.weights.*",
           "groups.*.capacity",
-          "routes.*");
+          "routes.*",
+          "servers.*.floodgate");
 
   /** Settings of earlier layouts, with what replaced them. */
   private static final Map<String, String> MOVED_KEYS =
@@ -203,6 +205,7 @@ public final class WarpConfig {
       StatusSettings status,
       QueryConfig query,
       ProxyProtocolConfig proxyProtocol,
+      BedrockConfig bedrock,
       LimitsConfig limits,
       AntiBotConfig antiBot,
       TimeoutsConfig timeouts,
@@ -231,6 +234,7 @@ public final class WarpConfig {
     this.status = status;
     this.query = query;
     this.proxyProtocol = proxyProtocol;
+    this.bedrock = bedrock;
     this.limits = limits;
     this.antiBot = antiBot;
     this.timeouts = timeouts;
@@ -401,6 +405,7 @@ public final class WarpConfig {
     StatusSettings status = parseStatus(root, directory);
     QueryConfig query = QueryConfig.parse(root, bind);
     ProxyProtocolConfig proxyProtocol = parseProxyProtocol(root);
+    BedrockConfig bedrock = BedrockConfig.parse(root, directory);
     LimitsConfig limits = parseLimits(root);
     AntiBotConfig antiBot = AntiBotConfig.parse(root);
     TimeoutsConfig timeouts = TimeoutsConfig.parse(root);
@@ -446,6 +451,7 @@ public final class WarpConfig {
         status,
         query,
         proxyProtocol,
+        bedrock,
         limits,
         antiBot,
         timeouts,
@@ -658,6 +664,16 @@ public final class WarpConfig {
    */
   public ProxyProtocolConfig proxyProtocol() {
     return proxyProtocol;
+  }
+
+  /**
+   * Returns how Bedrock players reach the proxy: Floodgate's key and prefix, the trusted Geyser
+   * hosts, and which backends get the Floodgate data.
+   *
+   * @return the Bedrock settings
+   */
+  public BedrockConfig bedrock() {
+    return bedrock;
   }
 
   /**
@@ -1508,6 +1524,8 @@ public final class WarpConfig {
         # Players connect to the default-server on join.
         # Leave the block empty (servers {}) to only use servers that plugins register at runtime,
         # and remove default-server and fallback-order in that case.
+        # A server running Floodgate for its plugins takes floodgate = true, and gets the Bedrock
+        # players' Floodgate data in its handshake (see bedrock.floodgate.forward for the default).
         servers {
           lobby {
             address = "localhost:25565"
@@ -1877,6 +1895,42 @@ public final class WarpConfig {
           trusted-proxies = []
         }
 
+        # Bedrock players, through Geyser. Geyser (standalone, or on another proxy) sends Bedrock
+        # players to Warp as Java connections carrying Floodgate's encrypted data in the handshake.
+        # Warp reads and verifies that data itself, with Floodgate's key: no Floodgate plugin is
+        # needed on Warp, and backends need one only for plugins that use the Floodgate API.
+        # See docs/bedrock.md.
+        bedrock {
+          floodgate {
+            # Read Floodgate data. Off, Bedrock players cannot join: a name with the prefix below
+            # is refused like any other invalid name.
+            enabled = false
+
+            # Floodgate's key.pem, the file Geyser encrypts the data with: copy it from Geyser's
+            # (or Floodgate's) folder, as it is. Whoever holds it can log in as any Bedrock player,
+            # so keep it as private as the forwarding secret.
+            key-file = "key.pem"
+
+            # What Bedrock names start with, so that they never collide with Java names. Only a
+            # verified Bedrock player may use a name with the prefix; "" for no prefix.
+            username-prefix = "."
+
+            # Append the Floodgate data to the handshake of every backend, re-encrypted with the
+            # same key, for the Floodgate plugin on it (its API: isFloodgatePlayer, device, skins).
+            # A backend without Floodgate ignores it. Each server may override this with its own
+            # floodgate = true or false.
+            forward = false
+          }
+
+          geyser {
+            # Addresses Geyser connects to Warp from. Floodgate's data names the Bedrock player's
+            # own address: from a Geyser here, Warp takes it as the player's (for limits, logs and
+            # forwarding); from anywhere else, the data must name the connection's own address.
+            # With the PROXY protocol from Geyser (proxy-protocol.trusted-proxies), the two match.
+            trusted = ["127.0.0.1/32", "::1/128"]
+          }
+        }
+
         # Limits on what one client address may do, against connection floods and bot attacks.
         # An address is an IPv4 address, or an IPv6 /64 network (what an ISP gives one customer).
         # Behind the PROXY protocol, limits count the players' real addresses, never the load
@@ -2179,6 +2233,7 @@ public final class WarpConfig {
     } else {
       logger.info(ConsoleMarkers.FILE_ONLY, "  proxy-protocol: disabled");
     }
+    logger.info(ConsoleMarkers.FILE_ONLY, "  bedrock: {}", config.bedrock.describe());
     logger.info(ConsoleMarkers.FILE_ONLY, "  timeouts: {}", config.timeouts);
     logger.info(ConsoleMarkers.FILE_ONLY, "  tcp-fast-open: {}", config.tcpFastOpen);
     LoggingConfig logging = config.logging;

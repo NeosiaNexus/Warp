@@ -20,6 +20,7 @@ import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.codec.McIdentifier;
 import dev.warp.protocol.packet.cookie.CookiePayload;
+import dev.warp.protocol.packet.handshake.Handshake;
 
 import java.util.Arrays;
 import java.util.concurrent.ConcurrentHashMap;
@@ -68,12 +69,13 @@ public final class FrameLimits {
   private static final int UUID = 16;
 
   /**
-   * Handshake: protocol (VarInt), server address (a string of 255 characters, 765 bytes of UTF-8
-   * and its 2-byte length), port (unsigned short), next state (VarInt).
+   * Handshake: protocol (VarInt), server address (a string of {@link Handshake#MAX_SERVER_ADDRESS}
+   * characters at most, three bytes of UTF-8 each and its 2-byte length), port (unsigned short),
+   * next state (VarInt).
    */
   static final int HANDSHAKE_MIN = ID + 1 + 1 + 2 + 1;
 
-  static final int HANDSHAKE_MAX = ID + VARINT + 2 + 255 * 3 + 2 + VARINT;
+  static final int HANDSHAKE_MAX = ID + VARINT + 2 + Handshake.MAX_SERVER_ADDRESS * 3 + 2 + VARINT;
 
   /** Status Request: the identifier alone. */
   static final int STATUS_REQUEST = ID;
@@ -124,18 +126,25 @@ public final class FrameLimits {
   // ---------------------------------------------------------------------------
 
   /** The HANDSHAKE state: the handshake alone, whatever the version. */
-  public static final FrameLimits HANDSHAKE =
-      new Builder(ProtocolState.HANDSHAKE).allow(0x00, HANDSHAKE_MIN, HANDSHAKE_MAX).build();
+  public static final FrameLimits HANDSHAKE;
 
   /** The STATUS state: a request and a ping, whatever the version. */
-  public static final FrameLimits STATUS =
-      new Builder(ProtocolState.STATUS)
-          .allow(0x00, STATUS_REQUEST, STATUS_REQUEST)
-          .allow(0x01, PING_REQUEST, PING_REQUEST)
-          .build();
+  public static final FrameLimits STATUS;
 
-  /** The LOGIN limits of each protocol, without and with cookie responses. */
-  private static final ConcurrentHashMap<Integer, FrameLimits[]> LOGIN = new ConcurrentHashMap<>();
+  static {
+    Builder handshake = new Builder(ProtocolState.HANDSHAKE);
+    handshake.allow(0x00, HANDSHAKE_MIN, HANDSHAKE_MAX);
+    HANDSHAKE = handshake.build();
+
+    Builder status = new Builder(ProtocolState.STATUS);
+    status.allow(0x00, STATUS_REQUEST, STATUS_REQUEST);
+    status.allow(0x01, PING_REQUEST, PING_REQUEST);
+    STATUS = status.build();
+  }
+
+  /** The LOGIN limits of each version, without and with cookie responses. */
+  private static final ConcurrentHashMap<ProtocolVersion, FrameLimits[]> LOGIN =
+      new ConcurrentHashMap<>();
 
   private final ProtocolState state;
 
@@ -184,13 +193,19 @@ public final class FrameLimits {
     return switch (state) {
       case HANDSHAKE -> HANDSHAKE;
       case STATUS -> STATUS;
-      case LOGIN ->
-          LOGIN.computeIfAbsent(version.protocol(), _ -> login(version))[cookieResponses ? 1 : 0];
+      case LOGIN -> LOGIN.computeIfAbsent(version, FrameLimits::login)[cookieResponses ? 1 : 0];
       case CONFIGURATION, PLAY -> null;
     };
   }
 
-  private static FrameLimits[] login(ProtocolVersion version) {
+  /**
+   * Computes what {@link #serverbound} caches for a version: the limits of the LOGIN state without
+   * cookie responses, then with them.
+   *
+   * @param version the client's protocol version
+   * @return the two limits, in that order
+   */
+  static FrameLimits[] login(ProtocolVersion version) {
     return new FrameLimits[] {login(version, false), login(version, true)};
   }
 
@@ -333,11 +348,10 @@ public final class FrameLimits {
       this.state = state;
     }
 
-    Builder allow(int packetId, int smallest, int largestFrame) {
+    void allow(int packetId, int smallest, int largestFrame) {
       min[packetId] = smallest;
       max[packetId] = largestFrame;
       count = Math.max(count, packetId + 1);
-      return this;
     }
 
     FrameLimits build() {
