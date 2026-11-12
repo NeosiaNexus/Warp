@@ -80,9 +80,10 @@ export async function ramp(count, ratePerSec, fn) {
 export function moverPath(index) {
   // The golden angle spreads consecutive movers around the circle; leg lengths differ so that the
   // movers do not all turn, or all come back near the spawn point, at the same moment. The legs are
-  // long enough to keep the crowd thin: what a backend's main thread pays per tick grows with the
-  // number of pairs of players within tracking range of each other.
-  return { heading: (index * 2.399963229728653) % (2 * Math.PI), min: 64, max: 256 + ((index * 37) % 256) };
+  // short on purpose: the movers then share one disc of chunks that stays loaded, and the backend
+  // sends chunks without generating, loading and unloading them all the time (measured: legs twice
+  // as long cost Paper's main thread more than twice the tick time for the same number of movers).
+  return { heading: (index * 2.399963229728653) % (2 * Math.PI), min: 64, max: 160 + ((index * 37) % 96) };
 }
 
 export class RawPool {

@@ -64,7 +64,7 @@ const HELP = `Warp macro benchmark
 
 Usage: bench/run.sh [options]
 
-  --smoke                 Two-minute sanity run: one proxy, ~50 bots. Use this first and in CI.
+  --smoke                 Sanity run of a few minutes: one proxy, a handful of bots. Use this first and in CI.
   --proxies a,b,c         Which proxies to run (default: warp,velocity,gate,gatelite,bungeecord;
                           with --smoke, default: warp). Ids: ${PROXY_IDS.join(', ')}.
   --scenarios a,b         Which scenarios (default: ${ALL_SCENARIOS.join(',')}).

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Warp macro benchmark: Warp vs Velocity, Gate (full and Lite) and BungeeCord, on one command.
 #
-#   bench/run.sh --smoke                 # two-minute sanity run (one proxy, ~50 bots); try this first
+#   bench/run.sh --smoke                 # sanity run of a few minutes (one proxy, a handful of bots); try this first
 #   bench/run.sh                         # full run, every proxy, every scenario
 #   bench/run.sh --proxies warp,velocity # a subset
 #   bench/run.sh --warp-jar path.jar     # benchmark a locally built Warp

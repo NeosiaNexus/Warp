@@ -147,7 +147,7 @@ export class Backend {
       gamemode: this.gameMode,
       'force-gamemode': true,
       'view-distance': 6,
-      'simulation-distance': 4,
+      'simulation-distance': 3,
       'spawn-protection': 0,
       'enforce-secure-profile': false,
       'prevent-proxy-connections': false,
