@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { parseTickHealth, Backend } from '../src/backend.js';
+import { ephemeralConflicts } from '../src/env.js';
 import { mergeStatus, split } from '../src/fleet.js';
 import { parseHeapInfo, slope } from '../src/heap.js';
 import { moverPath } from '../src/load.js';
@@ -162,5 +163,23 @@ describe('results on disk', () => {
 
   it('should refuse a directory that is not a run of this harness', () => {
     assert.throws(() => loadRun(tmpdir()), /no run\.json/);
+  });
+});
+
+describe('listening ports and the ephemeral range', () => {
+  const ports = [25565, 25700, 25720];
+
+  it('should find nothing wrong with the default range', () => {
+    assert.deepEqual(ephemeralConflicts(ports, '32768\t60999', ''), []);
+  });
+
+  it('should name the ports a widened range can hand out to an outgoing connection', () => {
+    assert.deepEqual(ephemeralConflicts(ports, '1024\t65535', ''), ports);
+    assert.deepEqual(ephemeralConflicts(ports, '1024\t65535', '25565,25700-25710'), [25720]);
+    assert.deepEqual(ephemeralConflicts(ports, '1024\t65535', '25565,25700-25720\n'), []);
+  });
+
+  it('should not guess when the range cannot be read', () => {
+    assert.deepEqual(ephemeralConflicts(ports, null, null), []);
   });
 });

@@ -79,8 +79,10 @@ export async function ramp(count, ratePerSec, fn) {
 /** The line a mover walks: out to `max` blocks from its spawn point, back to `min`, and again. */
 export function moverPath(index) {
   // The golden angle spreads consecutive movers around the circle; leg lengths differ so that the
-  // movers do not all turn, or all come back near the spawn point, at the same moment.
-  return { heading: (index * 2.399963229728653) % (2 * Math.PI), min: 64, max: 160 + ((index * 37) % 96) };
+  // movers do not all turn, or all come back near the spawn point, at the same moment. The legs are
+  // long enough to keep the crowd thin: what a backend's main thread pays per tick grows with the
+  // number of pairs of players within tracking range of each other.
+  return { heading: (index * 2.399963229728653) % (2 * Math.PI), min: 64, max: 256 + ((index * 37) % 256) };
 }
 
 export class RawPool {

@@ -8,7 +8,7 @@ import { cpus as osCpus } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { cpuPlan, fingerprint } from './env.js';
+import { cpuPlan, ephemeralConflictsHere, fingerprint } from './env.js';
 import { Fleet, killFleets } from './fleet.js';
 import { FULL, SMOKE, ALL_SCENARIOS, BACKEND_HEAP_MB, applyOverrides } from './profiles.js';
 import { killAll } from './reuse.js';
@@ -142,6 +142,18 @@ async function main() {
   for (const d of Object.values(dirs)) mkdirSync(d, { recursive: true });
   mkdirSync(join(resultsDir, 'csv'), { recursive: true });
   mkdirSync(join(resultsDir, 'configs'), { recursive: true });
+
+  // Listening ports inside the kernel's ephemeral range can be taken by an outgoing connection.
+  const listening = [opts.proxyPort, ...[0, 1, 2, 10, 20].map((i) => opts.backendBase + i)];
+  const atRisk = ephemeralConflictsHere(listening);
+  if (atRisk.length) {
+    console.error(
+      `error: ports ${atRisk.join(', ')} are inside net.ipv4.ip_local_port_range and not reserved: an outgoing connection can take one and a backend or the proxy then fails to listen mid-run.\n` +
+        `Reserve them first (as root):  sysctl -w net.ipv4.ip_local_reserved_ports=${opts.proxyPort},${opts.backendBase}-${opts.backendBase + 20}\n` +
+        'or pass --proxy-port and --backend-base outside the range.',
+    );
+    return 2;
+  }
 
   const cores = osCpus().length;
   const plan = cpuPlan(cores, opts.pin);

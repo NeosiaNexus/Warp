@@ -43,6 +43,7 @@ export function fingerprint({ harnessSha, proxies }) {
       'net.ipv4.ip_local_port_range': sysctl('net.ipv4.ip_local_port_range'),
       'net.core.somaxconn': sysctl('net.core.somaxconn'),
       'fs.file-max': sysctl('fs.file-max'),
+      'net.ipv4.ip_local_reserved_ports': sysctl('net.ipv4.ip_local_reserved_ports'),
     },
     ulimitNofile: tryExec('bash', ['-c', 'ulimit -n']),
     node: process.version,
@@ -97,4 +98,33 @@ export function cpuPlan(cores, enable) {
     probe: bots.at(-1),
     note: `CPU pinning on (${cores} cores): proxy on ${range(proxy)}, backends on ${range(backends)}, ${bots.length - 1} load worker(s) on ${range(bots.slice(0, -1))}, latency probe on ${bots.at(-1)}; the harness itself runs on the load cores.`,
   };
+}
+
+/**
+ * The listening ports of the harness that the kernel may also hand out as the source port of an
+ * outgoing connection. On a host tuned for many connections (`ip_local_port_range` widened to
+ * 1024-65535) a client socket of the previous proxy's run can sit on the port a backend or the proxy
+ * is about to listen on, and the bind then fails in the middle of a run. Ports listed in
+ * `ip_local_reserved_ports` are never handed out, so they are safe.
+ * @param {number[]} ports the ports the harness listens on
+ * @param {string|null} range contents of /proc/sys/net/ipv4/ip_local_port_range ("low high")
+ * @param {string|null} reserved contents of /proc/sys/net/ipv4/ip_local_reserved_ports ("a,b-c")
+ * @returns {number[]} the ports at risk (empty when the range is unknown)
+ */
+export function ephemeralConflicts(ports, range, reserved) {
+  const [low, high] = (range ?? '').trim().split(/\s+/).map(Number);
+  if (!Number.isFinite(low) || !Number.isFinite(high)) return [];
+  const spans = (reserved ?? '')
+    .trim()
+    .split(',')
+    .filter(Boolean)
+    .map((item) => item.split('-').map(Number))
+    .map(([from, to = from]) => [from, to]);
+  const isReserved = (port) => spans.some(([from, to]) => port >= from && port <= to);
+  return ports.filter((port) => port >= low && port <= high && !isReserved(port));
+}
+
+/** The ports at risk on this host (see {@link ephemeralConflicts}). */
+export function ephemeralConflictsHere(ports) {
+  return ephemeralConflicts(ports, tryRead('/proc/sys/net/ipv4/ip_local_port_range'), tryRead('/proc/sys/net/ipv4/ip_local_reserved_ports'));
 }
