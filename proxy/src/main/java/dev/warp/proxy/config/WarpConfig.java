@@ -1220,6 +1220,11 @@ public final class WarpConfig {
             section.node("max-pending-connections"),
             "limits.max-pending-connections",
             defaults.maxPendingConnections());
+    Duration evictPendingAfter =
+        parseDuration(
+            section.node("evict-pending-after"),
+            "limits.evict-pending-after",
+            defaults.pendingEvictionAfter());
     Duration handshakeTimeout =
         parseDuration(
             section.node("handshake-timeout"),
@@ -1268,7 +1273,8 @@ public final class WarpConfig {
         queue,
         queueWait,
         loginsUnderAttack,
-        perAddressUnderAttack);
+        perAddressUnderAttack,
+        evictPendingAfter);
   }
 
   /**
@@ -1954,9 +1960,18 @@ public final class WarpConfig {
 
           # Connections that have not logged in yet (server list pings, logins in progress,
           # connections that sent nothing), for the whole proxy, whatever their address: what a
-          # botnet of many addresses can hold at once. Over it, new connections are refused before
-          # Warp reads anything from them. 0 for no limit.
+          # botnet of many addresses can hold at once. 0 for no limit.
           max-pending-connections = 8192
+
+          # At that limit, a new connection takes the place of the one that has kept Warp waiting
+          # the longest, which is closed: first those that never sent a handshake, then those that
+          # sent one and stalled before a login gave its name. A flood of silent connections then
+          # no longer locks the players out. A connection is only closed after it kept Warp
+          # waiting this long (a game speaks within milliseconds); a new connection is refused
+          # only when none can be closed. Lower it to withstand a faster flood: the limit divided
+          # by this is the connections per second Warp takes in without refusing any (32768 here).
+          # 0 to never close one and refuse the new connections instead.
+          evict-pending-after = 250ms
 
           # The longest a connection may take to send its handshake (the PROXY protocol header
           # included), counted from the moment it connects, and the longest a server list ping may
@@ -2285,9 +2300,12 @@ public final class WarpConfig {
           limits.loginTimeout().isZero() ? "never" : LimitsConfig.format(limits.loginTimeout()));
       logger.info(
           ConsoleMarkers.FILE_ONLY,
-          "  limits: {} connections not logged in at once, handshakes within {}, server list pings"
-              + " within {}",
+          "  limits: {} connections not logged in at once, stalled ones closed to make room {},"
+              + " handshakes within {}, server list pings within {}",
           limits.maxPendingConnections() == 0 ? "any number of" : limits.maxPendingConnections(),
+          limits.pendingEvictionAfter().isZero()
+              ? "never"
+              : "after " + LimitsConfig.format(limits.pendingEvictionAfter()),
           limits.handshakeTimeout().isZero()
               ? "any time"
               : LimitsConfig.format(limits.handshakeTimeout()),

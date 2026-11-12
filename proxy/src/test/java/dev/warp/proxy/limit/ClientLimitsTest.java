@@ -346,7 +346,8 @@ class ClientLimitsTest {
         d.authenticationQueue(),
         d.authenticationQueueWait(),
         d.loginsUnderAttack(),
-        d.maxConcurrentLoginsPerAddressUnderAttack());
+        d.maxConcurrentLoginsPerAddressUnderAttack(),
+        d.pendingEvictionAfter());
   }
 
   private static LimitsConfig withLogins(LimitsConfig.Rate logins, int maxInProgress) {
@@ -367,7 +368,8 @@ class ClientLimitsTest {
         d.authenticationQueue(),
         d.authenticationQueueWait(),
         d.loginsUnderAttack(),
-        d.maxConcurrentLoginsPerAddressUnderAttack());
+        d.maxConcurrentLoginsPerAddressUnderAttack(),
+        d.pendingEvictionAfter());
   }
 
   private static LimitsConfig withAuthentications(int max) {
@@ -388,7 +390,8 @@ class ClientLimitsTest {
         d.authenticationQueue(),
         d.authenticationQueueWait(),
         d.loginsUnderAttack(),
-        d.maxConcurrentLoginsPerAddressUnderAttack());
+        d.maxConcurrentLoginsPerAddressUnderAttack(),
+        d.pendingEvictionAfter());
   }
 
   private static InetSocketAddress socket(String literal) {

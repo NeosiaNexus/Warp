@@ -458,6 +458,12 @@ final class LoginSessionHandler implements SessionHandler {
 
     this.username = name;
     state = LoginState.PRE_LOGIN;
+    // The client gave its name: the proxy now works on the login, and no longer closes it to make
+    // room for a new connection.
+    ConnectionGuard guard = connection.guard();
+    if (guard != null) {
+      guard.loginNamed();
+    }
 
     // The anti-bot first: no plugin hears of a login before the stages that apply to it.
     AntiBotService antiBot = loginContext.antiBot();

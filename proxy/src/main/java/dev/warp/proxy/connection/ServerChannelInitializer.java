@@ -91,8 +91,9 @@ import org.slf4j.LoggerFactory;
  * <p>Every new connection counts against its client address's connection limit ({@link
  * dev.warp.proxy.limit.ClientLimits}) before anything is read from it: here, from the socket's
  * peer, or, behind the PROXY protocol, from the address of the header once it is applied. A
- * connection over the limit is reset with no handler installed. Before that, the connection takes a
- * place among the connections not logged in, for the whole proxy: over that cap, it is reset too. A
+ * connection over the limit is reset with no handler installed. The connection then takes a place
+ * among the connections not logged in, for the whole proxy: at that cap, the one that has kept the
+ * proxy waiting the longest is closed to make room, and the new one is reset only if none may be. A
  * {@link ConnectionGuard} gives the place back once the client is logged in or gone, and holds the
  * connection to the deadlines of the states before login.
  *
@@ -234,15 +235,16 @@ public final class ServerChannelInitializer extends ChannelInitializer<Channel> 
     if (proxyProtocol.enabled() && !fromTrustedProxy(ch)) {
       return;
     }
-    // First the cap on connections not logged in, a counter: a flood over it costs no lookup.
-    if (!limits.tryStartPending()) {
+    // Behind the PROXY protocol, the connection limit applies to the client address of the
+    // header, once it is known. Here it comes first: an address over its rate must not take a
+    // place among the connections not logged in, which at the cap would cost another its own.
+    if (!proxyProtocol.enabled() && !limits.admitConnection(ch.remoteAddress())) {
       reset(ch);
       return;
     }
-    // Behind the PROXY protocol, the connection limit applies to the client address of the
-    // header, once it is known.
-    if (!proxyProtocol.enabled() && !limits.admitConnection(ch.remoteAddress())) {
-      limits.endPending();
+    // Then the cap on connections not logged in: at the cap, the one that kept the proxy waiting
+    // the longest makes room, and the new one is reset only if none can.
+    if (!limits.tryStartPending()) {
       reset(ch);
       return;
     }
