@@ -111,6 +111,8 @@ backend towards the client. The blind ratio of a proxy is
 | `warp_drain_transfers_total` | counter | `outcome` (`sent`, `unsupported`, `not_ready`, `disconnected`) | Transfers the drain attempted, by `TransferResult`. |
 | `warp_plugin_event_duration_seconds` | histogram (`fast`) | `event` (the API event's name) | Time one handler took on one event. |
 | `warp_plugin_handler_errors_total` | counter | `plugin` | Uncaught exceptions from event handlers. |
+| `warp_query_requests_total` | counter | `type` (`handshake`, `basic`, `full`, `unknown`), `outcome` (`answered`, `no_token`, `rate_limited`, `malformed`, `ignored`) | GS4 query datagrams. `unknown` is a datagram dropped before its type was read: over a rate limit, too short or with a wrong magic. `ignored` is a stat dropped while a plugin hides the proxy from pings. |
+| `warp_query_reply_bytes_total` | counter | | Bytes the query listener sent, to watch for amplification. |
 | `warp_metrics_label_overflow_total` | counter | `metric` | Label values recorded as `other`. |
 | `warp_metrics_collector_errors_total` | counter | `collector` | Scrapes a collector failed and was skipped from. |
 | `warp_antibot_level`, `warp_antibot_lockdown`, `warp_antibot_verified_identities`, `warp_antibot_verified_capacity`, `warp_antibot_blocklisted` | gauge | | The anti-bot, as before. |

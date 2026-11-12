@@ -83,6 +83,7 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-MGMT-001](#w-mgmt-001) | warning | A management request was refused |
 | [W-MGMT-002](#w-mgmt-002) | warning | A renewed management certificate could not be read |
 | [W-MGMT-003](#w-mgmt-003) | warning | GET /metrics is open to other machines |
+| [W-QUERY-001](#w-query-001) | warning | A query reply lists fewer names than query.player-names |
 | [W-MET-001](#w-met-001) | warning | A metric reached a cardinality cap |
 | [W-MET-002](#w-met-002) | warning | A metrics collector failed |
 | [W-MET-003](#w-met-003) | warning | GET /metrics could not be answered |
@@ -749,6 +750,16 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** management.bind is not a loopback address, and neither management.tls nor management.metrics.require-token is on: anyone who reaches the port reads the metrics (players online, servers, versions).
 
 **Fix.** Bind the management server to loopback or a private network, enable management.tls, or set management.metrics.require-token = true and give Prometheus the token.
+
+## Query
+
+### W-QUERY-001
+
+**A query reply lists fewer names than query.player-names** (warning)
+
+**Cause.** A GS4 query reply is capped at 1400 bytes, under a typical MTU and to bound what a query can make Warp send. The full stat lists as many of the player names as fit, then stops: with many players, or long names, that is fewer than query.player-names.
+
+**Fix.** Lower query.player-names to what fits (about 60 names), or set it to 0: server lists and monitoring agents use the counts, rarely the names.
 
 ## Metrics
 

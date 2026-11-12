@@ -659,6 +659,21 @@ public enum LogCode {
           + " management.metrics.require-token = true and give Prometheus the token."),
 
   // ---------------------------------------------------------------------------
+  // Query
+  // ---------------------------------------------------------------------------
+
+  /** A full query stat could not list every player name. */
+  QUERY_REPLY_TRUNCATED(
+      "W-QUERY-001",
+      false,
+      "A query reply lists fewer names than query.player-names",
+      "A GS4 query reply is capped at 1400 bytes, under a typical MTU and to bound what a query"
+          + " can make Warp send. The full stat lists as many of the player names as fit, then"
+          + " stops: with many players, or long names, that is fewer than query.player-names.",
+      "Lower query.player-names to what fits (about 60 names), or set it to 0: server lists and"
+          + " monitoring agents use the counts, rarely the names."),
+
+  // ---------------------------------------------------------------------------
   // Metrics
   // ---------------------------------------------------------------------------
 
