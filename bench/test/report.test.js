@@ -191,6 +191,11 @@ describe('buildReport', () => {
     assert.doesNotMatch(md, /read\+write/);
   });
 
+  it('should say that a smoke run makes no performance claim', () => {
+    assert.match(report(), /Smoke profile: .*not benchmark results/);
+    assert.doesNotMatch(report({ profileName: 'full' }), /Smoke profile/);
+  });
+
   it('should say which proxies are missing from a partial report', () => {
     assert.match(report({ pending: ['bungeecord'] }), /Partial report: bungeecord had not finished/);
     assert.doesNotMatch(report(), /Partial report/);

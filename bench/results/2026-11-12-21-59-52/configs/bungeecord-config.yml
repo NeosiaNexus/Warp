@@ -10,7 +10,7 @@ max_packets_data_per_second: 33554432
 reject_transfers: false
 prevent_proxy_connections: false
 player_limit: -1
-stats: ad6efb90-1ea3-46e9-beff-84819fdbe1c1
+stats: e9422c0f-7802-498a-87b0-2cadc1a71568
 connection_throttle_limit: 0
 connection_throttle: -1
 log_commands: false

@@ -1,0 +1,266 @@
+{
+  "id": "warp",
+  "label": "Warp",
+  "forwarding": "modern",
+  "metrics": {
+    "idle": {
+      "levels": [
+        {
+          "level": 50,
+          "online": 50,
+          "failures": 0,
+          "rssMiB": 2254.6,
+          "heapMiB": 16.7,
+          "fds": 139,
+          "cpuPct": 1,
+          "reps": [
+            {
+              "online": 50,
+              "failures": 0,
+              "failureSample": null,
+              "rssMiB": 2254.6,
+              "fds": 139,
+              "cpuPct": 1,
+              "proxyClients": 50,
+              "heapMiB": 16.7,
+              "lagP99Ms": 11.27,
+              "backends": [
+                {
+                  "name": "stub",
+                  "kind": "stub",
+                  "players": 50,
+                  "refused": 0,
+                  "keepAliveTimeouts": 0,
+                  "lagP99Ms": 11.25
+                }
+              ],
+              "reasons": []
+            }
+          ],
+          "validity": {
+            "valid": true,
+            "reasons": []
+          }
+        },
+        {
+          "level": 100,
+          "online": 100,
+          "failures": 0,
+          "rssMiB": 2256.4,
+          "heapMiB": 16.1,
+          "fds": 240,
+          "cpuPct": 1,
+          "reps": [
+            {
+              "online": 100,
+              "failures": 0,
+              "failureSample": null,
+              "rssMiB": 2256.4,
+              "fds": 240,
+              "cpuPct": 1,
+              "proxyClients": 100,
+              "heapMiB": 16.1,
+              "lagP99Ms": 11.29,
+              "backends": [
+                {
+                  "name": "stub",
+                  "kind": "stub",
+                  "players": 100,
+                  "refused": 0,
+                  "keepAliveTimeouts": 0,
+                  "lagP99Ms": 11.23
+                }
+              ],
+              "reasons": []
+            }
+          ],
+          "validity": {
+            "valid": true,
+            "reasons": []
+          }
+        }
+      ]
+    },
+    "traffic": {
+      "bots": 10,
+      "online": 10,
+      "failures": 0,
+      "bytesPerSec": 14986,
+      "deliveredBytesPerSec": 20419,
+      "chunkFramesPerSec": 64,
+      "cpuPct": 12,
+      "cpuPerMb": 6.762878087148027,
+      "rssMiB": 2253.3,
+      "heapMiB": 14.9,
+      "backendTps": 20,
+      "reps": [
+        {
+          "online": 10,
+          "failures": 0,
+          "failureSample": null,
+          "bytesPerSec": 14986,
+          "deliveredBytesPerSec": 20419,
+          "framesPerSec": 906,
+          "chunkFramesPerSec": 64,
+          "corrections": 0,
+          "cpuPct": 12,
+          "cpuPerMb": 6.762878087148027,
+          "rssMiB": 2253.3,
+          "heapMiB": 14.9,
+          "lagP99Ms": 11.49,
+          "backends": [
+            {
+              "name": "lobby",
+              "kind": "paper",
+              "tps": 20,
+              "msptAvg": 5.7,
+              "msptMax": 55.9,
+              "overloads": 0,
+              "errors": 0
+            }
+          ],
+          "reasons": []
+        }
+      ],
+      "validity": {
+        "valid": true,
+        "reasons": []
+      }
+    },
+    "latency": {
+      "viaProxy": {
+        "p50": 0.561,
+        "p90": 0.689,
+        "p99": 1.015,
+        "max": 1.785,
+        "n": 100,
+        "timeouts": 0,
+        "settled": true,
+        "background": 5,
+        "backends": [
+          {
+            "name": "lobby",
+            "kind": "paper",
+            "tps": 20,
+            "msptAvg": 2.9,
+            "msptMax": 19.2,
+            "overloads": 0,
+            "errors": 0
+          }
+        ],
+        "reasons": []
+      },
+      "direct": {
+        "p50": 0.378,
+        "p90": 0.445,
+        "p99": 0.577,
+        "max": 1.35,
+        "n": 100,
+        "timeouts": 0,
+        "settled": true,
+        "background": 5,
+        "backends": [
+          {
+            "name": "direct",
+            "kind": "paper",
+            "tps": 20,
+            "msptAvg": 5.7,
+            "msptMax": 80.3,
+            "overloads": 0,
+            "errors": 0
+          }
+        ],
+        "reasons": []
+      },
+      "added": {
+        "p50": 0.183,
+        "p90": 0.244,
+        "p99": 0.438
+      },
+      "samples": 100,
+      "warmup": 20,
+      "timeoutMs": 2000,
+      "backgroundBots": 5,
+      "validity": {
+        "valid": true,
+        "reasons": []
+      }
+    },
+    "switch": {
+      "bots": 4,
+      "online": 4,
+      "connectFailures": 0,
+      "failureSample": null,
+      "switches": 38,
+      "switchesPerSec": 2.5,
+      "failures": 0,
+      "firstChunkP50Ms": 320.9,
+      "firstChunkP99Ms": 613.3,
+      "p50Ms": 596.8,
+      "p99Ms": 912,
+      "heapMiB": 16.4,
+      "lagP99Ms": 15.07,
+      "backends": [
+        {
+          "name": "lobby",
+          "kind": "paper",
+          "tps": 20,
+          "msptAvg": 1.9,
+          "msptMax": 13.7,
+          "overloads": 0,
+          "errors": 0
+        },
+        {
+          "name": "survival",
+          "kind": "paper",
+          "tps": 20,
+          "msptAvg": 2.9,
+          "msptMax": 25.2,
+          "overloads": 0,
+          "errors": 0
+        },
+        {
+          "name": "mini",
+          "kind": "paper",
+          "tps": 20,
+          "msptAvg": 2.7,
+          "msptMax": 29.3,
+          "overloads": 0,
+          "errors": 0
+        }
+      ],
+      "validity": {
+        "valid": true,
+        "reasons": []
+      }
+    },
+    "storm": {
+      "rates": [
+        {
+          "rate": 500,
+          "attempted": 3999,
+          "opened": 3999,
+          "joined": true,
+          "joinError": null,
+          "cpuPct": 58,
+          "cpuPeakPct": 85,
+          "rssMiB": 2259.5,
+          "validity": {
+            "valid": true,
+            "reasons": []
+          }
+        }
+      ]
+    }
+  },
+  "errors": [],
+  "natives": {
+    "ok": true,
+    "checked": true,
+    "notes": [
+      "compression: 22:05:01 DEBUG compress   Compression: libdeflate 1.26 (linux-x86_64) from /root/.cache/warp/natives/libdeflate-1.26-linux-x86_64-b935df31e97b25e8.so",
+      "transport: 22:05:01 DEBUG warp       Using epoll native transport"
+    ]
+  },
+  "proxyFailures": []
+}

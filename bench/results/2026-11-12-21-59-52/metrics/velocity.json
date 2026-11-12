@@ -1,0 +1,267 @@
+{
+  "id": "velocity",
+  "label": "Velocity 3.4.0",
+  "forwarding": "modern",
+  "metrics": {
+    "idle": {
+      "levels": [
+        {
+          "level": 50,
+          "online": 50,
+          "failures": 0,
+          "rssMiB": 2227,
+          "heapMiB": 13.7,
+          "fds": 157,
+          "cpuPct": 0,
+          "reps": [
+            {
+              "online": 50,
+              "failures": 0,
+              "failureSample": null,
+              "rssMiB": 2227,
+              "fds": 157,
+              "cpuPct": 0,
+              "proxyClients": 50,
+              "heapMiB": 13.7,
+              "lagP99Ms": 11.55,
+              "backends": [
+                {
+                  "name": "stub",
+                  "kind": "stub",
+                  "players": 50,
+                  "refused": 0,
+                  "keepAliveTimeouts": 0,
+                  "lagP99Ms": 11.21
+                }
+              ],
+              "reasons": []
+            }
+          ],
+          "validity": {
+            "valid": true,
+            "reasons": []
+          }
+        },
+        {
+          "level": 100,
+          "online": 100,
+          "failures": 0,
+          "rssMiB": 2233.5,
+          "heapMiB": 14.2,
+          "fds": 258,
+          "cpuPct": 0,
+          "reps": [
+            {
+              "online": 100,
+              "failures": 0,
+              "failureSample": null,
+              "rssMiB": 2233.5,
+              "fds": 258,
+              "cpuPct": 0,
+              "proxyClients": 100,
+              "heapMiB": 14.2,
+              "lagP99Ms": 11.25,
+              "backends": [
+                {
+                  "name": "stub",
+                  "kind": "stub",
+                  "players": 100,
+                  "refused": 0,
+                  "keepAliveTimeouts": 0,
+                  "lagP99Ms": 11.21
+                }
+              ],
+              "reasons": []
+            }
+          ],
+          "validity": {
+            "valid": true,
+            "reasons": []
+          }
+        }
+      ]
+    },
+    "traffic": {
+      "bots": 10,
+      "online": 10,
+      "failures": 0,
+      "bytesPerSec": 18415,
+      "deliveredBytesPerSec": 20984,
+      "chunkFramesPerSec": 65,
+      "cpuPct": 12,
+      "cpuPerMb": 6.721145804170044,
+      "rssMiB": 2234.9,
+      "heapMiB": 17.6,
+      "backendTps": 20,
+      "reps": [
+        {
+          "online": 10,
+          "failures": 0,
+          "failureSample": null,
+          "bytesPerSec": 18415,
+          "deliveredBytesPerSec": 20984,
+          "framesPerSec": 881,
+          "chunkFramesPerSec": 65,
+          "corrections": 0,
+          "cpuPct": 12,
+          "cpuPerMb": 6.721145804170044,
+          "rssMiB": 2234.9,
+          "heapMiB": 17.6,
+          "lagP99Ms": 11.25,
+          "backends": [
+            {
+              "name": "lobby",
+              "kind": "paper",
+              "tps": 20,
+              "msptAvg": 7,
+              "msptMax": 168.8,
+              "overloads": 0,
+              "errors": 0
+            }
+          ],
+          "reasons": []
+        }
+      ],
+      "validity": {
+        "valid": true,
+        "reasons": []
+      }
+    },
+    "latency": {
+      "viaProxy": {
+        "p50": 0.592,
+        "p90": 0.712,
+        "p99": 2.443,
+        "max": 2.645,
+        "n": 100,
+        "timeouts": 0,
+        "settled": true,
+        "background": 5,
+        "backends": [
+          {
+            "name": "lobby",
+            "kind": "paper",
+            "tps": 20,
+            "msptAvg": 3.2,
+            "msptMax": 46.7,
+            "overloads": 0,
+            "errors": 0
+          }
+        ],
+        "reasons": []
+      },
+      "direct": {
+        "p50": 0.37,
+        "p90": 0.466,
+        "p99": 3.432,
+        "max": 3.706,
+        "n": 100,
+        "timeouts": 0,
+        "settled": true,
+        "background": 5,
+        "backends": [
+          {
+            "name": "direct",
+            "kind": "paper",
+            "tps": 20,
+            "msptAvg": 5.6,
+            "msptMax": 80.1,
+            "overloads": 0,
+            "errors": 0
+          }
+        ],
+        "reasons": []
+      },
+      "added": {
+        "p50": 0.222,
+        "p90": 0.246,
+        "p99": -0.989
+      },
+      "samples": 100,
+      "warmup": 20,
+      "timeoutMs": 2000,
+      "backgroundBots": 5,
+      "validity": {
+        "valid": true,
+        "reasons": []
+      }
+    },
+    "switch": {
+      "bots": 4,
+      "online": 4,
+      "connectFailures": 0,
+      "failureSample": null,
+      "switches": 38,
+      "switchesPerSec": 2.5,
+      "failures": 0,
+      "firstChunkP50Ms": 329.6,
+      "firstChunkP99Ms": 684.6,
+      "p50Ms": 559.2,
+      "p99Ms": 828.8,
+      "heapMiB": 15.3,
+      "lagP99Ms": 15.21,
+      "backends": [
+        {
+          "name": "lobby",
+          "kind": "paper",
+          "tps": 20,
+          "msptAvg": 1.9,
+          "msptMax": 17.3,
+          "overloads": 0,
+          "errors": 0
+        },
+        {
+          "name": "survival",
+          "kind": "paper",
+          "tps": 20,
+          "msptAvg": 4,
+          "msptMax": 20.7,
+          "overloads": 0,
+          "errors": 0
+        },
+        {
+          "name": "mini",
+          "kind": "paper",
+          "tps": 20,
+          "msptAvg": 3.3,
+          "msptMax": 30.8,
+          "overloads": 0,
+          "errors": 0
+        }
+      ],
+      "validity": {
+        "valid": true,
+        "reasons": []
+      }
+    },
+    "storm": {
+      "rates": [
+        {
+          "rate": 500,
+          "attempted": 3999,
+          "opened": 3999,
+          "joined": true,
+          "joinError": null,
+          "cpuPct": 66,
+          "cpuPeakPct": 124,
+          "rssMiB": 2229.2,
+          "validity": {
+            "valid": true,
+            "reasons": []
+          }
+        }
+      ]
+    }
+  },
+  "errors": [],
+  "natives": {
+    "ok": true,
+    "checked": true,
+    "notes": [
+      "transport: [22:07:48 INFO]: Connections will use epoll channels, libdeflate (Linux x86_64) compression, OpenSSL 3.x.x (Linux x86_64) ciphers",
+      "compression: [22:07:48 INFO]: Connections will use epoll channels, libdeflate (Linux x86_64) compression, OpenSSL 3.x.x (Linux x86_64) ciphers",
+      "cipher: [22:07:48 INFO]: Connections will use epoll channels, libdeflate (Linux x86_64) compression, OpenSSL 3.x.x (Linux x86_64) ciphers"
+    ]
+  },
+  "proxyFailures": []
+}

@@ -142,6 +142,10 @@ export function buildReport({ results, env, versions, profileName, date, cpuNote
     out.push(`> Partial report: ${pending.join(', ')} had not finished when this was written.`);
     out.push('');
   }
+  if (profileName === 'smoke') {
+    out.push('> Smoke profile: a handful of bots and windows of a few seconds. It proves that the harness runs end to end against each proxy; its figures are not benchmark results.');
+    out.push('');
+  }
   if (env.isWsl) {
     out.push('> This run was on WSL2. Timing numbers are not credible here (no CPU isolation, hypervisor scheduling noise). Treat this as a functional run only. See docs/benchmarks/README.md, hardware tiers.');
     out.push('');
