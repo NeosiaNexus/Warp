@@ -303,7 +303,7 @@ describe('tab list model', () => {
 
 describe('chat sessions', () => {
   const profileKeys = {
-    public: generateKeyPairSync('rsa', { modulusLength: 1024 }).publicKey,
+    public: generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey,
     expiresOn: new Date(1_800_000_000_000),
     signatureV2: Buffer.from('signed by the services host'),
   };
