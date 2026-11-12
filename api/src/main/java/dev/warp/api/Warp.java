@@ -25,6 +25,7 @@ import dev.warp.api.player.Player;
 import dev.warp.api.plugin.PluginManager;
 import dev.warp.api.server.ServerGroupRegistry;
 import dev.warp.api.server.ServerRegistry;
+import dev.warp.api.world.VirtualWorld;
 
 import java.util.Collection;
 import java.util.Optional;
@@ -114,6 +115,14 @@ public interface Warp {
    * @return the fleet
    */
   Fleet fleet();
+
+  /**
+   * Returns the proxy's virtual world, where players stand without a server: the anti-bot's check,
+   * the wait for a server that is down, and whatever a plugin holds a player for.
+   *
+   * @return the virtual world
+   */
+  VirtualWorld world();
 
   /**
    * Returns the console, as the command source that runs the commands typed at it. It has every

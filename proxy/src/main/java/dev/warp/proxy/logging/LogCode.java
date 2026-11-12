@@ -616,6 +616,18 @@ public enum LogCode {
           + " proxy, but its handshake named no usable host and anti-bot.verification.transfer"
           + " is not set. The player was asked to reconnect instead.",
       "Set anti-bot.verification.transfer.host and port to the address players connect to."),
+  /** A player could not be put in the virtual world. */
+  WORLD_ENTRY_FAILED(
+      "W-BOT-013",
+      false,
+      "A player could not be put in the virtual world",
+      "The proxy tried to hold a player in its virtual world (the anti-bot's world check, or a"
+          + " wait for a server that is down), but the world has no layout for the client's"
+          + " version or platform, or the client left meanwhile. The world check was skipped, or"
+          + " the player was disconnected as it would have been without the world.",
+      "Report the client version named in the message if it is one Warp supports; modded"
+          + " clients are expected here, set anti-bot.world.check = false for listeners whose"
+          + " backends are modded."),
 
   // ---------------------------------------------------------------------------
   // Logging and management

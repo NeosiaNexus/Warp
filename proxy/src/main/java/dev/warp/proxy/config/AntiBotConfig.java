@@ -37,6 +37,7 @@ import org.spongepowered.configurate.CommentedConfigurationNode;
  * @param blocklist the addresses refused at accept after repeated protocol violations
  * @param checkTimeout how long the proxy waits for plugins' checks of an unknown login
  * @param verification the verification of unknown identities: the probe, its queue, the tokens
+ * @param world the virtual world: the world check and the hold of players without a server
  */
 public record AntiBotConfig(
     boolean enabled,
@@ -45,7 +46,8 @@ public record AntiBotConfig(
     Attack attack,
     Blocklist blocklist,
     Duration checkTimeout,
-    Verification verification) {
+    Verification verification,
+    World world) {
 
   /** The defaults: everything on (decision D18 of the anti-bot research). */
   public static final AntiBotConfig DEFAULTS =
@@ -56,7 +58,8 @@ public record AntiBotConfig(
           Attack.DEFAULTS,
           Blocklist.DEFAULTS,
           Duration.ofSeconds(2),
-          Verification.DEFAULTS);
+          Verification.DEFAULTS,
+          World.DEFAULTS);
 
   /** The anti-bot off: the detector, the store and lockdown do not run. */
   public static final AntiBotConfig DISABLED =
@@ -67,7 +70,8 @@ public record AntiBotConfig(
           Attack.DEFAULTS,
           new Blocklist(0, Duration.ofMinutes(10)),
           Duration.ofSeconds(2),
-          Verification.DEFAULTS);
+          Verification.DEFAULTS,
+          World.OFF);
 
   /** The environment variable that holds the secret, ahead of {@code secret-file}. */
   public static final String ENV_SECRET = "WARP_ANTIBOT_SECRET";
@@ -383,6 +387,46 @@ public record AntiBotConfig(
     }
   }
 
+  /**
+   * The virtual world (phase 3 of the anti-bot research): the world check unknown players pass
+   * after the probe, and the hold of players whose server is down.
+   *
+   * @param check whether unknown players fall through the world after the probe; off for listeners
+   *     whose backends are modded, whose clients refuse a vanilla world
+   * @param hold whether players are kept in the world when no server can take them, instead of
+   *     being disconnected
+   * @param holdRetryEvery how often a held player's server is tried again
+   * @param holdMaxWait how long a player is held before it is disconnected after all
+   */
+  public record World(boolean check, boolean hold, Duration holdRetryEvery, Duration holdMaxWait) {
+
+    /** The check and the hold on, a retry every 5 s, a hold of 5 minutes at most. */
+    public static final World DEFAULTS =
+        new World(true, true, Duration.ofSeconds(5), Duration.ofMinutes(5));
+
+    /** Neither the check nor the hold: players without a server are disconnected. */
+    public static final World OFF =
+        new World(false, false, Duration.ofSeconds(5), Duration.ofMinutes(5));
+
+    /**
+     * Checks the values.
+     *
+     * @throws IllegalArgumentException if a value is out of range
+     */
+    public World {
+      if (holdRetryEvery.compareTo(Duration.ofSeconds(1)) < 0
+          || holdRetryEvery.compareTo(Duration.ofMinutes(1)) > 0) {
+        throw new IllegalArgumentException(
+            "holdRetryEvery must be 1 second to 1 minute, got " + holdRetryEvery);
+      }
+      if (holdMaxWait.compareTo(Duration.ofSeconds(5)) < 0
+          || holdMaxWait.compareTo(Duration.ofHours(1)) > 0) {
+        throw new IllegalArgumentException(
+            "holdMaxWait must be 5 seconds to 1 hour, got " + holdMaxWait);
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Parsing
   // ---------------------------------------------------------------------------
@@ -401,6 +445,7 @@ public record AntiBotConfig(
     CommentedConfigurationNode attackNode = node.node("attack");
     CommentedConfigurationNode blocklistNode = node.node("blocklist");
     CommentedConfigurationNode verificationNode = node.node("verification");
+    CommentedConfigurationNode worldNode = node.node("world");
     try {
       boolean enabled = WarpConfig.booleanValue(node.node("enabled"), d.enabled());
       CommentedConfigurationNode exemptNode = node.node("exempt");
@@ -513,8 +558,21 @@ public record AntiBotConfig(
                   verificationNode.node("transfer", "port"),
                   "anti-bot.verification.transfer.port",
                   dn.transferPort()));
+      World dw = d.world();
+      World world =
+          new World(
+              WarpConfig.booleanValue(worldNode.node("check"), dw.check()),
+              WarpConfig.booleanValue(worldNode.node("hold", "enabled"), dw.hold()),
+              WarpConfig.parseDuration(
+                  worldNode.node("hold", "retry-every"),
+                  "anti-bot.world.hold.retry-every",
+                  dw.holdRetryEvery()),
+              WarpConfig.parseDuration(
+                  worldNode.node("hold", "max-wait"),
+                  "anti-bot.world.hold.max-wait",
+                  dw.holdMaxWait()));
       return new AntiBotConfig(
-          enabled, exempt, verified, attack, blocklist, checkTimeout, verification);
+          enabled, exempt, verified, attack, blocklist, checkTimeout, verification, world);
     } catch (IllegalArgumentException e) {
       throw new ConfigurationException("anti-bot: " + e.getMessage(), e);
     }
@@ -554,7 +612,10 @@ public record AntiBotConfig(
         + verification.onlineMode().name().toLowerCase(Locale.ROOT)
         + " online, "
         + verification.maxConcurrent()
-        + " at once"
+        + " at once; world check "
+        + (world.check() ? "on" : "off")
+        + ", hold "
+        + (world.hold() ? "up to " + LimitsConfig.format(world.holdMaxWait()) : "off")
         + "; exempt "
         + exempt;
   }

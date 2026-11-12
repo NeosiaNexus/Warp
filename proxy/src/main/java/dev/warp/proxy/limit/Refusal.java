@@ -63,6 +63,8 @@ public enum Refusal {
   VERIFICATION_FAILED("logins that failed verification"),
   /** An unknown identity that did not answer the verification in time. */
   VERIFICATION_TIMEOUT("verifications timed out"),
+  /** An unknown identity whose fall in the world did not follow the gravity, after its retry. */
+  WORLD_CHECK_FAILED("logins that failed the world check"),
   /** An unknown identity the proxy had no room to verify. */
   VERIFICATION_BUSY("logins refused as too many verifying"),
   /** A player verified before authentication, told to reconnect (before 1.20.5). */

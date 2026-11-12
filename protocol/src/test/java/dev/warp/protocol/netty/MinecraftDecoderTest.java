@@ -36,11 +36,13 @@ import dev.warp.protocol.compress.TrackingCompressor;
 import dev.warp.protocol.compress.ZlibStreams;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
+import dev.warp.protocol.packet.StateRegistry;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayerInfo;
+import dev.warp.protocol.packet.play.TeleportConfirm;
 import dev.warp.protocol.packet.status.StatusRequest;
 
 import java.nio.charset.StandardCharsets;
@@ -1089,6 +1091,40 @@ class MinecraftDecoderTest {
 
       assertFalse(encoderCh.finish());
       assertFalse(decoderCh.finish());
+    }
+  }
+
+  @Nested
+  @DisplayName("a registry of its own")
+  class OwnRegistry {
+
+    @Test
+    @DisplayName("should read the world's packets while told to, and forward them blind after")
+    void worldRegistry() {
+      MinecraftDecoder decoder =
+          new MinecraftDecoder(
+              PacketDirection.SERVERBOUND, ProtocolVersion.MINECRAFT_1_21_4, ProtocolState.PLAY);
+      EmbeddedChannel ch = new EmbeddedChannel(decoder);
+      assertFalse(decoder.usesOwnRegistry());
+
+      decoder.useRegistry(StateRegistry.world(ProtocolState.PLAY));
+      assertTrue(decoder.usesOwnRegistry());
+      ByteBuf confirm = Unpooled.buffer();
+      VarInt.write(confirm, 0x00); // Teleport Confirm, which no server-bound player sends the proxy
+      VarInt.write(confirm, 42);
+      assertTrue(ch.writeInbound(Frames.framed(confirm)));
+      assertEquals(new TeleportConfirm(42), ch.readInbound());
+
+      decoder.useRegistry(null);
+      assertFalse(decoder.usesOwnRegistry());
+      ByteBuf again = Unpooled.buffer();
+      VarInt.write(again, 0x00);
+      VarInt.write(again, 42);
+      assertTrue(ch.writeInbound(Frames.framed(again)));
+      Object out = ch.readInbound();
+      assertInstanceOf(ByteBuf.class, out, "blind again");
+      ((ByteBuf) out).release();
+      assertFalse(ch.finish());
     }
   }
 }
