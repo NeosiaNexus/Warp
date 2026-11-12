@@ -1409,7 +1409,7 @@ public final class WarpConfig {
       }
       String generated = generateSecret();
       try {
-        Files.writeString(file, generated, StandardCharsets.UTF_8);
+        SecretFiles.create(file, generated);
       } catch (IOException e) {
         throw ConfigurationException.at(
             key,

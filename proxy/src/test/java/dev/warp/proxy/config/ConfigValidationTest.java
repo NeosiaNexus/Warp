@@ -26,6 +26,7 @@ import dev.warp.proxy.config.ConfigurationException.Problem;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -34,6 +35,8 @@ import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
 @DisplayName("Configuration errors")
@@ -259,6 +262,17 @@ class ConfigValidationTest {
 
       String written = Files.readString(directory.resolve("forwarding.secret")).trim();
       assertArrayEquals(written.getBytes(StandardCharsets.UTF_8), config.forwardingSecret());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    @DisplayName("should generate the default secret file readable by its owner only")
+    void generatedForItsOwnerOnly() throws Exception {
+      load("forwarding { mode = velocity }\n");
+
+      assertEquals(
+          PosixFilePermissions.fromString("rw-------"),
+          Files.getPosixFilePermissions(directory.resolve("forwarding.secret")));
     }
 
     @Test

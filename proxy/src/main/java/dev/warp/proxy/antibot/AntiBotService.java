@@ -39,6 +39,7 @@ import dev.warp.api.player.ClientPlatform;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.proxy.config.AntiBotConfig;
 import dev.warp.proxy.config.LoggingConfig;
+import dev.warp.proxy.config.SecretFiles;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.limit.Blocklist;
 import dev.warp.proxy.limit.ClientLimits;
@@ -54,8 +55,6 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
@@ -1416,17 +1415,7 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
     if (parent != null) {
       Files.createDirectories(parent);
     }
-    Files.writeString(
-        file,
-        Base64.getEncoder().encodeToString(secret) + "\n",
-        StandardCharsets.US_ASCII,
-        StandardOpenOption.CREATE_NEW,
-        StandardOpenOption.WRITE);
-    try {
-      Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-------"));
-    } catch (UnsupportedOperationException e) {
-      // Not a POSIX file system: the platform's defaults apply.
-    }
+    SecretFiles.create(file, Base64.getEncoder().encodeToString(secret) + "\n");
     logger.info("Anti-bot: generated the secret that hashes identities, in {}", file);
     return secret;
   }
