@@ -21,9 +21,14 @@ import dev.warp.api.logging.LogRecord;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Captures the records the proxy logs, through a real {@link SinkAppender} and {@link
@@ -33,13 +38,46 @@ public final class LogCapture implements AutoCloseable {
 
   private final LogSinkRegistry registry = new LogSinkRegistry();
   private final SinkAppender appender = new SinkAppender(registry);
-  private final List<LogRecord> records = new CopyOnWriteArrayList<>();
+  private static final Logger logger = LoggerFactory.getLogger(LogCapture.class);
 
-  /** Starts capturing the INFO records and above. */
+  private final List<LogRecord> records = new CopyOnWriteArrayList<>();
+  private final String barrier = "Log capture " + UUID.randomUUID() + " starts";
+  private final CountDownLatch started = new CountDownLatch(1);
+
+  /**
+   * Starts capturing the INFO records and above that are logged from now on.
+   *
+   * <p>Logging is asynchronous, so records logged before the capture (by an earlier test, say) may
+   * still be queued and would reach an appender installed meanwhile. The capture therefore logs a
+   * record of its own and drops everything up to it: the queue keeps the order, so whatever comes
+   * after was logged after the capture began.
+   *
+   * @throws AssertionError if the capture's own record does not come back within 10 seconds
+   */
   public LogCapture() {
     appender.install();
     registry.register(
-        "capture", LogLevel.INFO, 4096, records::add, LogCapture.class.getClassLoader());
+        "capture", LogLevel.INFO, 4096, this::accept, LogCapture.class.getClassLoader());
+    logger.info(barrier);
+    boolean reached;
+    try {
+      reached = started.await(10, TimeUnit.SECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      reached = false;
+    }
+    if (!reached) {
+      close();
+      throw new AssertionError("the log capture did not receive its own first record");
+    }
+  }
+
+  private void accept(LogRecord record) {
+    if (started.getCount() == 0) {
+      records.add(record);
+    } else if (record.message().equals(barrier)) {
+      started.countDown();
+    }
   }
 
   /**
