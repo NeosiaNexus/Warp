@@ -1,0 +1,221 @@
+{{- include "warp.validate" . -}}
+{{- $v := .Values -}}
+{{- $secret := include "warp.secretName" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "warp.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "warp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+spec:
+  {{- if not $v.autoscaling.enabled }}
+  replicas: {{ $v.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: {{ $v.revisionHistoryLimit }}
+  strategy:
+    {{- toYaml $v.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "warp.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "warp.labels" . | nindent 8 }}
+        app.kubernetes.io/component: proxy
+        {{- with $v.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # A changed configuration or Secret rolls the Pods (each one drains before it stops): the
+        # secrets reach the container as environment variables, read once at start.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        kubectl.kubernetes.io/default-container: warp
+        {{- if $v.management.metrics.podAnnotations }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ $v.management.port | quote }}
+        prometheus.io/path: /metrics
+        prometheus.io/scheme: {{ include "warp.managementScheme" . | lower }}
+        {{- end }}
+        {{- with $v.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with $v.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "warp.serviceAccountName" . }}
+      automountServiceAccountToken: {{ $v.serviceAccount.automountServiceAccountToken }}
+      {{- with $v.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      # The drain's propagation delay, its time-out and a margin: see drain.* in values.yaml.
+      terminationGracePeriodSeconds: {{ include "warp.terminationGracePeriodSeconds" . }}
+      securityContext:
+        {{- toYaml $v.podSecurityContext | nindent 8 }}
+      {{- with $v.initContainers }}
+      initContainers:
+        {{- tpl (toYaml .) $ | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: warp
+          image: {{ include "warp.image" . | quote }}
+          imagePullPolicy: {{ $v.image.pullPolicy }}
+          securityContext:
+            {{- toYaml $v.securityContext | nindent 12 }}
+          ports:
+            - name: minecraft
+              containerPort: 25577
+              protocol: TCP
+            - name: management
+              containerPort: {{ $v.management.port }}
+              protocol: TCP
+          env:
+            - name: WARP_FORWARDING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $v.secrets.forwardingSecretKey }}
+            - name: WARP_MANAGEMENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $v.secrets.managementTokenKey }}
+            {{- if $v.secrets.antiBot.shared }}
+            - name: WARP_ANTIBOT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $v.secrets.antiBot.secretKey }}
+            - name: WARP_ANTIBOT_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $v.secrets.antiBot.tokenSecretKey }}
+            {{- end }}
+            {{- range $v.management.console.tokens }}
+            - name: {{ printf "WARP_CONSOLE_TOKEN_%s" (.name | upper | replace "-" "_") }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ .secretKey }}
+            {{- end }}
+            {{- with $v.javaOpts }}
+            - name: JAVA_OPTS
+              value: {{ . | quote }}
+            {{- end }}
+            - name: WARP_HEALTH_URL
+              value: {{ printf "%s://127.0.0.1:%d/startupz" (include "warp.managementScheme" . | lower) (int $v.management.port) | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            {{- with $v.extraEnv }}
+            {{- tpl (toYaml .) $ | nindent 12 }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /startupz
+              port: management
+              scheme: {{ include "warp.managementScheme" . }}
+            periodSeconds: {{ $v.probes.startup.periodSeconds }}
+            failureThreshold: {{ $v.probes.startup.failureThreshold }}
+            timeoutSeconds: {{ $v.probes.startup.timeoutSeconds }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: management
+              scheme: {{ include "warp.managementScheme" . }}
+            periodSeconds: {{ $v.probes.readiness.periodSeconds }}
+            failureThreshold: {{ $v.probes.readiness.failureThreshold }}
+            successThreshold: {{ $v.probes.readiness.successThreshold }}
+            timeoutSeconds: {{ $v.probes.readiness.timeoutSeconds }}
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: management
+              scheme: {{ include "warp.managementScheme" . }}
+            periodSeconds: {{ $v.probes.liveness.periodSeconds }}
+            failureThreshold: {{ $v.probes.liveness.failureThreshold }}
+            timeoutSeconds: {{ $v.probes.liveness.timeoutSeconds }}
+          {{- if eq $v.drain.mode "preStop" }}
+          lifecycle:
+            preStop:
+              # Starts the drain through the management API and returns once every player left
+              # (or the drain timed out); SIGTERM then finds a proxy that is exiting. Over TLS, the
+              # certificate is verified against the mounted tls.crt but not for the name: on
+              # loopback the peer is this Pod's proxy, so no IP address in the certificate is needed.
+              exec:
+                command:
+                  - /opt/warp/entrypoint.sh
+                  - drain
+                  - --wait
+                  - --url
+                  - {{ printf "%s://127.0.0.1:%d" (include "warp.managementScheme" . | lower) (int $v.management.port) | quote }}
+                  {{- if $v.management.tls.enabled }}
+                  - --ca-file
+                  - /etc/warp/tls/tls.crt
+                  {{- end }}
+          {{- end }}
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /data/warp.conf
+              subPath: warp.conf
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+            {{- if $v.management.tls.enabled }}
+            - name: tls
+              mountPath: /etc/warp/tls
+              readOnly: true
+            {{- end }}
+            {{- with $v.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- with $v.extraContainers }}
+        {{- tpl (toYaml .) $ | nindent 8 }}
+        {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "warp.fullname" . }}
+        - name: data
+          emptyDir:
+            sizeLimit: {{ $v.dataVolume.sizeLimit }}
+        - name: tmp
+          emptyDir: {}
+        {{- if $v.management.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ $v.management.tls.secretName }}
+        {{- end }}
+        {{- with $v.extraVolumes }}
+        {{- tpl (toYaml .) $ | nindent 8 }}
+        {{- end }}
+      {{- with $v.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $v.affinity }}
+      affinity:
+        {{- tpl (toYaml .) $ | nindent 8 }}
+      {{- end }}
+      {{- with $v.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- tpl (toYaml .) $ | nindent 8 }}
+      {{- end }}
+      {{- with $v.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

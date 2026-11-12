@@ -22,7 +22,7 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 | **Decompresses packets it never reads** | Blind forwarding: in play, Warp decodes only the few packet types it acts on, and relays every other frame undecoded, still compressed when both sides use the same threshold | Available |
 | **Server switches that hang or crash the client** | A switch that does not complete within 30 s is ended instead of hanging on "Reconfiguring", no terminal packet is ever sent inside a bundle, and client settings are replayed to the new server | Available |
 | **Decompression bombs** | Impossible compression ratios are refused before inflating, sizes are capped, and each connection has an inflate budget | Available |
-| **No graceful drain** | Multi-phase drain with Transfer packet support, designed for rolling deployments and Kubernetes | Planned |
+| **No graceful drain** | Multi-phase drain with Transfer packet support, on SIGTERM or through the management API, with a Helm chart whose rolling updates drain each Pod ([docs/deploy/kubernetes.md](docs/deploy/kubernetes.md)) | Available |
 | **Shallow plugin DI** | Full dependency-injection graph via Guice with lifecycle hooks (provision, validate, start, ready, drain, stop) | Planned |
 | **No health probes, no metrics** | Built-in `/livez`, `/readyz`, `/startupz` endpoints and Prometheus metrics with an allocation-free registry ([docs/metrics.md](docs/metrics.md)); OpenTelemetry tracing planned | Available |
 | **Undefined event ordering** | Deterministic, priority-based event dispatch, with no race between handlers | Planned |
@@ -133,7 +133,6 @@ Planned, not implemented yet:
 
 - **Plugin system**: plugin loading, Guice dependency injection, lifecycle hooks, a deterministic
   event bus, commands and a scheduler. Today the API exposes the proxy version and `ServerInfo`.
-- **Graceful drain** with Transfer packets, for rolling deployments and Kubernetes.
 - **Observability**: OpenTelemetry tracing, OTLP metrics push and Grafana dashboards (the probes
   and the Prometheus metrics are available today).
 - **Configurable server list ping** (MOTD, player counts).
@@ -209,6 +208,45 @@ java --sun-misc-unsafe-memory-access=allow -jar /path/to/warp-<version>.jar
 Coming from Velocity or BungeeCord? `java -jar warp.jar migrate /path/to/proxy --to .` converts its
 configuration and reports what became of every setting and plugin: see
 [docs/migration.md](docs/migration.md).
+
+### Run with Docker
+
+Official images, for `linux/amd64` and `linux/arm64`, signed and attested:
+`ghcr.io/neosianexus/warp:<version>` (Temurin 25 JRE on Ubuntu, glibc) and
+`:<version>-alpine` (musl, smaller); `:edge` and `:edge-alpine` follow `main`.
+
+```bash
+docker run -d --name warp -p 25565:25577 \
+  -e WARP_LOBBY_ADDRESS=host.docker.internal:25566 \
+  -e WARP_FORWARDING_SECRET="$(openssl rand -hex 32)" \
+  -v warp-data:/data ghcr.io/neosianexus/warp:latest
+```
+
+The image runs as uid 1000, keeps everything under `/data`, answers its `HEALTHCHECK` from the
+management server, and drains on `docker stop` (give it time: `docker stop -t 1830`). Variables
+set the essentials; mount your own `warp.conf` at `/data/warp.conf` for the rest. A Compose
+example with two backends, the JVM flags and how to verify an image:
+[docs/deploy/docker.md](docs/deploy/docker.md).
+
+### Deploy on Kubernetes
+
+The `warp` Helm chart ([charts/warp](charts/warp), published as an OCI chart) deploys a fleet of
+proxies behind a `LoadBalancer` Service, with probes on the management endpoints, a Secret for the
+forwarding secret, a PodDisruptionBudget, and optionally an HPA, a ServiceMonitor and a
+NetworkPolicy. Its selling point: a rolling update, a scale-down or a node drain sends each Pod
+SIGTERM, Warp drains (readiness says no, players are transferred to your public address, the rest
+leave on their own), and the Pod exits once empty, within a `terminationGracePeriodSeconds` derived
+from the drain settings.
+
+```bash
+helm install warp oci://ghcr.io/neosianexus/charts/warp --version <version> \
+  --namespace minecraft --create-namespace \
+  --set config.servers.lobby.address=lobby.minecraft.svc.cluster.local:25565 \
+  --set drain.transferTo=play.example.com
+```
+
+How it works, the PROXY protocol, metrics, autoscaling and the remote console through
+`port-forward`: [docs/deploy/kubernetes.md](docs/deploy/kubernetes.md).
 
 ### Configure
 

@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "warp.managementServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "warp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: management
+    {{- with .Values.managementService.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.managementService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: management
+      port: {{ .Values.management.port }}
+      targetPort: management
+      protocol: TCP
+  selector:
+    {{- include "warp.selectorLabels" . | nindent 4 }}
