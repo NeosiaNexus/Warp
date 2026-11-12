@@ -45,7 +45,8 @@ export class WarpProxy extends Proxy {
     const jar = this.localJar ?? (await download(this.spec.url, join(this.cacheDir, 'proxies', `warp-${this.spec.version}.jar`), { sha256: this.spec.sha256 }));
     copyFileSync(jar, join(dir, 'warp.jar'));
     writeFileSync(join(dir, 'warp.conf'), this.config());
-    const java = await findJava(this.spec.java, this.cacheDir);
+    // A full JDK, not a JRE: the harness reads the live heap with its jcmd (heap.js).
+    const java = await findJava(this.spec.java, this.cacheDir, { tools: true });
     this.javaPath = java;
     return {
       command: java,
