@@ -123,21 +123,28 @@ load comes from one loopback address at rates no real player base produces:
   as an attack ("Bot attack detected: logins of unknown identities at N/s"), so Warp did work no
   other proxy did and could delay or refuse bots. Off, the start-up log reads `anti-bot off` and no
   anti-bot line follows. Warp's per-address limits (`limits`) exempt loopback by default, which is
-  the equivalent of the rate limits turned off above.
+  the equivalent of the rate limits turned off above. The rest of `limits` stays at its default,
+  in particular the global cap on connections that are not logged in (8192) and the attack signal
+  derived from it (half the cap): a benchmark ramp never comes near them, and the gate rejects the
+  measurement if they engage.
 - Warp's circuit breaker (a backend that refuses three logins in a row is skipped by the balancers)
   stays at its default: it is routing, not flood protection, and it only acts when a backend refuses
   logins. In the first run it fired 516 times because the backend was drowning, and sent Warp's
   players to the other servers, so Warp ended with a different backend distribution from the other
   proxies. The gate now rejects any measurement during which it fires.
 
-The storm scenario is where a proxy's flood protection would legitimately be on. On one machine it
-cannot be: the flood and the genuine player share the loopback address, so every per-address
-protection (Velocity's login rate limit, Gate's quotas, BungeeCord's throttle, Warp's limits once
-loopback is not exempt) would throttle the genuine player together with the flood. The storm
-therefore runs with the same configuration as the other scenarios and measures what the connections
-themselves cost and whether a player still gets in; a storm with each proxy's default protection
-needs a load generator with many source addresses (T1 with `127.x` aliases, or T2) and is not built
-yet.
+The storm scenario is where a proxy's flood protection is legitimately on, as far as one machine
+allows. The flood and the genuine player share the loopback address, so every per-address protection
+(Velocity's login rate limit, Gate's quotas, BungeeCord's throttle, Warp's per-address limits once
+loopback is not exempt) would throttle the genuine player together with the flood, and those stay
+off. A protection that is not per address stays on, and only Warp has one: its cap on connections
+that are not logged in, with the attack mode it triggers. In the storm it engages (the flood holds
+each hostile connection for three seconds, so 5000 connections per second is 15,000 pending, above
+the cap of 8192): Warp then refuses the connections over the cap, the genuine player's among them if
+it arrives at the wrong moment. The report says so under the storm table: the share of the flood
+each proxy accepted, the protection line, and why a player was kept out. A storm with each proxy's
+per-address protections on needs a load generator with many source addresses (T1 with `127.x`
+aliases, or T2) and is not built yet.
 
 ## Memory: what is reported
 
@@ -275,6 +282,26 @@ to the proxy telling the client to reconfigure and 70 to 135 ms to the new backe
 chunk, whatever the proxy. The bot received no chunk batch packet from Paper 1.21.4 in any trace, behind
 either proxy, so the client's batch acknowledgements play no part in the pacing. Read the first-chunk
 column as hand-off plus backend login, and expect most of it to be the backend.
+
+## Sizes: what one machine holds
+
+The full profile (`bench/src/profiles.js`) was sized on the first rented server, a 16 dedicated
+vCPU / 64 GB cloud instance (plan: proxy on 4 cores, backends on 8, 3 load workers and the probe on
+4), by raising each load until the gate rejected it:
+
+| Scenario | Full profile | Largest valid on 16 vCPU | What gives way first |
+|---|---|---|---|
+| Idle | 1000 / 5000 / 10000 connections, 3 reps | 10000 for Warp, Velocity and Gate, zero failures (20000 held for Warp in a one-rep trial; Gate established 80% of 20000 at 400 connections/s) | the proxy's own login rate; the stub and the raw clients were never late |
+| Traffic | 300 movers, 3 reps | 300 (Paper at 20 TPS, about 30 ms of its 50 ms tick). 450 kept 20 TPS but logged an overload warning; 600 fell to 13 TPS | Paper's main thread, which is one core whatever the machine: a larger machine does not raise this |
+| Latency | 2000 pings at 50/s, 50 background movers | direct median 0.24 to 0.26 ms | nothing |
+| Switch | 60 bots, 3 s pause (about 16 switches/s) | 60 (three backends at 20 TPS, 5 to 8 ms ticks, zero failed switches) | the bot workers: their event loop is 35 to 45 ms late at p99 while parsing chunks |
+| Storm | 1000 / 5000 / 10000 connections/s | 5000/s. At 10000/s three load workers deliver about 57% against a proxy that accepts every connection | the load workers: 10000/s needs six or more, that is 28 cores or more |
+
+On a 32 or 48 vCPU machine the same profile runs unchanged (`bench/run.sh`); the plan gives 7 or 11
+load workers, which lifts the storm limit, and 16 or 24 backend cores. Expect about 40 minutes per
+proxy, a little over 3 hours for the five. A higher idle level can be added with
+`--set idle.levels=1000,5000,10000,20000` (about 10 more minutes per proxy; both ends of a proxied
+connection use a loopback port, so one level cannot exceed about 28,000 with the default port range).
 
 ## What the first rented run got wrong
 

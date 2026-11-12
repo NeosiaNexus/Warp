@@ -267,6 +267,7 @@ export async function stormScenario(ctx, { rates, durationMs }) {
   const results = [];
   for (const rate of rates) {
     ctx.state({ scenario: 'storm', phase: 'flood', offered: rate, bots: 0 });
+    const mark = ctx.proxy.mark();
     const from = ctx.now();
     // Halfway through the flood, a genuine player tries to join and play.
     const [flood, join] = await Promise.all([
@@ -275,10 +276,15 @@ export async function stormScenario(ctx, { rates, durationMs }) {
     ]);
     const to = ctx.now();
     const rows = ctx.rows().filter((row) => row.scenario === 'storm' && row.offered === rate && row.t >= from && row.t <= to);
+    // A flood is where a proxy's own protection may engage (a cap on connections that are not
+    // logged in, an attack mode). That is a reaction to report, not a reason to reject the row.
+    const reaction = ctx.proxy.protections(mark);
     results.push({
       rate,
       attempted: flood.attempted,
       opened: flood.opened,
+      protections: reaction.protections,
+      protectionSample: reaction.protectionSample,
       joined: join.joined,
       joinError: join.error,
       cpuPct: median(column(rows, 'cpuPct')),

@@ -101,7 +101,12 @@ describe('buildReport', () => {
           validity: valid,
         },
         switch: { bots: 5, online: 5, switches: 40, switchesPerSec: 2.6, failures: 0, firstChunkP50Ms: 80, firstChunkP99Ms: 150, p50Ms: 120, p99Ms: 300, backends: [{ tps: 20 }, { tps: 19.8 }], validity: valid },
-        storm: { rates: [{ rate: 500, opened: 2000, joined: true, cpuPct: 26, cpuPeakPct: 100, rssMiB: 210, validity: valid }] },
+        storm: {
+          rates: [
+            { rate: 500, attempted: 2000, opened: 2000, joined: true, cpuPct: 26, cpuPeakPct: 100, rssMiB: 210, validity: valid },
+            { rate: 9000, attempted: 90000, opened: 45000, joined: false, joinError: 'storm_survivor: connect ECONNRESET\n  at x', protections: 3, protectionSample: 'Bot attack detected: connections not logged in at 8164', cpuPct: 20, cpuPeakPct: 90, validity: valid },
+          ],
+        },
       },
     },
     {
@@ -182,13 +187,19 @@ describe('buildReport', () => {
   it('should report the storm peak from the per-second maximum, next to the median', () => {
     const md = report();
     assert.match(md, /\| median CPU % \| peak CPU % \|/);
-    assert.match(md, /\| Warp \| yes \| 26 \| 100 \|/);
+    assert.match(md, /\| Warp \| yes \| NO \| 26 \| 100 \|/);
   });
 
   it('should describe throughput as bytes written, not read\+write', () => {
     const md = report();
     assert.match(md, /bytes written per second/);
     assert.doesNotMatch(md, /read\+write/);
+  });
+
+  it('should report how a proxy reacted to the flood, without rejecting the row', () => {
+    const md = report();
+    assert.match(md, /\*\*Warp @ 9000\/s\*\*: accepted 50% of the 90000 hostile connections; a protection engaged \(Bot attack detected: connections not logged in at 8164\); the genuine player was kept out: storm_survivor: connect ECONNRESET/);
+    assert.doesNotMatch(md, /\*\*Warp @ 500\/s\*\*/);
   });
 
   it('should say that a smoke run makes no performance claim', () => {

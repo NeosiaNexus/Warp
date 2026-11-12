@@ -275,7 +275,7 @@ export function buildReport({ results, env, versions, profileName, date, cpuNote
   if (results.some((r) => r.metrics.storm)) {
     out.push('## Connection / status storm');
     out.push('');
-    out.push('Hostile connections (a handshake and a status request each) at a rising rate while a genuine player tries to join. The key question is whether the real player still gets in, and at what CPU cost. The flood and the player come from the same loopback address, so the per-address protections of every proxy are off here as in the other scenarios (with them on, each proxy would throttle the genuine player together with the flood); what this measures is the cost of the connections themselves.');
+    out.push('Hostile connections (a handshake and a status request each, held open for three seconds) at a rising rate while a genuine player tries to join once, halfway through. The key question is whether the real player still gets in, and at what CPU cost. The flood and the player come from the same loopback address, so the per-address protections of every proxy are off here as in the other scenarios (with them on, each proxy would throttle the genuine player together with the flood). A protection that is not per address stays on and may engage: it is listed under the table with the share of the flood the proxy accepted.');
     out.push('');
     const rates = [...new Set(results.flatMap((r) => (r.metrics.storm?.rates ?? []).map((x) => x.rate)))].sort((a, b) => a - b);
     out.push('Median CPU is the highest per-rate median over the flood; peak CPU is the highest one-second sample in any flood window.');
@@ -294,6 +294,22 @@ export function buildReport({ results, env, versions, profileName, date, cpuNote
     }
     out.push('');
     invalidNotes(out, results.flatMap((r) => (r.metrics.storm?.rates ?? []).map((x) => ({ what: `${r.label} @ ${x.rate}/s`, validity: x.validity }))));
+    const reactions = results.flatMap((r) =>
+      (r.metrics.storm?.rates ?? [])
+        .filter((x) => ok(x) && x.attempted > 0 && (x.protections > 0 || x.opened / x.attempted < 0.99 || (!x.joined && x.joinError)))
+        .map((x) => {
+          const parts = [`accepted ${Math.round((x.opened / x.attempted) * 100)}% of the ${x.attempted} hostile connections`];
+          if (x.protections > 0) parts.push(`a protection engaged (${x.protectionSample})`);
+          if (!x.joined && x.joinError) parts.push(`the genuine player was kept out: ${String(x.joinError).split('\n')[0]}`);
+          return `- **${r.label} @ ${x.rate}/s**: ${parts.join('; ')}`;
+        }),
+    );
+    if (reactions.length) {
+      out.push('How the proxies reacted to the flood:');
+      out.push('');
+      out.push(...reactions);
+      out.push('');
+    }
   }
 
   // --- Errors ---

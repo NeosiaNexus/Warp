@@ -11,6 +11,9 @@
 // set to never (the per-address limits already exempt loopback by default, like the rate limits
 // turned off for the other proxies). The circuit breaker of the balancers stays at its default: it
 // only acts when a backend refuses logins, which the validity gate reports as an invalid result.
+// The `limits` section also stays at its default: its global cap on connections that are not logged
+// in (8192) and the attack signal derived from it are never reached by a benchmark ramp (the gate
+// rejects the measurement if they are) and are Warp's flood protection in the storm scenario.
 import { copyFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -29,6 +32,7 @@ export class WarpProxy extends Proxy {
       /Bot attack detected/,
       /verifications? timed out/i,
       /Anti-bot: .*(lockdown|refus)/i,
+      /Refused before login/, // the limits refused connections (the cap on connections not logged in)
     ];
   }
 
