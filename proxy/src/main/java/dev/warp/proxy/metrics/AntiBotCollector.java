@@ -176,6 +176,31 @@ public final class AntiBotCollector implements Collector {
     result(out, "warp_antibot_tokens_total", "issued", verifications.tokensIssued());
     result(out, "warp_antibot_tokens_total", "accepted", verifications.tokensAccepted());
     result(out, "warp_antibot_tokens_total", "rejected", verifications.tokensRejected());
+
+    AntiBotStatus.World world = status.world();
+    gauge(
+        out,
+        "warp_antibot_world_players",
+        "Players in the virtual world right now: being checked, held for a server, or held by a"
+            + " plugin.",
+        world.holding());
+    out.family(
+        "warp_antibot_world_checks_total",
+        MetricType.COUNTER,
+        "World checks by result: passed, retried (a physics mismatch given its second fall),"
+            + " mismatched (off the gravity after the retry too: let in, untrusted), or failed.");
+    result(out, "warp_antibot_world_checks_total", "passed", world.checksPassed());
+    result(out, "warp_antibot_world_checks_total", "retried", world.checksRetried());
+    result(out, "warp_antibot_world_checks_total", "mismatched", world.checksMismatched());
+    result(out, "warp_antibot_world_checks_total", "failed", world.checksFailed());
+    out.family(
+        "warp_antibot_holds_total",
+        MetricType.COUNTER,
+        "Players held in the world for want of a server, by how the hold ended: released to a"
+            + " server, or expired.");
+    result(out, "warp_antibot_holds_total", "started", world.holds());
+    result(out, "warp_antibot_holds_total", "released", world.holdsReleased());
+    result(out, "warp_antibot_holds_total", "expired", world.holdsExpired());
   }
 
   private static void result(SampleVisitor out, String name, String result, double value) {

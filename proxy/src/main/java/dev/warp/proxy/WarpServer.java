@@ -34,6 +34,7 @@ import dev.warp.api.plugin.PluginManager;
 import dev.warp.api.plugin.PluginState;
 import dev.warp.api.server.Balancer;
 import dev.warp.api.server.ServerGroup;
+import dev.warp.api.world.VirtualWorld;
 import dev.warp.jni.NativeStatus;
 import dev.warp.jni.Natives;
 import dev.warp.proxy.antibot.AntiBotService;
@@ -1071,6 +1072,20 @@ public final class WarpServer implements Warp {
       throw new IllegalStateException("The anti-bot is loaded when the proxy starts");
     }
     return bots;
+  }
+
+  /**
+   * {@inheritDoc}
+   *
+   * @throws IllegalStateException before {@link #start()}, which loads the anti-bot and its world
+   */
+  @Override
+  public VirtualWorld world() {
+    AntiBotService bots = antiBot;
+    if (bots == null) {
+      throw new IllegalStateException("The virtual world is loaded when the proxy starts");
+    }
+    return bots.world();
   }
 
   /**

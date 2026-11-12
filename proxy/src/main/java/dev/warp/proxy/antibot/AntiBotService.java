@@ -35,6 +35,7 @@ import dev.warp.api.event.antibot.AttackEndedEvent;
 import dev.warp.api.event.antibot.AttackStartedEvent;
 import dev.warp.api.event.antibot.LockdownChangedEvent;
 import dev.warp.api.event.antibot.VerificationFailedEvent;
+import dev.warp.api.player.ClientPlatform;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.proxy.config.AntiBotConfig;
 import dev.warp.proxy.config.LoggingConfig;
@@ -44,6 +45,8 @@ import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.limit.Refusal;
 import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.network.CidrRanges;
+import dev.warp.proxy.world.ProxyWorld;
+import dev.warp.proxy.world.WorldLayouts;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -132,6 +135,7 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
   private final List<VerificationCheck> checks = new CopyOnWriteArrayList<>();
   private final LongSupplier nanoClock;
   private final VerificationQueue queue;
+  private final ProxyWorld world;
   private final @Nullable VerificationTokens tokens;
   private volatile boolean lockdown;
 
@@ -290,6 +294,7 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
             verification.queueSize(),
             verification.queueMaxWait(),
             nanoClock);
+    this.world = new ProxyWorld(config.world(), new WorldLayouts(), nanoClock);
     this.onlineMode = onlineMode;
     this.limits = limits;
     this.events = events;
@@ -732,6 +737,38 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
   }
 
   /**
+   * Returns the virtual world: the world check, the hold of players without a server, and the
+   * plugin API over both.
+   *
+   * @return the world
+   */
+  public ProxyWorld world() {
+    return world;
+  }
+
+  /**
+   * Returns whether a client that passed the probe goes on to the world check: the check is on, the
+   * version is at least 1.8 (1.7 is not probed either) and the client is neither modded nor Bedrock
+   * (rules 6 and 7 of section 10 of the research).
+   *
+   * @param version the client's version
+   * @param platform the client's platform
+   * @return {@code true} to run the world check
+   */
+  public boolean worldChecks(ProtocolVersion version, ClientPlatform platform) {
+    return config.enabled() && world.checks(version, platform);
+  }
+
+  /**
+   * Returns the base deadline of each stage of the probe and of the world check.
+   *
+   * @return the configured probe timeout
+   */
+  public Duration stageTimeout() {
+    return config.verification().probeTimeout();
+  }
+
+  /**
    * Returns the admission of logins to verification.
    *
    * @return the queue
@@ -778,9 +815,20 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
    */
   public void verificationPassed(
       Recognition recognition, @Nullable UUID account, Probe.Outcome.Passed passed) {
+    verificationPassed(recognition, account, passed.trusted());
+  }
+
+  /**
+   * Counts a verification that passed, and trusts the identity when the pass was clean.
+   *
+   * @param recognition what the login was recognized as
+   * @param account the authenticated account, in online mode
+   * @param trusted whether the pass had fewer than two flags across its probe and world check
+   */
+  public void verificationPassed(Recognition recognition, @Nullable UUID account, boolean trusted) {
     detector.record(Signal.VERIFICATIONS_PASSED);
     verificationsPassed.increment();
-    if (!passed.trusted()) {
+    if (!trusted) {
       verificationsEscalated.increment();
       return;
     }
@@ -956,6 +1004,7 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
             signing == null ? 0 : signing.accepted(),
             signing == null ? 0 : signing.rejected(),
             signing == null ? null : signing.keySince()),
+        world.status(),
         Instant.ofEpochMilli(millisClock.getAsLong()));
   }
 
