@@ -227,6 +227,7 @@ class Connection {
 
   onConfig(id) {
     if (id !== IDS.configuration.toServer.finish) return; // client information, brand: ignored
+    if (this.socket.destroyed) return;
     this.state = STATE.PLAY;
     this.playing = true;
     this.server.logins++;
