@@ -114,6 +114,13 @@ describe('Paper backend', () => {
     assert.match(yml('none'), /disable-saving: true/);
     assert.match(yml('none'), /entity-tracking-range:\n\s+players: 32/);
   });
+
+  it('should never let a backend look offline players up at Mojang', () => {
+    const yml = (forwarding) => new Backend({ forwarding, secret: 'S' }).paperGlobalYml();
+    assert.match(yml('legacy'), /bungee-cord:\n\s+online-mode: false/);
+    assert.match(yml('modern'), /velocity:\n\s+enabled: true\n\s+online-mode: false\n\s+secret: 'S'/);
+    assert.equal(yml('none'), null);
+  });
 });
 
 describe('results on disk', () => {

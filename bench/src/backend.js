@@ -102,14 +102,25 @@ export class Backend {
     mkdirSync(join(this.dir, 'plugins', 'bStats'), { recursive: true });
     writeFileSync(join(this.dir, 'plugins', 'bStats', 'config.yml'), 'enabled: false\n');
     writeFileSync(join(this.dir, 'spigot.yml'), this.spigotYml());
-    if (this.forwarding === 'modern') {
+    const paperGlobal = this.paperGlobalYml();
+    if (paperGlobal) {
       const file = join(this.dir, 'config', 'paper-global.yml');
       mkdirSync(dirname(file), { recursive: true });
-      writeFileSync(
-        file,
-        `proxies:\n  velocity:\n    enabled: true\n    online-mode: false\n    secret: '${this.secret}'\n`,
-      );
+      writeFileSync(file, paperGlobal);
     }
+  }
+
+  /**
+   * paper-global.yml: the proxy section for this forwarding, or null when there is none. With
+   * BungeeCord forwarding Paper assumes by default that the proxy authenticated the players
+   * (`bungee-cord.online-mode: true`) and asks Mojang's session server for the profile of every
+   * player that joins; the bots are offline players, so each lookup fails, is logged as an error,
+   * and costs the backend a request per login that the backends of the other proxies do not make.
+   */
+  paperGlobalYml() {
+    if (this.forwarding === 'modern') return `proxies:\n  velocity:\n    enabled: true\n    online-mode: false\n    secret: '${this.secret}'\n`;
+    if (this.forwarding === 'legacy') return 'proxies:\n  bungee-cord:\n    online-mode: false\n';
+    return null;
   }
 
   /**
