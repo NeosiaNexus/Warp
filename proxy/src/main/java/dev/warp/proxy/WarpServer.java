@@ -46,6 +46,7 @@ import dev.warp.proxy.compression.Compression;
 import dev.warp.proxy.config.AntiBotConfig;
 import dev.warp.proxy.config.DrainConfig;
 import dev.warp.proxy.config.GroupConfig;
+import dev.warp.proxy.config.HandoffConfig;
 import dev.warp.proxy.config.WarpConfig;
 import dev.warp.proxy.connection.BackendPinger;
 import dev.warp.proxy.connection.ConnectedPlayer;
@@ -104,6 +105,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.spec.InvalidKeySpecException;
 import java.time.Duration;
@@ -907,6 +909,10 @@ public final class WarpServer implements Warp {
     if (token != null) {
       secrets.add(token);
     }
+    String handoffSecret = System.getenv(HandoffConfig.ENV_SECRET);
+    if (handoffSecret != null && !handoffSecret.isBlank()) {
+      secrets.add(handoffSecret.strip());
+    }
     return new RemoteConsole(
         config.management().console(), commands, config::messages, WarpBuildInfo.VERSION, secrets);
   }
@@ -1317,17 +1323,34 @@ public final class WarpServer implements Warp {
    * Loads the seamless handoff between Warp proxies: its key, from {@code WARP_TRANSFER_SECRET} or
    * its file (generated when absent), and its peers.
    *
-   * @throws IllegalStateException if the key file cannot be read or created
+   * @throws IllegalStateException if the key file cannot be read or created, or if the key is the
+   *     forwarding secret
    */
   private TransferHandoff loadHandoff() {
+    String secret = System.getenv(HandoffConfig.ENV_SECRET);
+    byte[] forwarding = config.forwardingSecret();
+    if (config.handoff().enabled()
+        && secret != null
+        && forwarding.length > 0
+        && MessageDigest.isEqual(secret.strip().getBytes(StandardCharsets.UTF_8), forwarding)) {
+      // Backends hold the forwarding secret: with it, one of them could write tickets.
+      throw new IllegalStateException(
+          HandoffConfig.ENV_SECRET
+              + " is the forwarding secret: give the transfer handoff a secret of its own");
+    }
     try {
-      return TransferHandoff.load(
-          config.handoff(),
-          config.drain().transferTo(),
-          directory,
-          System::getenv,
-          nodeId(),
-          System::currentTimeMillis);
+      TransferHandoff handoff =
+          TransferHandoff.load(
+              config.handoff(),
+              config.drain().transferTo(),
+              directory,
+              System::getenv,
+              nodeId(),
+              System::currentTimeMillis);
+      if (handoff.enabled()) {
+        logger.info("Transfers: seamless handoff {}", config.handoff());
+      }
+      return handoff;
     } catch (IOException e) {
       throw new IllegalStateException(
           "Cannot load the transfer handoff key: "

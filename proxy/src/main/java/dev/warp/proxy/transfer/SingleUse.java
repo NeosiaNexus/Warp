@@ -22,8 +22,9 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * The tickets used on this proxy within their lifetime, so that each is used once. Bounded: past
  * {@code capacity} live entries, a new ticket is refused rather than an old one forgotten, which
- * would let it be replayed. Entries go once their ticket expired, swept at most once a second.
- * Thread-safe and lock-free: logins run on every event loop.
+ * would let it be replayed. Entries go once their ticket expired, swept at most once a second, so a
+ * full cache refuses for a second at most after its oldest tickets expired. Thread-safe and
+ * lock-free: logins run on every event loop.
  */
 final class SingleUse {
 
@@ -36,6 +37,9 @@ final class SingleUse {
     /** No room to remember it: refused. */
     FULL
   }
+
+  /** At most one sweep per second: a full cache is not walked again by every login. */
+  static final long SWEEP_INTERVAL_MILLIS = 1_000;
 
   private record Nonce(long high, long low) {}
 
@@ -58,8 +62,7 @@ final class SingleUse {
    */
   Outcome use(long high, long low, long forgetAfterMillis, long nowMillis) {
     long sweep = nextSweep.get();
-    if ((nowMillis >= sweep || spent.size() >= capacity)
-        && nextSweep.compareAndSet(sweep, nowMillis + 1_000)) {
+    if (nowMillis >= sweep && nextSweep.compareAndSet(sweep, nowMillis + SWEEP_INTERVAL_MILLIS)) {
       spent.values().removeIf(expiry -> expiry < nowMillis);
     }
     if (spent.size() >= capacity) {

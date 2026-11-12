@@ -57,11 +57,12 @@ import org.slf4j.LoggerFactory;
  * <p><b>Security.</b> The ticket travels in clear on the second hop, so it alone grants nothing:
  * the proof never does (stored and read over encrypted connections), and a ticket without its proof
  * is refused. A ticket is single-use on each proxy, expires within {@code max-age}, and is bound to
- * the transfer's address. It is written only for transfers to peers ({@code drain.transfer-to},
- * {@code transfers.handoff.peers}): any other server a player is sent to never holds one. What
- * skipping Mojang gives up is Mojang's protection against an active man in the middle on that one
- * hop, the trade-off {@code shouldAuthenticate} exists for; {@code transfers.handoff.enabled =
- * false} restores full authentication.
+ * the transfer's address, to the client's protocol version and, unless {@code bind-address} is off,
+ * to the address the client had on the proxy that wrote it. It is written only for transfers to
+ * peers ({@code drain.transfer-to}, {@code transfers.handoff.peers}): any other server a player is
+ * sent to never holds one. What skipping Mojang gives up is Mojang's protection against an active
+ * man in the middle on that one hop, the trade-off {@code shouldAuthenticate} exists for; {@code
+ * transfers.handoff.enabled = false} restores full authentication.
  *
  * <p>Thread-safe: tickets are written and read on every event loop.
  */
@@ -93,6 +94,7 @@ public final class TransferHandoff {
 
   private final @Nullable HandoffSeal seal;
   private final Duration maxAge;
+  private final boolean bindAddress;
   private final Set<String> peers;
   private final String nodeId;
   private final LongSupplier millisClock;
@@ -101,11 +103,13 @@ public final class TransferHandoff {
   private TransferHandoff(
       @Nullable HandoffSeal seal,
       Duration maxAge,
+      boolean bindAddress,
       Set<String> peers,
       String nodeId,
       LongSupplier millisClock) {
     this.seal = seal;
     this.maxAge = maxAge;
+    this.bindAddress = bindAddress;
     this.peers = Set.copyOf(peers);
     this.nodeId = nodeId;
     this.millisClock = millisClock;
@@ -117,7 +121,7 @@ public final class TransferHandoff {
    * @return the disabled handoff
    */
   public static TransferHandoff disabled() {
-    return new TransferHandoff(null, HandoffConfig.DEFAULTS.maxAge(), Set.of(), "", () -> 0L);
+    return new TransferHandoff(null, HandoffConfig.DEFAULTS.maxAge(), true, Set.of(), "", () -> 0L);
   }
 
   /**
@@ -160,7 +164,8 @@ public final class TransferHandoff {
     for (DrainConfig.Target peer : config.peers()) {
       peers.add(peerKey(peer.host(), peer.port()));
     }
-    return new TransferHandoff(seal, config.maxAge(), peers, nodeId, millisClock);
+    return new TransferHandoff(
+        seal, config.maxAge(), config.bindAddress(), peers, nodeId, millisClock);
   }
 
   /**
@@ -168,19 +173,26 @@ public final class TransferHandoff {
    *
    * @param secret the shared secret
    * @param maxAge how long tickets stay valid
+   * @param bindAddress whether a ticket is only valid from the address it was written for
    * @param peers the peers, as {@code host:port}
    * @param nodeId this proxy's name in the tickets
    * @param millisClock the wall clock
    * @return the handoff
    */
   public static TransferHandoff of(
-      byte[] secret, Duration maxAge, List<String> peers, String nodeId, LongSupplier millisClock) {
+      byte[] secret,
+      Duration maxAge,
+      boolean bindAddress,
+      List<String> peers,
+      String nodeId,
+      LongSupplier millisClock) {
     Set<String> keys = new HashSet<>();
     for (String peer : peers) {
       int colon = peer.lastIndexOf(':');
       keys.add(peerKey(peer.substring(0, colon), Integer.parseInt(peer.substring(colon + 1))));
     }
-    return new TransferHandoff(HandoffSeal.of(secret), maxAge, keys, nodeId, millisClock);
+    return new TransferHandoff(
+        HandoffSeal.of(secret), maxAge, bindAddress, keys, nodeId, millisClock);
   }
 
   /**
@@ -217,6 +229,8 @@ public final class TransferHandoff {
    * @param uuid the player's UUID
    * @param name the player's name
    * @param properties the profile's properties, as Mojang signed them
+   * @param protocol the protocol version of the player's client
+   * @param address the address the player connected from, or {@code null} if unknown
    * @param server the server the player is on, or {@code null}
    * @param authenticated whether the player was authenticated with Mojang, here or by the handoff
    *     it arrived with; also whether its connection is encrypted, which the proof requires
@@ -226,6 +240,8 @@ public final class TransferHandoff {
       UUID uuid,
       String name,
       List<LoginSuccess.Property> properties,
+      int protocol,
+      @Nullable InetAddress address,
       @Nullable String server,
       boolean authenticated,
       boolean trusted) {}
@@ -270,6 +286,8 @@ public final class TransferHandoff {
             subject.uuid(),
             subject.name(),
             properties,
+            subject.protocol(),
+            subject.address(),
             subject.server(),
             nodeId,
             now,
@@ -306,6 +324,8 @@ public final class TransferHandoff {
    *
    * @param name the name of its Login Start
    * @param uuid the UUID of its Login Start, or {@code null} if it carried none
+   * @param protocol the protocol version of its handshake
+   * @param remoteAddress the address the client connects from, or {@code null} if unknown
    * @param handshakeHost the host its handshake named, cleaned, or {@code null}
    * @param handshakePort the port its handshake named
    * @param localAddress the address the client reached, which a transfer to an IP address matches
@@ -315,6 +335,8 @@ public final class TransferHandoff {
   public record Arrival(
       String name,
       @Nullable UUID uuid,
+      int protocol,
+      @Nullable InetAddress remoteAddress,
       @Nullable String handshakeHost,
       int handshakePort,
       @Nullable InetSocketAddress localAddress) {}
@@ -339,8 +361,9 @@ public final class TransferHandoff {
   /**
    * Opens a transferred client's ticket and checks it against its login, then spends it: a ticket
    * is used once on this proxy. Checked in that order, so that a ticket refused for another reason
-   * is not spent: version, key, seal, content, times, address, name, UUID (for an authenticated
-   * ticket: offline, the client's UUID is its own), single use.
+   * is not spent: version, key, seal, content, times, the transfer's address, the client's protocol
+   * version and address (with {@code bind-address}), name, UUID (for an authenticated ticket:
+   * offline, the client's UUID is its own), single use.
    *
    * @param payload the cookie's payload
    * @param arrival the login
@@ -378,6 +401,12 @@ public final class TransferHandoff {
     }
     if (!targets(ticket, arrival)) {
       return rejected(HandoffRejection.WRONG_TARGET, arrival);
+    }
+    if (ticket.protocol() != arrival.protocol()) {
+      return rejected(HandoffRejection.WRONG_PROTOCOL, arrival);
+    }
+    if (bindAddress && !sameClient(ticket.clientAddress(), arrival.remoteAddress())) {
+      return rejected(HandoffRejection.ADDRESS_MISMATCH, arrival);
     }
     if (!ticket.name().equals(arrival.name())) {
       return rejected(HandoffRejection.NAME_MISMATCH, arrival);
@@ -424,8 +453,18 @@ public final class TransferHandoff {
     }
   }
 
+  /**
+   * Whether the ticket was written for the address that presents it. A ticket without an address,
+   * or a client without one, never matches: binding means a known address on both proxies.
+   */
+  private static boolean sameClient(@Nullable InetAddress written, @Nullable InetAddress seen) {
+    return written != null && written.equals(seen);
+  }
+
   private Opening rejected(HandoffRejection reason, Arrival arrival) {
-    if (reason == HandoffRejection.FOREIGN_KEY || reason == HandoffRejection.WRONG_TARGET) {
+    if (reason == HandoffRejection.FOREIGN_KEY
+        || reason == HandoffRejection.WRONG_TARGET
+        || reason == HandoffRejection.ADDRESS_MISMATCH) {
       // Peers misconfigured, not a client's doing: worth a line, once a minute at most.
       long more = MISMATCH_WARNINGS.tryAcquire();
       if (more >= 0) {
@@ -433,10 +472,16 @@ public final class TransferHandoff {
             LogCode.HANDOFF_REJECTED.marker(),
             "Transfers: the handoff of {} was not used ({}); it logged in through Mojang{}",
             arrival.name(),
-            reason == HandoffRejection.FOREIGN_KEY
-                ? "sealed under another key: give every proxy the same transfers.handoff key"
-                : "written for another address than the one it connected to: set the peer's"
-                    + " address as clients reach it",
+            switch (reason) {
+              case FOREIGN_KEY ->
+                  "sealed under another key: give every proxy the same transfers.handoff key";
+              case WRONG_TARGET ->
+                  "written for another address than the one it connected to: set the peer's"
+                      + " address as clients reach it";
+              default ->
+                  "written for a client at another address: if the proxies do not see the same"
+                      + " client address, set transfers.handoff.bind-address = false";
+            },
             LogThrottle.suffix(more, "handoffs"));
       }
     }

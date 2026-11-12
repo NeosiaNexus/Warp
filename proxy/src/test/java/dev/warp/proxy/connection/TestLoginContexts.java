@@ -334,6 +334,7 @@ final class TestLoginContexts {
     org.mockito.Mockito.when(context.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
     org.mockito.Mockito.when(context.antiBot()).thenReturn(calmAntiBot());
     org.mockito.Mockito.when(context.messages()).thenReturn(PlayerMessages.bundled());
+    org.mockito.Mockito.when(context.handoff()).thenReturn(TransferHandoff.disabled());
     return context;
   }
 
@@ -378,7 +379,52 @@ final class TestLoginContexts {
       ServerRegistry servers,
       TimeoutsConfig timeouts,
       LoggingConfig logging) {
-    return with(base, servers, timeouts, logging, base.handoff());
+    return with(base, servers, timeouts, logging, base.acceptsTransfers(), base.handoff());
+  }
+
+  /**
+   * A context that accepts transfers, with a seamless handoff and servers of its own.
+   *
+   * @param onlineMode whether players authenticate
+   * @param sessionService the session service, usually a mock
+   * @param events the event bus
+   * @param servers the servers players join and fall back to
+   * @param handoff the handoff
+   * @return the context
+   */
+  static ServerLoginContext acceptingHandoffs(
+      boolean onlineMode,
+      MojangSessionService sessionService,
+      WarpEventBus events,
+      ServerRegistry servers,
+      TransferHandoff handoff) {
+    return acceptingHandoffs(
+        context(
+            onlineMode,
+            -1,
+            sessionService,
+            ProfileKeys.mojang(),
+            DuplicateLoginPolicy.AUTO,
+            events,
+            true,
+            StatusSettings.defaults(),
+            ClientLimits.unlimited(),
+            servers,
+            ForwardingMode.NONE,
+            new byte[0],
+            NioSocketChannel.class),
+        handoff);
+  }
+
+  /**
+   * Returns a context like {@code base} that accepts transfers, with a seamless handoff.
+   *
+   * @param base the context to copy
+   * @param handoff the handoff
+   * @return the context
+   */
+  static ServerLoginContext acceptingHandoffs(ServerLoginContext base, TransferHandoff handoff) {
+    return with(base, base.serverRegistry(), base.timeouts(), base.logging(), true, handoff);
   }
 
   /**
@@ -391,7 +437,7 @@ final class TestLoginContexts {
    */
   static ServerLoginContext withHandoff(
       ServerLoginContext base, ServerRegistry servers, TransferHandoff handoff) {
-    return with(base, servers, base.timeouts(), base.logging(), handoff);
+    return with(base, servers, base.timeouts(), base.logging(), base.acceptsTransfers(), handoff);
   }
 
   private static ServerLoginContext with(
@@ -399,6 +445,7 @@ final class TestLoginContexts {
       ServerRegistry servers,
       TimeoutsConfig timeouts,
       LoggingConfig logging,
+      boolean acceptsTransfers,
       TransferHandoff handoff) {
     return new ServerLoginContext(
         base.rsaKeyPair(),
@@ -420,7 +467,7 @@ final class TestLoginContexts {
         base.forwardingMode(),
         base.forwardingSecret(),
         base.channelClass(),
-        base.acceptsTransfers(),
+        acceptsTransfers,
         base.limits(),
         timeouts,
         logging,

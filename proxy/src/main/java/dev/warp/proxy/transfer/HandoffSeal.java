@@ -49,10 +49,11 @@ import org.jspecify.annotations.Nullable;
  * forgery), a random {@value #IV_LENGTH}-byte IV, then the encrypted ticket and its 16-byte tag.
  * The version, key id and IV are authenticated as associated data.
  *
- * <p><b>Key</b>: {@value HandoffConfig#ENV_SECRET} if set (any text, the same on every proxy), else
- * the file {@code transfers.handoff.secret-file}, generated at first start with 32 random bytes and
- * readable by its owner only. The AES key is derived from either with HMAC-SHA256, so that the
- * secret is never used as a key for two purposes.
+ * <p><b>Key</b>: {@value HandoffConfig#ENV_SECRET} if set (random text of 16 characters or more,
+ * the same on every proxy), else the file {@code transfers.handoff.secret-file}, generated at first
+ * start with 32 random bytes and readable by its owner only. The AES key is derived from either
+ * with HMAC-SHA256, so that the secret is never used as a key for two purposes; it is a secret of
+ * its own, never the forwarding secret backends hold.
  *
  * <p>Thread-safe: each call builds its own {@link Cipher}.
  */
@@ -67,6 +68,9 @@ final class HandoffSeal {
 
   /** The header: version, key id, IV. */
   static final int HEADER_LENGTH = 1 + KEY_ID_LENGTH + IV_LENGTH;
+
+  /** The shortest secret accepted, from the environment or the file: 128 bits if random. */
+  static final int MIN_SECRET_LENGTH = 16;
 
   private static final int SECRET_LENGTH = 32;
   private static final String TRANSFORMATION = "AES/GCM/NoPadding";
@@ -97,7 +101,16 @@ final class HandoffSeal {
    */
   static HandoffSeal load(Path file, @Nullable String fromEnvironment) throws IOException {
     if (fromEnvironment != null && !fromEnvironment.isBlank()) {
-      return new HandoffSeal(fromEnvironment.strip().getBytes(StandardCharsets.UTF_8), false, true);
+      byte[] text = fromEnvironment.strip().getBytes(StandardCharsets.UTF_8);
+      if (text.length < MIN_SECRET_LENGTH) {
+        // Never the value itself: a secret does not belong in a log.
+        throw new IOException(
+            HandoffConfig.ENV_SECRET
+                + " is too short to seal handoff tickets with: "
+                + MIN_SECRET_LENGTH
+                + " characters or more, random (openssl rand -base64 32)");
+      }
+      return new HandoffSeal(text, false, true);
     }
     byte[] secret = read(file);
     if (secret != null) {
@@ -224,7 +237,7 @@ final class HandoffSeal {
       }
       try {
         byte[] secret = Base64.getDecoder().decode(text);
-        if (secret.length >= 16) {
+        if (secret.length >= MIN_SECRET_LENGTH) {
           return secret;
         }
       } catch (IllegalArgumentException malformed) {

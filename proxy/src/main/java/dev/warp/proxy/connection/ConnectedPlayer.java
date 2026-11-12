@@ -238,6 +238,16 @@ public final class ConnectedPlayer {
    */
   private volatile @Nullable String handoffServer;
 
+  /** Whether another Warp proxy handed this player off with a valid ticket. */
+  private volatile boolean handedOff;
+
+  /**
+   * The profile the login authenticated as, before plugins changed it: what a handoff ticket
+   * carries, so that the next proxy starts from what Mojang said. The player's profile until the
+   * login says otherwise.
+   */
+  private volatile GameProfile authenticatedProfile;
+
   /** Whether {@link PostLoginEvent} was fired: a {@link DisconnectEvent} must follow. */
   private volatile boolean sessionStarted;
 
@@ -372,6 +382,7 @@ public final class ConnectedPlayer {
     this.uuid = profile.uuid();
     this.username = profile.name();
     this.profileProperties = profile.properties();
+    this.authenticatedProfile = profile;
     this.remoteAddress = remoteAddress;
     this.loginContext = loginContext;
     this.serverSwitch = ServerSwitch.of(this);
@@ -761,12 +772,33 @@ public final class ConnectedPlayer {
   }
 
   /**
-   * Records the server a handoff named: the player joins it first. Called once, by the login.
+   * Records a handoff and the server it named: the player joins it first. Called once, by the
+   * login.
    *
-   * @param server the server's name on the proxy the player came from
+   * @param server the server's name on the proxy the player came from, or {@code null}
    */
-  void handedOffFrom(String server) {
+  void handedOffFrom(@Nullable String server) {
+    this.handedOff = true;
     this.handoffServer = server;
+  }
+
+  /**
+   * Returns whether another Warp proxy handed this player off with a valid ticket.
+   *
+   * @return {@code true} for a handoff
+   */
+  public boolean isHandedOff() {
+    return handedOff;
+  }
+
+  /**
+   * Records the profile the login authenticated as, before plugins changed it. Called once, by the
+   * login.
+   *
+   * @param profile Mojang's profile, a handoff's, or the offline one
+   */
+  void authenticatedAs(GameProfile profile) {
+    this.authenticatedProfile = profile;
   }
 
   /** Applies the result {@link PlayerChooseInitialServerEvent} settled on. Client event loop. */
@@ -2564,16 +2596,19 @@ public final class ConnectedPlayer {
     if (!handoff.isPeer(host, port) || !cookies.supported()) {
       return false;
     }
+    GameProfile original = authenticatedProfile;
     boolean authenticated = onlineMode;
     TransferHandoff.Issued issued =
         handoff.issue(
             new TransferHandoff.Subject(
-                uuid,
-                username,
-                profileProperties,
+                original.uuid(),
+                original.name(),
+                original.properties(),
+                protocolVersion().protocol(),
+                remoteAddress().getAddress(),
                 currentServerName,
                 authenticated,
-                authenticated && loginContext.antiBot().trustsAccount(uuid)),
+                authenticated && loginContext.antiBot().trustsAccount(original.uuid())),
             host,
             port);
     if (issued == null) {

@@ -90,4 +90,16 @@ public interface InboundConnection {
    * @return {@code true} if the client was transferred here
    */
   boolean isTransferred();
+
+  /**
+   * Returns whether another Warp proxy of the network handed the client off: it arrived by a
+   * transfer with a handoff ticket that proxy sealed, which this proxy checked ({@code
+   * transfers.handoff}). On an online-mode login, the player's identity then comes from the ticket,
+   * as that proxy authenticated it, rather than from a new authentication with Mojang; the same
+   * events fire as for any login. Known from {@code PreLoginEvent} on; a login whose handoff turns
+   * out not to be the client's own is refused before {@code GameProfileRequestEvent}.
+   *
+   * @return {@code true} if the client was handed off; always {@code false} when the handoff is off
+   */
+  boolean isHandedOff();
 }

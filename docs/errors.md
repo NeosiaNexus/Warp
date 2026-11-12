@@ -122,6 +122,7 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-AUTH-003](#w-auth-003) | error | Encryption could not be enabled |
 | [W-AUTH-004](#w-auth-004) | warning | The session server failed |
 | [W-AUTH-005](#w-auth-005) | warning | A login was refused |
+| [W-AUTH-006](#w-auth-006) | warning | A transfer handoff was not used |
 | [W-NET-001](#w-net-001) | error | A connection failed |
 | [W-NET-002](#w-net-002) | warning | A trusted proxy's connection was refused |
 | [W-NET-003](#w-net-003) | warning | A connection from an untrusted address |
@@ -1071,6 +1072,14 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** A player was disconnected during login for the reason the message gives, with a reference the player also sees.
 
 **Fix.** Match the reference the player reports with this line.
+
+### W-AUTH-006
+
+**A transfer handoff was not used** (warning)
+
+**Cause.** A player transferred by another Warp proxy presented a handoff ticket this proxy could not use: sealed under another key, written for another address than the one the player connected to, or written for a client at another address. It logged in through Mojang instead, and joined the default server. Logged once a minute at most; warp_transfer_handoffs_rejected_total counts every reason.
+
+**Fix.** Give every proxy the same key (transfers.handoff.secret-file, or WARP_TRANSFER_SECRET), and set drain.transfer-to and transfers.handoff.peers to the addresses players reach the proxies by (a host name, not one an SRV record redirects). If the proxies do not see the same client address, set transfers.handoff.bind-address = false.
 
 ## Connections
 

@@ -36,6 +36,14 @@ public enum HandoffRejection {
   CLOCK("clock"),
   /** Written for another address than the one the client connected to. */
   WRONG_TARGET("target"),
+  /** Written for a client of another protocol version than the one that presents it. */
+  WRONG_PROTOCOL("protocol"),
+  /**
+   * Written for a client at another address than the one that presents it ({@code
+   * transfers.handoff.bind-address}): a ticket taken elsewhere, or proxies that do not see the same
+   * client address.
+   */
+  ADDRESS_MISMATCH("address"),
   /** Written for another name than the one the client logs in with. */
   NAME_MISMATCH("name"),
   /** Written for another account than the one the client logs in with. */

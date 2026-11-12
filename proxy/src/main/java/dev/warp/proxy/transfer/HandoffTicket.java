@@ -24,6 +24,8 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.InetAddress;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -37,6 +39,9 @@ import org.jspecify.annotations.Nullable;
  * @param uuid the player's UUID
  * @param name the player's name
  * @param properties the profile's properties, Mojang's signatures included (the skin)
+ * @param protocol the protocol version of the player's client, which a transfer does not change
+ * @param clientAddress the address the writer saw the player connect from, or {@code null} if it
+ *     saw none (a Unix socket)
  * @param server the backend the player was on, or {@code null} if it was on none
  * @param sourceNode the proxy that wrote the ticket, for the logs
  * @param issuedAtMillis when it was written, in epoch milliseconds
@@ -55,6 +60,8 @@ public record HandoffTicket(
     UUID uuid,
     String name,
     List<LoginSuccess.Property> properties,
+    int protocol,
+    @Nullable InetAddress clientAddress,
     @Nullable String server,
     String sourceNode,
     long issuedAtMillis,
@@ -91,7 +98,7 @@ public record HandoffTicket(
 
   /** Whether {@code candidate} is the proof secret, in constant time. */
   boolean proofIs(byte[] candidate) {
-    return proof.length > 0 && java.security.MessageDigest.isEqual(proof, candidate);
+    return proof.length > 0 && MessageDigest.isEqual(proof, candidate);
   }
 
   // ---------------------------------------------------------------------------
@@ -112,6 +119,10 @@ public record HandoffTicket(
       out.writeLong(uuid.getMostSignificantBits());
       out.writeLong(uuid.getLeastSignificantBits());
       out.writeUTF(name);
+      out.writeInt(protocol);
+      byte[] address = clientAddress == null ? new byte[0] : clientAddress.getAddress();
+      out.writeByte(address.length);
+      out.write(address);
       out.writeBoolean(server != null);
       if (server != null) {
         out.writeUTF(server);
@@ -153,6 +164,11 @@ public record HandoffTicket(
       int flags = in.readUnsignedByte();
       UUID uuid = new UUID(in.readLong(), in.readLong());
       String name = in.readUTF();
+      int protocol = in.readInt();
+      byte[] address = new byte[in.readUnsignedByte()];
+      in.readFully(address);
+      // 4 or 16 bytes: an address; none: the writer saw none; anything else does not parse.
+      InetAddress clientAddress = address.length == 0 ? null : InetAddress.getByAddress(address);
       String server = in.readBoolean() ? in.readUTF() : null;
       String sourceNode = in.readUTF();
       String targetHost = in.readUTF();
@@ -179,6 +195,8 @@ public record HandoffTicket(
           uuid,
           name,
           properties,
+          protocol,
+          clientAddress,
           server,
           sourceNode,
           issuedAt,

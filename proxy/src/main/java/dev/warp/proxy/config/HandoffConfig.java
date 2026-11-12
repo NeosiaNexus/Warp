@@ -28,15 +28,22 @@ import org.spongepowered.configurate.CommentedConfigurationNode;
  * player's client; the peer that receives it logs the player in without asking Mojang again, and
  * sends it to the server it was on.
  *
- * @param enabled whether tickets are written before transfers and read from transferred logins
+ * @param enabled whether tickets are written before transfers and read from transferred logins; off
+ *     unless the operator turns it on: a ticket stands in for Mojang's authentication
  * @param secretFile the file the sealing key is read from, generated when absent, relative to the
  *     proxy's directory; {@value #ENV_SECRET} takes precedence
  * @param maxAge how long a ticket stays valid after it was written
+ * @param bindAddress whether a ticket is only valid from the address its player had on the proxy
+ *     that wrote it; turned off where the proxies do not see the same client address
  * @param peers where a transfer carries a ticket, besides {@code drain.transfer-to}: the other
  *     proxies of the network, as players reach them
  */
 public record HandoffConfig(
-    boolean enabled, String secretFile, Duration maxAge, List<DrainConfig.Target> peers) {
+    boolean enabled,
+    String secretFile,
+    Duration maxAge,
+    boolean bindAddress,
+    List<DrainConfig.Target> peers) {
 
   /** The environment variable that holds the key, ahead of {@code secret-file}. */
   public static final String ENV_SECRET = "WARP_TRANSFER_SECRET";
@@ -47,9 +54,9 @@ public record HandoffConfig(
   static final Duration DEFAULT_MAX_AGE = Duration.ofSeconds(15);
   static final String DEFAULT_SECRET_FILE = "transfer.secret";
 
-  /** The defaults: on, with a key of its own, valid 15 seconds, no peer besides the drain's. */
+  /** The defaults: off; once on, valid 15 seconds from the same address, the drain's peer only. */
   public static final HandoffConfig DEFAULTS =
-      new HandoffConfig(true, DEFAULT_SECRET_FILE, DEFAULT_MAX_AGE, List.of());
+      new HandoffConfig(false, DEFAULT_SECRET_FILE, DEFAULT_MAX_AGE, true, List.of());
 
   /** Copies the peers. */
   public HandoffConfig {
@@ -65,7 +72,7 @@ public record HandoffConfig(
    */
   static HandoffConfig parse(CommentedConfigurationNode root) throws ConfigurationException {
     CommentedConfigurationNode node = root.node("transfers", "handoff");
-    boolean enabled = WarpConfig.booleanValue(node.node("enabled"), true);
+    boolean enabled = WarpConfig.booleanValue(node.node("enabled"), false);
     String secretFile = WarpConfig.stringValue(node.node("secret-file"), DEFAULT_SECRET_FILE);
     if (secretFile.isBlank()) {
       throw ConfigurationException.invalid(
@@ -77,7 +84,9 @@ public record HandoffConfig(
       throw ConfigurationException.invalid(
           "transfers.handoff.max-age", "a duration from 1s to 60s", DrainConfig.format(maxAge));
     }
-    return new HandoffConfig(enabled, secretFile.strip(), maxAge, parsePeers(node.node("peers")));
+    boolean bindAddress = WarpConfig.booleanValue(node.node("bind-address"), true);
+    return new HandoffConfig(
+        enabled, secretFile.strip(), maxAge, bindAddress, parsePeers(node.node("peers")));
   }
 
   private static List<DrainConfig.Target> parsePeers(CommentedConfigurationNode node)
@@ -102,7 +111,13 @@ public record HandoffConfig(
   @Override
   public String toString() {
     return enabled
-        ? "on, max-age " + DrainConfig.format(maxAge) + ", " + peers.size() + " peers listed"
+        ? "on, max-age "
+            + DrainConfig.format(maxAge)
+            + (bindAddress
+                ? ", bound to the client address, "
+                : ", not bound to the client address, ")
+            + peers.size()
+            + " peers listed"
         : "off";
   }
 }

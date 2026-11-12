@@ -1744,19 +1744,28 @@ public final class WarpConfig {
         #   phase 2  wait for the players kept to leave, at most timeout
         #   phase 3  disconnect whoever is left, disable plugins and exit
         #            (exit code 0 once empty, 2 when the time-out expired)
-        # Seamless handoff between Warp proxies (Minecraft 1.20.5+). Before a transfer to a peer (the
-        # drain's transfer-to, or an address below), Warp stores a sealed ticket in the player's
-        # client. The Warp it lands on logs the player in without asking Mojang again and sends it
-        # back to the server it was on. Needs accepts-transfers = true on the receiving proxy.
+        # Seamless handoff between Warp proxies (Minecraft 1.20.5+), off by default. Before a
+        # transfer to a peer (the drain's transfer-to, or an address below), Warp stores a sealed,
+        # single-use ticket in the player's client. The Warp it lands on logs the player in without
+        # asking Mojang again (the connection is still encrypted) and sends it back to the server
+        # it was on. A ticket stands in for Mojang's authentication: turn it on only between
+        # proxies you run, which share the key below. Needs accepts-transfers = true on the
+        # receiving proxy. See docs/transfers.md for the security model.
         transfers {
           handoff {
-            enabled = true
+            enabled = false
             # The key tickets are sealed with, generated at first start (readable by its owner
             # only). Give every proxy the same key: copy this file, or set WARP_TRANSFER_SECRET on
-            # each. With a key of its own, a proxy only accepts the tickets it wrote itself.
+            # each (16 random characters or more). Never the forwarding secret: backends hold it.
+            # With a key of its own, a proxy only accepts the tickets it wrote itself.
             secret-file = "transfer.secret"
             # How long a ticket stays valid once written, 1s to 60s: a transfer takes about one.
             max-age = 15s
+            # A ticket is only valid from the address its player had on the proxy that wrote it.
+            # Turn it off only if your proxies do not see the same client address (some load
+            # balancers, mixed IPv4 and IPv6 paths): players then log in through Mojang, and
+            # warp_transfer_handoffs_rejected_total{reason="address"} counts them.
+            bind-address = true
             # Where a transfer carries a ticket, besides drain.transfer-to: the other proxies of
             # this network, as players reach them, e.g. ["play.example.com:25565"]. Never a server
             # you do not run: whoever holds a fresh ticket can log in as its player.

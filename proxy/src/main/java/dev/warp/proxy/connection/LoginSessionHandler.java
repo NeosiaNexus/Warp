@@ -281,6 +281,12 @@ final class LoginSessionHandler implements SessionHandler {
    */
   private @Nullable HandoffTicket handoff;
 
+  /**
+   * The profile this login authenticated as (Mojang's, a handoff's, or the offline one), before
+   * plugins changed it: what a handoff ticket written for this player later carries.
+   */
+  private @Nullable GameProfile authenticatedProfile;
+
   /** Whether the client presented a ticket, valid or not: cleared from it once logged in. */
   private boolean handoffPresented;
 
@@ -477,7 +483,9 @@ final class LoginSessionHandler implements SessionHandler {
             deny(Refusal.LOCKDOWN, LOCKDOWN_REASON);
             return;
           }
+          // A trusted handoff spares the verification the token would: no second round trip.
           if (connection.handshakeIntent() == HandshakeIntent.TRANSFER
+              && !handoffTrusted(loginContext.onlineMode())
               && antiBot.checksToken(
                   recognized,
                   loginContext.onlineMode(),
@@ -1128,6 +1136,7 @@ final class LoginSessionHandler implements SessionHandler {
   private void completeLogin(GameProfile authenticated) {
     // Logged in: the login gives its place back, and no longer times out.
     endOfLogin();
+    this.authenticatedProfile = authenticated;
     WarpEventBus events = loginContext.events();
     if (!events.hasHandlers(GameProfileRequestEventImpl.class)) {
       registerPlayer(authenticated);
@@ -1162,10 +1171,13 @@ final class LoginSessionHandler implements SessionHandler {
             loginContext,
             cookies);
     joining.setOnlineMode(onlineMode);
+    GameProfile original = this.authenticatedProfile;
+    if (original != null) {
+      joining.authenticatedAs(original);
+    }
     HandoffTicket ticket = this.handoff;
-    String handedOffFrom = ticket != null ? ticket.server() : null;
-    if (handedOffFrom != null) {
-      joining.handedOffFrom(handedOffFrom);
+    if (ticket != null) {
+      joining.handedOffFrom(ticket.server());
     }
     boolean kickExisting = loginContext.duplicateLoginPolicy().kicksExisting(onlineMode);
     if (!(loginContext.playerRegistry().register(joining, kickExisting)
@@ -1413,12 +1425,17 @@ final class LoginSessionHandler implements SessionHandler {
         new TransferHandoff.Arrival(
             packet.name(),
             packet.playerUuid(),
+            clientVersion().protocol(),
+            connection.remoteAddress() instanceof InetSocketAddress remote
+                ? remote.getAddress()
+                : null,
             connection.virtualHost(),
             connection.virtualPort(),
             local instanceof InetSocketAddress address ? address : null);
     switch (loginContext.handoff().open(payload.get(), arrival)) {
       case TransferHandoff.Opening.Accepted(HandoffTicket ticket) -> {
         this.handoff = ticket;
+        inbound.handedOff();
         metrics.transfer(ProxyMetrics.TransferDirection.IN, ProxyMetrics.HandoffUse.USED);
         logger.debug(
             "{} from {} handed off by {}, from server {}",

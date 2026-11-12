@@ -123,6 +123,11 @@ public final class WarpPlayer implements Player {
   }
 
   @Override
+  public boolean isHandedOff() {
+    return player.isHandedOff();
+  }
+
+  @Override
   public Optional<ServerConnection> currentServer() {
     BackendServer server = player.currentServer();
     return server == null
