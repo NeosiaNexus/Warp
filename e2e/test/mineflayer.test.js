@@ -3,11 +3,13 @@
 // readings are checked by parsing packets with the harness's strict parser: a packet must be read
 // to its last byte.
 import assert from 'node:assert/strict';
+import { generateKeyPairSync } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import { describe, it } from 'node:test';
 
-import { BossBars, TabList, answerPacksByUuid, connect, correctProtocolData, endTicks, listedUuids, plainText } from '../src/clients/mineflayer.js';
+import { BossBars, TabList, answerPacksByUuid, connect, correctProtocolData, endTicks, listedUuids, plainText, renewChatSessions } from '../src/clients/mineflayer.js';
 
 const require = createRequire(import.meta.url);
 const { createDeserializer, createSerializer } = require('minecraft-protocol');
@@ -296,5 +298,69 @@ describe('tab list model', () => {
     tabList.apply('login', {});
 
     assert.deepEqual(tabList.names(), []);
+  });
+});
+
+describe('chat sessions', () => {
+  const profileKeys = {
+    public: generateKeyPairSync('rsa', { modulusLength: 1024 }).publicKey,
+    expiresOn: new Date(1_800_000_000_000),
+    signatureV2: Buffer.from('signed by the services host'),
+  };
+
+  /** A client as minecraft-protocol leaves it after the first Join Game: one session open, or none. */
+  function joinedClient(session) {
+    const client = new EventEmitter();
+    client.sent = [];
+    client.write = (name, params) => client.sent.push([name, params]);
+    client.profileKeys = profileKeys;
+    client._session = session;
+    client._lastChatSignature = Buffer.from('last');
+    client._lastSeenMessages = new (class Seen extends Array {})();
+    client._signatureCache = new (class Cache extends Array {})();
+    renewChatSessions(client);
+    client.emit('login', {});
+    return client;
+  }
+
+  it('leaves the first Join Game to minecraft-protocol, which opens the first session', () => {
+    const first = { index: 3, uuid: 'first' };
+
+    const client = joinedClient(first);
+
+    assert.deepEqual(client.sent, []);
+    assert.equal(client._session, first);
+  });
+
+  it('opens a new session at every later Join Game, as the vanilla client does', () => {
+    const client = joinedClient({ index: 3, uuid: 'first' });
+    client._lastSeenMessages.push('seen on the last server');
+    client._signatureCache.push('cached on the last server');
+    const seen = client._lastSeenMessages.constructor;
+
+    client.emit('login', {});
+    const second = client._session.uuid;
+    client.emit('login', {});
+
+    assert.deepEqual(client.sent.map(([name]) => name), ['chat_session_update', 'chat_session_update']);
+    assert.deepEqual(client.sent.map(([, params]) => params.sessionUUID), [second, client._session.uuid]);
+    assert.notEqual(second, 'first');
+    assert.notEqual(client._session.uuid, second);
+    assert.equal(client._session.index, 0, 'the message index starts over');
+    assert.equal(client._lastChatSignature, null);
+    assert.equal(client._lastSeenMessages.length, 0, 'nothing seen on the new server yet');
+    assert.ok(client._lastSeenMessages instanceof seen);
+    assert.equal(client._signatureCache.length, 0);
+    const serializer = createSerializer({ state: 'play', isServer: false, version: '1.20.4' });
+    assert.ok(serializer.createPacketBuffer({ name: 'chat_session_update', params: client.sent[1][1] }).length > 16, 'a Player Session the protocol writes');
+  });
+
+  it('opens none for a bot without a session: no encryption, or another profile', () => {
+    const client = joinedClient(undefined);
+
+    client.emit('login', {});
+
+    assert.deepEqual(client.sent, []);
+    assert.equal(client._session, undefined);
   });
 });
