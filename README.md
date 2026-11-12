@@ -295,7 +295,13 @@ drain { transfer-to = ${?WARP_PUBLIC_ADDRESS} }   # alone: the default when unse
 
 Secrets never go in `warp.conf`: the forwarding secret comes from `forwarding.secret-file` or
 `WARP_FORWARDING_SECRET`, the management token from `management.token-file` or
-`WARP_MANAGEMENT_TOKEN`.
+`WARP_MANAGEMENT_TOKEN`, the transfer handoff key from `transfers.handoff.secret-file` or
+`WARP_TRANSFER_SECRET`.
+
+Between Warp proxies that share that key, `transfers.handoff` (off by default) hands a player's
+session over when a draining proxy transfers it: the next proxy logs the player in without asking
+Mojang again and puts it back on the server it was on. The configuration and the security model
+are in [docs/transfers.md](docs/transfers.md).
 
 With `logging.format = json` (or `WARP_LOG_FORMAT=json`), standard output carries one JSON object
 per line, from the very first line: `timestamp` (UTC), `level`, `logger`, `thread`, `message`,
