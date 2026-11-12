@@ -159,6 +159,23 @@ class HandoffConfigTest {
           refused.getMessage());
     }
 
+    @Test
+    @DisplayName("should read peers without a port, and IPv6 peers in brackets")
+    void peerForms() throws ConfigurationException, IOException {
+      HandoffConfig handoff =
+          load(
+              "transfers.handoff.peers = [\"eu.example.com\", \" us.example.com:25570 \","
+                  + " \"[2001:db8::1]:25580\", \"[::1]\"]\n");
+
+      assertEquals(
+          List.of(
+              new DrainConfig.Target("eu.example.com", 25565),
+              new DrainConfig.Target("us.example.com", 25570),
+              new DrainConfig.Target("2001:db8::1", 25580),
+              new DrainConfig.Target("::1", 25565)),
+          handoff.peers());
+    }
+
     @ParameterizedTest
     @ValueSource(
         strings = {
@@ -166,6 +183,12 @@ class HandoffConfigTest {
           "peers = [\"\"]",
           "peers = [\"host:0\"]",
           "peers = [\"::1\"]",
+          "peers = [\"host:65536\"]",
+          "peers = [\"host:-1\"]",
+          "peers = [\"host:\"]",
+          "peers = [\":25565\"]",
+          "peers = [\"[::1\"]",
+          "peers = [\"[::1]25565\"]",
           "peers = [\"ok.example.com\", \"host:port\"]"
         })
     @DisplayName("should refuse peers that are not a list of addresses, naming the setting")

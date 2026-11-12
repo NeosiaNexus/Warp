@@ -65,6 +65,7 @@ import dev.warp.proxy.antibot.Probe;
 import dev.warp.proxy.antibot.VerificationTokens;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.config.AntiBotConfig;
+import dev.warp.proxy.config.DrainConfig;
 import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
@@ -773,7 +774,7 @@ class VerificationLoginTest {
               "a-shared-secret-of-the-network".getBytes(StandardCharsets.UTF_8),
               Duration.ofSeconds(15),
               true,
-              List.of(HOST + ":" + PORT),
+              List.of(new DrainConfig.Target(HOST, PORT)),
               "warp-1",
               millis::get);
       handoff = shared;

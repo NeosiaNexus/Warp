@@ -54,6 +54,7 @@ import dev.warp.protocol.packet.login.LoginDisconnect;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.play.Transfer;
 import dev.warp.proxy.auth.MojangSessionService;
+import dev.warp.proxy.config.DrainConfig;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.server.ServerRegistry;
@@ -64,9 +65,7 @@ import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
-import java.security.KeyFactory;
-import java.security.PublicKey;
-import java.security.spec.X509EncodedKeySpec;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -104,6 +103,7 @@ class HandoffLoginTest {
   private static final ProtocolVersion MODERN = ProtocolVersion.MINECRAFT_1_21_4;
   private static final String HOST = "play.warp.dev";
   private static final int PORT = 25565;
+  private static final SecureRandom RANDOM = new SecureRandom();
   private static final String CLIENT = "198.51.100.7";
   private static final byte[] SECRET =
       "a-shared-secret-of-the-network".getBytes(StandardCharsets.UTF_8);
@@ -141,7 +141,7 @@ class HandoffLoginTest {
         secret,
         Duration.ofSeconds(15),
         bindAddress,
-        List.of(HOST + ":" + PORT),
+        List.of(new DrainConfig.Target(HOST, PORT)),
         nodeId,
         millis::get);
   }
@@ -896,14 +896,13 @@ class HandoffLoginTest {
     /** Answers the encryption request as a vanilla client does, and encrypts from then on. */
     void encrypt(EncryptionRequest request) throws GeneralSecurityException {
       byte[] secret = new byte[16];
-      new java.security.SecureRandom().nextBytes(secret);
-      PublicKey proxyKey =
-          KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(request.publicKey()));
+      RANDOM.nextBytes(secret);
       send(
           ProtocolState.LOGIN,
           new EncryptionResponse(
-              rsa(proxyKey, secret),
-              new EncryptionResponse.EncryptedToken(rsa(proxyKey, request.verifyToken()))));
+              ConnectionLimitsTest.rsaEncrypt(request, secret),
+              new EncryptionResponse.EncryptedToken(
+                  ConnectionLimitsTest.rsaEncrypt(request, request.verifyToken()))));
       SecretKeySpec key = new SecretKeySpec(secret, "AES");
       Cipher out = Cipher.getInstance("AES/CFB8/NoPadding");
       out.init(Cipher.ENCRYPT_MODE, key, new IvParameterSpec(secret));
@@ -911,12 +910,6 @@ class HandoffLoginTest {
       in.init(Cipher.DECRYPT_MODE, key, new IvParameterSpec(secret));
       this.encryption = out;
       this.decryption = in;
-    }
-
-    private static byte[] rsa(PublicKey key, byte[] data) throws GeneralSecurityException {
-      Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
-      cipher.init(Cipher.ENCRYPT_MODE, key);
-      return cipher.doFinal(data);
     }
 
     /** Acknowledges Login Success: the client reads configuration packets from then on. */

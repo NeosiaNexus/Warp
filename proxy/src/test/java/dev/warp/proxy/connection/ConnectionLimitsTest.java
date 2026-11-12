@@ -689,8 +689,8 @@ class ConnectionLimitsTest {
     return frame(body);
   }
 
-  private static byte[] rsaEncrypt(EncryptionRequest request, byte[] data)
-      throws GeneralSecurityException {
+  /** Encrypts as a vanilla client does: PKCS#1 v1.5, which the protocol mandates. Shared. */
+  static byte[] rsaEncrypt(EncryptionRequest request, byte[] data) throws GeneralSecurityException {
     PublicKey proxyKey =
         KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(request.publicKey()));
     Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");

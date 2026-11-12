@@ -202,7 +202,7 @@ public final class TransferHandoff {
    * @param secret the shared secret
    * @param maxAge how long tickets stay valid
    * @param bindAddress whether a ticket is only valid from the address it was written for
-   * @param peers the peers, as {@code host:port}
+   * @param peers the peers
    * @param nodeId this proxy's name in the tickets
    * @param millisClock the wall clock
    * @return the handoff
@@ -211,13 +211,12 @@ public final class TransferHandoff {
       byte[] secret,
       Duration maxAge,
       boolean bindAddress,
-      List<String> peers,
+      List<DrainConfig.Target> peers,
       String nodeId,
       LongSupplier millisClock) {
     Set<String> keys = new HashSet<>();
-    for (String peer : peers) {
-      int colon = peer.lastIndexOf(':');
-      keys.add(peerKey(peer.substring(0, colon), Integer.parseInt(peer.substring(colon + 1))));
+    for (DrainConfig.Target peer : peers) {
+      keys.add(peerKey(peer.host(), peer.port()));
     }
     return new TransferHandoff(
         HandoffSeal.of(secret), maxAge, bindAddress, keys, nodeId, millisClock, Long.MIN_VALUE);
@@ -272,7 +271,13 @@ public final class TransferHandoff {
       @Nullable InetAddress address,
       @Nullable String server,
       boolean authenticated,
-      boolean trusted) {}
+      boolean trusted) {
+
+    // An unmodifiable copy: the ticket is sealed from what the subject was when it was built.
+    public Subject {
+      properties = List.copyOf(properties);
+    }
+  }
 
   /**
    * The cookies to store before a transfer.

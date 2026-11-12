@@ -74,7 +74,12 @@ class TransferHandoffTest {
 
   private TransferHandoff handoff(boolean bindAddress, String nodeId) {
     return TransferHandoff.of(
-        SECRET, MAX_AGE, bindAddress, List.of(HOST + ":" + PORT), nodeId, millis::get);
+        SECRET,
+        MAX_AGE,
+        bindAddress,
+        List.of(new DrainConfig.Target(HOST, PORT)),
+        nodeId,
+        millis::get);
   }
 
   private static InetAddress address(String literal) {
@@ -190,7 +195,8 @@ class TransferHandoffTest {
     @DisplayName("should not take a host and port that only concatenate like a peer's")
     void noConcatenation() {
       TransferHandoff handoff =
-          TransferHandoff.of(SECRET, MAX_AGE, true, List.of("host:12"), "n", millis::get);
+          TransferHandoff.of(
+              SECRET, MAX_AGE, true, List.of(new DrainConfig.Target("host", 12)), "n", millis::get);
 
       assertTrue(handoff.isPeer("host", 12));
       assertFalse(handoff.isPeer("host1", 2));
@@ -439,6 +445,18 @@ class TransferHandoffTest {
     }
 
     @Test
+    @DisplayName("should copy the subject's properties")
+    void copiesProperties() {
+      List<LoginSuccess.Property> properties = new ArrayList<>(TEXTURES);
+
+      Subject subject = new Subject(STEVE, "Steve", properties, PROTOCOL, null, null, true, true);
+      properties.clear();
+
+      assertEquals(TEXTURES, subject.properties());
+      assertThrows(UnsupportedOperationException.class, () -> subject.properties().clear());
+    }
+
+    @Test
     @DisplayName("should fit Mojang's signed textures in a cookie")
     void signedTextures() {
       List<LoginSuccess.Property> textures =
@@ -529,7 +547,7 @@ class TransferHandoffTest {
               "the-secret-of-another-network".getBytes(StandardCharsets.UTF_8),
               MAX_AGE,
               true,
-              List.of(HOST + ":" + PORT),
+              List.of(new DrainConfig.Target(HOST, PORT)),
               "n",
               millis::get);
       Issued forged = stranger.issue(steve(true), HOST, PORT);
@@ -624,7 +642,13 @@ class TransferHandoffTest {
     @DisplayName("should take a transfer to an IP address by the address the client reached")
     void literalTarget() {
       TransferHandoff toAddress =
-          TransferHandoff.of(SECRET, MAX_AGE, true, List.of("192.0.2.1:25565"), "n", millis::get);
+          TransferHandoff.of(
+              SECRET,
+              MAX_AGE,
+              true,
+              List.of(new DrainConfig.Target("192.0.2.1", 25565)),
+              "n",
+              millis::get);
       Issued first = toAddress.issue(steve(true), "192.0.2.1", 25565);
       Issued second = toAddress.issue(steve(true), "192.0.2.1", 25565);
       Issued third = toAddress.issue(steve(true), "192.0.2.2", 25565);
