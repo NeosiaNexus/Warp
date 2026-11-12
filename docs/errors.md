@@ -116,7 +116,7 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-BACK-008](#w-back-008) | warning | A server switch timed out |
 | [W-BACK-009](#w-back-009) | warning | A held packet was dropped |
 | [W-BACK-010](#w-back-010) | warning | A server group has no server available |
-| [W-BACK-011](#w-back-011) | warning | A server is skipped by the balancers |
+| [W-BACK-011](#w-back-011) | warning | A server is skipped when choosing a server for a player |
 | [W-BACK-012](#w-back-012) | warning | A backend's login query was too large for a client |
 | [W-BACK-013](#w-back-013) | warning | A backend left too many login queries unanswered |
 | [W-AUTH-001](#w-auth-001) | warning | Players authenticate against a custom server |
@@ -1036,9 +1036,9 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 
 ### W-BACK-011
 
-**A server is skipped by the balancers** (warning)
+**A server is skipped when choosing a server for a player** (warning)
 
-**Cause.** The server did not answer its last ping within timeouts.ping, a player could not connect to it, or it refused the logins of three players in a row (a single refusal is taken as aimed at that player: a ban, a whitelist). Groups and fallbacks skip it for a cool-down, then let one player through to find out whether it is back; a successful ping brings it back at once.
+**Cause.** The server did not answer its last ping within timeouts.ping, a player could not connect to it, or it refused the logins of three players in a row (a single refusal is taken as aimed at that player: a ban, a whitelist). Every way of choosing a server (the default server, the fallbacks, the routes and the groups' balancers) skips it for a cool-down, then lets one player through to find out whether it is back; a successful ping brings it back at once. Logged once per outage, not at every failed ping.
 
 **Fix.** Check that the server runs, is reachable from Warp and accepts logins from it (forwarding secret, whitelist). Raise timeouts.ping if it answers pings slowly under load. Nothing to do if it was restarting.
 

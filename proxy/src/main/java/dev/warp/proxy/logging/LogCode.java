@@ -971,12 +971,13 @@ public enum LogCode {
   SERVER_BREAKER_OPENED(
       "W-BACK-011",
       false,
-      "A server is skipped by the balancers",
+      "A server is skipped when choosing a server for a player",
       "The server did not answer its last ping within timeouts.ping, a player could not connect to"
           + " it, or it refused the logins of three players in a row (a single refusal is taken as"
-          + " aimed at that player: a ban, a whitelist). Groups and fallbacks skip it for a"
-          + " cool-down, then let one player through to find out whether it is back; a successful"
-          + " ping brings it back at once.",
+          + " aimed at that player: a ban, a whitelist). Every way of choosing a server (the"
+          + " default server, the fallbacks, the routes and the groups' balancers) skips it for a"
+          + " cool-down, then lets one player through to find out whether it is back; a successful"
+          + " ping brings it back at once. Logged once per outage, not at every failed ping.",
       "Check that the server runs, is reachable from Warp and accepts logins from it (forwarding"
           + " secret, whitelist). Raise timeouts.ping if it answers pings slowly under load. Nothing"
           + " to do if it was restarting."),

@@ -39,7 +39,7 @@ import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.LoggerContext;
 import org.apache.logging.log4j.core.appender.ConsoleAppender;
 import org.apache.logging.log4j.core.appender.RollingFileAppender;
-import org.apache.logging.log4j.core.config.Configurator;
+import org.apache.logging.log4j.core.config.ConfigurationFactory;
 import org.apache.logging.log4j.core.impl.Log4jLogEvent;
 import org.apache.logging.log4j.layout.template.json.JsonTemplateLayout;
 import org.apache.logging.log4j.message.Message;
@@ -60,7 +60,11 @@ class LoggingConfigurationTest {
         .build();
   }
 
-  /** Loads the shipped configuration with a console format, runs {@code check}, then stops it. */
+  /**
+   * Loads the shipped configuration with a console format into a context of its own, runs {@code
+   * check}, then stops it. Never the JVM's shared context: stopping that one would leave every
+   * logger created before this test attached to a dead context, silent for the tests that follow.
+   */
   private static void withConfiguration(LogFormat format, Consumer<LoggerContext> check)
       throws URISyntaxException {
     URL resource = LoggingConfigurationTest.class.getClassLoader().getResource("log4j2.xml");
@@ -68,14 +72,13 @@ class LoggingConfigurationTest {
     URI uri = resource.toURI();
     String previous = System.getProperty(LogFormat.SYSTEM_PROPERTY);
     System.setProperty(LogFormat.SYSTEM_PROPERTY, format.configName());
-    LoggerContext context = null;
+    String name = "test-" + format.configName();
+    LoggerContext context = new LoggerContext(name);
     try {
-      context = Configurator.initialize("test-" + format.configName(), null, uri);
+      context.start(ConfigurationFactory.getInstance().getConfiguration(context, name, uri));
       check.accept(context);
     } finally {
-      if (context != null) {
-        Configurator.shutdown(context);
-      }
+      context.stop();
       if (previous == null) {
         System.clearProperty(LogFormat.SYSTEM_PROPERTY);
       } else {
