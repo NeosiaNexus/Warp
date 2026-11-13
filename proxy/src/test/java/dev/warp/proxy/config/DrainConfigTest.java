@@ -63,6 +63,18 @@ class DrainConfigTest {
   }
 
   @Test
+  @DisplayName("should take transfer-to = fleet as the least loaded proxy of the fleet")
+  void fleetTarget() throws Exception {
+    DrainConfig drain = load("online-mode = false\ndrain { transfer-to = \"fleet\" }\n");
+
+    DrainConfig.Target target = drain.transferTo();
+    assertEquals(DrainConfig.Target.FLEET, target);
+    assertTrue(target != null && target.isFleet());
+    assertEquals("fleet", String.valueOf(target));
+    assertFalse(new DrainConfig.Target("fleet", 25565).isFleet(), "a host named fleet is one");
+  }
+
+  @Test
   @DisplayName("should write the drain section, with its defaults explained, in a new file")
   void defaultFile() throws Exception {
     WarpConfig config = WarpConfig.load(directory);

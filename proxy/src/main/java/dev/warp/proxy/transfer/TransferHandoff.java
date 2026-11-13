@@ -179,7 +179,8 @@ public final class TransferHandoff {
           HandoffConfig.ENV_VARIABLE);
     }
     Set<String> peers = new HashSet<>();
-    if (drainTarget != null) {
+    if (drainTarget != null && !drainTarget.isFleet()) {
+      // drain.transfer-to = fleet names no address: the proxies it picks are peers when listed.
       peers.add(peerKey(drainTarget.host(), drainTarget.port()));
     }
     for (DrainConfig.Target peer : config.peers()) {

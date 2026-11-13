@@ -20,12 +20,14 @@ import dev.warp.protocol.ProtocolVersion;
 import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
+import dev.warp.proxy.bedrock.FloodgateService;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.config.DuplicateLoginPolicy;
 import dev.warp.proxy.config.ForwardingMode;
 import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.fleet.FleetService;
 import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.messaging.ChannelRegistry;
@@ -82,6 +84,9 @@ import io.netty.channel.Channel;
  * @param pipelines the pipeline initializers plugins registered
  * @param messages what the proxy tells players, rendered in each player's language
  * @param metrics the proxy's metrics, which the handlers update
+ * @param fleet the fleet, which settles who owns an account across proxies
+ * @param floodgate reads and verifies the Floodgate data of Bedrock players sent through Geyser,
+ *     and re-emits it to backends running Floodgate
  * @param handoff the seamless handoff between Warp proxies: the tickets written before transfers
  *     and read from transferred logins
  */
@@ -115,6 +120,8 @@ public record ServerLoginContext(
     PipelineRegistry pipelines,
     PlayerMessages messages,
     ProxyMetrics metrics,
+    FleetService fleet,
+    FloodgateService floodgate,
     TransferHandoff handoff) {
 
   /** Validates configuration invariants. */

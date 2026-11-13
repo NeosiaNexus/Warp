@@ -23,6 +23,8 @@ import dev.warp.api.antibot.AttackLevel;
 import dev.warp.api.antibot.Signal;
 import dev.warp.api.event.proxy.ProxyReadyEvent;
 import dev.warp.api.event.proxy.ProxyShutdownEvent;
+import dev.warp.api.fleet.Fleet;
+import dev.warp.api.fleet.spi.FleetStore;
 import dev.warp.api.lifecycle.DrainOutcome;
 import dev.warp.api.lifecycle.DrainPhase;
 import dev.warp.api.lifecycle.DrainStatus;
@@ -34,17 +36,20 @@ import dev.warp.api.plugin.PluginManager;
 import dev.warp.api.plugin.PluginState;
 import dev.warp.api.server.Balancer;
 import dev.warp.api.server.ServerGroup;
+import dev.warp.api.world.VirtualWorld;
 import dev.warp.jni.NativeStatus;
 import dev.warp.jni.Natives;
 import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
+import dev.warp.proxy.bedrock.FloodgateService;
 import dev.warp.proxy.command.ProxyCommands;
 import dev.warp.proxy.command.ProxyControl;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.compression.Compression;
 import dev.warp.proxy.config.AntiBotConfig;
 import dev.warp.proxy.config.DrainConfig;
+import dev.warp.proxy.config.FleetConfig;
 import dev.warp.proxy.config.GroupConfig;
 import dev.warp.proxy.config.HandoffConfig;
 import dev.warp.proxy.config.WarpConfig;
@@ -64,6 +69,9 @@ import dev.warp.proxy.console.WarpConsole;
 import dev.warp.proxy.drain.ExecutorDrainScheduler;
 import dev.warp.proxy.drain.ProxyDrain;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.fleet.FleetService;
+import dev.warp.proxy.fleet.SingleNodeStore;
+import dev.warp.proxy.fleet.valkey.ValkeyFleetStore;
 import dev.warp.proxy.limit.Blocklist;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.logging.LogCode;
@@ -90,6 +98,9 @@ import dev.warp.proxy.permission.PermissionRegistry;
 import dev.warp.proxy.pipeline.PipelineRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.plugin.WarpPluginManager;
+import dev.warp.proxy.query.QueryHandler;
+import dev.warp.proxy.query.QueryServer;
+import dev.warp.proxy.query.QueryStatus;
 import dev.warp.proxy.server.Balancers;
 import dev.warp.proxy.server.HostRoutes;
 import dev.warp.proxy.server.ServerGroupRegistry;
@@ -130,8 +141,10 @@ import io.netty.channel.IoHandlerFactory;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.WriteBufferWaterMark;
 import io.netty.channel.nio.NioIoHandler;
+import io.netty.channel.socket.DatagramChannel;
 import io.netty.channel.socket.ServerSocketChannel;
 import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.util.NettyRuntime;
@@ -194,6 +207,14 @@ public final class WarpServer implements Warp {
 
   /** How often the backend servers are pinged while the console's status line shows them. */
   private static final long STATUS_PING_SECONDS = 10;
+
+  /**
+   * How long the startup summary waits for the backends' first pings once the port is bound. The
+   * pings start before the plugins load and run on with the configured deadline either way: a
+   * server that has not answered by then shows as still pinging, and its answer feeds its health.
+   * Readiness must not wait for the ping deadline of an unreachable server.
+   */
+  static final Duration STARTUP_PING_BUDGET = Duration.ofSeconds(1);
 
   /** How long shutdown waits for the handlers of {@link ProxyShutdownEvent}. */
   private static final long SHUTDOWN_EVENT_TIMEOUT_SECONDS = 30;
@@ -297,6 +318,9 @@ public final class WarpServer implements Warp {
   /** Empties the proxy before it stops. */
   private final ProxyDrain drain;
 
+  /** The fleet: this proxy alone without a store, the network with one. */
+  private final FleetService fleet;
+
   /** Ends the process once a drain stopped the proxy: {@link System#exit} outside tests. */
   private final IntConsumer exit;
 
@@ -308,6 +332,9 @@ public final class WarpServer implements Warp {
 
   /** The management server, when enabled. */
   private @Nullable ManagementServer management;
+
+  /** The GS4 query listener, when enabled. */
+  private @Nullable QueryServer query;
 
   /** The remote console on the management server, when enabled. */
   private final @Nullable RemoteConsole remoteConsole;
@@ -390,6 +417,18 @@ public final class WarpServer implements Warp {
       registerGroup(serverRegistry.groups(), group);
     }
     this.serverChecks = new ServerChecks(serverRegistry.health());
+    this.fleet =
+        new FleetService(
+            config.fleet(),
+            createStore(config.fleet()),
+            playerRegistry,
+            serverRegistry,
+            events,
+            metrics,
+            config.duplicateLoginPolicy(),
+            config.onlineMode(),
+            WarpBuildInfo.VERSION,
+            this::isDraining);
     this.channels =
         new ChannelRegistry(
             new BungeeCordChannel(config.bungeeCord(), playerRegistry, serverRegistry));
@@ -420,6 +459,7 @@ public final class WarpServer implements Warp {
         new ProxyDrain(
             config.drain(), playerRegistry, events, drainScheduler, this::stopAfterDrain);
     drain.onTransfer(proxyMetrics::drainTransfer);
+    drain.transferTargets(fleet::transferTarget);
     events.observe(
         new dev.warp.proxy.event.HandlerObserver() {
           @Override
@@ -434,7 +474,12 @@ public final class WarpServer implements Warp {
         });
     metrics.collector(
         "warp_proxy",
-        new ProxyCollector(this::playerCount, serverRegistry, drain::status, () -> workerGroup));
+        new ProxyCollector(
+            this::playerCount,
+            fleet::playerCount,
+            serverRegistry,
+            drain::status,
+            () -> workerGroup));
     metrics.collector(
         "warp_antibot",
         new AntiBotCollector(
@@ -522,6 +567,9 @@ public final class WarpServer implements Warp {
     AntiBotService bots = startAntiBot(limits);
     ServerLoginContext loginContext = createLoginContext(transport, limits, bots);
     mark = lap("anti-bot", mark);
+    // Joins the fleet (or stays alone): bounded, a store down leaves the fleet degraded.
+    fleet.start().join();
+    mark = lap("fleet", mark);
     this.bossGroup = new MultiThreadIoEventLoopGroup(1, transport.ioFactory());
     this.workerGroup = new MultiThreadIoEventLoopGroup(transport.ioFactory());
     var _ = LoopIndex.assignAll(workerGroup);
@@ -544,11 +592,11 @@ public final class WarpServer implements Warp {
     }
 
     serverRegistry.setPinger(new BackendPinger(workerGroup, transport.clientChannelClass()));
-    // Answered while plugins load; the summary waits for what is left once the port is bound. The
-    // pings feed the servers' health, so they get the configured deadline, not a shorter one.
+    // Answered while plugins load; the summary waits at most STARTUP_PING_BUDGET for what is left
+    // once the port is bound. The pings feed the servers' health, so they get the configured
+    // deadline, not a shorter one: an unreachable server delays the summary, not the readiness.
     Duration pingTimeout = config.timeouts().ping();
-    CompletableFuture<List<Summaries.Server>> checks =
-        serverChecks.check(serverRegistry.servers(), pingTimeout);
+    ServerChecks.Pings checks = serverChecks.start(serverRegistry.servers(), pingTimeout);
 
     mark = lap("event loops", mark);
     // Probes get an answer (503) while plugins load, and the agent check from the start.
@@ -603,6 +651,8 @@ public final class WarpServer implements Warp {
       throw StartupException.cannotBind(config.bind(), "bind", e);
     }
 
+    startQuery(transport, loginContext);
+
     Runtime.getRuntime().addShutdownHook(new Thread(this::onJvmShutdown, "warp-shutdown"));
     if (config.drain().onSigterm()) {
       catchSigterm();
@@ -610,7 +660,7 @@ public final class WarpServer implements Warp {
 
     this.running = true;
     this.started = true;
-    List<Summaries.Server> servers = awaitChecks(checks, pingTimeout);
+    List<Summaries.Server> servers = awaitChecks(checks);
     var _ = lap("servers", mark);
     BLOCKS.info(Summaries.startup(startupFacts(transport, servers)));
     this.readyNanos = System.nanoTime();
@@ -720,12 +770,14 @@ public final class WarpServer implements Warp {
             .close()
             .awaitUninterruptibly(LISTENER_CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
       }
+      stopQuery();
       int disconnected = disconnectPlayers(reason);
       awaitShutdownHandlers();
       // Before the plugins: a disconnect is asynchronous, and a backend still decoding through a
       // plugin's handlers once its class loader closed fails with a NoClassDefFoundError.
       awaitConnectionsClosed();
       pluginManager.disableAll();
+      fleet.close(); // says goodbye, so that the other proxies drop this node at once
       logSinks.close();
       sinkAppender.uninstall();
       events.close();
@@ -882,6 +934,61 @@ public final class WarpServer implements Warp {
       throw e;
     }
     this.management = server;
+  }
+
+  /**
+   * Binds the GS4 query listener, if enabled, once the players' port is bound: a query answers for
+   * a proxy that listens. A bind failure stops the proxy like one of the players' port.
+   */
+  private void startQuery(TransportInfo transport, ServerLoginContext loginContext) {
+    if (!config.query().enabled()) {
+      return;
+    }
+    MultiThreadIoEventLoopGroup workers = workerGroup;
+    if (workers == null) {
+      return;
+    }
+    DrainConfig.Target publicAddress = config.drain().transferTo();
+    InetSocketAddress playersAddress =
+        publicAddress != null
+            ? InetSocketAddress.createUnresolved(publicAddress.host(), publicAddress.port())
+            : config.bind();
+    QueryStatus status =
+        new QueryStatus(
+            config.query(),
+            loginContext.serverList(),
+            events,
+            playerRegistry,
+            pluginManager::plugins,
+            config.query().bind(),
+            playersAddress,
+            System::nanoTime);
+    QueryServer server =
+        new QueryServer(
+            config.query(),
+            workers,
+            transport.datagramChannelClass(),
+            new QueryHandler(config.query(), status, metrics, System::nanoTime));
+    try {
+      server.start();
+    } catch (RuntimeException e) {
+      Channel listener = serverChannel;
+      if (listener != null) {
+        listener.close().awaitUninterruptibly(LISTENER_CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+      }
+      shutdownEventLoops();
+      stopManagement();
+      throw e;
+    }
+    this.query = server;
+  }
+
+  private void stopQuery() {
+    QueryServer server = query;
+    if (server != null) {
+      server.stop();
+      query = null;
+    }
   }
 
   private void stopManagement() {
@@ -1080,6 +1187,20 @@ public final class WarpServer implements Warp {
   }
 
   /**
+   * {@inheritDoc}
+   *
+   * @throws IllegalStateException before {@link #start()}, which loads the anti-bot and its world
+   */
+  @Override
+  public VirtualWorld world() {
+    AntiBotService bots = antiBot;
+    if (bots == null) {
+      throw new IllegalStateException("The virtual world is loaded when the proxy starts");
+    }
+    return bots.world();
+  }
+
+  /**
    * Loads the anti-bot: its secret and its store of trusted identities.
    *
    * @throws IllegalStateException if they cannot be read or written
@@ -1106,6 +1227,19 @@ public final class WarpServer implements Warp {
               + e.getMessage(),
           e);
     }
+  }
+
+  @Override
+  public Fleet fleet() {
+    return fleet;
+  }
+
+  /** The store {@code fleet.store.type} names. */
+  private FleetStore createStore(FleetConfig config) {
+    return switch (config.store().type()) {
+      case NONE -> new SingleNodeStore();
+      case VALKEY -> new ValkeyFleetStore(config, this::workerGroup, this::clientChannelClass);
+    };
   }
 
   @Override
@@ -1286,6 +1420,10 @@ public final class WarpServer implements Warp {
           MojangSessionService.SESSION_SERVER_PROPERTY);
     }
 
+    ServerList serverList = new ServerList(config.status(), playerRegistry);
+    if (config.fleet().networkCount()) {
+      serverList.networkCount(fleet::playerCount);
+    }
     return new ServerLoginContext(
         rsaKeyPair,
         config.onlineMode(),
@@ -1297,7 +1435,7 @@ public final class WarpServer implements Warp {
         new PlaySession(),
         serverRegistry,
         playerRegistry,
-        new ServerList(config.status(), playerRegistry),
+        serverList,
         config.duplicateLoginPolicy(),
         events,
         channels,
@@ -1315,6 +1453,8 @@ public final class WarpServer implements Warp {
         pipelines,
         config.messages(),
         proxyMetrics,
+        fleet,
+        new FloodgateService(config.bedrock()),
         loadHandoff());
   }
 
@@ -1415,7 +1555,10 @@ public final class WarpServer implements Warp {
         Class<? extends SocketChannel> clientClass =
             (Class<? extends SocketChannel>)
                 Class.forName("io.netty.channel.epoll.EpollSocketChannel");
-        return new TransportInfo("epoll", factory, serverClass, clientClass, true);
+        Class<? extends DatagramChannel> datagramClass =
+            (Class<? extends DatagramChannel>)
+                Class.forName("io.netty.channel.epoll.EpollDatagramChannel");
+        return new TransportInfo("epoll", factory, serverClass, clientClass, datagramClass, true);
       }
     } catch (ReflectiveOperationException | UnsatisfiedLinkError e) {
       logger.trace("Epoll not available", e);
@@ -1436,7 +1579,10 @@ public final class WarpServer implements Warp {
         Class<? extends SocketChannel> clientClass =
             (Class<? extends SocketChannel>)
                 Class.forName("io.netty.channel.kqueue.KQueueSocketChannel");
-        return new TransportInfo("kqueue", factory, serverClass, clientClass, false);
+        Class<? extends DatagramChannel> datagramClass =
+            (Class<? extends DatagramChannel>)
+                Class.forName("io.netty.channel.kqueue.KQueueDatagramChannel");
+        return new TransportInfo("kqueue", factory, serverClass, clientClass, datagramClass, false);
       }
     } catch (ReflectiveOperationException | UnsatisfiedLinkError e) {
       logger.trace("KQueue not available", e);
@@ -1448,6 +1594,7 @@ public final class WarpServer implements Warp {
         NioIoHandler.newFactory(),
         NioServerSocketChannel.class,
         NioSocketChannel.class,
+        NioDatagramChannel.class,
         false);
   }
 
@@ -1471,21 +1618,13 @@ public final class WarpServer implements Warp {
   }
 
   /** The results of the startup's pings, those not over in time as unreachable. */
-  private List<Summaries.Server> awaitChecks(
-      CompletableFuture<List<Summaries.Server>> checks, Duration timeout) {
+  private List<Summaries.Server> awaitChecks(ServerChecks.Pings checks) {
     try {
-      return checks.get(timeout.toMillis() + 500, TimeUnit.MILLISECONDS);
+      return checks.within(STARTUP_PING_BUDGET);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-    } catch (ExecutionException | TimeoutException e) {
-      logger.debug("The startup's pings of the backend servers did not finish", e);
+      return checks.pending();
     }
-    List<Summaries.Server> unknown = new ArrayList<>();
-    for (var server : serverRegistry.servers()) {
-      unknown.add(
-          new Summaries.Server(server.name(), server.info().address().toString(), -1, null));
-    }
-    return unknown;
   }
 
   private Summaries.Startup startupFacts(TransportInfo transport, List<Summaries.Server> servers) {
@@ -1544,7 +1683,7 @@ public final class WarpServer implements Warp {
     String draining =
         drainState.phase() == DrainPhase.NONE
             ? null
-            : "draining, " + drainState.players() + " left";
+            : "draining, " + drainState.players() + " still connected";
     var servers = serverRegistry.servers();
     return new StatusLine.Snapshot(
         playerRegistry.count(),
@@ -1582,5 +1721,6 @@ public final class WarpServer implements Warp {
       IoHandlerFactory ioFactory,
       Class<? extends ServerSocketChannel> serverChannelClass,
       Class<? extends SocketChannel> clientChannelClass,
+      Class<? extends DatagramChannel> datagramChannelClass,
       boolean tcpFastOpen) {}
 }

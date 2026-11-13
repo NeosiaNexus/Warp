@@ -1,0 +1,18 @@
+# A configuration kept outside values, an existing Secret, NodePort.
+config:
+  raw: |
+    config-version = 1
+    bind = "0.0.0.0:25577"
+    servers { lobby { address = "lobby:25565" } }
+    default-server = "lobby"
+secrets:
+  existingSecret: my-warp-secrets
+  antiBot:
+    shared: false
+service:
+  type: NodePort
+  nodePort: 32565
+podDisruptionBudget:
+  enabled: false
+serviceAccount:
+  create: false

@@ -17,14 +17,12 @@
 package dev.warp.proxy.transfer;
 
 import dev.warp.proxy.config.HandoffConfig;
+import dev.warp.proxy.config.SecretFiles;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -263,7 +261,7 @@ final class HandoffSeal {
             + HandoffConfig.ENV_VARIABLE);
   }
 
-  /** Writes a new key file, readable by its owner only, through a temporary file renamed. */
+  /** Writes a new key file, readable by its owner only; never over an existing one. */
   private static void write(Path file, byte[] secret) throws IOException {
     Path parent = file.toAbsolutePath().getParent();
     if (parent != null) {
@@ -276,24 +274,8 @@ final class HandoffSeal {
             + " on each), and keep it secret.\n"
             + Base64.getEncoder().encodeToString(secret)
             + "\n";
-    Path temporary = file.resolveSibling(file.getFileName() + ".tmp");
-    Files.deleteIfExists(temporary);
-    try {
-      // Created readable by its owner only: the secret is never on disk with wider permissions.
-      Files.createFile(
-          temporary,
-          PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
-    } catch (UnsupportedOperationException notPosix) {
-      Files.createFile(temporary); // the platform's defaults apply
-    }
-    Files.writeString(
-        temporary,
-        text,
-        StandardCharsets.US_ASCII,
-        StandardOpenOption.TRUNCATE_EXISTING,
-        StandardOpenOption.WRITE);
-    Files.move(
-        temporary, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+    // Created readable by its owner only: the secret is never on disk with wider permissions.
+    SecretFiles.create(file, text);
   }
 
   private static byte[] hmac(byte[] key, byte[] data) {

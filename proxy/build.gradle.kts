@@ -99,6 +99,18 @@ dependencies {
     "launcherCompileOnly"(libs.jspecify)
     testImplementation(launcher.output)
 
+    // The fleet store against a real Valkey, started by Testcontainers when Docker is available.
+    "integrationTestImplementation"(project(":api"))
+    "integrationTestImplementation"(platform(libs.netty.bom))
+    "integrationTestImplementation"(libs.bundles.netty)
+    "integrationTestImplementation"(libs.testcontainers.junit)
+    "integrationTestImplementation"(libs.bundles.testing)
+    constraints {
+        "integrationTestImplementation"(libs.commons.compress) {
+            because("Testcontainers 1.21 asks for 1.24.0: GHSA-4265-ccf5-phj5, GHSA-4g9r-vxhx-9pgx")
+        }
+    }
+
     // Native crypto
     implementation(libs.netty.tcnative.boringssl)
 }
@@ -142,4 +154,12 @@ tasks.shadowJar {
 
 tasks.named("build") {
     dependsOn(tasks.shadowJar)
+}
+
+tasks.named<Test>("integrationTest") {
+    // Testcontainers 1.21 negotiates Docker API 1.32, which Docker 29 refuses: ask for 1.44 (Docker
+    // 25 and later) unless the host says otherwise.
+    if (System.getenv("DOCKER_API_VERSION") == null) {
+        environment("DOCKER_API_VERSION", "1.44")
+    }
 }

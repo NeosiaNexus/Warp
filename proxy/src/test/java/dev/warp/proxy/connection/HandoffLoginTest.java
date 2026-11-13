@@ -33,6 +33,7 @@ import dev.warp.api.event.player.GameProfileRequestEvent;
 import dev.warp.api.event.player.LoginEvent;
 import dev.warp.api.event.player.PlayerChooseInitialServerEvent;
 import dev.warp.api.event.player.PreLoginEvent;
+import dev.warp.api.player.ClientPlatform;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
@@ -54,6 +55,7 @@ import dev.warp.protocol.packet.login.LoginDisconnect;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.play.Transfer;
 import dev.warp.proxy.auth.MojangSessionService;
+import dev.warp.proxy.bedrock.BedrockIdentity;
 import dev.warp.proxy.config.DrainConfig;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
@@ -679,6 +681,20 @@ class HandoffLoginTest {
     }
 
     @Test
+    @DisplayName("should store nothing for a Bedrock player, who logs in again through Floodgate")
+    void bedrockPlayer() {
+      SwitchHarness setup = playingOnLobby(false);
+      BedrockIdentity identity = mock(BedrockIdentity.class);
+      when(identity.platform()).thenReturn(mock(ClientPlatform.Bedrock.class));
+      setup.client.setBedrock(identity);
+
+      setup.player.api().transfer(HOST, PORT);
+      setup.runPendingTasks();
+
+      assertEquals(List.of(Transfer.class), SwitchHarness.types(setup.sentToClient()));
+    }
+
+    @Test
     @DisplayName("should write the profile the login authenticated, not what plugins made of it")
     void authenticatedProfile() {
       SwitchHarness setup = playingOnLobby(true);
@@ -824,7 +840,7 @@ class HandoffLoginTest {
     return client;
   }
 
-  private static ByteBuf handshake(ProtocolVersion version, HandshakeIntent intent) {
+  static ByteBuf handshake(ProtocolVersion version, HandshakeIntent intent) {
     ByteBuf body = Unpooled.buffer();
     VarInt.write(body, 0x00);
     VarInt.write(body, version.protocol());
@@ -834,7 +850,7 @@ class HandoffLoginTest {
     return body;
   }
 
-  private static ByteBuf loginStart(String name, UUID uuid) {
+  static ByteBuf loginStart(String name, UUID uuid) {
     ByteBuf body = Unpooled.buffer();
     VarInt.write(body, 0x00);
     McString.write(body, name);
@@ -851,7 +867,7 @@ class HandoffLoginTest {
   }
 
   /** A client of the proxy: frames what it sends, and encrypts both ways once told to. */
-  private static final class Client {
+  static final class Client {
 
     final EmbeddedChannel channel;
     private final ProtocolVersion version;

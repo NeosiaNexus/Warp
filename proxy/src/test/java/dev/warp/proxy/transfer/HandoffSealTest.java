@@ -251,16 +251,6 @@ class HandoffSealTest {
     }
 
     @Test
-    @DisplayName("should replace a temporary file left by an interrupted start")
-    void staleTemporary() throws Exception {
-      Path file = directory.resolve("transfer.secret");
-      Files.writeString(file.resolveSibling("transfer.secret.tmp"), "left over");
-
-      assertTrue(HandoffSeal.load(file, null).generated());
-      assertFalse(Files.exists(file.resolveSibling("transfer.secret.tmp")));
-    }
-
-    @Test
     @DisplayName("should share a copied key file: both proxies open each other's tickets")
     void copiedFile() throws Exception {
       Path file = directory.resolve("transfer.secret");

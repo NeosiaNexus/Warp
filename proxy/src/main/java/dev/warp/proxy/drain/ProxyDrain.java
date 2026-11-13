@@ -100,6 +100,15 @@ public final class ProxyDrain implements DrainHost<PlayerCandidate> {
   }
 
   /**
+   * Sets who picks the proxy players go to when {@code drain.transfer-to = fleet}.
+   *
+   * @param targets see {@link DrainController#transferTargets}
+   */
+  public void transferTargets(java.util.function.Supplier<DrainConfig.@Nullable Target> targets) {
+    controller.transferTargets(targets);
+  }
+
+  /**
    * Starts the drain, if it has not started yet.
    *
    * @param trigger what starts it

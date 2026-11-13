@@ -79,10 +79,12 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-BOT-010](#w-bot-010) | warning | The anti-bot journal was cut short |
 | [W-BOT-011](#w-bot-011) | warning | The anti-bot token key cannot be rotated |
 | [W-BOT-012](#w-bot-012) | warning | A verified player could not be transferred back |
+| [W-BOT-013](#w-bot-013) | warning | A player could not be put in the virtual world |
 | [W-LOG-001](#w-log-001) | warning | Log sinks receive nothing |
 | [W-MGMT-001](#w-mgmt-001) | warning | A management request was refused |
 | [W-MGMT-002](#w-mgmt-002) | warning | A renewed management certificate could not be read |
 | [W-MGMT-003](#w-mgmt-003) | warning | GET /metrics is open to other machines |
+| [W-QUERY-001](#w-query-001) | warning | A query reply lists fewer names than query.player-names |
 | [W-MET-001](#w-met-001) | warning | A metric reached a cardinality cap |
 | [W-MET-002](#w-met-002) | warning | A metrics collector failed |
 | [W-MET-003](#w-met-003) | warning | GET /metrics could not be answered |
@@ -114,7 +116,7 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-BACK-008](#w-back-008) | warning | A server switch timed out |
 | [W-BACK-009](#w-back-009) | warning | A held packet was dropped |
 | [W-BACK-010](#w-back-010) | warning | A server group has no server available |
-| [W-BACK-011](#w-back-011) | warning | A server is skipped by the balancers |
+| [W-BACK-011](#w-back-011) | warning | A server is skipped when choosing a server for a player |
 | [W-BACK-012](#w-back-012) | warning | A backend's login query was too large for a client |
 | [W-BACK-013](#w-back-013) | warning | A backend left too many login queries unanswered |
 | [W-AUTH-001](#w-auth-001) | warning | Players authenticate against a custom server |
@@ -123,6 +125,7 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-AUTH-004](#w-auth-004) | warning | The session server failed |
 | [W-AUTH-005](#w-auth-005) | warning | A login was refused |
 | [W-AUTH-006](#w-auth-006) | warning | A transfer handoff was not used |
+| [W-BEDROCK-001](#w-bedrock-001) | warning | Floodgate data was refused |
 | [W-NET-001](#w-net-001) | error | A connection failed |
 | [W-NET-002](#w-net-002) | warning | A trusted proxy's connection was refused |
 | [W-NET-003](#w-net-003) | warning | A connection from an untrusted address |
@@ -134,6 +137,13 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-NET-009](#w-net-009) | warning | Cookie requests went unanswered |
 | [W-NET-010](#w-net-010) | warning | A transfer failed |
 | [W-NET-011](#w-net-011) | warning | A player's command list could not be refreshed |
+| [W-FLEET-001](#w-fleet-001) | warning | The fleet store is unreachable |
+| [W-FLEET-002](#w-fleet-002) | error | Two proxies share a fleet node id |
+| [W-FLEET-003](#w-fleet-003) | warning | A login was not settled with the fleet in time |
+| [W-FLEET-004](#w-fleet-004) | warning | A fleet bus handler failed |
+| [W-FLEET-005](#w-fleet-005) | warning | A malformed fleet message was dropped |
+| [W-FLEET-006](#w-fleet-006) | warning | A proxy of the fleet stopped heartbeating |
+| [W-FLEET-007](#w-fleet-007) | warning | A player is online on two proxies |
 
 ## Configuration
 
@@ -715,6 +725,14 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 
 **Fix.** Set anti-bot.verification.transfer.host and port to the address players connect to.
 
+### W-BOT-013
+
+**A player could not be put in the virtual world** (warning)
+
+**Cause.** The proxy tried to hold a player in its virtual world (the anti-bot's world check, or a wait for a server that is down), but the world has no layout for the client's version or platform, or the client left meanwhile. The world check was skipped, or the player was disconnected as it would have been without the world.
+
+**Fix.** Report the client version named in the message if it is one Warp supports; modded clients are expected here, set anti-bot.world.check = false for listeners whose backends are modded.
+
 ## Logging
 
 ### W-LOG-001
@@ -750,6 +768,16 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** management.bind is not a loopback address, and neither management.tls nor management.metrics.require-token is on: anyone who reaches the port reads the metrics (players online, servers, versions).
 
 **Fix.** Bind the management server to loopback or a private network, enable management.tls, or set management.metrics.require-token = true and give Prometheus the token.
+
+## Query
+
+### W-QUERY-001
+
+**A query reply lists fewer names than query.player-names** (warning)
+
+**Cause.** A GS4 query reply is capped at 1400 bytes, under a typical MTU and to bound what a query can make Warp send. The full stat lists as many of the player names as fit, then stops: with many players, or long names, that is fewer than query.player-names.
+
+**Fix.** Lower query.player-names to what fits (about 60 names), or set it to 0: server lists and monitoring agents use the counts, rarely the names.
 
 ## Metrics
 
@@ -1009,9 +1037,9 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 
 ### W-BACK-011
 
-**A server is skipped by the balancers** (warning)
+**A server is skipped when choosing a server for a player** (warning)
 
-**Cause.** The server did not answer its last ping within timeouts.ping, a player could not connect to it, or it refused the logins of three players in a row (a single refusal is taken as aimed at that player: a ban, a whitelist). Groups and fallbacks skip it for a cool-down, then let one player through to find out whether it is back; a successful ping brings it back at once.
+**Cause.** The server did not answer its last ping within timeouts.ping, a player could not connect to it, or it refused the logins of three players in a row (a single refusal is taken as aimed at that player: a ban, a whitelist). Every way of choosing a server (the default server, the fallbacks, the routes and the groups' balancers) skips it for a cool-down, then lets one player through to find out whether it is back; a successful ping brings it back at once. Logged once per outage, not at every failed ping.
 
 **Fix.** Check that the server runs, is reachable from Warp and accepts logins from it (forwarding secret, whitelist). Raise timeouts.ping if it answers pings slowly under load. Nothing to do if it was restarting.
 
@@ -1080,6 +1108,16 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** A player transferred by another Warp proxy presented a handoff ticket this proxy could not use: sealed under another key, written for another address than the one the player connected to, or written for a client at another address. It logged in through Mojang instead, and joined the default server. Logged once a minute at most; warp_transfer_handoffs_rejected_total counts every reason.
 
 **Fix.** Give every proxy the same key (transfers.handoff.secret-file, or WARP_TRANSFER_SECRET), and set drain.transfer-to and transfers.handoff.peers to the addresses players reach the proxies by (a host name, not one an SRV record redirects). If the proxies do not see the same client address, set transfers.handoff.bind-address = false.
+
+## Bedrock
+
+### W-BEDROCK-001
+
+**Floodgate data was refused** (warning)
+
+**Cause.** A connection announced a Bedrock player with Floodgate data Warp could not verify: it was not encrypted with the key in bedrock.floodgate.key-file, was already used (a replay), named another address than the connection's from a Geyser host not in bedrock.geyser.trusted, or carried an identity that cannot log in. The connection was refused, and the player told the data did not verify. Logged once, then at most every five minutes with the count of refusals in between: the counts are in the limits report and the metrics.
+
+**Fix.** If the connection is your Geyser: copy its key.pem over Warp's (the two must be the same file), and list the address Geyser connects from in bedrock.geyser.trusted. If it is not, nothing to do: someone tried to log in as a Bedrock player without the key.
 
 ## Connections
 
@@ -1170,3 +1208,61 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** Rebuilding the commands a player sees failed; the player keeps the previous list.
 
 **Fix.** Report it with the stack trace.
+
+## Fleet
+
+### W-FLEET-001
+
+**The fleet store is unreachable** (warning)
+
+**Cause.** Warp cannot reach the store named in fleet.store (Valkey): it is down, the address or the credentials are wrong, or a firewall is in the way. This proxy keeps running alone: the other proxies' players are frozen as last seen, and logins follow fleet.on-store-down. Warp reconnects by itself and logs when the store is back.
+
+**Fix.** Check that the store runs and that fleet.store.valkey.address, username and password are right. Nothing to do once the store is back: the proxies resynchronise.
+
+### W-FLEET-002
+
+**Two proxies share a fleet node id** (error)
+
+**Cause.** Another proxy heartbeats under this proxy's fleet.node-id with a newer incarnation: two proxies have the same id, and would reap each other's players. This proxy left the fleet; its own players are unaffected, but it is invisible to the others.
+
+**Fix.** Give each proxy a distinct fleet.node-id (or leave it empty, so that each uses its host name), then restart this proxy.
+
+### W-FLEET-003
+
+**A login was not settled with the fleet in time** (warning)
+
+**Cause.** The store did not answer within fleet.claim-timeout whether the account is online on another proxy. The login followed fleet.on-store-down: let in (duplicates settled on this proxy alone) or refused.
+
+**Fix.** A slow or overloaded store: check its latency, or raise fleet.claim-timeout.
+
+### W-FLEET-004
+
+**A fleet bus handler failed** (warning)
+
+**Cause.** A plugin's listener or responder on the fleet bus threw an exception. The message was lost for that listener; a request got a failure in reply.
+
+**Fix.** Report it to the plugin's author with the stack trace.
+
+### W-FLEET-005
+
+**A malformed fleet message was dropped** (warning)
+
+**Cause.** A message on a fleet channel could not be read: another program publishes on Warp's channels, or two Warp versions with different frames share a network.
+
+**Fix.** Run one Warp version per network, and keep other programs off the warp:<network>:* channels.
+
+### W-FLEET-006
+
+**A proxy of the fleet stopped heartbeating** (warning)
+
+**Cause.** A proxy wrote no heartbeat for fleet.heartbeat-ttl: it crashed, hung, or lost the store. This proxy reaped its player records, so that its players can log in elsewhere.
+
+**Fix.** Check that proxy. A clean stop or drain says goodbye and is not logged here.
+
+### W-FLEET-007
+
+**A player is online on two proxies** (warning)
+
+**Cause.** After the store came back, a player connected here is claimed by another proxy: a write was lost during the outage (an asynchronous replica failing over). Both sessions stay until one leaves.
+
+**Fix.** Nothing to do for one player. Repeated conflicts point at a store that loses writes on failover: check its replication.

@@ -94,6 +94,46 @@ class ServerChecksTest {
     assertEquals(-1, results.getFirst().latencyMillis());
   }
 
+  @Test
+  @DisplayName("should report, within its budget, the servers still pinging as pending")
+  void budgetDoesNotWaitForSlowPings() throws InterruptedException {
+    RegisteredServer lobby = server("lobby", CompletableFuture.completedFuture(ping()));
+    CompletableFuture<ServerPing> never = new CompletableFuture<>();
+    RegisteredServer games = server("games", never);
+    Duration budget = Duration.ofMillis(200);
+
+    long start = System.nanoTime();
+    ServerChecks.Pings pings = checks.start(List.of(lobby, games), TIMEOUT);
+    List<Summaries.Server> results = pings.within(budget);
+    long elapsed = System.nanoTime() - start;
+
+    assertTrue(elapsed < TIMEOUT.toNanos() / 2, "waited " + elapsed / 1_000_000 + " ms");
+    assertEquals(2, results.size());
+    assertFalse(results.get(0).pending());
+    assertEquals("1.21.4", results.get(0).version());
+    assertTrue(results.get(1).pending(), "games has not answered");
+    assertEquals("games", results.get(1).name());
+    assertEquals(-1, results.get(1).latencyMillis());
+    assertFalse(pings.all().isDone(), "the slow ping goes on");
+
+    never.complete(ping());
+    assertFalse(pings.all().join().get(1).pending());
+    assertTrue(health.latency("games").isPresent(), "a late answer still feeds the health");
+  }
+
+  @Test
+  @DisplayName("should return at once when every ping answered within its budget")
+  void budgetReturnsEarly() throws InterruptedException {
+    RegisteredServer lobby = server("lobby", CompletableFuture.completedFuture(ping()));
+
+    long start = System.nanoTime();
+    List<Summaries.Server> results = checks.start(List.of(lobby), TIMEOUT).within(TIMEOUT);
+
+    assertTrue(System.nanoTime() - start < TIMEOUT.toNanos() / 2);
+    assertFalse(results.getFirst().pending());
+    assertEquals(1, checks.countUp(List.of(lobby)));
+  }
+
   private static RegisteredServer server(String name, CompletableFuture<ServerPing> answer) {
     RegisteredServer server = mock(RegisteredServer.class);
     when(server.name()).thenReturn(name);

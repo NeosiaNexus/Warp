@@ -103,6 +103,12 @@ public record HandoffConfig(
       if (peer == null) {
         throw new ConfigurationException(key + " holds an empty entry: list host:port addresses");
       }
+      if (peer.isFleet()) {
+        throw new ConfigurationException(
+            key
+                + " lists addresses, not fleet: write the fleet.public-address of each proxy that"
+                + " reads this proxy's tickets");
+      }
       peers.add(peer);
     }
     return peers;

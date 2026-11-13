@@ -231,6 +231,31 @@ class TransferHandoffTest {
     }
 
     @Test
+    @DisplayName("should take no address from drain.transfer-to = fleet: only the listed peers")
+    void fleetTarget() throws Exception {
+      HandoffConfig config =
+          new HandoffConfig(
+              true,
+              "transfer.secret",
+              MAX_AGE,
+              true,
+              List.of(new DrainConfig.Target("eu.warp.dev", 25570)));
+
+      TransferHandoff loaded =
+          TransferHandoff.load(
+              config,
+              DrainConfig.Target.FLEET,
+              directory,
+              _ -> null,
+              new byte[0],
+              "n",
+              millis::get);
+
+      assertTrue(loaded.isPeer("eu.warp.dev", 25570));
+      assertFalse(loaded.isPeer(DrainConfig.Target.FLEET_WORD, 0));
+    }
+
+    @Test
     @DisplayName("should take the drain's target and the listed addresses for peers")
     void peers() throws Exception {
       HandoffConfig config =

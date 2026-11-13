@@ -68,8 +68,10 @@ public interface InboundConnection {
   /**
    * Returns what kind of client this is, as the markers of its handshake declared: a Forge client
    * of one of its three eras, otherwise {@link ClientPlatform#JAVA} until a later phase says more
-   * (NeoForge is recognized in the configuration phase, Bedrock from Floodgate's data). A platform
-   * is a claim, not a proof: anything can send a Forge marker.
+   * (NeoForge is recognized in the configuration phase), or {@link ClientPlatform.Bedrock} for a
+   * player whose Floodgate data the proxy decrypted and verified. A Forge platform is a claim, not
+   * a proof: anything can send a Forge marker. A Bedrock platform is a proof: only Geyser, or
+   * another proxy holding the same Floodgate key, can produce the data it was read from.
    *
    * @return the platform, {@link ClientPlatform#JAVA} when nothing marks the client
    */

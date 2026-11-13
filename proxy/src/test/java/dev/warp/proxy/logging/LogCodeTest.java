@@ -78,12 +78,15 @@ class LogCodeTest {
     CATEGORIES.put("BOT", "Anti-bot");
     CATEGORIES.put("LOG", "Logging");
     CATEGORIES.put("MGMT", "Management");
+    CATEGORIES.put("QUERY", "Query");
     CATEGORIES.put("MET", "Metrics");
     CATEGORIES.put("RCON", "Remote console");
     CATEGORIES.put("MSG", "BungeeCord channel");
     CATEGORIES.put("BACK", "Backends");
     CATEGORIES.put("AUTH", "Authentication and login");
+    CATEGORIES.put("BEDROCK", "Bedrock");
     CATEGORIES.put("NET", "Connections");
+    CATEGORIES.put("FLEET", "Fleet");
   }
 
   @Nested

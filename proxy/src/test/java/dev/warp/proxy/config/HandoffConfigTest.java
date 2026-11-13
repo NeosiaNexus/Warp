@@ -189,6 +189,7 @@ class HandoffConfigTest {
           "peers = [\":25565\"]",
           "peers = [\"[::1\"]",
           "peers = [\"[::1]25565\"]",
+          "peers = [\"fleet\"]",
           "peers = [\"ok.example.com\", \"host:port\"]"
         })
     @DisplayName("should refuse peers that are not a list of addresses, naming the setting")

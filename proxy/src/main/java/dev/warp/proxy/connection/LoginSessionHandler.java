@@ -58,10 +58,12 @@ import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.Pkcs1Decryption;
 import dev.warp.proxy.auth.ProfileKeys;
 import dev.warp.proxy.auth.ServerHash;
+import dev.warp.proxy.bedrock.BedrockIdentity;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.event.player.GameProfileRequestEventImpl;
 import dev.warp.proxy.event.player.LoginEventImpl;
 import dev.warp.proxy.event.player.PreLoginEventImpl;
+import dev.warp.proxy.fleet.FleetService;
 import dev.warp.proxy.i18n.Message;
 import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.limit.AuthenticationLane;
@@ -76,6 +78,8 @@ import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.transfer.HandoffRejection;
 import dev.warp.proxy.transfer.HandoffTicket;
 import dev.warp.proxy.transfer.TransferHandoff;
+import dev.warp.proxy.world.ProxyWorld;
+import dev.warp.proxy.world.WorldCheck;
 
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -86,11 +90,13 @@ import java.security.PublicKey;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 import java.util.regex.Pattern;
 
 import javax.crypto.SecretKey;
@@ -456,8 +462,23 @@ final class LoginSessionHandler implements SessionHandler {
     }
 
     String name = packet.name();
-    if (!USERNAME_PATTERN.matcher(name).matches()) {
+    BedrockIdentity bedrock = connection.bedrock();
+    if (bedrock != null) {
+      // Geyser sends the gamertag, spaces and all; the player logs in under the name Floodgate's
+      // data derives, verified at the handshake. Xbox Live authenticated the player to Geyser, and
+      // the key proves Geyser wrote the data: there is nothing to ask Mojang.
+      name = bedrock.javaName();
+      onlineMode = false;
+    } else if (!USERNAME_PATTERN.matcher(name).matches()) {
       deny(Refusal.INVALID_LOGIN, Message.INVALID_USERNAME.of(), "Invalid username");
+      return;
+    } else if (!loginContext.onlineMode() && loginContext.floodgate().reservesName(name)) {
+      // A Java client under the Bedrock prefix, without Floodgate's data: in offline mode, where
+      // names are free, it would be taken for a Bedrock player.
+      deny(
+          Refusal.INVALID_LOGIN,
+          Message.INVALID_USERNAME.of(),
+          "Bedrock name prefix without Floodgate data");
       return;
     }
 
@@ -479,18 +500,16 @@ final class LoginSessionHandler implements SessionHandler {
         recognized -> {
           this.recognition = recognized;
           readHandoff(packet, ticket.join());
-          if (!loginContext.onlineMode() && antiBot.lockdownRefuses(recognized)) {
+          if (!onlineMode && bedrock == null && antiBot.lockdownRefuses(recognized)) {
+            // Not a verified Bedrock player: its identity is as proven as an account's.
             deny(Refusal.LOCKDOWN, LOCKDOWN_REASON);
             return;
           }
           // A trusted handoff spares the verification the token would: no second round trip.
           if (connection.handshakeIntent() == HandshakeIntent.TRANSFER
-              && !handoffTrusted(loginContext.onlineMode())
+              && !handoffTrusted(onlineMode)
               && antiBot.checksToken(
-                  recognized,
-                  loginContext.onlineMode(),
-                  clientVersion(),
-                  loginContext.acceptsTransfers())) {
+                  recognized, onlineMode, clientVersion(), loginContext.acceptsTransfers())) {
             checkToken(packet, recognized);
             return;
           }
@@ -544,9 +563,8 @@ final class LoginSessionHandler implements SessionHandler {
   private void verifyOrCheck(LoginStart packet, AntiBotService.Recognition recognized) {
     AntiBotService antiBot = loginContext.antiBot();
     if (tokenClaim == null
-        && !handoffTrusted(loginContext.onlineMode())
-        && antiBot.plan(recognized, loginContext.onlineMode(), clientVersion())
-            == Plan.BEFORE_AUTHENTICATION) {
+        && !handoffTrusted(onlineMode)
+        && antiBot.plan(recognized, onlineMode, clientVersion()) == Plan.BEFORE_AUTHENTICATION) {
       plan = Plan.BEFORE_AUTHENTICATION;
       state = LoginState.AWAITING_LOGIN_START;
       acquireVerification(this::beginUnauthenticatedVerification);
@@ -639,7 +657,13 @@ final class LoginSessionHandler implements SessionHandler {
   /** Goes on with a login the pre-login handlers let through. */
   private void continueLogin(LoginStart packet) {
     AntiBotService.Recognition recognized = recognition();
-    if (!onlineMode && loginContext.antiBot().lockdownRefuses(recognized)) {
+    BedrockIdentity bedrock = connection.bedrock();
+    if (bedrock != null) {
+      // Whatever a pre-login handler asked: Geyser cannot authenticate with Mojang for a Bedrock
+      // player, and the Floodgate key already proved the identity.
+      onlineMode = false;
+    }
+    if (!onlineMode && bedrock == null && loginContext.antiBot().lockdownRefuses(recognized)) {
       // An online proxy a plugin made offline for this login: lockdown has no account to check.
       deny(Refusal.LOCKDOWN, LOCKDOWN_REASON);
       return;
@@ -1021,6 +1045,13 @@ final class LoginSessionHandler implements SessionHandler {
       internalError("offline login without a username");
       return;
     }
+    BedrockIdentity bedrock = connection.bedrock();
+    if (bedrock != null) {
+      // Floodgate's identity: the linked Java account's UUID and name, else 0000...0009-<xuid>
+      // and the prefixed gamertag. No properties yet: the skin comes with a later milestone.
+      completeLogin(new GameProfile(bedrock.javaId(), bedrock.javaName(), List.of()));
+      return;
+    }
     UUID offlineUuid =
         UUID.nameUUIDFromBytes(("OfflinePlayer:" + name).getBytes(StandardCharsets.UTF_8));
     GameProfile profile = new GameProfile(offlineUuid, name, List.of());
@@ -1179,7 +1210,11 @@ final class LoginSessionHandler implements SessionHandler {
     if (ticket != null) {
       joining.handedOffFrom(ticket.server());
     }
-    boolean kickExisting = loginContext.duplicateLoginPolicy().kicksExisting(onlineMode);
+    // A handoff is the word of the proxy that held the session that it let it go: what is left of
+    // it there (or here) yields to the arrival, whatever the policy says of two rival logins.
+    boolean handedOff = ticket != null;
+    boolean kickExisting =
+        handedOff || loginContext.duplicateLoginPolicy().kicksExisting(onlineMode);
     if (!(loginContext.playerRegistry().register(joining, kickExisting)
         instanceof PlayerRegistry.Registration.Registered(int place))) {
       // Counted, not logged: in offline mode anyone can claim the name of a player online.
@@ -1188,6 +1223,39 @@ final class LoginSessionHandler implements SessionHandler {
     }
     this.player = joining;
     joining.countVersion();
+
+    // The fleet settles the account across proxies: at once on a single node, within
+    // fleet.claim-timeout otherwise, on a fleet thread.
+    CompletableFuture<FleetService.Claim> claim = loginContext.fleet().claim(joining, handedOff);
+    if (claim.isDone()) {
+      claimed(joining, profile, place, claim.join());
+      return;
+    }
+    var _ =
+        claim.whenCompleteAsync(
+            (outcome, _) -> {
+              if (!connection.channel().isActive()) {
+                this.player = null;
+                loginContext.playerRegistry().unregister(joining);
+                joining.uncountVersion();
+                loginContext.fleet().release(joining);
+                return;
+              }
+              claimed(joining, profile, place, outcome);
+            },
+            connection.channel().eventLoop());
+  }
+
+  /** Goes on with the login once the fleet settled who owns the account. */
+  private void claimed(
+      ConnectedPlayer joining, GameProfile profile, int place, FleetService.Claim claim) {
+    if (claim instanceof FleetService.Claim.Refused(Message message)) {
+      this.player = null;
+      loginContext.playerRegistry().unregister(joining);
+      joining.uncountVersion();
+      deny(Refusal.DUPLICATE_LOGIN, message.of());
+      return;
+    }
 
     // The place is taken atomically at registration: of two logins racing for the last place,
     // exactly one gets it. A session replacing a duplicate takes the place it frees.
@@ -1220,6 +1288,7 @@ final class LoginSessionHandler implements SessionHandler {
                     this.player = null;
                     loginContext.playerRegistry().unregister(joining);
                     joining.uncountVersion();
+                    loginContext.fleet().release(joining);
                     deny(
                         proposed instanceof LoginEvent.Denied
                             ? Refusal.SERVER_FULL
@@ -1237,6 +1306,7 @@ final class LoginSessionHandler implements SessionHandler {
     this.player = null;
     loginContext.playerRegistry().unregister(joining);
     joining.uncountVersion();
+    loginContext.fleet().release(joining);
     deny(Refusal.SERVER_FULL, SERVER_FULL);
   }
 
@@ -1283,10 +1353,11 @@ final class LoginSessionHandler implements SessionHandler {
         && loginContext.logging().connections()
         && loginContext.antiBot().logs(RoutineLine.CONNECTION)) {
       joined.log(logger, Level.INFO).log(
-          "Player {} ({}) logged in from {}{}",
+          "Player {} ({}) logged in from {}{}{}",
           profile.name(),
           profile.uuid(),
           connection.remoteAddress(),
+          Platforms.describe(connection.clientPlatform()),
           ticket != null
               ? ", handed off by "
                   + ticket.sourceNode()
@@ -1391,10 +1462,12 @@ final class LoginSessionHandler implements SessionHandler {
   /**
    * Asks a client a peer transferred here for its handoff ticket: before encryption, since the
    * ticket decides whether the client authenticates with Mojang. Completed empty at once for a
-   * login that is not a transfer, or when the handoff does not apply.
+   * login that is not a transfer, or when the handoff does not apply: never for a Bedrock player,
+   * whose identity is the one Floodgate's data proves at every login, under the Floodgate rules.
    */
   private CompletableFuture<Optional<byte[]>> requestHandoff() {
     if (connection.handshakeIntent() != HandshakeIntent.TRANSFER
+        || connection.bedrock() != null
         || !loginContext.acceptsTransfers()
         || !loginContext.handoff().enabled()
         || !cookies.supported()) {
@@ -1657,7 +1730,10 @@ final class LoginSessionHandler implements SessionHandler {
 
   /** Probes a 1.20.2+ client in its first configuration phase, in place of its first server. */
   private void startConfigurationProbe() {
-    Probe probe = loginContext.antiBot().newProbe(Probe.Kind.CONFIGURATION, clientVersion());
+    Probe probe =
+        loginContext
+            .antiBot()
+            .newProbe(Probe.Kind.CONFIGURATION, clientVersion(), connection.clientPlatform());
     connection.setSessionHandler(
         new ProbeSessionHandler(
             connection,
@@ -1669,7 +1745,10 @@ final class LoginSessionHandler implements SessionHandler {
 
   /** Probes a 1.8 to 1.20.1 client with a keep-alive before its first Join Game. */
   private void startPreJoinProbe() {
-    Probe probe = loginContext.antiBot().newProbe(Probe.Kind.PRE_JOIN, clientVersion());
+    Probe probe =
+        loginContext
+            .antiBot()
+            .newProbe(Probe.Kind.PRE_JOIN, clientVersion(), connection.clientPlatform());
     VerificationOutcome outcome = new VerificationOutcome(handOverVerificationSlot());
     PreJoinProbeSessionHandler handler =
         new PreJoinProbeSessionHandler(
@@ -1687,7 +1766,10 @@ final class LoginSessionHandler implements SessionHandler {
    */
   private void startLoginQueryProbe() {
     state = LoginState.HELD_FOR_PROBE;
-    Probe probe = loginContext.antiBot().newProbe(Probe.Kind.LOGIN_QUERY, clientVersion());
+    Probe probe =
+        loginContext
+            .antiBot()
+            .newProbe(Probe.Kind.LOGIN_QUERY, clientVersion(), connection.clientPlatform());
     this.loginQueryProbe = probe;
     this.loginQueryOutcome = new VerificationOutcome(handOverVerificationSlot());
     connection.writeAndFlush(
@@ -1765,20 +1847,34 @@ final class LoginSessionHandler implements SessionHandler {
     @Override
     public void passed(
         Probe.Outcome.Passed outcome, @Nullable ClientInformation settings, List<ByteBuf> held) {
-      release();
       ConnectedPlayer joined = player;
+      AntiBotService antiBot = loginContext.antiBot();
+      boolean worldCheck = antiBot.worldChecks(clientVersion(), connection.clientPlatform());
       if (plan == Plan.BEFORE_AUTHENTICATION || joined == null) {
         // Never admitted from this path: nothing it sent is for a server.
         held.forEach(ByteBuf::release);
-        verifiedBeforeAuthentication(outcome);
+        if (worldCheck) {
+          // The world check is the verification's last stage: the slot is held until it ends.
+          startWorldCheck(null, outcome, slot);
+        } else {
+          release();
+          verifiedBeforeAuthentication(outcome.trusted());
+        }
         return;
       }
-      loginContext
-          .antiBot()
-          .verificationPassed(recognition(), onlineMode ? joined.uuid() : null, outcome);
       if (settings != null) {
         joined.cacheClientSettings(settings);
       }
+      if (worldCheck) {
+        // The world follows the probe: what the client sent for its first server goes, it sends
+        // its brand and settings again when it reaches that server.
+        held.forEach(ByteBuf::release);
+        joined.beginSession();
+        startWorldCheck(joined, outcome, slot);
+        return;
+      }
+      release();
+      antiBot.verificationPassed(recognition(), onlineMode ? joined.uuid() : null, outcome);
       PreJoinProbeSessionHandler waiting = preJoin;
       if (waiting != null) {
         waiting.waitFor(joined);
@@ -1839,16 +1935,204 @@ final class LoginSessionHandler implements SessionHandler {
   }
 
   /**
+   * Puts a client that passed the probe in the virtual world for the world check (section 9.8 of
+   * the research): a 1.20.2+ client gets the world's registries in its configuration phase first.
+   * The player's first server, or the transfer back, waits for the pass.
+   *
+   * <p>The verification slot stays held until the check ends, so that {@code
+   * anti-bot.verification.max-concurrent} bounds the world sessions too: the world check is the
+   * verification's longest stage.
+   *
+   * @param joined the player, or {@code null} before authentication
+   * @param probe the probe's pass, whose round trip sets the deadlines
+   * @param slot the verification slot the probe held, if any, given back when the check ends
+   */
+  private void startWorldCheck(
+      @Nullable ConnectedPlayer joined,
+      Probe.Outcome.Passed probe,
+      VerificationQueue.@Nullable Slot slot) {
+    AntiBotService antiBot = loginContext.antiBot();
+    ProxyWorld world = antiBot.world();
+    ProtocolVersion version = clientVersion();
+    LongSupplier clock = antiBot.nanoClock();
+    WorldCheck check =
+        new WorldCheck(
+            version,
+            ThreadLocalRandom.current(),
+            antiBot.stageTimeout(),
+            probe.roundTripNanos(),
+            clock.getAsLong());
+    world.checkStarted();
+    WorldOutcome outcome = new WorldOutcome(joined, probe, slot);
+    Runnable play =
+        () -> {
+          if (joined != null && joined.serverSwitch() instanceof RespawnSwitch respawn) {
+            // The world's Join Game gives the client a level: its first server is a rejoin.
+            respawn.spawnedInWorld();
+          }
+          connection.setSessionHandler(
+              new WorldSessionHandler(
+                  connection,
+                  version,
+                  world,
+                  joined,
+                  check,
+                  outcome,
+                  clock,
+                  WorldSessionHandler.Entry.FRESH));
+        };
+    if (!version.supportsConfigurationState()) {
+      play.run();
+      return;
+    }
+    connection.setSessionHandler(
+        new WorldConfigSessionHandler(
+            connection,
+            version,
+            world.layouts().of(version),
+            joined,
+            antiBot.stageTimeout(),
+            clock,
+            new WorldConfigSessionHandler.Listener() {
+              @Override
+              public void play() {
+                play.run();
+              }
+
+              @Override
+              public void unsupported(String detail) {
+                outcome.skipped(detail);
+              }
+
+              @Override
+              public void failed(VerificationFailure reason, String detail) {
+                outcome.failed(reason, detail);
+              }
+
+              @Override
+              public void left() {
+                outcome.left();
+              }
+            }));
+  }
+
+  /** What follows the world check: the first server, the transfer back, or a disconnect. */
+  private final class WorldOutcome implements WorldSessionHandler.Listener {
+
+    private final @Nullable ConnectedPlayer joined;
+    private final Probe.Outcome.Passed probe;
+    private final VerificationQueue.@Nullable Slot slot;
+
+    WorldOutcome(
+        @Nullable ConnectedPlayer joined,
+        Probe.Outcome.Passed probe,
+        VerificationQueue.@Nullable Slot slot) {
+      this.joined = joined;
+      this.probe = probe;
+      this.slot = slot;
+    }
+
+    /** Gives the verification slot back: the check ended, however it did. Idempotent. */
+    private void release() {
+      VerificationQueue.Slot held = slot;
+      if (held != null) {
+        held.release();
+      }
+    }
+
+    @Override
+    public void passed(Set<WorldCheck.Flag> flags) {
+      release();
+      boolean mismatched = flags.contains(WorldCheck.Flag.PHYSICS_MISMATCH);
+      if (!mismatched) {
+        loginContext.antiBot().world().checkPassed();
+      }
+      // Two flags or more across the probe and the world, or a fall off the gravity after the
+      // retry: let in, not trusted.
+      boolean trusted = !mismatched && probe.trusted() && probe.flags().size() + flags.size() < 2;
+      logger.trace("World check passed for {}: {}", username, flags);
+      verified(trusted);
+    }
+
+    /** The world could not be given to this client (no known pack in common): the probe stands. */
+    void skipped(String detail) {
+      release();
+      logger.debug(
+          "World check skipped for {} from {}: {}", username, connection.remoteAddress(), detail);
+      verified(false);
+    }
+
+    private void verified(boolean trusted) {
+      ConnectedPlayer player = joined;
+      if (player == null) {
+        verifiedBeforeAuthentication(trusted);
+        return;
+      }
+      loginContext
+          .antiBot()
+          .verificationPassed(recognition(), onlineMode ? player.uuid() : null, trusted);
+      if (player.isPluginHeld()) {
+        // A plugin held the player while it was checked: it stays in the world until released.
+        logger.debug("World check passed for {}: held in the world by a plugin", username);
+        return;
+      }
+      player.chooseInitialServer();
+    }
+
+    @Override
+    public void failed(VerificationFailure reason, String detail) {
+      release();
+      loginContext.antiBot().world().checkFailed();
+      Refusal counted =
+          switch (reason) {
+            case PHYSICS -> Refusal.WORLD_CHECK_FAILED;
+            case TIMED_OUT -> Refusal.VERIFICATION_TIMEOUT;
+            default -> Refusal.VERIFICATION_FAILED;
+          };
+      loginContext.limits().refused(counted, connection.remoteAddress());
+      loginContext.antiBot().verificationFailed(loginAttempt(), reason);
+      Message message =
+          switch (reason) {
+            case PHYSICS -> Message.WORLD_CHECK_FAILED;
+            case TIMED_OUT -> Message.VERIFICATION_TIMED_OUT;
+            default -> Message.VERIFICATION_FAILED;
+          };
+      logger.debug(
+          "Disconnecting {} from {} ({}): {}",
+          username,
+          connection.remoteAddress(),
+          counted.label(),
+          detail);
+      ConnectedPlayer player = joined;
+      if (player != null) {
+        LoginSessionHandler.this.player = null;
+        player.disconnect(message.of());
+      } else {
+        connection.writeAndClose(disconnectPacket(render(message.of())));
+      }
+    }
+
+    @Override
+    public void left() {
+      release();
+      ConnectedPlayer player = joined;
+      if (player != null) {
+        player.disconnect();
+      }
+    }
+  }
+
+  /**
    * Ends a verification before authentication that passed: the identity is trusted here (so this
    * proxy recognizes its next login before authentication), plugins' checks run now that the client
    * proved itself, and the client is sent back with a signed token (1.20.5+), or asked to
    * reconnect. It is never admitted from this path.
    */
-  private void verifiedBeforeAuthentication(Probe.Outcome.Passed outcome) {
+  private void verifiedBeforeAuthentication(boolean trusted) {
     AntiBotService antiBot = loginContext.antiBot();
-    antiBot.verificationPassed(recognition(), null, outcome);
+    antiBot.verificationPassed(recognition(), null, trusted);
     if (!antiBot.hasChecks()) {
-      sendBack(outcome.trusted());
+      sendBack(trusted);
       return;
     }
     var _ =
@@ -1864,7 +2148,7 @@ final class LoginSessionHandler implements SessionHandler {
                     connection.writeAndClose(disconnectPacket(render(reason)));
                     return;
                   }
-                  sendBack(outcome.trusted() && !(verdict instanceof Verdict.Escalate));
+                  sendBack(trusted && !(verdict instanceof Verdict.Escalate));
                 },
                 connection.channel().eventLoop());
   }

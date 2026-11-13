@@ -84,6 +84,10 @@ transfers {
 The address of a peer must be the one clients connect to and name in their handshake: the ticket is
 bound to it. A transfer to an IP address also matches the local address the client reached.
 
+`drain.transfer-to = fleet` names no address: the proxy the fleet picks gets a ticket only if its
+`fleet.public-address` is listed in `peers`. The fleet store says where proxies are, not which ones
+may vouch for a player: that stays a setting of each proxy, like the key.
+
 The key is never the forwarding secret (backends hold that one; Warp refuses to start if the
 handoff secret, from the environment or the file, equals it). The AES key is derived from the secret with HMAC-SHA256 and a
 fixed label, so the secret is not used raw.
@@ -145,6 +149,28 @@ the session in clear, and would leave nothing to protect the ticket against a pa
   path attacker above) can do it, and it gains nothing over logging in twice.
 - **Clocks.** Proxies must agree on the time within 5 s plus `max-age`; `reason="clock"` and
   `reason="expired"` count the tickets refused for it.
+
+## With the fleet, Bedrock players and the virtual world
+
+- **Fleet.** A handed-off login claims its account in the fleet like any other login, after the
+  ticket and its proof were checked: the handoff never goes around the claim, and a fleet that
+  refuses the login (store down with `on-store-down = refuse-new-logins`) refuses it too. For a
+  moment the player is known to both proxies: the one it left releases the account when the client
+  disconnects, which can be after the arrival claims it. A valid ticket is the word of that proxy
+  that it let the session go, so the arrival takes the account over whatever `duplicate-login` says
+  (`refuse-new` included, and `auto` on an offline-mode proxy), and what is left of the old session
+  is dropped, on the other proxy or on this one. A login without a valid ticket follows
+  `duplicate-login` as before.
+- **Bedrock.** Players who come through Geyser are never handed off: no ticket is written for
+  them, and a connection that carries Floodgate data is never asked for one. A transferred Bedrock
+  player logs in again under the Floodgate rules (trusted Geyser address, data verified with the
+  key, re-emitted to backends running Floodgate), which cost no round trip to Mojang anyway.
+- **Virtual world.** A ticket of an account the sibling's anti-bot trusts spares the login the
+  probe, and with it the world check that follows the probe: one mark decides both. A ticket of
+  an account it did not trust is verified like any login, world check included. The server the
+  ticket names is only proposed first: if it is not on this proxy or not healthy, the player gets
+  the default; if no server is up, it waits in the virtual world (`anti-bot.world.hold`) rather
+  than being disconnected, and the hold's retries route it like any player.
 
 ## Observing it
 

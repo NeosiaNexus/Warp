@@ -1,0 +1,18 @@
+# What the image build needs: the sources (build stage) or proxy/build/libs/warp-*.jar (prebuilt).
+.gradle/
+**/build/
+!proxy/build/
+proxy/build/*
+!proxy/build/libs/
+proxy/build/libs/*
+!proxy/build/libs/warp-*.jar
+**/src/*/build/
+!**/src/*/build/
+e2e/node_modules/
+.claude/
+.idea/
+*.iml
+graphify-out/
+docs/
+charts/
+*.md

@@ -98,10 +98,13 @@ public enum Message {
   VERIFICATION_TIMED_OUT("warp.login.verification-timed-out", Kind.DISCONNECT),
   /** A player verified before authentication, on a version without transfers. */
   VERIFIED_RECONNECT("warp.login.verified-reconnect", Kind.DISCONNECT),
+  WORLD_CHECK_FAILED("warp.login.world-check-failed", Kind.DISCONNECT),
   /** A transfer whose handoff could not be proven: the player reconnects normally. */
   HANDOFF_FAILED("warp.login.handoff-failed", Kind.DISCONNECT),
   /** A username no vanilla client sends. */
   INVALID_USERNAME("warp.login.invalid-username", Kind.DISCONNECT),
+  /** Floodgate data that did not verify: a Bedrock player Warp cannot vouch for. */
+  FLOODGATE_REFUSED("warp.login.floodgate-refused", Kind.DISCONNECT),
   /** A login packet sent out of order: a broken or modified client. */
   UNEXPECTED_PACKET("warp.login.unexpected-packet", Kind.DISCONNECT),
   /** The encryption handshake failed. */
@@ -110,6 +113,10 @@ public enum Message {
   AUTHENTICATION_FAILED("warp.login.authentication-failed", Kind.DISCONNECT),
   /** The duplicate login policy keeps the session already connected. */
   ALREADY_CONNECTED("warp.login.already-connected", Kind.DISCONNECT),
+  /** The account is online on another proxy of the fleet, which did not let go in time. */
+  ALREADY_CONNECTED_ELSEWHERE("warp.login.already-connected-elsewhere", Kind.DISCONNECT),
+  /** The fleet store is down and fleet.on-store-down refuses new logins. */
+  FLEET_UNAVAILABLE("warp.login.fleet-unavailable", Kind.DISCONNECT),
 
   // ---------------------------------------------------------------------------
   // Disconnected
@@ -133,6 +140,7 @@ public enum Message {
   FALLBACK_DENIED("warp.disconnect.fallback-denied", Kind.DISCONNECT, "server"),
   /** A server switch took too long. */
   SWITCH_TIMED_OUT("warp.disconnect.switch-timed-out", Kind.DISCONNECT),
+  HOLD_EXPIRED("warp.disconnect.hold-expired", Kind.DISCONNECT),
   /** Plugins took too long to decide where the player goes. */
   WAIT_TIMED_OUT("warp.disconnect.wait-timed-out", Kind.DISCONNECT),
   /** A reason too large for the client, replaced by this one. */
@@ -156,6 +164,9 @@ public enum Message {
   ALREADY_ON_SERVER("warp.connect.already-on-server", Kind.CHAT, "server"),
   /** The player is moved to a fallback server. */
   CONNECTING("warp.connect.connecting", Kind.CHAT, "server"),
+  HOLD_ENTERED("warp.hold.entered", Kind.CHAT),
+  HOLD_WAITING("warp.hold.waiting", Kind.CHAT, "seconds"),
+  HOLD_RETRYING("warp.hold.retrying", Kind.CHAT, "server"),
   /** The player was moved to a fallback after its server disconnected it with a reason. */
   FALLBACK_KICKED("warp.fallback.kicked", Kind.CHAT, "server", "fallback", "reason"),
   /** The player was moved to a fallback after its server went away. */
@@ -288,6 +299,32 @@ public enum Message {
   WARP_ROUTES_NONE("warp.command.warp.routes.none", Kind.CHAT),
   /** One route. */
   WARP_ROUTE("warp.command.warp.routes.route", Kind.CHAT, "host", "target"),
+  /** {@code /warp fleet} without a store. */
+  WARP_FLEET_SINGLE("warp.command.warp.fleet.single", Kind.CHAT, "node"),
+  /** {@code /warp fleet}: the network and its store. */
+  WARP_FLEET("warp.command.warp.fleet.header", Kind.CHAT, "network", "store", "count", "n"),
+  /** One node of {@code /warp fleet}. */
+  WARP_FLEET_NODE(
+      "warp.command.warp.fleet.node",
+      Kind.CHAT,
+      "node",
+      "state",
+      "incarnation",
+      "address",
+      "players",
+      "version"),
+  /** The local node's marker in {@code /warp fleet}. */
+  WARP_FLEET_LOCAL("warp.command.warp.fleet.local", Kind.PART),
+  /** A node without a public address. */
+  WARP_FLEET_NO_ADDRESS("warp.command.warp.fleet.no-address", Kind.PART),
+  /** A node's state, ready. */
+  WARP_FLEET_STATE_READY("warp.command.warp.fleet.state.ready", Kind.PART),
+  /** A node's state, draining. */
+  WARP_FLEET_STATE_DRAINING("warp.command.warp.fleet.state.draining", Kind.PART),
+  /** The store's state. */
+  WARP_FLEET_STORE_CONNECTED("warp.command.warp.fleet.store.connected", Kind.PART),
+  /** The store's state, down. */
+  WARP_FLEET_STORE_DEGRADED("warp.command.warp.fleet.store.degraded", Kind.PART),
 
   // ---------------------------------------------------------------------------
   // /log (console only)
@@ -367,6 +404,8 @@ public enum Message {
   GLIST_NOBODY("warp.command.glist.nobody", Kind.CHAT, "server"),
   /** Nobody online. */
   GLIST_NOBODY_ALL("warp.command.glist.nobody-all", Kind.CHAT),
+  /** A node of the fleet and its player count, in the overview. */
+  GLIST_NODE("warp.command.glist.node", Kind.CHAT, "node", "count"),
 
   // ---------------------------------------------------------------------------
   // /send
@@ -411,6 +450,19 @@ public enum Message {
   SEND_REASON_DENIED("warp.command.send.reason.denied", Kind.PART),
   /** Not sent: the destination refused the player. */
   SEND_REASON_REFUSED("warp.command.send.reason.refused", Kind.PART, "reason"),
+  /** A player on another proxy of the fleet was sent. */
+  SEND_REMOTE_DONE("warp.command.send.remote-done", Kind.CHAT, "player", "server", "node"),
+  /** A player on another proxy of the fleet could not be sent. */
+  SEND_REMOTE_FAILED(
+      "warp.command.send.remote-failed", Kind.CHAT, "player", "server", "node", "reason"),
+  /** The other proxy knows no such server. */
+  FLEET_RESULT_UNKNOWN_SERVER("warp.command.fleet.result.unknown-server", Kind.PART),
+  /** The other proxy did not answer. */
+  FLEET_RESULT_TIMED_OUT("warp.command.fleet.result.timed-out", Kind.PART),
+  /** The other proxy failed to connect the player. */
+  FLEET_RESULT_FAILED("warp.command.fleet.result.failed", Kind.PART),
+  /** The other proxy no longer has the player. */
+  FLEET_RESULT_UNKNOWN_PLAYER("warp.command.fleet.result.unknown-player", Kind.PART),
   /** Not sent: the destination could not be reached. */
   SEND_REASON_UNREACHABLE("warp.command.send.reason.unreachable", Kind.PART),
   /** Not sent: the player left. */
@@ -453,6 +505,10 @@ public enum Message {
   FIND_ON("warp.command.find.on", Kind.CHAT, "player", "server", "ping", "version", "address"),
   /** A player not on a server yet. */
   FIND_CONNECTING("warp.command.find.connecting", Kind.CHAT, "player", "version", "address"),
+  /** A player on another proxy of the fleet, on a server. */
+  FIND_REMOTE("warp.command.find.remote", Kind.CHAT, "player", "node", "server"),
+  /** A player on another proxy of the fleet, between servers. */
+  FIND_REMOTE_CONNECTING("warp.command.find.remote-connecting", Kind.CHAT, "player", "node"),
   /** A player's address, for sources allowed to see it. */
   FIND_ADDRESS("warp.command.find.address", Kind.PART, "address"),
   /** The hover text of a player's server: a link to its players. */

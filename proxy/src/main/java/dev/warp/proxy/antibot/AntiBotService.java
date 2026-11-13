@@ -35,15 +35,19 @@ import dev.warp.api.event.antibot.AttackEndedEvent;
 import dev.warp.api.event.antibot.AttackStartedEvent;
 import dev.warp.api.event.antibot.LockdownChangedEvent;
 import dev.warp.api.event.antibot.VerificationFailedEvent;
+import dev.warp.api.player.ClientPlatform;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.proxy.config.AntiBotConfig;
 import dev.warp.proxy.config.LoggingConfig;
+import dev.warp.proxy.config.SecretFiles;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.limit.Blocklist;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.limit.Refusal;
 import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.network.CidrRanges;
+import dev.warp.proxy.world.ProxyWorld;
+import dev.warp.proxy.world.WorldLayouts;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -51,8 +55,6 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
@@ -132,6 +134,7 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
   private final List<VerificationCheck> checks = new CopyOnWriteArrayList<>();
   private final LongSupplier nanoClock;
   private final VerificationQueue queue;
+  private final ProxyWorld world;
   private final @Nullable VerificationTokens tokens;
   private volatile boolean lockdown;
 
@@ -290,6 +293,7 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
             verification.queueSize(),
             verification.queueMaxWait(),
             nanoClock);
+    this.world = new ProxyWorld(config.world(), new WorldLayouts(), nanoClock);
     this.onlineMode = onlineMode;
     this.limits = limits;
     this.events = events;
@@ -324,7 +328,9 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
             env.apply(AntiBotConfig.ENV_TOKEN_SECRET),
             millisClock);
     if (tokens.generated()) {
-      logger.info("Anti-bot: generated the key that signs verification tokens, in {}", directory);
+      logger.info(
+          "Anti-bot: generated the key that signs verification tokens, in {}",
+          directory.resolve(verification.tokenSecretFile()));
     }
     this.store =
         new IdentityStore(
@@ -615,7 +621,11 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
    * @param version the client's version: 1.7 clients are never probed (their keep-alive answer is
    *     not reliable before Join Game, as Sonar found), and no version is verified before
    *     authentication without a way back (every version has one: transfer or reconnect)
-   * @return the plan
+   * @return the plan. The client's platform does not enter it: a verified Bedrock player
+   *     (Floodgate's data decrypted with the key) is planned like any other login, Geyser answers
+   *     the probe as a client does, and the budgets and limits apply to the player's own address.
+   *     What its proof exempts is the world check alone, see {@link #skipsWorldCheck}; a
+   *     self-declared platform (a Forge marker) exempts nothing
    */
   public Plan plan(Recognition recognition, boolean onlineMode, ProtocolVersion version) {
     if (!config.enabled()
@@ -630,6 +640,20 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
       return Plan.NONE;
     }
     return onlineMode && attack ? Plan.BEFORE_AUTHENTICATION : Plan.AFTER_LOGIN;
+  }
+
+  /**
+   * Returns whether a verification may skip its world check, the physics stage: Geyser translates
+   * Bedrock movement, which is not Java physics, so a verified Bedrock player (and only one with
+   * proof, which the {@link ClientPlatform.Bedrock} variant is by construction) would fail it for
+   * nothing. Every other stage still applies to it. The world check is a later phase of the
+   * anti-bot; this is the input it takes from the platform.
+   *
+   * @param platform the client's platform
+   * @return {@code true} for a verified Bedrock player
+   */
+  public boolean skipsWorldCheck(ClientPlatform platform) {
+    return platform instanceof ClientPlatform.Bedrock;
   }
 
   /**
@@ -745,6 +769,38 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
   }
 
   /**
+   * Returns the virtual world: the world check, the hold of players without a server, and the
+   * plugin API over both.
+   *
+   * @return the world
+   */
+  public ProxyWorld world() {
+    return world;
+  }
+
+  /**
+   * Returns whether a client that passed the probe goes on to the world check: the check is on, the
+   * version is at least 1.8 (1.7 is not probed either) and the client is neither modded nor Bedrock
+   * (rules 6 and 7 of section 10 of the research).
+   *
+   * @param version the client's version
+   * @param platform the client's platform
+   * @return {@code true} to run the world check
+   */
+  public boolean worldChecks(ProtocolVersion version, ClientPlatform platform) {
+    return config.enabled() && world.checks(version, platform);
+  }
+
+  /**
+   * Returns the base deadline of each stage of the probe and of the world check.
+   *
+   * @return the configured probe timeout
+   */
+  public Duration stageTimeout() {
+    return config.verification().probeTimeout();
+  }
+
+  /**
    * Returns the admission of logins to verification.
    *
    * @return the queue
@@ -768,16 +824,21 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
    *
    * @param kind what to ask
    * @param version the client's version
+   * @param platform the client's platform: a verified Bedrock player gets a longer deadline
    * @return the probe, with its ids drawn
    */
-  public Probe newProbe(Probe.Kind kind, ProtocolVersion version) {
-    return new Probe(
-        kind,
-        version,
-        config.verification().probeTimeout(),
-        ThreadLocalRandom.current(),
-        nanoClock);
+  public Probe newProbe(Probe.Kind kind, ProtocolVersion version, ClientPlatform platform) {
+    Duration timeout = config.verification().probeTimeout();
+    if (platform instanceof ClientPlatform.Bedrock) {
+      // Geyser answers for the Bedrock client, after its own translation and the Bedrock
+      // client's round trip: Sonar gives Bedrock players three times the deadline (45 s for 15).
+      timeout = timeout.multipliedBy(BEDROCK_DEADLINE_FACTOR);
+    }
+    return new Probe(kind, version, timeout, ThreadLocalRandom.current(), nanoClock);
   }
+
+  /** How many times the probe's deadline a Bedrock player gets, after Sonar's 45 s for 15 s. */
+  static final int BEDROCK_DEADLINE_FACTOR = 3;
 
   /**
    * Takes a passed verification: counted, and the identity trusted under {@link
@@ -791,9 +852,20 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
    */
   public void verificationPassed(
       Recognition recognition, @Nullable UUID account, Probe.Outcome.Passed passed) {
+    verificationPassed(recognition, account, passed.trusted());
+  }
+
+  /**
+   * Counts a verification that passed, and trusts the identity when the pass was clean.
+   *
+   * @param recognition what the login was recognized as
+   * @param account the authenticated account, in online mode
+   * @param trusted whether the pass had fewer than two flags across its probe and world check
+   */
+  public void verificationPassed(Recognition recognition, @Nullable UUID account, boolean trusted) {
     detector.record(Signal.VERIFICATIONS_PASSED);
     verificationsPassed.increment();
-    if (!passed.trusted()) {
+    if (!trusted) {
       verificationsEscalated.increment();
       return;
     }
@@ -969,6 +1041,7 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
             signing == null ? 0 : signing.accepted(),
             signing == null ? 0 : signing.rejected(),
             signing == null ? null : signing.keySince()),
+        world.status(),
         Instant.ofEpochMilli(millisClock.getAsLong()));
   }
 
@@ -1355,18 +1428,8 @@ public final class AntiBotService implements AntiBot, AutoCloseable {
     if (parent != null) {
       Files.createDirectories(parent);
     }
-    Files.writeString(
-        file,
-        Base64.getEncoder().encodeToString(secret) + "\n",
-        StandardCharsets.US_ASCII,
-        StandardOpenOption.CREATE_NEW,
-        StandardOpenOption.WRITE);
-    try {
-      Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-------"));
-    } catch (UnsupportedOperationException e) {
-      // Not a POSIX file system: the platform's defaults apply.
-    }
-    logger.info("Anti-bot: generated the secret identities are hashed under in {}", file);
+    SecretFiles.create(file, Base64.getEncoder().encodeToString(secret) + "\n");
+    logger.info("Anti-bot: generated the secret that hashes identities, in {}", file);
     return secret;
   }
 

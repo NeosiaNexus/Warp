@@ -1,0 +1,15 @@
+{
+  "name": "warp-bench",
+  "private": true,
+  "description": "Public, reproducible macro benchmark of Warp against Velocity, Gate (full and Lite) and BungeeCord",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "bench": "node src/cli.js",
+    "smoke": "node src/cli.js --smoke",
+    "test": "node --test \"test/**/*.test.js\""
+  }
+}

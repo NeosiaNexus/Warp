@@ -61,4 +61,15 @@ public sealed interface PlayPacket extends Packet
         ResourcePackPush,
         ResourcePackPop,
         DeleteChat,
-        ClearDialog {}
+        ClearDialog,
+        ClientMovement,
+        TeleportConfirm,
+        PlayPing,
+        PlayPong,
+        WindowConfirmation,
+        TickEnd,
+        SyncPlayerPosition,
+        SetDefaultSpawnPosition,
+        GameEvent,
+        BlockUpdate,
+        EmptyChunk {}

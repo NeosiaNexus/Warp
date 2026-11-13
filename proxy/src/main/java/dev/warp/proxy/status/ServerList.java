@@ -32,6 +32,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReferenceArray;
+import java.util.function.IntSupplier;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
@@ -70,6 +71,9 @@ public final class ServerList {
   private final StatusSettings settings;
   private final PlayerRegistry players;
 
+  /** How many players the list shows online: this proxy's, or the fleet's. */
+  private volatile IntSupplier online;
+
   /** The configured description, written in each text format. */
   private final String[] motdJson;
 
@@ -107,6 +111,16 @@ public final class ServerList {
         ProtocolVersion.values().stream().mapToInt(ProtocolVersion::protocol).max().orElseThrow();
     this.unsupportedSlot = maxProtocol + 1;
     this.answers = new AtomicReferenceArray<>(unsupportedSlot + 1);
+    this.online = players::count;
+  }
+
+  /**
+   * Shows the network's player count instead of this proxy's, when the proxy is part of a fleet.
+   *
+   * @param count the count to show
+   */
+  public void networkCount(IntSupplier count) {
+    this.online = count;
   }
 
   /**
@@ -187,7 +201,7 @@ public final class ServerList {
     int slot =
         ProtocolVersion.byProtocolId(clientProtocol) != null ? clientProtocol : unsupportedSlot;
     Sample current = currentSample();
-    int online = settings.showPlayerCount() ? players.count() : 0;
+    int online = settings.showPlayerCount() ? this.online.getAsInt() : 0;
     Memo memo = answers.get(slot);
     if (memo != null
         && memo.format() == format

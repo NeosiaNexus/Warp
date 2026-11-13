@@ -22,7 +22,7 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
 | **Decompresses packets it never reads** | Blind forwarding: in play, Warp decodes only the few packet types it acts on, and relays every other frame undecoded, still compressed when both sides use the same threshold | Available |
 | **Server switches that hang or crash the client** | A switch that does not complete within 30 s is ended instead of hanging on "Reconfiguring", no terminal packet is ever sent inside a bundle, and client settings are replayed to the new server | Available |
 | **Decompression bombs** | Impossible compression ratios are refused before inflating, sizes are capped, and each connection has an inflate budget | Available |
-| **No graceful drain** | Multi-phase drain with Transfer packet support, designed for rolling deployments and Kubernetes | Planned |
+| **No graceful drain** | Multi-phase drain with Transfer packet support, on SIGTERM or through the management API, with a Helm chart whose rolling updates drain each Pod ([docs/deploy/kubernetes.md](docs/deploy/kubernetes.md)) | Available |
 | **Shallow plugin DI** | Full dependency-injection graph via Guice with lifecycle hooks (provision, validate, start, ready, drain, stop) | Planned |
 | **No health probes, no metrics** | Built-in `/livez`, `/readyz`, `/startupz` endpoints and Prometheus metrics with an allocation-free registry ([docs/metrics.md](docs/metrics.md)); OpenTelemetry tracing planned | Available |
 | **Undefined event ordering** | Deterministic, priority-based event dispatch, with no race between handlers | Planned |
@@ -75,6 +75,11 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
   Plugins read the platform with `InboundConnection.platform()`. Switching between modded servers
   before 1.20.2 and a `modded = false` option for vanilla backends in a mixed network are the
   next milestones of [the modded clients design](docs/research/modded-and-bedrock.md).
+- **Bedrock players through Geyser, natively**: Warp reads and verifies Floodgate's encrypted
+  handshake data with the shared `key.pem` (no Floodgate plugin on the proxy), refuses what does not
+  decrypt, was replayed or names a foreign address, logs the player in under Floodgate's UUID and
+  prefixed name (or the linked Java account), exposes `ClientPlatform.Bedrock` to plugins and
+  routes, and re-emits the data to backends running Floodgate. See [docs/bedrock.md](docs/bedrock.md).
 - **BungeeCord plugin messaging channel** (`BungeeCord`, `bungeecord:main`): all 18 sub-channels
   Paper and Spigot plugins use to move players and query the network, answered byte for byte as
   BungeeCord and Velocity answer them. Connect goes through Warp's own switch and events; each
@@ -100,6 +105,13 @@ Velocity solved BungeeCord's problems. Warp is designed to solve Velocity's.
   never pay again; during an attack in online mode, unknown players are verified before the proxy
   asks Mojang about them, so fake authentications never reach the session server. Nothing stays in
   the pipeline after verification, and the PLAY path is untouched.
+- **Virtual world**: a void with one platform inside the proxy, for every version from 1.7.10.
+  Unknown players fall through it after the probe (a teleport to confirm, the vanilla gravity over
+  a few ticks, a landing, a ping to echo): what tells a game from a script in offline mode, with
+  one retry for a stumble and, if it stumbles again, admission without trust rather than a kick:
+  a game is never disconnected for its physics. Players whose server is down wait there with a countdown
+  instead of being disconnected, and plugins can hold a player there and release it to a server;
+  the player reaches its server in the same session, as any server switch.
 - **Blind forwarding**: frames Warp does not inspect are never deserialized; they go from one
   connection to the other as raw bytes.
 - **Compression passthrough**: Warp reads the packet id of a compressed frame without inflating it.
@@ -133,7 +145,6 @@ Planned, not implemented yet:
 
 - **Plugin system**: plugin loading, Guice dependency injection, lifecycle hooks, a deterministic
   event bus, commands and a scheduler. Today the API exposes the proxy version and `ServerInfo`.
-- **Graceful drain** with Transfer packets, for rolling deployments and Kubernetes.
 - **Observability**: OpenTelemetry tracing, OTLP metrics push and Grafana dashboards (the probes
   and the Prometheus metrics are available today).
 - **Configurable server list ping** (MOTD, player counts).
@@ -209,6 +220,45 @@ java --sun-misc-unsafe-memory-access=allow -jar /path/to/warp-<version>.jar
 Coming from Velocity or BungeeCord? `java -jar warp.jar migrate /path/to/proxy --to .` converts its
 configuration and reports what became of every setting and plugin: see
 [docs/migration.md](docs/migration.md).
+
+### Run with Docker
+
+Official images, for `linux/amd64` and `linux/arm64`, signed and attested:
+`ghcr.io/neosianexus/warp:<version>` (Temurin 25 JRE on Ubuntu, glibc) and
+`:<version>-alpine` (musl, smaller); `:edge` and `:edge-alpine` follow `main`.
+
+```bash
+docker run -d --name warp -p 25565:25577 \
+  -e WARP_LOBBY_ADDRESS=host.docker.internal:25566 \
+  -e WARP_FORWARDING_SECRET="$(openssl rand -hex 32)" \
+  -v warp-data:/data ghcr.io/neosianexus/warp:latest
+```
+
+The image runs as uid 1000, keeps everything under `/data`, answers its `HEALTHCHECK` from the
+management server, and drains on `docker stop` (give it time: `docker stop -t 1830`). Variables
+set the essentials; mount your own `warp.conf` at `/data/warp.conf` for the rest. A Compose
+example with two backends, the JVM flags and how to verify an image:
+[docs/deploy/docker.md](docs/deploy/docker.md).
+
+### Deploy on Kubernetes
+
+The `warp` Helm chart ([charts/warp](charts/warp), published as an OCI chart) deploys a fleet of
+proxies behind a `LoadBalancer` Service, with probes on the management endpoints, a Secret for the
+forwarding secret, a PodDisruptionBudget, and optionally an HPA, a ServiceMonitor and a
+NetworkPolicy. Its selling point: a rolling update, a scale-down or a node drain sends each Pod
+SIGTERM, Warp drains (readiness says no, players are transferred to your public address, the rest
+leave on their own), and the Pod exits once empty, within a `terminationGracePeriodSeconds` derived
+from the drain settings.
+
+```bash
+helm install warp oci://ghcr.io/neosianexus/charts/warp --version <version> \
+  --namespace minecraft --create-namespace \
+  --set config.servers.lobby.address=lobby.minecraft.svc.cluster.local:25565 \
+  --set drain.transferTo=play.example.com
+```
+
+How it works, the PROXY protocol, metrics, autoscaling and the remote console through
+`port-forward`: [docs/deploy/kubernetes.md](docs/deploy/kubernetes.md).
 
 ### Configure
 
@@ -449,6 +499,48 @@ The registry is Warp's own, with no dependency: a counter resolved once by a han
 event loop, so an increment on the forwarding path allocates nothing and contends with nothing.
 Plugins register their metrics through `PluginContext.metrics()`, under their id as a prefix, and a
 label per player or address is refused at registration.
+
+### Query
+
+GS4 Query is the UDP protocol server lists, hosting panels and monitoring agents speak to read a
+server's MOTD, counts and player names (`enable-query` in a vanilla server). Warp answers it from
+the same entry as the server list ping, through `ProxyPingEvent` when a plugin shapes it, so a
+plugin that changes the MOTD needs no query code. Off by default:
+
+```hocon
+query {
+  enabled = true
+  bind = ""                        # empty: bind's address and port number, over UDP
+  map = "Warp"
+  show-plugins = false             # "Warp 1.0: foo 1.2; bar 2.0" in a full stat
+  player-names = 0                 # names a full stat lists, 0 to 1000
+  advertise-host = ""              # hostip: empty takes drain.transfer-to, else the listener's
+  rate-limit { per-address = 5, burst = 10, global = 2000 }
+}
+```
+
+The listener is one datagram channel on the proxy's event loops, built to be hit from the internet:
+
+- The challenge token comes from `SecureRandom` and is bound to the client's address and port, as
+  the protocol specifies, in a fixed table of 65,536 slots indexed by a keyed hash: a flood of
+  spoofed handshakes overwrites slots instead of growing a cache, where Velocity and BungeeCord
+  keep every address until it expires, and nobody can compute which endpoints share a monitor's
+  slot.
+- Two token buckets, per source address (one IPv6 /64) then global, are checked before a byte of
+  the datagram is read, in that order so that one host flooding past the global rate spends no more
+  than its own share of it. Whatever is over the limit, malformed, of an unknown type or without a
+  valid token is dropped without a reply and counted under `warp_query_requests_total`; no
+  exception ever leaves the handler (Velocity issue 1828).
+- A stat is a copy of a body encoded once every 2 seconds, through `ProxyPingEvent` when a plugin
+  listens, and a stat that finds it stale is answered from the refresh, so a plugin that hides the
+  proxy is honoured from the first query. A reply never exceeds 1,400 bytes: the MOTD, version and
+  `hostip` are cut to a budget, the plugins list is dropped when it alone does not fit, and the
+  full stat lists as many player names as fit, then stops (`W-QUERY-001` once). With no valid
+  token the only reply is the handshake's, about the size of its request, so a spoofed source
+  cannot turn the proxy into an amplifier.
+- `hostip` and `hostport` are the address players connect to, not the listener's: `advertise-host`
+  when set, else the host and port of `drain.transfer-to`, else `bind`. Behind a load balancer or
+  in a container, set one of the first two.
 
 ## Project Structure
 
