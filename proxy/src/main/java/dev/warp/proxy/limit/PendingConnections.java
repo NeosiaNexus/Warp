@@ -198,7 +198,7 @@ public final class PendingConnections {
       return;
     }
     Loop loop = queue.loop;
-    loop.remove(connection);
+    loop.remove(queue, connection);
     loop.append(loop.engaged, connection, elapsed());
   }
 
@@ -212,7 +212,7 @@ public final class PendingConnections {
   public void settle(Entry connection) {
     Fifo queue = connection.queue;
     if (queue != null) {
-      queue.loop.remove(connection);
+      queue.loop.remove(queue, connection);
     }
   }
 
@@ -356,24 +356,21 @@ public final class PendingConnections {
      */
     private boolean makeRoom(long time) {
       boolean closed = false;
-      while (count.get() > max) {
-        Entry victim = victim(silent, time);
-        if (victim == null) {
-          victim = victim(engaged, time);
-        }
-        if (victim == null) {
-          break;
-        }
-        remove(victim);
-        victim.evicted();
+      while (count.get() > max && (close(silent, time) || close(engaged, time))) {
         closed = true;
       }
       return closed;
     }
 
-    private @Nullable Entry victim(Fifo queue, long time) {
+    /** Closes the oldest connection of {@code queue}, if the grace has passed for it. */
+    private boolean close(Fifo queue, long time) {
       Entry candidate = queue.oldest;
-      return candidate != null && time - candidate.since >= graceNanos ? candidate : null;
+      if (candidate == null || time - candidate.since < graceNanos) {
+        return false;
+      }
+      remove(queue, candidate);
+      candidate.evicted();
+      return true;
     }
 
     private void append(Fifo queue, Entry connection, long time) {
@@ -391,11 +388,7 @@ public final class PendingConnections {
       publish();
     }
 
-    private void remove(Entry connection) {
-      Fifo queue = connection.queue;
-      if (queue == null) {
-        return;
-      }
+    private void remove(Fifo queue, Entry connection) {
       Entry before = connection.older;
       Entry after = connection.newer;
       if (before == null) {

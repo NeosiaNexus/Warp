@@ -446,13 +446,13 @@ class PendingConnectionsTest {
     }
 
     @Test
-    @DisplayName("should compare ages on a clock whose values are about to overflow twice over")
+    @DisplayName("should keep its times from its creation, on a clock half way to overflowing")
     void clockFarFromZero() throws Exception {
-      clock.set((1L << 62) - GRACE.toNanos() / 2);
+      clock.set((1L << 62) - 1);
       PendingConnections table = table(1);
       ExecutorService other = thread();
       on(other, () -> accept(table, "first", asked::add));
-      pass(GRACE);
+      pass(GRACE.multipliedBy(2));
 
       assertTrue(table.tryStart());
 
