@@ -172,7 +172,7 @@ public final class PendingConnections {
    * @param connection the connection, never tracked before
    * @param eventLoop the connection's event loop, which runs what other loops ask of it
    */
-  public void track(PendingConnection connection, Executor eventLoop) {
+  public void track(Entry connection, Executor eventLoop) {
     if (graceNanos == 0) {
       return;
     }
@@ -193,7 +193,7 @@ public final class PendingConnections {
    *
    * @param connection the connection
    */
-  public void progressed(PendingConnection connection) {
+  public void progressed(Entry connection) {
     Loop loop = connection.home;
     if (loop == null || connection.queue == null) {
       return;
@@ -209,7 +209,7 @@ public final class PendingConnections {
    *
    * @param connection the connection
    */
-  public void settle(PendingConnection connection) {
+  public void settle(Entry connection) {
     Loop loop = connection.home;
     if (loop != null) {
       loop.remove(connection);
@@ -256,14 +256,52 @@ public final class PendingConnections {
   }
 
   // ---------------------------------------------------------------------------
+  // One connection
+  // ---------------------------------------------------------------------------
+
+  /**
+   * A connection that is not logged in, as the table sees it: a node of the list its event loop
+   * keeps of the connections it may close to make room for a new one. The links live in the
+   * connection's own watcher, which extends this class, so that tracking a connection allocates
+   * nothing. Every field is read and written on the connection's event loop only.
+   */
+  public abstract static class Entry {
+
+    /** The event loop's lists the connection was tracked on, or {@code null} if it never was. */
+    private @Nullable Loop home;
+
+    /** The list the connection is in, or {@code null} while nothing may close it. */
+    private @Nullable Fifo queue;
+
+    /** The neighbours in {@link #queue}, towards the oldest and the newest. */
+    private @Nullable Entry older;
+
+    private @Nullable Entry newer;
+
+    /** When the connection last made progress, on the table's clock. */
+    private long since;
+
+    /** Creates a connection nothing tracks yet. */
+    protected Entry() {}
+
+    /**
+     * Closes the connection to make room for a new one. Called on the connection's event loop,
+     * once, after it left the lists. The implementation must give the connection's place back
+     * ({@link PendingConnections#end()}, exactly once over the connection's life, as for any other
+     * close) and close it without blocking.
+     */
+    protected abstract void evicted();
+  }
+
+  // ---------------------------------------------------------------------------
   // One event loop's connections
   // ---------------------------------------------------------------------------
 
   /** A list of connections in order of last progress; touched by its event loop only. */
-  static final class Fifo {
+  private static final class Fifo {
 
-    private @Nullable PendingConnection oldest;
-    private @Nullable PendingConnection newest;
+    private @Nullable Entry oldest;
+    private @Nullable Entry newest;
 
     private Fifo() {}
   }
@@ -272,7 +310,7 @@ public final class PendingConnections {
    * The connections of one event loop that may be closed to make room. Everything but {@link
    * #oldest} and {@link #request()} is used on that loop only.
    */
-  final class Loop implements Runnable {
+  private final class Loop implements Runnable {
 
     private final Executor executor;
     private final Fifo silent = new Fifo();
@@ -318,7 +356,7 @@ public final class PendingConnections {
     private boolean makeRoom(long time) {
       boolean closed = false;
       while (count.get() > max) {
-        PendingConnection victim = victim(silent, time);
+        Entry victim = victim(silent, time);
         if (victim == null) {
           victim = victim(engaged, time);
         }
@@ -332,13 +370,13 @@ public final class PendingConnections {
       return closed;
     }
 
-    private @Nullable PendingConnection victim(Fifo queue, long time) {
-      PendingConnection candidate = queue.oldest;
+    private @Nullable Entry victim(Fifo queue, long time) {
+      Entry candidate = queue.oldest;
       return candidate != null && time - candidate.since >= graceNanos ? candidate : null;
     }
 
-    private void append(Fifo queue, PendingConnection connection, long time) {
-      PendingConnection last = queue.newest;
+    private void append(Fifo queue, Entry connection, long time) {
+      Entry last = queue.newest;
       connection.queue = queue;
       connection.since = time;
       connection.older = last;
@@ -352,13 +390,13 @@ public final class PendingConnections {
       publish();
     }
 
-    private void remove(PendingConnection connection) {
+    private void remove(Entry connection) {
       Fifo queue = connection.queue;
       if (queue == null) {
         return;
       }
-      PendingConnection before = connection.older;
-      PendingConnection after = connection.newer;
+      Entry before = connection.older;
+      Entry after = connection.newer;
       if (before == null) {
         queue.oldest = after;
       } else {
@@ -376,8 +414,8 @@ public final class PendingConnections {
     }
 
     private void publish() {
-      PendingConnection first = silent.oldest;
-      PendingConnection second = engaged.oldest;
+      Entry first = silent.oldest;
+      Entry second = engaged.oldest;
       long since =
           Math.min(
               first == null ? Long.MAX_VALUE : first.since,

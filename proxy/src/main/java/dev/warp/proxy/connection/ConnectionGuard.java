@@ -18,7 +18,6 @@ package dev.warp.proxy.connection;
 
 import dev.warp.protocol.netty.FrameLimitException;
 import dev.warp.proxy.limit.ClientLimits;
-import dev.warp.proxy.limit.PendingConnection;
 import dev.warp.proxy.limit.PendingConnections;
 import dev.warp.proxy.limit.Refusal;
 
@@ -56,7 +55,7 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>Used on the connection's event loop only.
  */
-final class ConnectionGuard extends PendingConnection {
+final class ConnectionGuard extends PendingConnections.Entry {
 
   private final MinecraftConnection connection;
   private final Channel channel;

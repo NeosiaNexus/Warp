@@ -631,7 +631,7 @@ class PendingConnectionsTest {
       }
     }
 
-    private final class Flooding extends PendingConnection {
+    private final class Flooding extends PendingConnections.Entry {
 
       private final PendingConnections table;
       private final ExecutorService loop;
@@ -697,7 +697,7 @@ class PendingConnectionsTest {
   }
 
   /** A connection that records its close, and gives its place back once. */
-  private final class Tracked extends PendingConnection {
+  private final class Tracked extends PendingConnections.Entry {
 
     private final PendingConnections table;
     private final String name;
