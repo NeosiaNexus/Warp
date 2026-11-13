@@ -245,8 +245,12 @@ codecs:
 
 Allocation gates pull requests; timings do not. The guard counts allocation with escape analysis
 off: the count then covers everything the code allocates, not what the JIT happened to keep in one
-run, and it moves by less than 0.3% from one run or machine to the next. A benchmark fails when it
-allocates more than its baseline plus the larger of 2 B and 1%. Timings depend on the runner's CPU
+run. JMH's profiler also counts what JMH itself allocates around each iteration, about 7 KiB, which
+divided by the packets of the iteration is several bytes for a benchmark that runs a thousand of
+them, and more on a slower machine: the guard measures it in the same run with a benchmark that
+allocates nothing (`HarnessAllocationBenchmark`) and takes each benchmark's share of it off. What is
+left does not depend on the machine's speed. A benchmark fails when it allocates more than its
+baseline plus the larger of 2 B and 1%. Timings depend on the runner's CPU
 model, which varies, so each model has its own series; on the same model, two runs agree within 3%.
 A benchmark 25% slower than on the previous run on the same model comments on the commit, and fails
 nothing.
