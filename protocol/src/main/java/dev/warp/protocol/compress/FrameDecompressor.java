@@ -23,6 +23,7 @@ import java.util.function.LongSupplier;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.handler.codec.DecoderException;
+import io.netty.util.concurrent.FastThreadLocal;
 
 /**
  * Validates and decompresses the payloads of compressed Minecraft frames received on one
@@ -108,12 +109,23 @@ public final class FrameDecompressor implements AutoCloseable {
   private static final DecoderException RATE_EXCEEDED =
       stackless("Decompression rate limit exceeded (potential sustained attack)");
 
+  /**
+   * The peek of the calling thread. Its scratch tables (about 2 KiB) hold nothing between two
+   * calls, so the connections of an event loop share one instead of keeping one each.
+   */
+  private static final FastThreadLocal<DeflatePeek> PEEK =
+      new FastThreadLocal<>() {
+        @Override
+        protected DeflatePeek initialValue() {
+          return new DeflatePeek();
+        }
+      };
+
   // ---------------------------------------------------------------------------
   // State
   // ---------------------------------------------------------------------------
 
   private final PacketCompressor compressor;
-  private final DeflatePeek peek = new DeflatePeek();
   private final int threshold;
   private final boolean validateThreshold;
   private final int maxUncompressedSize;
@@ -198,7 +210,7 @@ public final class FrameDecompressor implements AutoCloseable {
    * @return the packet id, or {@link DeflatePeek#UNKNOWN} if the payload must be inflated to know
    */
   public int peekPacketId(ByteBuf payload) {
-    return peek.peekVarInt(payload);
+    return PEEK.get().peekVarInt(payload);
   }
 
   /**
