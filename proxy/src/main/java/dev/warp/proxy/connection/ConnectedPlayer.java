@@ -2693,8 +2693,16 @@ public final class ConnectedPlayer {
   private void joinKeepAliveWheel() {
     if (keepAliveSeat == null && !disconnected.get()) {
       keepAliveSeat =
-          KeepAliveWheel.of(clientConnection.channel().eventLoop()).join(this::sendKeepAlive);
+          KeepAliveWheel.of(clientConnection.channel().eventLoop())
+              .join(this::sendKeepAlive, this::keepAliveFailed);
     }
+  }
+
+  /**
+   * A failure of the keep-alive task ends the connection like any other failure in its pipeline.
+   */
+  private void keepAliveFailed(RuntimeException failure) {
+    var _ = clientConnection.channel().pipeline().fireExceptionCaught(failure);
   }
 
   /**

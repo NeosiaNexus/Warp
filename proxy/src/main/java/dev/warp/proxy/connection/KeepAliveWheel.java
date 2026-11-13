@@ -18,13 +18,12 @@ package dev.warp.proxy.connection;
 
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import io.netty.channel.EventLoop;
 import org.jspecify.annotations.Nullable;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Runs the keep-alive tasks of every player of one event loop from a single timer: one tick every
@@ -46,8 +45,6 @@ import org.slf4j.LoggerFactory;
  * from it.
  */
 final class KeepAliveWheel {
-
-  private static final Logger logger = LoggerFactory.getLogger(KeepAliveWheel.class);
 
   /** Time between two ticks. */
   static final long TICK_MS = 1_000;
@@ -99,11 +96,13 @@ final class KeepAliveWheel {
    * first time within that delay, until the seat is {@linkplain Seat#leave() left}.
    *
    * @param task the task, which may leave its own seat or any other, and take new ones
+   * @param onFailure told when the task throws, so that one task's failure neither goes unseen nor
+   *     stops the other tasks of the loop; the seat is kept
    * @return the seat
    */
-  Seat join(Runnable task) {
+  Seat join(Runnable task, Consumer<RuntimeException> onFailure) {
     int slot = (cursor + SLOTS - 1) % SLOTS;
-    Seat seat = new Seat(this, task, slot);
+    Seat seat = new Seat(this, task, onFailure, slot);
     Seat head = heads[slot];
     seat.next = head;
     if (head != null) {
@@ -162,7 +161,7 @@ final class KeepAliveWheel {
         seat.task.run();
       } catch (RuntimeException e) {
         // One player's failure must not stop the keep-alives of every other player of the loop.
-        logger.error("A keep-alive task failed", e);
+        seat.onFailure.accept(e);
       }
       seat = upcoming;
     }
@@ -174,6 +173,7 @@ final class KeepAliveWheel {
 
     private final KeepAliveWheel wheel;
     private final Runnable task;
+    private final Consumer<RuntimeException> onFailure;
 
     /** The slot of the seat, negative once it was left. */
     private int slot;
@@ -181,9 +181,11 @@ final class KeepAliveWheel {
     private @Nullable Seat previous;
     private @Nullable Seat next;
 
-    private Seat(KeepAliveWheel wheel, Runnable task, int slot) {
+    private Seat(
+        KeepAliveWheel wheel, Runnable task, Consumer<RuntimeException> onFailure, int slot) {
       this.wheel = wheel;
       this.task = task;
+      this.onFailure = onFailure;
       this.slot = slot;
     }
 

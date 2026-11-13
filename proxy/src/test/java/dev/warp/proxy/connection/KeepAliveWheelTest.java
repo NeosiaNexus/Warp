@@ -46,6 +46,9 @@ class KeepAliveWheelTest {
   /** The names of the tasks that ran, in order. */
   private final List<String> served = new ArrayList<>();
 
+  /** What the wheel reported of the tasks that threw. */
+  private final List<RuntimeException> failures = new ArrayList<>();
+
   @AfterEach
   void tearDown() {
     channel.finishAndReleaseAll();
@@ -62,7 +65,7 @@ class KeepAliveWheelTest {
     @Test
     @DisplayName("should serve a seat one interval after it was taken, then every interval")
     void servesEveryInterval() {
-      wheel.join(named("a"));
+      join(named("a"));
 
       elapse(INTERVAL_SECONDS - 1);
       assertEquals(List.of(), served, "nothing is due before one interval");
@@ -77,9 +80,9 @@ class KeepAliveWheelTest {
     @Test
     @DisplayName("should serve a seat taken later one interval after it was taken")
     void servesLateSeatAfterOneInterval() {
-      wheel.join(named("a"));
+      join(named("a"));
       elapse(7);
-      wheel.join(named("b"));
+      join(named("b"));
 
       elapse(INTERVAL_SECONDS - 1);
       assertEquals(List.of("a"), served, "b is not due yet");
@@ -90,9 +93,9 @@ class KeepAliveWheelTest {
     @Test
     @DisplayName("should serve seats taken at the same time in the same tick")
     void servesSeatsOfOneSlotTogether() {
-      wheel.join(named("a"));
-      wheel.join(named("b"));
-      wheel.join(named("c"));
+      join(named("a"));
+      join(named("b"));
+      join(named("c"));
 
       elapse(INTERVAL_SECONDS);
 
@@ -102,10 +105,10 @@ class KeepAliveWheelTest {
     @Test
     @DisplayName("should give a seat taken after every slot was served a turn per interval")
     void wrapsAround() {
-      wheel.join(named("a"));
+      join(named("a"));
       elapse(2 * INTERVAL_SECONDS + 3);
       served.clear();
-      wheel.join(named("b"));
+      join(named("b"));
 
       elapse(INTERVAL_SECONDS);
 
@@ -115,17 +118,19 @@ class KeepAliveWheelTest {
     @Test
     @DisplayName("should keep serving the other seats when a task fails")
     void survivesFailingTask() {
-      wheel.join(named("a"));
-      wheel.join(
+      join(named("a"));
+      join(
           () -> {
             served.add("failing");
             throw new IllegalStateException("boom");
           });
-      wheel.join(named("c"));
+      join(named("c"));
 
       elapse(2 * INTERVAL_SECONDS);
 
       assertEquals(List.of("c", "failing", "a", "c", "failing", "a"), served);
+      assertEquals(2, failures.size(), "each failure is reported to the task's owner");
+      assertEquals("boom", failures.get(0).getMessage());
     }
   }
 
@@ -140,7 +145,7 @@ class KeepAliveWheelTest {
     @Test
     @DisplayName("should no longer serve a seat that was left")
     void stopsServingLeftSeat() {
-      KeepAliveWheel.Seat seat = wheel.join(named("a"));
+      KeepAliveWheel.Seat seat = join(named("a"));
       elapse(INTERVAL_SECONDS);
 
       seat.leave();
@@ -152,11 +157,11 @@ class KeepAliveWheelTest {
     @Test
     @DisplayName("should keep serving the seats around one that was left, wherever it stood")
     void keepsNeighbours() {
-      KeepAliveWheel.Seat last = wheel.join(named("a"));
-      wheel.join(named("b"));
-      KeepAliveWheel.Seat middle = wheel.join(named("c"));
-      wheel.join(named("d"));
-      KeepAliveWheel.Seat first = wheel.join(named("e"));
+      KeepAliveWheel.Seat last = join(named("a"));
+      join(named("b"));
+      KeepAliveWheel.Seat middle = join(named("c"));
+      join(named("d"));
+      KeepAliveWheel.Seat first = join(named("e"));
 
       middle.leave();
       elapse(INTERVAL_SECONDS);
@@ -177,8 +182,8 @@ class KeepAliveWheelTest {
     @Test
     @DisplayName("should count a seat left twice once")
     void leavesOnce() {
-      KeepAliveWheel.Seat seat = wheel.join(named("a"));
-      wheel.join(named("b"));
+      KeepAliveWheel.Seat seat = join(named("a"));
+      join(named("b"));
 
       seat.leave();
       seat.leave();
@@ -191,7 +196,7 @@ class KeepAliveWheelTest {
     @Test
     @DisplayName("should stop its timer once the last seat was left, and start it again")
     void stopsTimerWhenEmpty() {
-      KeepAliveWheel.Seat seat = wheel.join(named("a"));
+      KeepAliveWheel.Seat seat = join(named("a"));
       assertEquals(1, wheel.seats());
 
       seat.leave();
@@ -199,7 +204,7 @@ class KeepAliveWheelTest {
       assertEquals(0, wheel.seats());
       assertEquals(-1, channel.runScheduledPendingTasks(), "no timer is left on the loop");
 
-      wheel.join(named("b"));
+      join(named("b"));
       elapse(INTERVAL_SECONDS);
       assertEquals(List.of("b"), served);
     }
@@ -207,8 +212,8 @@ class KeepAliveWheelTest {
     @Test
     @DisplayName("should run one timer however many seats are taken")
     void runsOneTimer() {
-      wheel.join(named("a"));
-      KeepAliveWheel.Seat second = wheel.join(named("b"));
+      join(named("a"));
+      KeepAliveWheel.Seat second = join(named("b"));
       second.leave();
 
       elapse(INTERVAL_SECONDS);
@@ -230,15 +235,15 @@ class KeepAliveWheelTest {
     @Test
     @DisplayName("should let a task leave its own seat and still serve the following ones")
     void taskLeavesItsOwnSeat() {
-      wheel.join(named("a"));
+      join(named("a"));
       AtomicReference<KeepAliveWheel.Seat> own = new AtomicReference<>();
       own.set(
-          wheel.join(
+          join(
               () -> {
                 served.add("b");
                 Objects.requireNonNull(own.get()).leave();
               }));
-      wheel.join(named("c"));
+      join(named("c"));
 
       elapse(2 * INTERVAL_SECONDS);
 
@@ -248,9 +253,9 @@ class KeepAliveWheelTest {
     @Test
     @DisplayName("should not serve the next seat when the running task makes it leave")
     void taskMakesNextSeatLeave() {
-      wheel.join(named("a"));
-      KeepAliveWheel.Seat next = wheel.join(named("b"));
-      wheel.join(
+      join(named("a"));
+      KeepAliveWheel.Seat next = join(named("b"));
+      join(
           () -> {
             served.add("c");
             next.leave();
@@ -264,9 +269,9 @@ class KeepAliveWheelTest {
     @Test
     @DisplayName("should not serve a later seat when the running task makes it leave")
     void taskMakesLaterSeatLeave() {
-      KeepAliveWheel.Seat later = wheel.join(named("a"));
-      wheel.join(named("b"));
-      wheel.join(
+      KeepAliveWheel.Seat later = join(named("a"));
+      join(named("b"));
+      join(
           () -> {
             served.add("c");
             later.leave();
@@ -280,14 +285,14 @@ class KeepAliveWheelTest {
     @Test
     @DisplayName("should keep the pass going when a task makes an already served seat leave")
     void taskMakesServedSeatLeave() {
-      wheel.join(named("a"));
+      join(named("a"));
       AtomicReference<KeepAliveWheel.Seat> servedSeat = new AtomicReference<>();
-      wheel.join(
+      join(
           () -> {
             served.add("b");
             Objects.requireNonNull(servedSeat.get()).leave();
           });
-      servedSeat.set(wheel.join(named("c")));
+      servedSeat.set(join(named("c")));
 
       elapse(INTERVAL_SECONDS);
 
@@ -297,11 +302,11 @@ class KeepAliveWheelTest {
     @Test
     @DisplayName("should serve a seat taken during a tick one interval later, not in that tick")
     void seatTakenDuringTickWaits() {
-      wheel.join(
+      join(
           () -> {
             served.add("a");
             if (served.size() == 1) {
-              wheel.join(named("b"));
+              join(named("b"));
             }
           });
 
@@ -318,16 +323,16 @@ class KeepAliveWheelTest {
     void lastTaskLeaves() {
       AtomicReference<KeepAliveWheel.Seat> own = new AtomicReference<>();
       own.set(
-          wheel.join(
+          join(
               () -> {
                 served.add("a");
                 Objects.requireNonNull(own.get()).leave();
               }));
-      wheel.join(named("b"));
+      join(named("b"));
       elapse(INTERVAL_SECONDS);
       served.clear();
 
-      KeepAliveWheel.Seat late = wheel.join(named("c"));
+      KeepAliveWheel.Seat late = join(named("c"));
       late.leave();
       elapse(INTERVAL_SECONDS);
 
@@ -356,8 +361,8 @@ class KeepAliveWheelTest {
       try {
         KeepAliveWheel otherWheel = KeepAliveWheel.of(other.eventLoop());
         assertNotSame(wheel, otherWheel);
-        otherWheel.join(named("other"));
-        wheel.join(named("a"));
+        otherWheel.join(named("other"), failures::add);
+        join(named("a"));
 
         elapse(INTERVAL_SECONDS);
 
@@ -371,6 +376,10 @@ class KeepAliveWheelTest {
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  private KeepAliveWheel.Seat join(Runnable task) {
+    return wheel.join(task, failures::add);
+  }
 
   private Runnable named(String name) {
     return () -> served.add(name);
