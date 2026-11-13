@@ -2684,9 +2684,6 @@ public final class ConnectedPlayer {
    * every state), and no server sends it anything while it waits between two.
    */
   void startKeepAliveTask() {
-    if (disconnected.get()) {
-      return;
-    }
     onEventLoop(this::joinKeepAliveWheel);
   }
 

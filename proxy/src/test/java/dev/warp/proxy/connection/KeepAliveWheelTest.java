@@ -180,6 +180,36 @@ class KeepAliveWheelTest {
     }
 
     @Test
+    @DisplayName("should keep the list of a slot whole when neighbours leave one after the other")
+    void neighboursLeaveInTurn() {
+      join(named("a"));
+      join(named("b"));
+      KeepAliveWheel.Seat third = join(named("c"));
+      KeepAliveWheel.Seat fourth = join(named("d"));
+      join(named("e"));
+
+      fourth.leave();
+      third.leave();
+      elapse(INTERVAL_SECONDS);
+
+      assertEquals(List.of("e", "b", "a"), served);
+    }
+
+    @Test
+    @DisplayName("should let a seat of the first slot leave")
+    void leavesFirstSlot() {
+      join(named("a"));
+      elapse(1); // the seats taken now go to the slot that tick served: the first one
+      KeepAliveWheel.Seat seat = join(named("b"));
+
+      seat.leave();
+      elapse(INTERVAL_SECONDS);
+
+      assertEquals(List.of("a"), served);
+      assertEquals(1, wheel.seats());
+    }
+
+    @Test
     @DisplayName("should count a seat left twice once")
     void leavesOnce() {
       KeepAliveWheel.Seat seat = join(named("a"));

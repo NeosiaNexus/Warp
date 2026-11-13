@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.connection;
 
+import java.util.Objects;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -140,9 +141,8 @@ final class KeepAliveWheel {
     seat.previous = null;
     seat.next = null;
     seat.slot = -1;
-    ScheduledFuture<?> running = timer;
-    if (--seats == 0 && running != null) {
-      running.cancel(false);
+    if (--seats == 0) {
+      Objects.requireNonNull(timer, "the timer runs while a seat is taken").cancel(false);
       timer = null;
     }
   }

@@ -211,6 +211,53 @@ class ClientKeepAliveTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Time-out
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("A client that does not answer")
+  class Unanswered {
+
+    @Test
+    @DisplayName("should be sent no second keep-alive, and kept until its answer is late")
+    void keptUntilLate() {
+      connectPlayer(ProtocolVersion.latest());
+      nextKeepAlive();
+
+      advanceOneTick(); // the answer is 30 s old: not late yet
+
+      assertNull(warpSide.readOutbound(), "no keep-alive while one is unanswered");
+      assertTrue(warpSide.isActive(), "an answer is late after more than 30 s");
+    }
+
+    @Test
+    @DisplayName("should be disconnected once its answer is more than 30 s late")
+    void timedOut() {
+      connectPlayer(ProtocolVersion.latest());
+      nextKeepAlive();
+      advanceOneTick();
+
+      advanceOneTick();
+
+      assertFalse(warpSide.isActive(), "the client timed out");
+      assertEquals(0, KeepAliveWheel.of(warpSide.eventLoop()).seats());
+    }
+
+    @Test
+    @DisplayName("should stay connected when its answer comes before the time-out")
+    void answersLate() {
+      connectPlayer(ProtocolVersion.latest());
+      KeepAlive first = nextKeepAlive();
+      advanceOneTick();
+
+      echo(first);
+
+      assertNotNull(nextKeepAlive(), "the late answer was taken: the cycle goes on");
+      assertTrue(warpSide.isActive());
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // The task and the wheel of the event loop
   // ---------------------------------------------------------------------------
 
