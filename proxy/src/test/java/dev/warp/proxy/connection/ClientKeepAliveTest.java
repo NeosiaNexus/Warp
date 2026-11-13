@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.connection;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -210,11 +211,67 @@ class ClientKeepAliveTest {
   }
 
   // ---------------------------------------------------------------------------
+  // The task and the wheel of the event loop
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("The keep-alive task")
+  class Task {
+
+    @Test
+    @DisplayName("should take one seat in the wheel of the client's event loop")
+    void takesOneSeat() {
+      ConnectedPlayer player = connectPlayer(ProtocolVersion.latest());
+
+      player.startKeepAliveTask(); // already started on entering PLAY
+
+      assertEquals(1, KeepAliveWheel.of(warpSide.eventLoop()).seats());
+    }
+
+    @Test
+    @DisplayName("should send nothing once cancelled, and leave the wheel")
+    void cancelled() {
+      ConnectedPlayer player = connectPlayer(ProtocolVersion.latest());
+
+      player.cancelKeepAliveTask();
+      advanceOneTick();
+
+      assertNull(warpSide.readOutbound(), "a cancelled task sends no keep-alive");
+      assertEquals(0, KeepAliveWheel.of(warpSide.eventLoop()).seats());
+    }
+
+    @Test
+    @DisplayName("should send keep-alives again when started after a cancellation")
+    void restarted() {
+      ConnectedPlayer player = connectPlayer(ProtocolVersion.latest());
+      player.cancelKeepAliveTask();
+      player.cancelKeepAliveTask();
+
+      player.startKeepAliveTask();
+
+      assertEquals(1, KeepAliveWheel.of(warpSide.eventLoop()).seats());
+      assertNotNull(nextKeepAlive());
+    }
+
+    @Test
+    @DisplayName("should leave the wheel when the player disconnects, and not come back")
+    void leavesOnDisconnect() {
+      ConnectedPlayer player = connectPlayer(ProtocolVersion.latest());
+
+      player.disconnect(net.kyori.adventure.text.Component.text("bye"));
+      warpSide.runPendingTasks();
+      player.startKeepAliveTask();
+
+      assertEquals(0, KeepAliveWheel.of(warpSide.eventLoop()).seats());
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
   /** Puts a player of {@code version} in PLAY, with a client of the same version on the wire. */
-  private void connectPlayer(ProtocolVersion version) {
+  private ConnectedPlayer connectPlayer(ProtocolVersion version) {
     addCodecs(warpSide, PacketDirection.SERVERBOUND, PacketDirection.CLIENTBOUND, version);
     addCodecs(clientSide, PacketDirection.CLIENTBOUND, PacketDirection.SERVERBOUND, version);
     MinecraftConnection connection = new MinecraftConnection(warpSide);
@@ -243,6 +300,7 @@ class ClientKeepAliveTest {
             new ClientCookies(connection, version, warpSide.eventLoop()));
     // Entering PLAY starts the keep-alive task.
     connection.setSessionHandler(new ClientPlaySessionHandler(player));
+    return player;
   }
 
   private static void addCodecs(
