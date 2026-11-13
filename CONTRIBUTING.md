@@ -310,6 +310,15 @@ gh attestation verify warp-<version>.jar --repo NeosiaNexus/Warp
 gh attestation verify warp-<version>.jar --repo NeosiaNexus/Warp --bundle warp-<version>.jar.intoto.jsonl
 ```
 
+The same run publishes the container images (`ghcr.io/neosianexus/warp:<version>` and
+`:<version>-alpine`, for `linux/amd64` and `linux/arm64`, from the released jar) and the Helm
+chart (`oci://ghcr.io/neosianexus/charts/warp:<version>`), each signed with cosign (keyless) and
+the images attested like the jar; `.github/workflows/_container.yml` tests and scans every image
+before `_container-publish.yml` pushes it. `docker.yml` publishes `:edge` and `:edge-alpine` from
+every push to `main`.
+The chart's `version` and `appVersion` are `version.txt`'s: release-please bumps them
+(`extra-files` in `release-please-config.json`), and CI fails when they differ.
+
 ### Version numbers
 
 `version.txt` holds the last release; release-please writes it, never edit it by hand. Only the

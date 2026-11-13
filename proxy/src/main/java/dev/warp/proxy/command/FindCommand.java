@@ -18,8 +18,10 @@ package dev.warp.proxy.command;
 
 import dev.warp.api.Warp;
 import dev.warp.api.command.CommandSource;
+import dev.warp.api.fleet.FleetPlayer;
 import dev.warp.api.player.Player;
 import dev.warp.protocol.ProtocolVersion;
+import dev.warp.proxy.connection.Platforms;
 import dev.warp.proxy.i18n.Message;
 
 import java.util.Optional;
@@ -69,6 +71,11 @@ final class FindCommand {
                       String name = StringArgumentType.getString(context, "player");
                       Optional<Player> player = proxy.player(name);
                       if (player.isEmpty()) {
+                        Optional<FleetPlayer> remote = proxy.fleet().player(name);
+                        if (remote.isPresent()) {
+                          source.sendMessage(describeRemote(remote.get()));
+                          return Command.SINGLE_SUCCESS;
+                        }
                         source.sendMessage(
                             Message.UNKNOWN_PLAYER.with(Message.text("player", name)));
                         return 0;
@@ -77,6 +84,25 @@ final class FindCommand {
                           describe(player.get(), source.hasPermission(ADDRESS_PERMISSION)));
                       return Command.SINGLE_SUCCESS;
                     }));
+  }
+
+  /**
+   * The answer to {@code /find} for a player on another proxy of the fleet: where it is, nothing
+   * personal, which only its own proxy knows.
+   *
+   * @param player the player
+   * @return the message
+   */
+  static Component describeRemote(FleetPlayer player) {
+    String server = player.server();
+    if (server == null) {
+      return Message.FIND_REMOTE_CONNECTING.with(
+          Message.text("player", player.name()), Message.text("node", player.proxyId()));
+    }
+    return Message.FIND_REMOTE.with(
+        Message.text("player", player.name()),
+        Message.text("node", player.proxyId()),
+        Message.text("server", server));
   }
 
   /**
@@ -93,7 +119,9 @@ final class FindCommand {
             ? Message.FIND_ADDRESS.with(
                 Message.text("address", player.remoteAddress().getAddress().getHostAddress()))
             : Component.empty();
-    String versionName = version != null ? version.name() : "protocol " + player.protocolVersion();
+    String versionName =
+        (version != null ? version.name() : "protocol " + player.protocolVersion())
+            + Platforms.describe(player.platform());
     return player
         .currentServer()
         .map(

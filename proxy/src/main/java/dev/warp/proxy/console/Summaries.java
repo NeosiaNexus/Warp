@@ -44,8 +44,33 @@ public final class Summaries {
    * @param address its address, as configured
    * @param latencyMillis how long its status ping took, or -1 when it did not answer
    * @param version the version it reports, or {@code null}
+   * @param pending whether its ping is still under way: the summary did not wait for it
    */
-  public record Server(String name, String address, long latencyMillis, @Nullable String version) {
+  public record Server(
+      String name, String address, long latencyMillis, @Nullable String version, boolean pending) {
+
+    /**
+     * A server whose ping is over.
+     *
+     * @param name its name
+     * @param address its address, as configured
+     * @param latencyMillis how long its status ping took, or -1 when it did not answer
+     * @param version the version it reports, or {@code null}
+     */
+    public Server(String name, String address, long latencyMillis, @Nullable String version) {
+      this(name, address, latencyMillis, version, false);
+    }
+
+    /**
+     * Returns a server whose ping has not answered yet.
+     *
+     * @param name its name
+     * @param address its address, as configured
+     * @return the server, still pinging
+     */
+    public static Server pending(String name, String address) {
+      return new Server(name, address, -1, null, true);
+    }
 
     /** Returns whether it answered. */
     boolean up() {
@@ -220,10 +245,15 @@ public final class Summaries {
       return;
     }
     long up = servers.stream().filter(Server::up).count();
-    row(block, "servers")
-        .text(up == servers.size() ? Style.GOOD : up == 0 ? Style.BAD : Style.CAUTION, up + "")
-        .text(" of " + servers.size() + " reachable")
-        .end();
+    long pending = servers.stream().filter(Server::pending).count();
+    ConsoleBlock.Builder count =
+        row(block, "servers")
+            .text(up == servers.size() ? Style.GOOD : up == 0 ? Style.BAD : Style.CAUTION, up + "")
+            .text(" of " + servers.size() + " reachable");
+    if (pending > 0) {
+      count.text(", ").text(Style.CAUTION, pending + " still pinging");
+    }
+    count.end();
     int nameWidth = 0;
     int addressWidth = 0;
     for (Server server : servers) {
@@ -232,7 +262,8 @@ public final class Summaries {
     }
     for (Server server : servers) {
       block.text(" ".repeat(2 + LABEL_WIDTH));
-      block.glyph(server.up() ? Style.GOOD : Style.BAD, server.up() ? Glyphs::up : Glyphs::down);
+      Style state = server.up() ? Style.GOOD : server.pending() ? Style.CAUTION : Style.BAD;
+      block.glyph(state, server.up() ? Glyphs::up : Glyphs::down);
       block.text(" ").text(Style.SERVER, pad(server.name(), nameWidth + 2));
       block.text(Style.MUTED, pad(server.address(), addressWidth + 2));
       if (server.up()) {
@@ -241,6 +272,8 @@ public final class Summaries {
         if (version != null && !version.isBlank()) {
           block.text("  ").text(Style.MUTED, version);
         }
+      } else if (server.pending()) {
+        block.text(Style.CAUTION, "still pinging");
       } else {
         block.text(Style.BAD, "unreachable");
       }

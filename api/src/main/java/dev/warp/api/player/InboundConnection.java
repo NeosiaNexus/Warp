@@ -68,8 +68,10 @@ public interface InboundConnection {
   /**
    * Returns what kind of client this is, as the markers of its handshake declared: a Forge client
    * of one of its three eras, otherwise {@link ClientPlatform#JAVA} until a later phase says more
-   * (NeoForge is recognized in the configuration phase, Bedrock from Floodgate's data). A platform
-   * is a claim, not a proof: anything can send a Forge marker.
+   * (NeoForge is recognized in the configuration phase), or {@link ClientPlatform.Bedrock} for a
+   * player whose Floodgate data the proxy decrypted and verified. A Forge platform is a claim, not
+   * a proof: anything can send a Forge marker. A Bedrock platform is a proof: only Geyser, or
+   * another proxy holding the same Floodgate key, can produce the data it was read from.
    *
    * @return the platform, {@link ClientPlatform#JAVA} when nothing marks the client
    */
@@ -90,4 +92,16 @@ public interface InboundConnection {
    * @return {@code true} if the client was transferred here
    */
   boolean isTransferred();
+
+  /**
+   * Returns whether another Warp proxy of the network handed the client off: it arrived by a
+   * transfer with a handoff ticket that proxy sealed, which this proxy checked ({@code
+   * transfers.handoff}). On an online-mode login, the player's identity then comes from the ticket,
+   * as that proxy authenticated it, rather than from a new authentication with Mojang; the same
+   * events fire as for any login. Known from {@code PreLoginEvent} on; a login whose handoff turns
+   * out not to be the client's own is refused before {@code GameProfileRequestEvent}.
+   *
+   * @return {@code true} if the client was handed off; always {@code false} when the handoff is off
+   */
+  boolean isHandedOff();
 }

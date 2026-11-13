@@ -1,0 +1,5 @@
+# Per-run working directories and logs are large and machine-specific: never committed.
+results/*/work/
+results/*/logs/
+# Only the report, the raw CSVs, the configs used and the host fingerprint are kept for a committed
+# run (the smoke run shipped with the harness). Everything else under results/ is local.

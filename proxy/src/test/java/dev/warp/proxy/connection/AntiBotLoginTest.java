@@ -277,7 +277,8 @@ class AntiBotLoginTest {
                 d.verification().tokenRotateAfter(),
                 d.verification().tokenSecretFile(),
                 d.verification().transferHost(),
-                d.verification().transferPort()));
+                d.verification().transferPort()),
+            AntiBotConfig.World.DEFAULTS);
     antiBot =
         new AntiBotService(
             config,

@@ -154,7 +154,7 @@ class ShutdownCommandTest {
       assertTrue(proxy.control.shutdowns.isEmpty());
       assertTrue(proxy.told(steve).isEmpty());
       assertEquals(
-          "Already shutting down for 1m 15s (transferring, by SIGTERM), 12 players left.",
+          "Already shutting down for 1m 15s (transferring, by SIGTERM), 12 players still connected.",
           console.last());
     }
 

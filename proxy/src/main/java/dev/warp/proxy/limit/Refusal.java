@@ -63,6 +63,8 @@ public enum Refusal {
   VERIFICATION_FAILED("logins that failed verification"),
   /** An unknown identity that did not answer the verification in time. */
   VERIFICATION_TIMEOUT("verifications timed out"),
+  /** An unknown identity whose fall in the world did not follow the gravity, after its retry. */
+  WORLD_CHECK_FAILED("logins that failed the world check"),
   /** An unknown identity the proxy had no room to verify. */
   VERIFICATION_BUSY("logins refused as too many verifying"),
   /** A player verified before authentication, told to reconnect (before 1.20.5). */
@@ -103,6 +105,13 @@ public enum Refusal {
   /** A transfer while {@code accepts-transfers} is off. */
   TRANSFER_REFUSED("transfers refused"),
 
+  /**
+   * A transfer whose handoff ticket was valid but whose proof, read once encrypted, was missing or
+   * wrong: the client was told to skip Mojang, so it cannot be authenticated, and the ticket was
+   * captured in transit.
+   */
+  HANDOFF_FAILED("transfer handoffs without their proof"),
+
   /** An invalid name, or a profile key that does not check. */
   INVALID_LOGIN("invalid names or profile keys"),
 
@@ -116,7 +125,12 @@ public enum Refusal {
   DENIED_BY_PLUGIN("logins denied by plugins"),
 
   /** A login beyond the player limit. */
-  SERVER_FULL("logins refused as the server is full");
+  SERVER_FULL("logins refused as the server is full"),
+  /**
+   * A handshake whose Floodgate data did not verify: not encrypted with the proxy's key, replayed,
+   * naming another address, or carrying an identity that cannot log in.
+   */
+  FLOODGATE_REFUSED("Bedrock logins whose Floodgate data did not verify");
 
   private final String description;
 

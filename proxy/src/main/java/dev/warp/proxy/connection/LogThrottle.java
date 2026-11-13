@@ -53,7 +53,7 @@ public final class LogThrottle {
    * @param interval the minimum time between two lines
    * @param nanoClock a monotonic clock in nanoseconds, such as {@link System#nanoTime()}
    */
-  LogThrottle(Duration interval, LongSupplier nanoClock) {
+  public LogThrottle(Duration interval, LongSupplier nanoClock) {
     this.intervalNanos = interval.toNanos();
     this.nanoClock = nanoClock;
     this.nextPermitted = new AtomicLong(nanoClock.getAsLong());

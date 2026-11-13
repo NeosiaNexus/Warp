@@ -1,0 +1,357 @@
+# Default values for the Warp chart. Every key is documented here; the generated warp.conf and
+# what Warp does with each setting are documented in Warp's reference configuration
+# (https://github.com/NeosiaNexus/Warp/blob/main/docs/deploy/kubernetes.md#configuration).
+
+# -- Proxies to run. Ignored when autoscaling.enabled is true.
+replicaCount: 2
+
+image:
+  repository: ghcr.io/neosianexus/warp
+  # -- Overrides the chart's appVersion. Append -alpine for the musl variant (smaller image).
+  tag: ''
+  # -- Pins the image by digest instead of the tag (sha256:...).
+  digest: ''
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ''
+fullnameOverride: ''
+
+# -----------------------------------------------------------------------------
+# Warp's configuration (rendered into a ConfigMap as /data/warp.conf)
+# -----------------------------------------------------------------------------
+config:
+  # -- Authenticate players with Mojang. Off only behind another proxy or on an offline network.
+  onlineMode: true
+  # -- Backend servers, by name: address, and optionally what Warp's reference configuration allows
+  # for a server. At least one, unless servers are registered by a plugin.
+  servers:
+    lobby:
+      address: lobby.minecraft.svc.cluster.local:25565
+  # -- Where players land when they connect: a server or a group.
+  defaultServer: lobby
+  # -- Servers or groups tried, in order, when a player is kicked from a server. Defaults to the
+  # default server.
+  fallbackOrder: []
+  # -- Server groups: servers spread by a strategy (round-robin, least-connections, lowest-latency,
+  # random, weighted, fill). A group stands wherever a server name does.
+  groups: {}
+  #  lobbies:
+  #    servers: [lobby-1, lobby-2]
+  #    strategy: least-connections
+  # -- Routes: the server or group for the host name a player connected with. "*.example.com"
+  # matches subdomains, "$1" in the target stands for what * matched.
+  routes: {}
+  #  play.example.com: lobbies
+  #  "*.mini.example.com": "$1"
+  # -- Let in players a server sends here with a Transfer packet (1.20.5+): another Warp draining,
+  # or another network.
+  acceptsTransfers: true
+  forwarding:
+    # -- velocity (modern forwarding, signed with the forwarding secret) or none.
+    mode: velocity
+  # -- Players let in at once; -1 for no limit, 0 for a maintenance mode.
+  playerLimit: -1
+  status:
+    # -- The message of the day, in MiniMessage.
+    motd: '<#38bdf8>A Warp Proxy'
+    # -- The maximum shown in the server list; empty shows the player limit or 500.
+    maxPlayers: ''
+  compression:
+    threshold: 256
+    # -- Forward compressed frames as they are: keep the backends at the same threshold.
+    passthrough: true
+  logging:
+    # -- json for log collectors, text to read `kubectl logs` by eye.
+    format: json
+  # -- PROXY protocol v1/v2 from the load balancer in front of the Service. When enabled, every
+  # connection must come from a trusted proxy and carry the header; set the Service annotations
+  # your cloud needs to send it (see docs/deploy/kubernetes.md).
+  proxyProtocol:
+    enabled: false
+    # -- Addresses or CIDR ranges the header is accepted from. Required when enabled.
+    trustedProxies: []
+  # -- Anything else, appended to warp.conf as HOCON: limits, anti-bot, timeouts, plugins'
+  # settings... Keys given above win over the same keys here.
+  extra: ''
+  # -- A whole warp.conf, replacing everything the chart would generate (the keys above are then
+  # ignored, except management and drain, which the chart's probes and hooks rely on: write them
+  # the same way). For a configuration kept outside values.
+  raw: ''
+
+# -----------------------------------------------------------------------------
+# Draining: how a Pod stops without disconnecting anyone
+# -----------------------------------------------------------------------------
+drain:
+  # -- Where players are transferred when this Pod stops (1.20.5+ clients): the network's public
+  # address, as players type it, never a Pod or a backend. Empty: players stay until they leave or
+  # the time-out expires (see cannotTransfer).
+  transferTo: ''
+  # -- How long readiness says "draining" before transfers start, for the load balancer to stop
+  # sending new players here (kube-proxy and cloud balancers take a few seconds).
+  propagationDelay: 10s
+  # -- Time between two transfers, so that the other proxies absorb them smoothly.
+  transferInterval: 100ms
+  # -- Players that cannot be transferred (older clients, or no transferTo): keep until they leave,
+  # or kick.
+  cannotTransfer: keep
+  # -- Players who log in while draining (before the balancer caught up): accept (transferred with
+  # the others) or refuse.
+  newPlayers: accept
+  # -- Longest wait for the players kept, once the transfers are done. The Pod's
+  # terminationGracePeriodSeconds is derived from it: propagationDelay + timeout + gracePeriodMargin.
+  timeout: 30m
+  # -- Seconds added to the derived grace period, for the proxy to disable its plugins and exit.
+  gracePeriodMargin: 60
+  # -- How the drain is triggered when Kubernetes stops the Pod:
+  #   sigterm   Warp drains on SIGTERM (drain.on-sigterm = true), no hook. The default: works on
+  #             every image variant, and a second SIGTERM (kubectl delete --grace-period=0) stops
+  #             at once.
+  #   preStop   a preStop hook runs `warp drain --wait` against the management API with the
+  #             management token, then SIGTERM finds an empty proxy. For clusters that must see
+  #             the drain as an explicit hook (audits, Argo Rollouts analysis).
+  mode: sigterm
+
+# -----------------------------------------------------------------------------
+# Management server: probes, drain, metrics, remote console (:9901, never exposed outside)
+# -----------------------------------------------------------------------------
+management:
+  port: 9901
+  # -- Ready only once at least one backend is registered.
+  readyRequiresServer: true
+  # -- TLS on the management port, from a Secret with tls.crt and tls.key (cert-manager). Probes
+  # then use HTTPS. Issue the certificate for <management service>.<namespace>.svc (the name the
+  # ServiceMonitor and the helm test verify); the preStop drain reaches the Pod's own proxy over
+  # loopback and verifies the certificate against tls.crt without its name, so no IP address SAN.
+  tls:
+    enabled: false
+    secretName: ''
+  metrics:
+    enabled: true
+    # -- Require the management token to read /metrics (Prometheus then needs it as a bearer).
+    requireToken: false
+    # -- How often each backend is pinged for warp_server_rtt_seconds and warp_server_health.
+    serverPingInterval: 15s
+    serviceMonitor:
+      # -- Create a ServiceMonitor (Prometheus Operator) for the management Service.
+      enabled: false
+      interval: 15s
+      scrapeTimeout: 10s
+      # -- Labels the Prometheus instance selects ServiceMonitors by.
+      labels: {}
+      # -- Namespace of the ServiceMonitor, when the Prometheus Operator only watches its own. The
+      # operator reads the ServiceMonitor's Secrets (the TLS Secret's ca.crt, the management token)
+      # from that namespace, where the chart does not create them: another namespace is refused
+      # with tls (unless insecureSkipVerify) or requireToken.
+      namespace: ''
+      relabelings: []
+      metricRelabelings: []
+      # -- With management.tls, Prometheus verifies the certificate against the CA in the TLS
+      # Secret (key ca.crt) for <management service>.<namespace>.svc: issue the certificate for
+      # that name (cert-manager's dnsNames). Setting this to true skips the verification, and is
+      # refused together with requireToken, since the token would go to whoever answers.
+      insecureSkipVerify: false
+    # -- Add prometheus.io/scrape annotations to the Pods, for a Prometheus without the operator.
+    podAnnotations: false
+  console:
+    # -- Remote console over the management port: `warp console attach --url
+    # http://localhost:9901` through `kubectl port-forward`.
+    enabled: false
+    # -- Tokens: a name, scopes (logs, commands) and the Secret key holding the token (created in
+    # the chart's Secret when `generate: true`, else read from existingSecret, which is required
+    # for a token without `generate`).
+    tokens: []
+    #  - name: ops
+    #    scopes: [logs, commands]
+    #    secretKey: console-ops-token
+    #    generate: true
+    # -- Networks allowed to run commands without TLS, besides loopback (port-forward arrives on
+    # loopback): the ingress that terminates TLS, a VPN.
+    trustedNetworks: []
+    history: 1000
+
+# -----------------------------------------------------------------------------
+# Secrets
+# -----------------------------------------------------------------------------
+secrets:
+  # -- A Secret of yours instead of the chart's, with the keys named below.
+  existingSecret: ''
+  # -- The key of the forwarding secret shared with the backends (Paper: proxies.velocity.secret).
+  forwardingSecretKey: forwarding-secret
+  # -- The key of the management token, which POST /drain and the metrics (when requireToken)
+  # take as a bearer.
+  managementTokenKey: management-token
+  # -- Values for the chart's own Secret. Empty values are generated once and kept across
+  # upgrades (the chart reads the existing Secret back).
+  forwardingSecret: ''
+  managementToken: ''
+  antiBot:
+    # -- Share the anti-bot's keys across the proxies (identity hashing and verification tokens),
+    # so that a player verified on one proxy stays verified on the others. Generated when empty.
+    shared: true
+    secret: ''
+    tokenSecret: ''
+    secretKey: antibot-secret
+    tokenSecretKey: antibot-token-secret
+
+# -----------------------------------------------------------------------------
+# Service for the players
+# -----------------------------------------------------------------------------
+service:
+  type: LoadBalancer
+  port: 25565
+  # -- Only with type NodePort or LoadBalancer; 0 lets Kubernetes choose.
+  nodePort: 0
+  # -- Local keeps the players' addresses (no SNAT) and avoids a second hop; Cluster spreads
+  # across nodes but hides addresses unless the PROXY protocol is on.
+  externalTrafficPolicy: Local
+  loadBalancerIP: ''
+  loadBalancerClass: ''
+  loadBalancerSourceRanges: []
+  # -- Cloud-specific: the PROXY protocol, health check ports, static addresses...
+  annotations: {}
+  labels: {}
+  ipFamilyPolicy: ''
+  ipFamilies: []
+
+# -- The management Service (ClusterIP), for Prometheus and the console: never exposed.
+managementService:
+  annotations: {}
+  labels: {}
+
+# -----------------------------------------------------------------------------
+# Scheduling and resources
+# -----------------------------------------------------------------------------
+# -- The heap takes half of the memory limit (the image's JVM flags); Netty's direct buffers, the
+# metaspace and the threads take the rest. 1Gi serves a few hundred players.
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    memory: 1Gi
+
+# -- Extra JVM flags (JAVA_OPTS). WARP_JVM_OPTS replaces the image's flags altogether.
+javaOpts: ''
+# -- Extra environment variables (plain or valueFrom).
+extraEnv: []
+# -- Extra volumes and mounts: plugins under /data/plugins, messages under /data/messages...
+extraVolumes: []
+extraVolumeMounts: []
+# -- Init containers, for instance one that downloads plugins into a shared volume.
+initContainers: []
+# -- Sidecars.
+extraContainers: []
+
+podAnnotations: {}
+podLabels: {}
+priorityClassName: ''
+nodeSelector: {}
+tolerations: []
+# -- Spread the proxies across nodes by default (preferred, not required, so that a small cluster
+# still schedules them all).
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: '{{ include "warp.name" . }}'
+              app.kubernetes.io/instance: '{{ .Release.Name }}'
+topologySpreadConstraints: []
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+
+# -- /data (warp.conf, forwarding secret, anti-bot store, logs) is an emptyDir: a proxy keeps no
+# state worth a volume. Size limit of that emptyDir.
+dataVolume:
+  sizeLimit: 1Gi
+
+# -----------------------------------------------------------------------------
+# Rollouts and availability
+# -----------------------------------------------------------------------------
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    # -- A new Pod is Ready before an old one starts draining.
+    maxSurge: 1
+    maxUnavailable: 0
+revisionHistoryLimit: 5
+
+probes:
+  startup:
+    # -- Up to periodSeconds * failureThreshold for the proxy to listen and its plugins to enable.
+    periodSeconds: 5
+    failureThreshold: 60
+    timeoutSeconds: 3
+  readiness:
+    periodSeconds: 5
+    failureThreshold: 2
+    successThreshold: 1
+    timeoutSeconds: 3
+  liveness:
+    periodSeconds: 10
+    failureThreshold: 3
+    timeoutSeconds: 3
+
+podDisruptionBudget:
+  enabled: true
+  # -- One of minAvailable or maxUnavailable.
+  minAvailable: 1
+  maxUnavailable: ''
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  # -- CPU (percentage of the request); empty to scale on the custom metric only.
+  targetCPUUtilizationPercentage: 70
+  # -- Players per proxy, from warp_players_online through the Prometheus adapter or KEDA (see
+  # docs/deploy/kubernetes.md). Empty for CPU only.
+  targetPlayersPerPod: ''
+  # -- Scale down one Pod at a time, and slowly: each one drains its players first.
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 300
+
+networkPolicy:
+  # -- Allow the players' port from anywhere, the management port from the namespaces and Pods
+  # below, and egress to the backends, DNS and Mojang.
+  enabled: false
+  # -- Who may reach the management port (Prometheus, operators). Namespace and Pod selectors.
+  managementFrom: []
+  #  - namespaceSelector:
+  #      matchLabels:
+  #        kubernetes.io/metadata.name: monitoring
+  # -- Where the proxies may connect: the backends (any port), or everything when empty.
+  egressTo: []
+  #  - podSelector:
+  #      matchLabels:
+  #        app.kubernetes.io/component: minecraft-server
+
+serviceAccount:
+  create: true
+  name: ''
+  annotations: {}
+  automountServiceAccountToken: false
+
+# -- Compatibility with Minecraft operators: extra labels on the Pods, such as those Shulker or
+# Agones select by.
+commonLabels: {}
