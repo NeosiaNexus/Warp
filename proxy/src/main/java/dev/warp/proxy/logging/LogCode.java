@@ -1043,6 +1043,20 @@ public enum LogCode {
       "A player was disconnected during login for the reason the message gives, with a reference"
           + " the player also sees.",
       "Match the reference the player reports with this line."),
+  /** A transferred player's handoff ticket was not used. */
+  HANDOFF_REJECTED(
+      "W-AUTH-006",
+      false,
+      "A transfer handoff was not used",
+      "A player transferred by another Warp proxy presented a handoff ticket this proxy could not"
+          + " use: sealed under another key, written for another address than the one the player"
+          + " connected to, or written for a client at another address. It logged in through Mojang instead, and joined the default"
+          + " server. Logged once a minute at most; warp_transfer_handoffs_rejected_total counts"
+          + " every reason.",
+      "Give every proxy the same key (transfers.handoff.secret-file, or WARP_TRANSFER_SECRET),"
+          + " and set drain.transfer-to and transfers.handoff.peers to the addresses players"
+          + " reach the proxies by (a host name, not one an SRV record redirects). If the proxies"
+          + " do not see the same client address, set transfers.handoff.bind-address = false."),
 
   // ---------------------------------------------------------------------------
   // Bedrock

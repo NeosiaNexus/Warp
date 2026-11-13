@@ -37,6 +37,7 @@ import dev.warp.proxy.pipeline.PipelineRegistry;
 import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 import dev.warp.proxy.status.ServerList;
+import dev.warp.proxy.transfer.TransferHandoff;
 
 import java.security.KeyPair;
 
@@ -86,6 +87,8 @@ import io.netty.channel.Channel;
  * @param fleet the fleet, which settles who owns an account across proxies
  * @param floodgate reads and verifies the Floodgate data of Bedrock players sent through Geyser,
  *     and re-emits it to backends running Floodgate
+ * @param handoff the seamless handoff between Warp proxies: the tickets written before transfers
+ *     and read from transferred logins
  */
 @SuppressWarnings("ArrayRecordComponent") // forwardingSecret is treated as immutable
 public record ServerLoginContext(
@@ -118,7 +121,8 @@ public record ServerLoginContext(
     PlayerMessages messages,
     ProxyMetrics metrics,
     FleetService fleet,
-    FloodgateService floodgate) {
+    FloodgateService floodgate,
+    TransferHandoff handoff) {
 
   /** Validates configuration invariants. */
   public ServerLoginContext {

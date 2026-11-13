@@ -38,6 +38,9 @@ final class WarpInboundConnection implements InboundConnection {
   private final MinecraftConnection connection;
   private final int protocol;
 
+  /** Whether the client presented a valid handoff ticket: set by its login, read by plugins. */
+  private volatile boolean handedOff;
+
   /**
    * Creates the view of a connection logging in: its protocol is the one Warp decodes it with.
    *
@@ -92,6 +95,16 @@ final class WarpInboundConnection implements InboundConnection {
   @Override
   public boolean isTransferred() {
     return connection.handshakeIntent() == HandshakeIntent.TRANSFER;
+  }
+
+  @Override
+  public boolean isHandedOff() {
+    return handedOff;
+  }
+
+  /** Records that the client presented a valid handoff ticket. Called once, by the login. */
+  void handedOff() {
+    this.handedOff = true;
   }
 
   @Override

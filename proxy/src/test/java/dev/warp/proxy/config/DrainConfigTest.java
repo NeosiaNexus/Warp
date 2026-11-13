@@ -121,15 +121,18 @@ class DrainConfigTest {
     void defaultPort() throws Exception {
       assertEquals(
           new DrainConfig.Target("play.example.net", 25565),
-          DrainConfig.parseTarget("play.example.net"));
+          DrainConfig.parseTarget("drain.transfer-to", "play.example.net"));
     }
 
     @Test
     @DisplayName("should read an IPv6 address in brackets, with or without a port")
     void ipv6() throws Exception {
-      assertEquals(new DrainConfig.Target("::1", 25570), DrainConfig.parseTarget("[::1]:25570"));
       assertEquals(
-          new DrainConfig.Target("2001:db8::1", 25565), DrainConfig.parseTarget("[2001:db8::1]"));
+          new DrainConfig.Target("::1", 25570),
+          DrainConfig.parseTarget("drain.transfer-to", "[::1]:25570"));
+      assertEquals(
+          new DrainConfig.Target("2001:db8::1", 25565),
+          DrainConfig.parseTarget("drain.transfer-to", "[2001:db8::1]"));
       assertEquals("[::1]:25570", new DrainConfig.Target("::1", 25570).toString());
     }
 
@@ -137,7 +140,8 @@ class DrainConfigTest {
     @ValueSource(strings = {"::1", "host:0", "host:65536", "host:port", ":25565", "[::1", "[::1]x"})
     @DisplayName("should refuse an address it cannot use")
     void invalid(String value) {
-      assertThrows(ConfigurationException.class, () -> DrainConfig.parseTarget(value));
+      assertThrows(
+          ConfigurationException.class, () -> DrainConfig.parseTarget("drain.transfer-to", value));
     }
   }
 

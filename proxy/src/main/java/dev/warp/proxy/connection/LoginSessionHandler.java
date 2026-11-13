@@ -73,11 +73,16 @@ import dev.warp.proxy.limit.LoginSlot;
 import dev.warp.proxy.limit.Refusal;
 import dev.warp.proxy.logging.LogCode;
 import dev.warp.proxy.metrics.LoginOutcome;
+import dev.warp.proxy.metrics.ProxyMetrics;
 import dev.warp.proxy.player.PlayerRegistry;
+import dev.warp.proxy.transfer.HandoffRejection;
+import dev.warp.proxy.transfer.HandoffTicket;
+import dev.warp.proxy.transfer.TransferHandoff;
 import dev.warp.proxy.world.ProxyWorld;
 import dev.warp.proxy.world.WorldCheck;
 
 import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.PrivateKey;
@@ -276,6 +281,27 @@ final class LoginSessionHandler implements SessionHandler {
    */
   private VerificationTokens.@Nullable Claim tokenClaim;
 
+  /**
+   * The handoff ticket this transferred client presented, once valid and spent: the profile another
+   * Warp proxy authenticated, and the server the player joins first.
+   */
+  private @Nullable HandoffTicket handoff;
+
+  /**
+   * The profile this login authenticated as (Mojang's, a handoff's, or the offline one), before
+   * plugins changed it: what a handoff ticket written for this player later carries.
+   */
+  private @Nullable GameProfile authenticatedProfile;
+
+  /** Whether the client presented a ticket, valid or not: cleared from it once logged in. */
+  private boolean handoffPresented;
+
+  /**
+   * Whether this login skips Mojang thanks to {@link #handoff}: the client was told not to
+   * authenticate, and proves the ticket is its own once encrypted.
+   */
+  private boolean handoffSkipsMojang;
+
   /** This login's place among the verifications running, from its admission to the probe's end. */
   private VerificationQueue.@Nullable Slot verificationSlot;
 
@@ -462,16 +488,26 @@ final class LoginSessionHandler implements SessionHandler {
     // The anti-bot first: no plugin hears of a login before the stages that apply to it.
     AntiBotService antiBot = loginContext.antiBot();
     InetSocketAddress address = (InetSocketAddress) connection.remoteAddress();
+    // A transferred client's handoff ticket is asked for at once: its round trip overlaps the
+    // recognition, and the answer decides whether the client authenticates with Mojang.
+    CompletableFuture<AntiBotService.Recognition> recognizing =
+        antiBot.recognizeEverywhere(name, address);
+    CompletableFuture<Optional<byte[]>> ticket = requestHandoff();
     whenOnLoop(
-        antiBot.recognizeEverywhere(name, address),
+        ticket.isDone()
+            ? recognizing
+            : CompletableFuture.allOf(recognizing, ticket).thenCompose(_ -> recognizing),
         recognized -> {
           this.recognition = recognized;
+          readHandoff(packet, ticket.join());
           if (!onlineMode && bedrock == null && antiBot.lockdownRefuses(recognized)) {
             // Not a verified Bedrock player: its identity is as proven as an account's.
             deny(Refusal.LOCKDOWN, LOCKDOWN_REASON);
             return;
           }
+          // A trusted handoff spares the verification the token would: no second round trip.
           if (connection.handshakeIntent() == HandshakeIntent.TRANSFER
+              && !handoffTrusted(onlineMode)
               && antiBot.checksToken(
                   recognized, onlineMode, clientVersion(), loginContext.acceptsTransfers())) {
             checkToken(packet, recognized);
@@ -527,6 +563,7 @@ final class LoginSessionHandler implements SessionHandler {
   private void verifyOrCheck(LoginStart packet, AntiBotService.Recognition recognized) {
     AntiBotService antiBot = loginContext.antiBot();
     if (tokenClaim == null
+        && !handoffTrusted(onlineMode)
         && antiBot.plan(recognized, onlineMode, clientVersion()) == Plan.BEFORE_AUTHENTICATION) {
       plan = Plan.BEFORE_AUTHENTICATION;
       state = LoginState.AWAITING_LOGIN_START;
@@ -653,9 +690,10 @@ final class LoginSessionHandler implements SessionHandler {
     }
 
     // The verification plan, now that plugins settled the mode of this login. A valid token
-    // spares it: the client was verified before authentication and came back.
+    // spares it (the client was verified before authentication and came back), and so does a
+    // handoff from a proxy whose anti-bot trusts the account.
     plan =
-        tokenClaim != null
+        tokenClaim != null || handoffTrusted(onlineMode)
             ? Plan.NONE
             : loginContext.antiBot().plan(recognized, onlineMode, clientVersion());
     if (plan == Plan.BEFORE_AUTHENTICATION) {
@@ -832,6 +870,13 @@ final class LoginSessionHandler implements SessionHandler {
       // Install cipher on the pipeline BEFORE async auth: it secures the channel immediately.
       enableEncryption(new SecretKeySpec(secret, "AES"));
 
+      if (handoffSkipsMojang) {
+        // Handed off by a peer: no Mojang round trip, the ticket's proof instead, read now that
+        // the connection is encrypted.
+        checkHandoffProof();
+        return;
+      }
+
       // Authenticate with Mojang asynchronously on a virtual thread.
       requested = authenticateAsync(secret);
 
@@ -981,6 +1026,11 @@ final class LoginSessionHandler implements SessionHandler {
 
     byte[] publicKey = loginContext.rsaKeyPair().getPublic().getEncoded();
     boolean shouldAuthenticate = clientVersion().isAtLeast(ProtocolVersion.MINECRAFT_1_20_5);
+    HandoffTicket ticket = this.handoff;
+    // A ticket of a player another proxy authenticated: the client skips Mojang's join, and the
+    // proxy its hasJoined (only clients from 1.20.5, which have transfers, read the flag).
+    handoffSkipsMojang = shouldAuthenticate && ticket != null && ticket.authenticated();
+    shouldAuthenticate &= !handoffSkipsMojang;
 
     EncryptionRequest encryptionRequest =
         new EncryptionRequest("", publicKey, token, shouldAuthenticate);
@@ -1047,28 +1097,7 @@ final class LoginSessionHandler implements SessionHandler {
                               || state != LoginState.AUTHENTICATING) {
                             return; // Client disconnected or state changed during auth.
                           }
-                          UUID holder = this.profileKeyHolder;
-                          if (holder != null && !holder.equals(profile.uuid())) {
-                            // The key belongs to another player (Velocity: internalAddHolder).
-                            refuseProfileKey(ProfileKeys.Problem.OTHER_HOLDER);
-                            return;
-                          }
-                          // Lockdown, online: an account trusted from another network gets in.
-                          if (loginContext
-                              .antiBot()
-                              .lockdownRefuses(recognition(), profile.uuid())) {
-                            deny(Refusal.LOCKDOWN, LOCKDOWN_REASON);
-                            return;
-                          }
-                          // An unknown account is verified after it authenticated; one trusted
-                          // from another network is not.
-                          if (plan == Plan.AFTER_LOGIN
-                              && loginContext.antiBot().verifiesAccount(profile.uuid())) {
-                            acquireVerification(() -> completeLogin(profile));
-                            return;
-                          }
-                          plan = Plan.NONE;
-                          completeLogin(profile);
+                          authenticated(profile);
                         });
 
               } catch (AuthenticationException e) {
@@ -1109,9 +1138,36 @@ final class LoginSessionHandler implements SessionHandler {
     return true;
   }
 
+  /**
+   * Goes on with an account authenticated, by Mojang or by a handoff: the checks that need the
+   * account (its profile key, the lockdown, its verification), then the login's completion.
+   */
+  private void authenticated(GameProfile profile) {
+    UUID holder = this.profileKeyHolder;
+    if (holder != null && !holder.equals(profile.uuid())) {
+      // The key belongs to another player (Velocity: internalAddHolder).
+      refuseProfileKey(ProfileKeys.Problem.OTHER_HOLDER);
+      return;
+    }
+    // Lockdown, online: an account trusted from another network gets in.
+    if (loginContext.antiBot().lockdownRefuses(recognition(), profile.uuid())) {
+      deny(Refusal.LOCKDOWN, LOCKDOWN_REASON);
+      return;
+    }
+    // An unknown account is verified after it authenticated; one trusted from another network is
+    // not.
+    if (plan == Plan.AFTER_LOGIN && loginContext.antiBot().verifiesAccount(profile.uuid())) {
+      acquireVerification(() -> completeLogin(profile));
+      return;
+    }
+    plan = Plan.NONE;
+    completeLogin(profile);
+  }
+
   private void completeLogin(GameProfile authenticated) {
     // Logged in: the login gives its place back, and no longer times out.
     endOfLogin();
+    this.authenticatedProfile = authenticated;
     WarpEventBus events = loginContext.events();
     if (!events.hasHandlers(GameProfileRequestEventImpl.class)) {
       registerPlayer(authenticated);
@@ -1146,7 +1202,19 @@ final class LoginSessionHandler implements SessionHandler {
             loginContext,
             cookies);
     joining.setOnlineMode(onlineMode);
-    boolean kickExisting = loginContext.duplicateLoginPolicy().kicksExisting(onlineMode);
+    GameProfile original = this.authenticatedProfile;
+    if (original != null) {
+      joining.authenticatedAs(original);
+    }
+    HandoffTicket ticket = this.handoff;
+    if (ticket != null) {
+      joining.handedOffFrom(ticket.server());
+    }
+    // A handoff is the word of the proxy that held the session that it let it go: what is left of
+    // it there (or here) yields to the arrival, whatever the policy says of two rival logins.
+    boolean handedOff = ticket != null;
+    boolean kickExisting =
+        handedOff || loginContext.duplicateLoginPolicy().kicksExisting(onlineMode);
     if (!(loginContext.playerRegistry().register(joining, kickExisting)
         instanceof PlayerRegistry.Registration.Registered(int place))) {
       // Counted, not logged: in offline mode anyone can claim the name of a player online.
@@ -1158,7 +1226,7 @@ final class LoginSessionHandler implements SessionHandler {
 
     // The fleet settles the account across proxies: at once on a single node, within
     // fleet.claim-timeout otherwise, on a fleet thread.
-    CompletableFuture<FleetService.Claim> claim = loginContext.fleet().claim(joining);
+    CompletableFuture<FleetService.Claim> claim = loginContext.fleet().claim(joining, handedOff);
     if (claim.isDone()) {
       claimed(joining, profile, place, claim.join());
       return;
@@ -1269,10 +1337,17 @@ final class LoginSessionHandler implements SessionHandler {
       // The client reads what follows in the configuration state, before it acknowledges: what the
       // proxy sends of its own (a cookie request) waits for the acknowledgement.
       connection.writeTerminal(loginSuccess);
+      if (handoffPresented) {
+        clearHandoff();
+      }
     } else {
       connection.writeAndFlush(loginSuccess);
     }
     ended(LoginOutcome.SUCCESS);
+    HandoffTicket ticket = this.handoff;
+    if (ticket != null) {
+      loginContext.metrics().handoffLogin(System.nanoTime() - startNanos);
+    }
 
     if (joined != null
         && loginContext.logging().connections()
@@ -1283,7 +1358,11 @@ final class LoginSessionHandler implements SessionHandler {
           profile.uuid(),
           connection.remoteAddress(),
           Platforms.describe(connection.clientPlatform()),
-          connection.handshakeIntent() == HandshakeIntent.TRANSFER ? ", transferred" : "");
+          ticket != null
+              ? ", handed off by "
+                  + ticket.sourceNode()
+                  + (handoffSkipsMojang ? " without Mojang" : "")
+              : connection.handshakeIntent() == HandshakeIntent.TRANSFER ? ", transferred" : "");
     }
     // No longer among the connections not logged in, nor under their deadlines and frame limits:
     // from now on it is read under the read timeout of logged-in connections.
@@ -1300,7 +1379,9 @@ final class LoginSessionHandler implements SessionHandler {
               recognition(),
               onlineMode ? profile.uuid() : null,
               escalated,
-              claim != null && claim.trusted() ? VerificationMethod.TOKEN : null);
+              claim != null && claim.trusted()
+                  ? VerificationMethod.TOKEN
+                  : handoffTrusted(onlineMode) ? VerificationMethod.HANDOFF : null);
     }
 
     if (held) {
@@ -1372,6 +1453,132 @@ final class LoginSessionHandler implements SessionHandler {
     UUID sessionId = session.join();
     connection.channel().closeFuture().addListener(_ -> session.leave());
     return sessionId;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Seamless handoff
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Asks a client a peer transferred here for its handoff ticket: before encryption, since the
+   * ticket decides whether the client authenticates with Mojang. Completed empty at once for a
+   * login that is not a transfer, or when the handoff does not apply: never for a Bedrock player,
+   * whose identity is the one Floodgate's data proves at every login, under the Floodgate rules.
+   */
+  private CompletableFuture<Optional<byte[]>> requestHandoff() {
+    if (connection.handshakeIntent() != HandshakeIntent.TRANSFER
+        || connection.bedrock() != null
+        || !loginContext.acceptsTransfers()
+        || !loginContext.handoff().enabled()
+        || !cookies.supported()) {
+      return CompletableFuture.completedFuture(Optional.empty());
+    }
+    return cookies
+        .request(TransferHandoff.TICKET_COOKIE, ClientCookies.DEFAULT_TIMEOUT)
+        .handle((payload, failure) -> failure != null ? Optional.<byte[]>empty() : payload);
+  }
+
+  /**
+   * Opens the ticket a transferred client returned, and counts the transfer: with a ticket used,
+   * without one, or with one refused (by reason, never a line per login: anyone can send one).
+   */
+  private void readHandoff(LoginStart packet, Optional<byte[]> payload) {
+    if (connection.handshakeIntent() != HandshakeIntent.TRANSFER) {
+      return;
+    }
+    ProxyMetrics metrics = loginContext.metrics();
+    // An empty cookie is one a proxy cleared after using it: no ticket.
+    if (payload.isEmpty() || payload.get().length == 0) {
+      metrics.transfer(ProxyMetrics.TransferDirection.IN, ProxyMetrics.HandoffUse.ABSENT);
+      return;
+    }
+    handoffPresented = true;
+    SocketAddress local = connection.channel().localAddress();
+    TransferHandoff.Arrival arrival =
+        new TransferHandoff.Arrival(
+            packet.name(),
+            packet.playerUuid(),
+            clientVersion().protocol(),
+            connection.remoteAddress() instanceof InetSocketAddress remote
+                ? remote.getAddress()
+                : null,
+            connection.virtualHost(),
+            connection.virtualPort(),
+            local instanceof InetSocketAddress address ? address : null);
+    switch (loginContext.handoff().open(payload.get(), arrival)) {
+      case TransferHandoff.Opening.Accepted(HandoffTicket ticket) -> {
+        this.handoff = ticket;
+        inbound.handedOff();
+        metrics.transfer(ProxyMetrics.TransferDirection.IN, ProxyMetrics.HandoffUse.USED);
+        logger.debug(
+            "{} from {} handed off by {}, from server {}",
+            ticket.name(),
+            connection.remoteAddress(),
+            ticket.sourceNode(),
+            ticket.server());
+      }
+      case TransferHandoff.Opening.Rejected(HandoffRejection reason) -> {
+        metrics.transfer(ProxyMetrics.TransferDirection.IN, ProxyMetrics.HandoffUse.INVALID);
+        metrics.handoffRejected(reason);
+        logger.debug(
+            "Handoff of {} from {} not used: {}",
+            packet.name(),
+            connection.remoteAddress(),
+            reason);
+      }
+    }
+  }
+
+  /**
+   * Returns whether this login's handoff vouches for it to the anti-bot: a ticket of an account
+   * another proxy authenticated and trusts, on a login that authenticates (offline, the ticket is
+   * read in clear and proves nothing).
+   */
+  private boolean handoffTrusted(boolean authenticates) {
+    HandoffTicket ticket = this.handoff;
+    return authenticates && ticket != null && ticket.authenticated() && ticket.trusted();
+  }
+
+  /**
+   * Asks the encrypted client for the ticket's proof, which never travels in clear: with it, the
+   * ticket's profile is the player's; without it, the ticket was captured in transit, and the
+   * client, told to skip Mojang, cannot be authenticated: refused.
+   */
+  private void checkHandoffProof() {
+    HandoffTicket ticket = this.handoff;
+    if (ticket == null) {
+      internalError("no handoff ticket to check the proof of");
+      return;
+    }
+    var _ =
+        cookies
+            .request(TransferHandoff.PROOF_COOKIE, ClientCookies.DEFAULT_TIMEOUT)
+            .handle((payload, failure) -> failure != null ? Optional.<byte[]>empty() : payload)
+            .thenAcceptAsync(
+                payload -> {
+                  if (!connection.channel().isActive() || state != LoginState.AUTHENTICATING) {
+                    return;
+                  }
+                  if (!loginContext.handoff().proves(ticket, payload.orElse(null))) {
+                    loginContext.metrics().handoffRejected(HandoffRejection.BAD_PROOF);
+                    deny(
+                        Refusal.HANDOFF_FAILED,
+                        Message.HANDOFF_FAILED.of(),
+                        "a handoff ticket without its proof");
+                    return;
+                  }
+                  authenticated(new GameProfile(ticket.uuid(), ticket.name(), ticket.properties()));
+                },
+                connection.channel().eventLoop());
+  }
+
+  /**
+   * Empties the handoff cookies of a client that presented a ticket, now used or useless: a later
+   * transfer elsewhere never carries them. Sent once the client reads configuration packets.
+   */
+  private void clearHandoff() {
+    cookies.store(TransferHandoff.TICKET_COOKIE, new byte[0]);
+    cookies.store(TransferHandoff.PROOF_COOKIE, new byte[0]);
   }
 
   // ---------------------------------------------------------------------------

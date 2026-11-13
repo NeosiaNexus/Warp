@@ -41,5 +41,11 @@ public enum VerificationMethod {
    * It came back from a verification before authentication with the signed token the proxy stored
    * in its client, and then authenticated.
    */
-  TOKEN
+  TOKEN,
+
+  /**
+   * Another Warp proxy of the network, whose anti-bot trusted it, transferred it here with a sealed
+   * handoff ticket vouching for it.
+   */
+  HANDOFF
 }

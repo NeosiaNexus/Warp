@@ -154,6 +154,12 @@ does: Floodgate on the backend, with the same `key.pem`, sees the player as Geys
 `bedrock.floodgate.forward = true` does it for every backend that does not say `floodgate = false`.
 A backend without Floodgate ignores the suffix.
 
+## Transfers
+
+A Bedrock player transferred by a draining proxy logs in again through Geyser, with fresh Floodgate
+data, under the rules above. The [seamless handoff](transfers.md) does not apply to it: Warp writes
+no handoff ticket for a Bedrock player, and never asks a connection carrying Floodgate data for one.
+
 ## Not yet
 
 - **Skins**: the profile has no textures yet, so Bedrock players appear with the default skin, and a

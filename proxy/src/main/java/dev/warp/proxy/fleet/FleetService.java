@@ -797,6 +797,20 @@ public final class FleetService implements Fleet, AutoCloseable {
    * @return completed with the outcome within {@code fleet.claim-timeout}, never exceptionally
    */
   public CompletableFuture<Claim> claim(ConnectedPlayer player) {
+    return claim(player, false);
+  }
+
+  /**
+   * Settles who owns an account across the fleet, as {@link #claim(ConnectedPlayer)} does, for a
+   * player that may take the account over from the proxy that owns it whatever the duplicate login
+   * policy: one a sibling handed off with a valid ticket, which is that proxy's word that it let
+   * the session go. The owner is asked to drop what is left of the session, as for any duplicate.
+   *
+   * @param player the player, registered on this proxy
+   * @param takesOver whether the player takes the account over from its owner under any policy
+   * @return completed with the outcome within {@code fleet.claim-timeout}, never exceptionally
+   */
+  public CompletableFuture<Claim> claim(ConnectedPlayer player, boolean takesOver) {
     PlayerRecord record =
         new PlayerRecord(
             player.uuid(),
@@ -816,7 +830,7 @@ public final class FleetService implements Fleet, AutoCloseable {
       return CompletableFuture.completedFuture(storeDown(record));
     }
     CompletableFuture<Claim> result = new CompletableFuture<>();
-    executor.execute(() -> result.complete(claimBlocking(record)));
+    executor.execute(() -> result.complete(claimBlocking(record, takesOver)));
     return result;
   }
 
@@ -829,7 +843,7 @@ public final class FleetService implements Fleet, AutoCloseable {
   }
 
   /** The claim, on a fleet thread: it may wait for the owner to let go. */
-  private Claim claimBlocking(PlayerRecord record) {
+  private Claim claimBlocking(PlayerRecord record, boolean takesOver) {
     long deadline = System.nanoTime() + config.claimTimeout().toNanos();
     try {
       boolean kicked = false;
@@ -854,7 +868,7 @@ public final class FleetService implements Fleet, AutoCloseable {
             await("release", store.release(record.uuid(), owner, inc));
           }
           case ClaimResult.Owned(String owner, long inc) -> {
-            if (!policy.kicksExisting(onlineMode)) {
+            if (!takesOver && !policy.kicksExisting(onlineMode)) {
               metrics.claim(FleetMetrics.ClaimOutcome.OWNED_REFUSED);
               local.remove(record.uuid(), record);
               return new Claim.Refused(Message.ALREADY_CONNECTED);
@@ -1152,7 +1166,7 @@ public final class FleetService implements Fleet, AutoCloseable {
       return null;
     }
     try {
-      return DrainConfig.parseTarget(best.publicAddress());
+      return DrainConfig.parseTarget("fleet.public-address", best.publicAddress());
     } catch (ConfigurationException e) {
       logger.debug(
           "Fleet node {} has an invalid public address {}", best.id(), best.publicAddress());

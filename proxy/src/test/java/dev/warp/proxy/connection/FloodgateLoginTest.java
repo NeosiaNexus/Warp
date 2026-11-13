@@ -32,6 +32,7 @@ import dev.warp.protocol.codec.VarInt;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
 import dev.warp.protocol.packet.StateRegistry;
+import dev.warp.protocol.packet.cookie.CookieRequest;
 import dev.warp.protocol.packet.handshake.Handshake;
 import dev.warp.protocol.packet.login.LoginDisconnect;
 import dev.warp.protocol.packet.login.LoginSuccess;
@@ -41,12 +42,14 @@ import dev.warp.proxy.bedrock.FloodgateCipher;
 import dev.warp.proxy.bedrock.FloodgateData;
 import dev.warp.proxy.bedrock.FloodgateService;
 import dev.warp.proxy.config.BedrockConfig;
+import dev.warp.proxy.config.DrainConfig;
 import dev.warp.proxy.config.LimitsConfig;
 import dev.warp.proxy.limit.Blocklist;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.limit.Refusal;
 import dev.warp.proxy.network.CidrRanges;
 import dev.warp.proxy.server.ServerRegistry;
+import dev.warp.proxy.transfer.TransferHandoff;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -114,6 +117,9 @@ class FloodgateLoginTest {
 
   private ServerLoginContext context = TestLoginContexts.offline();
 
+  /** The seamless handoff of the proxy, which then accepts transfers; {@code null} without one. */
+  private @Nullable TransferHandoff handoff;
+
   private EmbeddedChannel channel() {
     return channel(".", ClientLimits.unlimited(), false, null);
   }
@@ -149,6 +155,9 @@ class FloodgateLoginTest {
             registry,
             limits,
             antiBot != null ? antiBot : AntiBotService.disabled(limits, TestLoginContexts.EVENTS));
+    if (handoff != null) {
+      context = TestLoginContexts.acceptingHandoffs(context, handoff);
+    }
     EmbeddedChannel channel = new ClientChannel();
     channel.pipeline().addLast(new ServerChannelInitializer(context));
     channel.runPendingTasks();
@@ -329,6 +338,67 @@ class FloodgateLoginTest {
   }
 
   @Nested
+  @DisplayName("on a proxy with the seamless handoff")
+  class Handoff {
+
+    private TransferHandoff shared() {
+      return TransferHandoff.of(
+          "a-shared-secret-of-the-network".getBytes(StandardCharsets.UTF_8),
+          Duration.ofSeconds(15),
+          true,
+          List.of(new DrainConfig.Target("play.example.com", 25565)),
+          "warp-2:25565",
+          System::currentTimeMillis);
+    }
+
+    @Test
+    @DisplayName("should never ask a transferred Bedrock player for a ticket: Floodgate rules")
+    void bedrockNotAsked() {
+      handoff = shared();
+      EmbeddedChannel channel = channel();
+      try {
+        handshake(channel, hostname(PLAINTEXT), HandshakeIntent.TRANSFER);
+        loginStart(channel, "Steve Jr");
+
+        ByteBuf success =
+            Unpooled.wrappedBuffer(nextPacket(channel, ProtocolState.LOGIN, LoginSuccess.class));
+        try {
+          assertEquals(new UUID(0, XUID), McUuid.read(success));
+          assertEquals(".Steve_Jr", McString.read(success));
+        } finally {
+          success.release();
+        }
+        ConnectedPlayer player = context.playerRegistry().get(".Steve_Jr");
+        assertNotNull(player);
+        assertFalse(player.isHandedOff());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should ask a transferred Java client of the same proxy for its ticket")
+    void javaAsked() {
+      handoff = shared();
+      EmbeddedChannel channel = channel();
+      try {
+        handshake(channel, "play.example.com", HandshakeIntent.TRANSFER);
+        loginStart(channel, "Steve");
+
+        ByteBuf request =
+            Unpooled.wrappedBuffer(nextPacket(channel, ProtocolState.LOGIN, CookieRequest.class));
+        try {
+          assertEquals(TransferHandoff.TICKET_COOKIE, McString.read(request));
+        } finally {
+          request.release();
+        }
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+  }
+
+  @Nested
   @DisplayName("refusals")
   class Refusals {
 
@@ -491,12 +561,17 @@ class FloodgateLoginTest {
 
   /** Writes a Handshake as Geyser does: id 0, protocol, host with the data, port, login. */
   private void handshake(EmbeddedChannel channel, String host) {
+    handshake(channel, host, HandshakeIntent.LOGIN);
+  }
+
+  /** Writes a Handshake with {@code intent}: a login, or one a Transfer packet sent here. */
+  private void handshake(EmbeddedChannel channel, String host, HandshakeIntent intent) {
     ByteBuf body = Unpooled.buffer();
     VarInt.write(body, 0x00);
     VarInt.write(body, VERSION.protocol());
     McString.write(body, host);
     body.writeShort(25565);
-    VarInt.write(body, 2);
+    VarInt.write(body, intent.id());
     writeFrame(channel, body);
   }
 

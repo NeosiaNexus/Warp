@@ -99,6 +99,8 @@ public enum Message {
   /** A player verified before authentication, on a version without transfers. */
   VERIFIED_RECONNECT("warp.login.verified-reconnect", Kind.DISCONNECT),
   WORLD_CHECK_FAILED("warp.login.world-check-failed", Kind.DISCONNECT),
+  /** A transfer whose handoff could not be proven: the player reconnects normally. */
+  HANDOFF_FAILED("warp.login.handoff-failed", Kind.DISCONNECT),
   /** A username no vanilla client sends. */
   INVALID_USERNAME("warp.login.invalid-username", Kind.DISCONNECT),
   /** Floodgate data that did not verify: a Bedrock player Warp cannot vouch for. */
