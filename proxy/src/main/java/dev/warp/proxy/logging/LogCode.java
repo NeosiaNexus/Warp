@@ -172,6 +172,16 @@ public enum LogCode {
       "Warp failed to start",
       "An unexpected error stopped the startup; the stack trace says where.",
       "Report it with the log file at https://github.com/NeosiaNexus/Warp/issues."),
+  /** The event loops could not each listen on the port. */
+  LISTENER_NOT_SHARED(
+      "W-START-008",
+      false,
+      "The event loops share one listening socket",
+      "On Linux every event loop listens on the port with a socket of its own (SO_REUSEPORT). The"
+          + " kernel refused it, so one socket accepts for all of them: nothing is lost, but a"
+          + " connection flood costs more CPU.",
+      "Nothing to do for players. The message names the system's reason; a container or security"
+          + " policy that forbids SO_REUSEPORT is the usual one."),
 
   // ---------------------------------------------------------------------------
   // The JVM and the process

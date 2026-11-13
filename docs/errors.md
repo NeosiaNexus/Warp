@@ -25,6 +25,7 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 | [W-START-005](#w-start-005) | error | Warp cannot listen on its address |
 | [W-START-006](#w-start-006) | error | The plugins directory cannot be read |
 | [W-START-007](#w-start-007) | error | Warp failed to start |
+| [W-START-008](#w-start-008) | warning | The event loops share one listening socket |
 | [W-SYS-001](#w-sys-001) | error | Uncaught exception |
 | [W-SYS-002](#w-sys-002) | error | Handling SIGTERM failed |
 | [W-SYS-003](#w-sys-003) | warning | The shutdown did not finish in time |
@@ -276,6 +277,14 @@ A code keeps its meaning for good: a warning that goes away retires its code, wh
 **Cause.** An unexpected error stopped the startup; the stack trace says where.
 
 **Fix.** Report it with the log file at https://github.com/NeosiaNexus/Warp/issues.
+
+### W-START-008
+
+**The event loops share one listening socket** (warning)
+
+**Cause.** On Linux every event loop listens on the port with a socket of its own (SO_REUSEPORT). The kernel refused it, so one socket accepts for all of them: nothing is lost, but a connection flood costs more CPU.
+
+**Fix.** Nothing to do for players. The message names the system's reason; a container or security policy that forbids SO_REUSEPORT is the usual one.
 
 ## The process
 

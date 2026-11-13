@@ -266,6 +266,8 @@ final class HandshakeSessionHandler implements SessionHandler {
     if (guard != null) {
       guard.loginStarted();
     }
+    // From here the socket may carry a player: it gets the options a status ping does without.
+    PlayerSocketOptions.apply(connection.channel());
     connection.setState(ProtocolState.LOGIN);
     // Plugin handlers go in before the first login packet is read.
     if (!loginContext

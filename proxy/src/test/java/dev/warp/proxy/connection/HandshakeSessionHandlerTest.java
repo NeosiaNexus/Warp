@@ -43,14 +43,20 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelConfig;
+import io.netty.channel.ChannelOption;
+import io.netty.channel.DefaultChannelConfig;
 import io.netty.channel.embedded.EmbeddedChannel;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -228,6 +234,41 @@ class HandshakeSessionHandlerTest {
 
         assertEquals(HandshakeIntent.LOGIN, connection(channel).handshakeIntent());
         assertInstanceOf(LoginSessionHandler.class, connection(channel).sessionHandler());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @ParameterizedTest(name = "nextState {0}")
+    @ValueSource(ints = {LOGIN, TRANSFER})
+    @DisplayName("should give the socket a player's options when a login starts")
+    void setsPlayerSocketOptions(int nextState) {
+      EmbeddedChannel channel = channel(true);
+      try {
+        handshake(channel, ProtocolVersion.MINECRAFT_1_21_4, nextState);
+
+        assertEquals(
+            Map.of(
+                ChannelOption.TCP_NODELAY,
+                true,
+                ChannelOption.SO_KEEPALIVE,
+                true,
+                ChannelOption.IP_TOS,
+                PlayerSocketOptions.IP_TOS_LOW_LATENCY),
+            ((ClientChannel) channel).options());
+      } finally {
+        channel.finishAndReleaseAll();
+      }
+    }
+
+    @Test
+    @DisplayName("should leave the socket of a server list ping without them")
+    void sparesStatusTheSocketOptions() {
+      EmbeddedChannel channel = channel(false);
+      try {
+        handshake(channel, ProtocolVersion.MINECRAFT_1_21_4, STATUS);
+
+        assertEquals(Map.of(), ((ClientChannel) channel).options());
       } finally {
         channel.finishAndReleaseAll();
       }
@@ -477,6 +518,37 @@ class HandshakeSessionHandlerTest {
 
     private static final InetSocketAddress CLIENT_ADDRESS =
         new InetSocketAddress(InetAddress.getLoopbackAddress(), 50_000);
+
+    /** The socket options set on the channel, which an embedded channel would ignore. */
+    private final Map<ChannelOption<?>, Object> options = new ConcurrentHashMap<>();
+
+    private @Nullable ChannelConfig recording;
+
+    Map<ChannelOption<?>, Object> options() {
+      return options;
+    }
+
+    @Override
+    public ChannelConfig config() {
+      ChannelConfig config = recording;
+      if (config == null) {
+        config =
+            new DefaultChannelConfig(this) {
+              @Override
+              public <T> boolean setOption(ChannelOption<T> option, T value) {
+                if (option == ChannelOption.TCP_NODELAY
+                    || option == ChannelOption.SO_KEEPALIVE
+                    || option == ChannelOption.IP_TOS) {
+                  options.put(option, value);
+                  return true;
+                }
+                return super.setOption(option, value);
+              }
+            };
+        recording = config;
+      }
+      return config;
+    }
 
     @Override
     protected SocketAddress remoteAddress0() {

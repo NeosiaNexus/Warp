@@ -55,6 +55,7 @@ import dev.warp.proxy.config.HandoffConfig;
 import dev.warp.proxy.config.WarpConfig;
 import dev.warp.proxy.connection.BackendPinger;
 import dev.warp.proxy.connection.ConnectedPlayer;
+import dev.warp.proxy.connection.Listeners;
 import dev.warp.proxy.connection.PlaySession;
 import dev.warp.proxy.connection.ServerChannelInitializer;
 import dev.warp.proxy.connection.ServerLoginContext;
@@ -131,12 +132,13 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BiFunction;
 import java.util.function.IntConsumer;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.PooledByteBufAllocator;
-import io.netty.channel.Channel;
 import io.netty.channel.ChannelOption;
+import io.netty.channel.EventLoopGroup;
 import io.netty.channel.IoHandlerFactory;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.WriteBufferWaterMark;
@@ -177,12 +179,6 @@ public final class WarpServer implements Warp {
    * channel becomes unwritable (back-pressure).
    */
   private static final int WRITE_BUFFER_HIGH_WATER_MARK = 2 * 1024 * 1024;
-
-  /**
-   * DSCP value for low-latency traffic. Sets the IP Type of Service field to prioritise interactive
-   * game packets over bulk transfers.
-   */
-  private static final int IP_TOS_LOW_LATENCY = 0x18;
 
   /**
    * How many TCP Fast Open connections may wait for their handshake to complete at once. Beyond it
@@ -346,7 +342,7 @@ public final class WarpServer implements Warp {
   private @Nullable MultiThreadIoEventLoopGroup workerGroup;
 
   /** The bound server channel, used for graceful shutdown. */
-  private @Nullable Channel serverChannel;
+  private @Nullable Listeners listeners;
 
   /** The detected transport info, needed for outbound connections. */
   private @Nullable TransportInfo transportInfo;
@@ -570,7 +566,6 @@ public final class WarpServer implements Warp {
     // Joins the fleet (or stays alone): bounded, a store down leaves the fleet degraded.
     fleet.start().join();
     mark = lap("fleet", mark);
-    this.bossGroup = new MultiThreadIoEventLoopGroup(1, transport.ioFactory());
     this.workerGroup = new MultiThreadIoEventLoopGroup(transport.ioFactory());
     var _ = LoopIndex.assignAll(workerGroup);
     lagProbe.start(workerGroup);
@@ -611,34 +606,45 @@ public final class WarpServer implements Warp {
     startup.record("plugins", System.nanoTime() - mark, pluginManager.loadNanos());
     mark = System.nanoTime();
 
-    ServerBootstrap bootstrap =
-        new ServerBootstrap()
-            .group(bossGroup, workerGroup)
-            .channel(transport.serverChannelClass())
-            .childHandler(new ServerChannelInitializer(loginContext, config.proxyProtocol()))
-            // TCP_NODELAY: disable Nagle — critical for game traffic. BungeeCord misses this.
-            .childOption(ChannelOption.TCP_NODELAY, true)
-            // SO_KEEPALIVE: detect dead connections at the TCP level.
-            .childOption(ChannelOption.SO_KEEPALIVE, true)
-            // IP_TOS: DSCP low-latency marking for routers that honour it.
-            .childOption(ChannelOption.IP_TOS, IP_TOS_LOW_LATENCY)
-            // Write buffer water marks for back-pressure (512 KB / 2 MB).
-            .childOption(
-                ChannelOption.WRITE_BUFFER_WATER_MARK,
-                new WriteBufferWaterMark(WRITE_BUFFER_LOW_WATER_MARK, WRITE_BUFFER_HIGH_WATER_MARK))
-            // Pooled direct allocator — avoids unpooled heap copies.
-            .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
-            // SO_REUSEADDR: allow rebind immediately after restart.
-            .option(ChannelOption.SO_REUSEADDR, true);
-    if (loginContext.tcpFastOpen()) {
-      bootstrap.option(ChannelOption.TCP_FASTOPEN, TCP_FAST_OPEN_QUEUE);
-    }
+    ServerChannelInitializer initializer =
+        new ServerChannelInitializer(loginContext, config.proxyProtocol());
+    boolean fastOpen = loginContext.tcpFastOpen();
+    BiFunction<EventLoopGroup, EventLoopGroup, ServerBootstrap> bootstraps =
+        (acceptors, servers) -> {
+          ServerBootstrap bootstrap =
+              new ServerBootstrap()
+                  .group(acceptors, servers)
+                  .channel(transport.serverChannelClass())
+                  // The options of a player's socket (keep-alive, DSCP marking) are set when a
+                  // login starts, see PlayerSocketOptions: a connection that only pings, or says
+                  // nothing, does not pay their system calls.
+                  .childHandler(initializer)
+                  // Write buffer water marks for back-pressure (512 KB / 2 MB).
+                  .childOption(
+                      ChannelOption.WRITE_BUFFER_WATER_MARK,
+                      new WriteBufferWaterMark(
+                          WRITE_BUFFER_LOW_WATER_MARK, WRITE_BUFFER_HIGH_WATER_MARK))
+                  // Pooled direct allocator: avoids unpooled heap copies.
+                  .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
+                  // SO_REUSEADDR: allow rebind immediately after restart.
+                  .option(ChannelOption.SO_REUSEADDR, true);
+          if (fastOpen) {
+            bootstrap.option(ChannelOption.TCP_FASTOPEN, TCP_FAST_OPEN_QUEUE);
+          }
+          return bootstrap;
+        };
 
-    // No SO_REUSEPORT: with it, a second Warp started on the same port binds without error and the
-    // kernel silently splits players between the two processes. A port conflict must fail loudly.
-
+    // One listening socket per event loop where the port can be shared (see Listeners), and still
+    // a loud failure if another process holds the port: the first socket binds without
+    // SO_REUSEPORT. Otherwise one socket on a loop of its own, created only then.
     try {
-      this.serverChannel = bootstrap.bind(config.bind()).sync().channel();
+      this.listeners =
+          Listeners.bind(
+              config.bind(),
+              workerGroup,
+              () -> acceptorGroup(transport.ioFactory()),
+              transport.reusePort(),
+              bootstraps);
       mark = lap("bind", mark);
     } catch (InterruptedException e) {
       shutdownEventLoops();
@@ -669,7 +675,7 @@ public final class WarpServer implements Warp {
     startup.finish(TimeUnit.MILLISECONDS.toNanos(uptimeMillis));
     // Where the time went, in one dimmed line; /warp startup gives the details.
     BLOCKS.info(startup.block());
-    var _ = events.fire(new ProxyReadyEvent(serverChannel.localAddress()));
+    var _ = events.fire(new ProxyReadyEvent(listeners.localAddress()));
   }
 
   /**
@@ -765,10 +771,9 @@ public final class WarpServer implements Warp {
       }
       logger.info("Shutting down: {}", stopCause);
 
-      if (serverChannel != null) {
-        serverChannel
-            .close()
-            .awaitUninterruptibly(LISTENER_CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+      Listeners listening = listeners;
+      if (listening != null) {
+        listening.close(LISTENER_CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
       }
       stopQuery();
       int disconnected = disconnectPlayers(reason);
@@ -972,9 +977,9 @@ public final class WarpServer implements Warp {
     try {
       server.start();
     } catch (RuntimeException e) {
-      Channel listener = serverChannel;
-      if (listener != null) {
-        listener.close().awaitUninterruptibly(LISTENER_CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+      Listeners listening = listeners;
+      if (listening != null) {
+        listening.close(LISTENER_CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
       }
       shutdownEventLoops();
       stopManagement();
@@ -1077,6 +1082,19 @@ public final class WarpServer implements Warp {
           pipelines.connectionCount(),
           SHUTDOWN_TIMEOUT_MILLIS);
     }
+  }
+
+  /**
+   * Returns the loop of a listening socket shared by every worker, created on first use: where
+   * every worker listens for itself there is none.
+   */
+  private EventLoopGroup acceptorGroup(IoHandlerFactory ioFactory) {
+    MultiThreadIoEventLoopGroup group = bossGroup;
+    if (group == null) {
+      group = new MultiThreadIoEventLoopGroup(1, ioFactory);
+      this.bossGroup = group;
+    }
+    return group;
   }
 
   /**
@@ -1558,7 +1576,14 @@ public final class WarpServer implements Warp {
         Class<? extends DatagramChannel> datagramClass =
             (Class<? extends DatagramChannel>)
                 Class.forName("io.netty.channel.epoll.EpollDatagramChannel");
-        return new TransportInfo("epoll", factory, serverClass, clientClass, datagramClass, true);
+        return new TransportInfo(
+            "epoll",
+            factory,
+            serverClass,
+            clientClass,
+            datagramClass,
+            true,
+            Listeners.sharedPortOption());
       }
     } catch (ReflectiveOperationException | UnsatisfiedLinkError e) {
       logger.trace("Epoll not available", e);
@@ -1582,7 +1607,8 @@ public final class WarpServer implements Warp {
         Class<? extends DatagramChannel> datagramClass =
             (Class<? extends DatagramChannel>)
                 Class.forName("io.netty.channel.kqueue.KQueueDatagramChannel");
-        return new TransportInfo("kqueue", factory, serverClass, clientClass, datagramClass, false);
+        return new TransportInfo(
+            "kqueue", factory, serverClass, clientClass, datagramClass, false, null);
       }
     } catch (ReflectiveOperationException | UnsatisfiedLinkError e) {
       logger.trace("KQueue not available", e);
@@ -1595,7 +1621,8 @@ public final class WarpServer implements Warp {
         NioServerSocketChannel.class,
         NioSocketChannel.class,
         NioDatagramChannel.class,
-        false);
+        false,
+        null);
   }
 
   // ---------------------------------------------------------------------------
@@ -1715,6 +1742,9 @@ public final class WarpServer implements Warp {
    * @param clientChannelClass the client socket channel class matching the transport
    * @param tcpFastOpen whether the transport supports TCP Fast Open on both the listener and
    *     outgoing connections (epoll only)
+   * @param reusePort the option that lets every event loop listen on the port with a socket of its
+   *     own, or {@code null} where sockets sharing a port do not share its connections (epoll only:
+   *     kqueue gives them all to the last socket bound)
    */
   private record TransportInfo(
       String name,
@@ -1722,5 +1752,6 @@ public final class WarpServer implements Warp {
       Class<? extends ServerSocketChannel> serverChannelClass,
       Class<? extends SocketChannel> clientChannelClass,
       Class<? extends DatagramChannel> datagramChannelClass,
-      boolean tcpFastOpen) {}
+      boolean tcpFastOpen,
+      @Nullable ChannelOption<Boolean> reusePort) {}
 }
