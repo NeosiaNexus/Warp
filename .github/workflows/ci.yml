@@ -407,7 +407,7 @@ jobs:
       # the tests of each) ran past 90 minutes, where its pull requests took two hours between
       # them. So a pull request gets the nightly full run's limit (mutation.yml); a small one
       # finishes long before.
-      timeout-minutes: 180
+      timeout-minutes: 240
 
   # The only check to mark as required: it fails if any job above failed or was cancelled, and
   # passes when they succeeded or were skipped on purpose.
