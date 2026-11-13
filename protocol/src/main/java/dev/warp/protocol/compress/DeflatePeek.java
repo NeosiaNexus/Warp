@@ -59,8 +59,8 @@ import io.netty.buffer.ByteBuf;
  *   <li>Zero allocation; the source buffer's indices are not modified.
  * </ul>
  *
- * <p>Instances hold scratch tables (~2 KiB) and are <b>not</b> thread-safe: use one per thread, as
- * {@link FrameDecompressor} does for the connections of an event loop.
+ * <p>Instances hold scratch tables (~2 KiB) and are <b>not</b> thread-safe: use one per connection
+ * or per event loop.
  */
 public final class DeflatePeek {
 

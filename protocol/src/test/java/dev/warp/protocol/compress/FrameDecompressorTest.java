@@ -290,6 +290,23 @@ class FrameDecompressorTest {
 
       assertEquals(0x27, lenient().peekPacketId(Unpooled.wrappedBuffer(zlib(packet, 6))));
     }
+
+    @Test
+    @DisplayName("should peek on a thread that never peeked, with the peek of that thread")
+    void peeksOnFreshThread() throws InterruptedException {
+      byte[] packet = randomBytes(700, 5);
+      packet[0] = 0x31;
+      FrameDecompressor decompressor = lenient();
+      int[] peeked = {DeflatePeek.UNKNOWN};
+
+      Thread fresh =
+          new Thread(
+              () -> peeked[0] = decompressor.peekPacketId(Unpooled.wrappedBuffer(zlib(packet, 6))));
+      fresh.start();
+      fresh.join();
+
+      assertEquals(0x31, peeked[0]);
+    }
   }
 
   @Nested
