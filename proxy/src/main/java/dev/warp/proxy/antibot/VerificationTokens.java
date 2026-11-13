@@ -18,6 +18,7 @@ package dev.warp.proxy.antibot;
 
 import dev.warp.api.antibot.VerifiedKey;
 import dev.warp.proxy.config.AntiBotConfig;
+import dev.warp.proxy.config.SecretFiles;
 import dev.warp.proxy.logging.LogCode;
 
 import java.io.IOException;
@@ -25,9 +26,6 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.StandardOpenOption;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.security.InvalidKeyException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -443,17 +441,7 @@ public final class VerificationTokens {
     if (previous != null) {
       append(text, previous);
     }
-    Path temporary = file.resolveSibling(file.getFileName() + ".tmp");
-    Files.writeString(
-        temporary,
-        text.toString(),
-        StandardCharsets.US_ASCII,
-        StandardOpenOption.CREATE,
-        StandardOpenOption.TRUNCATE_EXISTING,
-        StandardOpenOption.WRITE);
-    restrict(temporary);
-    Files.move(
-        temporary, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+    SecretFiles.replace(file, text.toString());
   }
 
   private static void append(StringBuilder text, Key key) {
@@ -461,14 +449,6 @@ public final class VerificationTokens {
         .append(' ')
         .append(key.sinceMillis())
         .append('\n');
-  }
-
-  private static void restrict(Path file) {
-    try {
-      Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-------"));
-    } catch (UnsupportedOperationException | IOException e) {
-      // Not a POSIX file system, or no permission to change them: the platform's defaults apply.
-    }
   }
 
   private static byte[] randomKey() {

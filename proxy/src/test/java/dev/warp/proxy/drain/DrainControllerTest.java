@@ -30,6 +30,7 @@ import dev.warp.api.lifecycle.DrainStatus;
 import dev.warp.api.lifecycle.DrainTrigger;
 import dev.warp.api.player.TransferResult;
 import dev.warp.proxy.config.DrainConfig;
+import dev.warp.proxy.logging.LogCapture;
 
 import java.time.Duration;
 import java.util.List;
@@ -600,22 +601,41 @@ class DrainControllerTest {
 
     @Test
     @DisplayName("should time out with players still connected, and stop anyway")
-    void timesOut() {
+    void timesOut() throws InterruptedException {
       FakePlayer old = legacy("Old");
       host.with(old);
       DrainController<FakePlayer> drain = controller();
 
-      CompletableFuture<DrainStatus> done = drain.start(DrainTrigger.HTTP);
-      clock.advance(PROPAGATION.plus(TIMEOUT).minusMillis(1));
+      try (LogCapture logs = new LogCapture()) {
+        CompletableFuture<DrainStatus> done = drain.start(DrainTrigger.HTTP);
+        clock.advance(PROPAGATION.plus(TIMEOUT).minusMillis(1));
 
-      assertFalse(done.isDone());
+        assertFalse(done.isDone());
 
-      clock.advance(at(1));
+        clock.advance(at(1));
 
-      DrainStatus status = settled(done);
-      assertEquals(DrainOutcome.TIMED_OUT, status.outcome());
-      assertEquals(1, status.players(), "the proxy disconnects whoever is left");
-      assertEquals(1, host.shutdowns());
+        DrainStatus status = settled(done);
+        assertEquals(DrainOutcome.TIMED_OUT, status.outcome());
+        assertEquals(1, status.players(), "the proxy disconnects whoever is left");
+        assertEquals(1, host.shutdowns());
+        // "1 player left" would read as a departure: the lines say who is still connected.
+        var _ =
+            logs.await(
+                r ->
+                    r.message()
+                        .startsWith(
+                            "Drain phase 2: 0 transferred, 1 kept, 0 kicked; waiting up to"));
+        var _ = logs.await(r -> r.message().endsWith("for the 1 player still connected"));
+        var _ =
+            logs.await(
+                r ->
+                    r.message().startsWith("Drain timed out after")
+                        && r.message()
+                            .contains(
+                                "disconnecting the 1 player still connected (0 transferred, 1"
+                                    + " kept, 0 kicked, 0 logins refused)"));
+        assertFalse(logs.anyAfterSettling(r -> r.message().contains("player left")));
+      }
     }
 
     @Test

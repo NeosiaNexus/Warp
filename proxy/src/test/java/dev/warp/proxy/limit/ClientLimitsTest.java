@@ -39,6 +39,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.util.NetUtil;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -261,6 +262,62 @@ class ClientLimitsTest {
   // ---------------------------------------------------------------------------
 
   @Nested
+  @DisplayName("connections not logged in")
+  class Pending {
+
+    @Test
+    @DisplayName("should tell its listener of each connection it counts, and of the one it refuses")
+    void listenerHearsAcceptsAndRefusals() {
+      LimitsConfig d = LimitsConfig.DEFAULTS;
+      ClientLimits limits =
+          limits(
+              new LimitsConfig(
+                  true,
+                  d.exempt(),
+                  d.connections(),
+                  d.statusPings(),
+                  d.logins(),
+                  d.maxConcurrentLoginsPerAddress(),
+                  d.maxConcurrentAuthentications(),
+                  d.loginTimeout(),
+                  d.reportInterval(),
+                  1,
+                  d.handshakeTimeout(),
+                  d.statusTimeout(),
+                  d.authenticationQueue(),
+                  d.authenticationQueueWait(),
+                  d.loginsUnderAttack(),
+                  d.maxConcurrentLoginsPerAddressUnderAttack(),
+                  d.pendingEvictionAfter()));
+      List<String> heard = new ArrayList<>();
+      limits.listen(
+          new ClientLimits.RefusalListener() {
+            @Override
+            public void refused(Refusal reason, @Nullable InetAddress address) {
+              heard.add("refused " + reason);
+            }
+
+            @Override
+            public void accepted() {
+              heard.add("accepted");
+            }
+          });
+
+      assertTrue(limits.tryStartPending());
+      assertFalse(limits.tryStartPending());
+
+      assertEquals(List.of("accepted", "refused PENDING_CONNECTIONS"), heard);
+      assertEquals(1, limits.pendingConnections());
+      assertEquals(1, limits.maxPendingConnections());
+      assertEquals(1, limits.pending().count());
+
+      limits.endPending();
+
+      assertEquals(0, limits.pendingConnections());
+    }
+  }
+
+  @Nested
   @DisplayName("exemptions")
   class Exemptions {
 
@@ -346,7 +403,8 @@ class ClientLimitsTest {
         d.authenticationQueue(),
         d.authenticationQueueWait(),
         d.loginsUnderAttack(),
-        d.maxConcurrentLoginsPerAddressUnderAttack());
+        d.maxConcurrentLoginsPerAddressUnderAttack(),
+        d.pendingEvictionAfter());
   }
 
   private static LimitsConfig withLogins(LimitsConfig.Rate logins, int maxInProgress) {
@@ -367,7 +425,8 @@ class ClientLimitsTest {
         d.authenticationQueue(),
         d.authenticationQueueWait(),
         d.loginsUnderAttack(),
-        d.maxConcurrentLoginsPerAddressUnderAttack());
+        d.maxConcurrentLoginsPerAddressUnderAttack(),
+        d.pendingEvictionAfter());
   }
 
   private static LimitsConfig withAuthentications(int max) {
@@ -388,7 +447,8 @@ class ClientLimitsTest {
         d.authenticationQueue(),
         d.authenticationQueueWait(),
         d.loginsUnderAttack(),
-        d.maxConcurrentLoginsPerAddressUnderAttack());
+        d.maxConcurrentLoginsPerAddressUnderAttack(),
+        d.pendingEvictionAfter());
   }
 
   private static InetSocketAddress socket(String literal) {

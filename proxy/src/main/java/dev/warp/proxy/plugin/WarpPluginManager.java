@@ -19,6 +19,7 @@ package dev.warp.proxy.plugin;
 import dev.warp.api.Warp;
 import dev.warp.api.command.CommandManager;
 import dev.warp.api.event.EventBus;
+import dev.warp.api.fleet.Fleet;
 import dev.warp.api.logging.LogSinks;
 import dev.warp.api.messaging.Messaging;
 import dev.warp.api.network.NetworkPipelines;
@@ -345,6 +346,7 @@ public final class WarpPluginManager implements PluginManager {
     Map<Class<?>, Object> injectables = new HashMap<>();
     injectables.put(PluginContext.class, context);
     injectables.put(Warp.class, proxy);
+    injectables.put(Fleet.class, proxy.fleet());
     injectables.put(Logger.class, context.logger());
     injectables.put(PluginContainer.class, context.plugin());
     injectables.put(PluginDescription.class, context.plugin().description());

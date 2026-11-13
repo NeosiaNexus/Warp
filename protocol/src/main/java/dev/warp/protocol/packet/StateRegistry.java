@@ -24,6 +24,7 @@ import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_14;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_15;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_16;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_16_2;
+import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_16_4;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_17;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_18;
 import static dev.warp.protocol.ProtocolVersion.MINECRAFT_1_18_2;
@@ -58,6 +59,8 @@ import dev.warp.protocol.packet.config.ConfigPing;
 import dev.warp.protocol.packet.config.ConfigPluginMessage;
 import dev.warp.protocol.packet.config.ConfigPong;
 import dev.warp.protocol.packet.config.FinishConfiguration;
+import dev.warp.protocol.packet.config.KnownPacks;
+import dev.warp.protocol.packet.config.RegistryData;
 import dev.warp.protocol.packet.cookie.CookieRequest;
 import dev.warp.protocol.packet.cookie.CookieResponse;
 import dev.warp.protocol.packet.cookie.StoreCookie;
@@ -72,22 +75,28 @@ import dev.warp.protocol.packet.login.LoginStart;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.login.SetCompression;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
+import dev.warp.protocol.packet.play.BlockUpdate;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatAcknowledgement;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.ClearDialog;
 import dev.warp.protocol.packet.play.ClearTitles;
+import dev.warp.protocol.packet.play.ClientMovement;
 import dev.warp.protocol.packet.play.DeclareCommands;
 import dev.warp.protocol.packet.play.DeleteChat;
+import dev.warp.protocol.packet.play.EmptyChunk;
 import dev.warp.protocol.packet.play.EntitySoundEffect;
+import dev.warp.protocol.packet.play.GameEvent;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
 import dev.warp.protocol.packet.play.LegacyPlayerInfo;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
+import dev.warp.protocol.packet.play.PlayPing;
 import dev.warp.protocol.packet.play.PlayPluginMessage;
+import dev.warp.protocol.packet.play.PlayPong;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
@@ -96,17 +105,22 @@ import dev.warp.protocol.packet.play.ResourcePackPush;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.Respawn;
 import dev.warp.protocol.packet.play.SetActionBarText;
+import dev.warp.protocol.packet.play.SetDefaultSpawnPosition;
 import dev.warp.protocol.packet.play.SetSubtitleText;
 import dev.warp.protocol.packet.play.SetTitleText;
 import dev.warp.protocol.packet.play.SetTitleTimes;
 import dev.warp.protocol.packet.play.SoundEffect;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.StopSound;
+import dev.warp.protocol.packet.play.SyncPlayerPosition;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
 import dev.warp.protocol.packet.play.TabListHeaderFooter;
+import dev.warp.protocol.packet.play.TeleportConfirm;
+import dev.warp.protocol.packet.play.TickEnd;
 import dev.warp.protocol.packet.play.Transfer;
+import dev.warp.protocol.packet.play.WindowConfirmation;
 import dev.warp.protocol.packet.status.PingRequest;
 import dev.warp.protocol.packet.status.PongResponse;
 import dev.warp.protocol.packet.status.StatusRequest;
@@ -130,6 +144,16 @@ public final class StateRegistry {
 
   private static final PacketRegistry EMPTY = PacketRegistry.builder().build();
   private static final Map<ProtocolState, Map<PacketDirection, PacketRegistry>> REGISTRIES;
+
+  /**
+   * The serverbound registries of the anti-bot's virtual world: the regular ones plus the packets
+   * only the world reads (movement, teleport confirmations, pongs, known packs). Built once, used
+   * by a decoder only while a client is in the world, so that no player on a server pays for them.
+   */
+  private static final Map<ProtocolState, PacketRegistry> WORLD_SERVERBOUND =
+      Map.of(
+          ProtocolState.CONFIGURATION, worldConfigurationServerbound(),
+          ProtocolState.PLAY, worldPlayServerbound());
 
   static {
     REGISTRIES = new EnumMap<>(ProtocolState.class);
@@ -164,6 +188,23 @@ public final class StateRegistry {
   public static PacketRegistry get(ProtocolState state, PacketDirection direction) {
     // Every state has its map (see the static initializer); a direction may have no packets.
     return REGISTRIES.getOrDefault(state, Map.of()).getOrDefault(direction, EMPTY);
+  }
+
+  /**
+   * Returns the serverbound registry a client in the anti-bot's virtual world is decoded with: the
+   * regular registry of the state plus the world's own packets. Only the configuration and play
+   * states have one.
+   *
+   * @param state the configuration or play state
+   * @return the registry
+   * @throws IllegalArgumentException for another state
+   */
+  public static PacketRegistry world(ProtocolState state) {
+    PacketRegistry registry = WORLD_SERVERBOUND.get(state);
+    if (registry == null) {
+      throw new IllegalArgumentException("The virtual world has no registry for " + state);
+    }
+    return registry;
   }
 
   /** Returns the direction map for a state, creating it if absent. Never null after init. */
@@ -271,40 +312,10 @@ public final class StateRegistry {
     directionMap(ProtocolState.CONFIGURATION)
         .put(
             PacketDirection.SERVERBOUND,
-            PacketRegistry.builder()
-                .register(
-                    ClientInformation.class, ClientInformation.CODEC, map(0x00, MINECRAFT_1_20_2))
-                .register(
-                    AcknowledgeFinishConfiguration.class,
-                    AcknowledgeFinishConfiguration.CODEC,
-                    map(0x02, MINECRAFT_1_20_2),
-                    map(0x03, MINECRAFT_1_20_5))
-                .register(
-                    KeepAlive.class,
-                    KeepAlive.CODEC,
-                    map(0x03, MINECRAFT_1_20_2),
-                    map(0x04, MINECRAFT_1_20_5))
-                .register(CookieResponse.class, CookieResponse.CODEC, map(0x01, MINECRAFT_1_20_5))
-                // The proxy's own messages to a server; the client's stay blind, their brand read
-                // in place for the anti-bot's probe.
-                .registerWatched(
-                    ConfigPluginMessage.class,
-                    ConfigPluginMessage.CODEC,
-                    ConfigPluginMessage.BRAND_WATCH,
-                    map(0x01, MINECRAFT_1_20_2),
-                    map(0x02, MINECRAFT_1_20_5))
-                // The anti-bot's probe: the answer to its ping.
-                .registerWatched(
-                    ConfigPong.class,
-                    ConfigPong.CODEC,
-                    ConfigPong.WATCH,
-                    map(0x04, MINECRAFT_1_20_2),
-                    map(0x05, MINECRAFT_1_20_5))
-                .register(
-                    ResourcePackResponse.class,
-                    ResourcePackResponse.CODEC,
-                    map(0x05, MINECRAFT_1_20_2),
-                    map(0x06, MINECRAFT_1_20_5))
+            serverboundConfiguration()
+                // Written by the proxy for a client whose answer it holds (see the virtual
+                // world's registry, which decodes it); a client's own answer stays opaque.
+                .registerEncodeOnly(KnownPacks.class, KnownPacks.CODEC, map(0x07, MINECRAFT_1_20_5))
                 .build());
 
     directionMap(ProtocolState.CONFIGURATION)
@@ -362,6 +373,20 @@ public final class StateRegistry {
                     ClearDialog.CODEC,
                     map(0x11, MINECRAFT_1_21_6),
                     map(0x12, MINECRAFT_26_3))
+                // The virtual world's own configuration: its registries, and the packs it asks
+                // a 1.20.5+ client to acknowledge so that the entries can be sent as ids.
+                .registerEncodeOnly(
+                    RegistryData.class,
+                    RegistryData.CODEC,
+                    map(0x05, MINECRAFT_1_20_2),
+                    map(0x07, MINECRAFT_1_20_5))
+                // Decoded: a server's offer is answered by the proxy for a client whose answer it
+                // already holds (the virtual world asked first), forwarded otherwise.
+                .register(
+                    KnownPacks.class,
+                    KnownPacks.CODEC,
+                    map(0x0E, MINECRAFT_1_20_5),
+                    map(0x0F, MINECRAFT_26_3))
                 .build());
   }
 
@@ -384,146 +409,7 @@ public final class StateRegistry {
   // ---------------------------------------------------------------------------
 
   private static void registerPlay() {
-    directionMap(ProtocolState.PLAY)
-        .put(
-            PacketDirection.SERVERBOUND,
-            PacketRegistry.builder()
-                .register(
-                    KeepAlive.class,
-                    KeepAlive.CODEC,
-                    map(0x00, MINECRAFT_1_7_2),
-                    map(0x0B, MINECRAFT_1_9),
-                    map(0x0C, MINECRAFT_1_12),
-                    map(0x0B, MINECRAFT_1_12_1),
-                    map(0x0E, MINECRAFT_1_13),
-                    map(0x0F, MINECRAFT_1_14),
-                    map(0x10, MINECRAFT_1_16),
-                    map(0x0F, MINECRAFT_1_17),
-                    map(0x11, MINECRAFT_1_19),
-                    map(0x12, MINECRAFT_1_19_1),
-                    map(0x11, MINECRAFT_1_19_3),
-                    map(0x12, MINECRAFT_1_19_4),
-                    map(0x14, MINECRAFT_1_20_2),
-                    map(0x15, MINECRAFT_1_20_3),
-                    map(0x18, MINECRAFT_1_20_5),
-                    map(0x1A, MINECRAFT_1_21_2),
-                    map(0x1B, MINECRAFT_1_21_6),
-                    map(0x1C, MINECRAFT_26_1))
-                .registerEncodeOnly(
-                    PlayPluginMessage.class,
-                    PlayPluginMessage.CODEC,
-                    map(0x17, MINECRAFT_1_7_2),
-                    map(0x09, MINECRAFT_1_9),
-                    map(0x0A, MINECRAFT_1_12),
-                    map(0x09, MINECRAFT_1_12_1),
-                    map(0x0A, MINECRAFT_1_13),
-                    map(0x0B, MINECRAFT_1_14),
-                    map(0x0A, MINECRAFT_1_17),
-                    map(0x0C, MINECRAFT_1_19),
-                    map(0x0D, MINECRAFT_1_19_1),
-                    map(0x0C, MINECRAFT_1_19_3),
-                    map(0x0D, MINECRAFT_1_19_4),
-                    map(0x0F, MINECRAFT_1_20_2),
-                    map(0x10, MINECRAFT_1_20_3),
-                    map(0x12, MINECRAFT_1_20_5),
-                    map(0x14, MINECRAFT_1_21_2),
-                    map(0x15, MINECRAFT_1_21_6),
-                    map(0x16, MINECRAFT_26_1))
-                .registerEncodeOnly(
-                    TabCompleteRequest.class,
-                    TabCompleteRequest.CODEC,
-                    map(0x05, MINECRAFT_1_13),
-                    map(0x06, MINECRAFT_1_14),
-                    map(0x08, MINECRAFT_1_19),
-                    map(0x09, MINECRAFT_1_19_1),
-                    map(0x08, MINECRAFT_1_19_3),
-                    map(0x09, MINECRAFT_1_19_4),
-                    map(0x0A, MINECRAFT_1_20_2),
-                    map(0x0B, MINECRAFT_1_20_5),
-                    map(0x0D, MINECRAFT_1_21_2),
-                    map(0x0E, MINECRAFT_1_21_6),
-                    map(0x0F, MINECRAFT_26_1))
-                .register(
-                    LegacyChatMessage.class,
-                    LegacyChatMessage.CODEC,
-                    map(0x01, MINECRAFT_1_7_2),
-                    map(0x02, MINECRAFT_1_9),
-                    map(0x03, MINECRAFT_1_12),
-                    map(0x02, MINECRAFT_1_12_1),
-                    map(0x03, MINECRAFT_1_14, MINECRAFT_1_18_2))
-                // Commands from 1.19; from 1.20.5, only the unsigned ones. The signed command,
-                // split off in 1.20.5 at the next id, only carries commands whose declared syntax
-                // has a message argument (/msg, /say), and is forwarded untouched.
-                .register(
-                    ChatCommand.class,
-                    ChatCommand.CODEC,
-                    map(0x03, MINECRAFT_1_19),
-                    map(0x04, MINECRAFT_1_19_1),
-                    map(0x05, MINECRAFT_1_21_2),
-                    map(0x06, MINECRAFT_1_21_6),
-                    map(0x07, MINECRAFT_26_1))
-                // Sent in the client's place for a command the proxy keeps from the backend, with
-                // the last-seen offset the command carried: from 1.19.3, which made it an offset,
-                // to 1.20.4. From 1.20.5 the commands the proxy decodes carry none. A client's own
-                // acknowledgements are forwarded untouched.
-                .registerEncodeOnly(
-                    ChatAcknowledgement.class,
-                    ChatAcknowledgement.CODEC,
-                    map(0x03, MINECRAFT_1_19_3, MINECRAFT_1_20_3))
-                .register(
-                    AcknowledgeConfiguration.class,
-                    AcknowledgeConfiguration.CODEC,
-                    map(0x0B, MINECRAFT_1_20_2),
-                    map(0x0C, MINECRAFT_1_20_5),
-                    map(0x0E, MINECRAFT_1_21_2),
-                    map(0x0F, MINECRAFT_1_21_6),
-                    map(0x10, MINECRAFT_26_1))
-                .register(
-                    PlayClientSettings.class,
-                    PlayClientSettings.CODEC,
-                    map(0x15, MINECRAFT_1_7_2),
-                    map(0x04, MINECRAFT_1_9),
-                    map(0x05, MINECRAFT_1_12),
-                    map(0x04, MINECRAFT_1_12_1),
-                    map(0x05, MINECRAFT_1_14),
-                    map(0x07, MINECRAFT_1_19),
-                    map(0x08, MINECRAFT_1_19_1),
-                    map(0x07, MINECRAFT_1_19_3),
-                    map(0x08, MINECRAFT_1_19_4),
-                    map(0x09, MINECRAFT_1_20_2),
-                    map(0x0A, MINECRAFT_1_20_5),
-                    map(0x0C, MINECRAFT_1_21_2),
-                    map(0x0D, MINECRAFT_1_21_6),
-                    map(0x0E, MINECRAFT_26_1))
-                // Answers to resource packs: the proxy keeps those for its own packs.
-                .register(
-                    ResourcePackResponse.class,
-                    ResourcePackResponse.CODEC,
-                    map(0x19, MINECRAFT_1_8),
-                    map(0x16, MINECRAFT_1_9),
-                    map(0x18, MINECRAFT_1_12),
-                    map(0x1D, MINECRAFT_1_13),
-                    map(0x1F, MINECRAFT_1_14),
-                    map(0x20, MINECRAFT_1_16),
-                    map(0x21, MINECRAFT_1_16_2),
-                    map(0x23, MINECRAFT_1_19),
-                    map(0x24, MINECRAFT_1_19_1),
-                    map(0x27, MINECRAFT_1_20_2),
-                    map(0x28, MINECRAFT_1_20_3),
-                    map(0x2B, MINECRAFT_1_20_5),
-                    map(0x2D, MINECRAFT_1_21_2),
-                    map(0x2F, MINECRAFT_1_21_4),
-                    map(0x30, MINECRAFT_1_21_6),
-                    map(0x31, MINECRAFT_26_1),
-                    map(0x32, MINECRAFT_26_3))
-                .register(
-                    CookieResponse.class,
-                    CookieResponse.CODEC,
-                    map(0x11, MINECRAFT_1_20_5),
-                    map(0x13, MINECRAFT_1_21_2),
-                    map(0x14, MINECRAFT_1_21_6),
-                    map(0x15, MINECRAFT_26_1))
-                .build());
+    directionMap(ProtocolState.PLAY).put(PacketDirection.SERVERBOUND, serverboundPlay().build());
 
     directionMap(ProtocolState.PLAY)
         .put(
@@ -1015,6 +901,445 @@ public final class StateRegistry {
                     map(0x10, MINECRAFT_1_19_4),
                     map(0x11, MINECRAFT_1_20_2),
                     map(0x10, MINECRAFT_1_21_5))
+                // The anti-bot's virtual world (encode-only: a server's stay opaque): a teleport,
+                // the spawn point, the "waiting for chunks" event, one empty chunk, the blocks of
+                // the platform, and the ping or transaction the client must echo.
+                .registerEncodeOnly(
+                    SyncPlayerPosition.class,
+                    SyncPlayerPosition.CODEC,
+                    map(0x08, MINECRAFT_1_7_2),
+                    map(0x2E, MINECRAFT_1_9),
+                    map(0x2F, MINECRAFT_1_12_1),
+                    map(0x32, MINECRAFT_1_13),
+                    map(0x35, MINECRAFT_1_14),
+                    map(0x36, MINECRAFT_1_15),
+                    map(0x35, MINECRAFT_1_16),
+                    map(0x34, MINECRAFT_1_16_2),
+                    map(0x38, MINECRAFT_1_17),
+                    map(0x36, MINECRAFT_1_19),
+                    map(0x39, MINECRAFT_1_19_1),
+                    map(0x38, MINECRAFT_1_19_3),
+                    map(0x3C, MINECRAFT_1_19_4),
+                    map(0x3E, MINECRAFT_1_20_2),
+                    map(0x40, MINECRAFT_1_20_5),
+                    map(0x42, MINECRAFT_1_21_2),
+                    map(0x41, MINECRAFT_1_21_5),
+                    map(0x46, MINECRAFT_1_21_9),
+                    map(0x48, MINECRAFT_26_1),
+                    map(0x49, MINECRAFT_26_3))
+                .registerEncodeOnly(
+                    SetDefaultSpawnPosition.class,
+                    SetDefaultSpawnPosition.CODEC,
+                    map(0x05, MINECRAFT_1_7_2),
+                    map(0x43, MINECRAFT_1_9),
+                    map(0x45, MINECRAFT_1_12),
+                    map(0x46, MINECRAFT_1_12_1),
+                    map(0x49, MINECRAFT_1_13),
+                    map(0x4D, MINECRAFT_1_14),
+                    map(0x4E, MINECRAFT_1_15),
+                    map(0x42, MINECRAFT_1_16),
+                    map(0x4B, MINECRAFT_1_17),
+                    map(0x4A, MINECRAFT_1_19),
+                    map(0x4D, MINECRAFT_1_19_1),
+                    map(0x4C, MINECRAFT_1_19_3),
+                    map(0x50, MINECRAFT_1_19_4),
+                    map(0x52, MINECRAFT_1_20_2),
+                    map(0x54, MINECRAFT_1_20_3),
+                    map(0x56, MINECRAFT_1_20_5),
+                    map(0x5B, MINECRAFT_1_21_2),
+                    map(0x5A, MINECRAFT_1_21_5),
+                    map(0x5F, MINECRAFT_1_21_9),
+                    map(0x61, MINECRAFT_26_1),
+                    map(0x63, MINECRAFT_26_3))
+                .registerEncodeOnly(
+                    GameEvent.class,
+                    GameEvent.CODEC,
+                    map(0x2B, MINECRAFT_1_7_2),
+                    map(0x1E, MINECRAFT_1_9),
+                    map(0x20, MINECRAFT_1_13),
+                    map(0x1E, MINECRAFT_1_14),
+                    map(0x1F, MINECRAFT_1_15),
+                    map(0x1E, MINECRAFT_1_16),
+                    map(0x1D, MINECRAFT_1_16_2),
+                    map(0x1E, MINECRAFT_1_17),
+                    map(0x1B, MINECRAFT_1_19),
+                    map(0x1D, MINECRAFT_1_19_1),
+                    map(0x1C, MINECRAFT_1_19_3),
+                    map(0x1F, MINECRAFT_1_19_4),
+                    map(0x20, MINECRAFT_1_20_2),
+                    map(0x22, MINECRAFT_1_20_5),
+                    map(0x23, MINECRAFT_1_21_2),
+                    map(0x22, MINECRAFT_1_21_5),
+                    map(0x26, MINECRAFT_1_21_9),
+                    map(0x27, MINECRAFT_26_3))
+                .registerEncodeOnly(
+                    EmptyChunk.class,
+                    EmptyChunk.CODEC,
+                    map(0x21, MINECRAFT_1_7_2),
+                    map(0x20, MINECRAFT_1_9),
+                    map(0x22, MINECRAFT_1_13),
+                    map(0x21, MINECRAFT_1_14),
+                    map(0x22, MINECRAFT_1_15),
+                    map(0x21, MINECRAFT_1_16),
+                    map(0x20, MINECRAFT_1_16_2),
+                    map(0x22, MINECRAFT_1_17),
+                    map(0x1F, MINECRAFT_1_19),
+                    map(0x21, MINECRAFT_1_19_1),
+                    map(0x20, MINECRAFT_1_19_3),
+                    map(0x24, MINECRAFT_1_19_4),
+                    map(0x25, MINECRAFT_1_20_2),
+                    map(0x27, MINECRAFT_1_20_5),
+                    map(0x28, MINECRAFT_1_21_2),
+                    map(0x27, MINECRAFT_1_21_5),
+                    map(0x2C, MINECRAFT_1_21_9),
+                    map(0x2D, MINECRAFT_26_1),
+                    map(0x2E, MINECRAFT_26_3))
+                .registerEncodeOnly(
+                    BlockUpdate.class,
+                    BlockUpdate.CODEC,
+                    map(0x23, MINECRAFT_1_7_2),
+                    map(0x0B, MINECRAFT_1_9),
+                    map(0x0C, MINECRAFT_1_15),
+                    map(0x0B, MINECRAFT_1_16),
+                    map(0x0C, MINECRAFT_1_17),
+                    map(0x09, MINECRAFT_1_19),
+                    map(0x0A, MINECRAFT_1_19_4),
+                    map(0x09, MINECRAFT_1_20_2),
+                    map(0x08, MINECRAFT_1_21_5))
+                .registerEncodeOnly(
+                    PlayPing.class,
+                    PlayPing.CODEC,
+                    map(0x30, MINECRAFT_1_17),
+                    map(0x2D, MINECRAFT_1_19),
+                    map(0x2F, MINECRAFT_1_19_1),
+                    map(0x2E, MINECRAFT_1_19_3),
+                    map(0x32, MINECRAFT_1_19_4),
+                    map(0x33, MINECRAFT_1_20_2),
+                    map(0x35, MINECRAFT_1_20_5),
+                    map(0x37, MINECRAFT_1_21_2),
+                    map(0x36, MINECRAFT_1_21_5),
+                    map(0x3B, MINECRAFT_1_21_9),
+                    map(0x3D, MINECRAFT_26_1),
+                    map(0x3E, MINECRAFT_26_3))
+                .registerEncodeOnly(
+                    WindowConfirmation.class,
+                    WindowConfirmation.CODEC,
+                    map(0x32, MINECRAFT_1_7_2),
+                    map(0x11, MINECRAFT_1_9),
+                    map(0x12, MINECRAFT_1_13),
+                    map(0x13, MINECRAFT_1_15),
+                    map(0x12, MINECRAFT_1_16),
+                    map(0x11, MINECRAFT_1_16_2, MINECRAFT_1_16_4))
                 .build());
+  }
+
+  // ---------------------------------------------------------------------------
+  // Serverbound builders, shared with the virtual world's registries
+  // ---------------------------------------------------------------------------
+
+  private static PacketRegistry.Builder serverboundConfiguration() {
+    return PacketRegistry.builder()
+        .register(ClientInformation.class, ClientInformation.CODEC, map(0x00, MINECRAFT_1_20_2))
+        .register(
+            AcknowledgeFinishConfiguration.class,
+            AcknowledgeFinishConfiguration.CODEC,
+            map(0x02, MINECRAFT_1_20_2),
+            map(0x03, MINECRAFT_1_20_5))
+        .register(
+            KeepAlive.class,
+            KeepAlive.CODEC,
+            map(0x03, MINECRAFT_1_20_2),
+            map(0x04, MINECRAFT_1_20_5))
+        .register(CookieResponse.class, CookieResponse.CODEC, map(0x01, MINECRAFT_1_20_5))
+        // The proxy's own messages to a server; the client's stay blind, their brand read
+        // in place for the anti-bot's probe.
+        .registerWatched(
+            ConfigPluginMessage.class,
+            ConfigPluginMessage.CODEC,
+            ConfigPluginMessage.BRAND_WATCH,
+            map(0x01, MINECRAFT_1_20_2),
+            map(0x02, MINECRAFT_1_20_5))
+        // The anti-bot's probe: the answer to its ping.
+        .registerWatched(
+            ConfigPong.class,
+            ConfigPong.CODEC,
+            ConfigPong.WATCH,
+            map(0x04, MINECRAFT_1_20_2),
+            map(0x05, MINECRAFT_1_20_5))
+        .register(
+            ResourcePackResponse.class,
+            ResourcePackResponse.CODEC,
+            map(0x05, MINECRAFT_1_20_2),
+            map(0x06, MINECRAFT_1_20_5));
+  }
+
+  private static PacketRegistry.Builder serverboundPlay() {
+    return PacketRegistry.builder()
+        .register(
+            KeepAlive.class,
+            KeepAlive.CODEC,
+            map(0x00, MINECRAFT_1_7_2),
+            map(0x0B, MINECRAFT_1_9),
+            map(0x0C, MINECRAFT_1_12),
+            map(0x0B, MINECRAFT_1_12_1),
+            map(0x0E, MINECRAFT_1_13),
+            map(0x0F, MINECRAFT_1_14),
+            map(0x10, MINECRAFT_1_16),
+            map(0x0F, MINECRAFT_1_17),
+            map(0x11, MINECRAFT_1_19),
+            map(0x12, MINECRAFT_1_19_1),
+            map(0x11, MINECRAFT_1_19_3),
+            map(0x12, MINECRAFT_1_19_4),
+            map(0x14, MINECRAFT_1_20_2),
+            map(0x15, MINECRAFT_1_20_3),
+            map(0x18, MINECRAFT_1_20_5),
+            map(0x1A, MINECRAFT_1_21_2),
+            map(0x1B, MINECRAFT_1_21_6),
+            map(0x1C, MINECRAFT_26_1))
+        .registerEncodeOnly(
+            PlayPluginMessage.class,
+            PlayPluginMessage.CODEC,
+            map(0x17, MINECRAFT_1_7_2),
+            map(0x09, MINECRAFT_1_9),
+            map(0x0A, MINECRAFT_1_12),
+            map(0x09, MINECRAFT_1_12_1),
+            map(0x0A, MINECRAFT_1_13),
+            map(0x0B, MINECRAFT_1_14),
+            map(0x0A, MINECRAFT_1_17),
+            map(0x0C, MINECRAFT_1_19),
+            map(0x0D, MINECRAFT_1_19_1),
+            map(0x0C, MINECRAFT_1_19_3),
+            map(0x0D, MINECRAFT_1_19_4),
+            map(0x0F, MINECRAFT_1_20_2),
+            map(0x10, MINECRAFT_1_20_3),
+            map(0x12, MINECRAFT_1_20_5),
+            map(0x14, MINECRAFT_1_21_2),
+            map(0x15, MINECRAFT_1_21_6),
+            map(0x16, MINECRAFT_26_1))
+        .registerEncodeOnly(
+            TabCompleteRequest.class,
+            TabCompleteRequest.CODEC,
+            map(0x05, MINECRAFT_1_13),
+            map(0x06, MINECRAFT_1_14),
+            map(0x08, MINECRAFT_1_19),
+            map(0x09, MINECRAFT_1_19_1),
+            map(0x08, MINECRAFT_1_19_3),
+            map(0x09, MINECRAFT_1_19_4),
+            map(0x0A, MINECRAFT_1_20_2),
+            map(0x0B, MINECRAFT_1_20_5),
+            map(0x0D, MINECRAFT_1_21_2),
+            map(0x0E, MINECRAFT_1_21_6),
+            map(0x0F, MINECRAFT_26_1))
+        .register(
+            LegacyChatMessage.class,
+            LegacyChatMessage.CODEC,
+            map(0x01, MINECRAFT_1_7_2),
+            map(0x02, MINECRAFT_1_9),
+            map(0x03, MINECRAFT_1_12),
+            map(0x02, MINECRAFT_1_12_1),
+            map(0x03, MINECRAFT_1_14, MINECRAFT_1_18_2))
+        // Commands from 1.19; from 1.20.5, only the unsigned ones. The signed command,
+        // split off in 1.20.5 at the next id, only carries commands whose declared syntax
+        // has a message argument (/msg, /say), and is forwarded untouched.
+        .register(
+            ChatCommand.class,
+            ChatCommand.CODEC,
+            map(0x03, MINECRAFT_1_19),
+            map(0x04, MINECRAFT_1_19_1),
+            map(0x05, MINECRAFT_1_21_2),
+            map(0x06, MINECRAFT_1_21_6),
+            map(0x07, MINECRAFT_26_1))
+        // Sent in the client's place for a command the proxy keeps from the backend, with
+        // the last-seen offset the command carried: from 1.19.3, which made it an offset,
+        // to 1.20.4. From 1.20.5 the commands the proxy decodes carry none. A client's own
+        // acknowledgements are forwarded untouched.
+        .registerEncodeOnly(
+            ChatAcknowledgement.class,
+            ChatAcknowledgement.CODEC,
+            map(0x03, MINECRAFT_1_19_3, MINECRAFT_1_20_3))
+        .register(
+            AcknowledgeConfiguration.class,
+            AcknowledgeConfiguration.CODEC,
+            map(0x0B, MINECRAFT_1_20_2),
+            map(0x0C, MINECRAFT_1_20_5),
+            map(0x0E, MINECRAFT_1_21_2),
+            map(0x0F, MINECRAFT_1_21_6),
+            map(0x10, MINECRAFT_26_1))
+        .register(
+            PlayClientSettings.class,
+            PlayClientSettings.CODEC,
+            map(0x15, MINECRAFT_1_7_2),
+            map(0x04, MINECRAFT_1_9),
+            map(0x05, MINECRAFT_1_12),
+            map(0x04, MINECRAFT_1_12_1),
+            map(0x05, MINECRAFT_1_14),
+            map(0x07, MINECRAFT_1_19),
+            map(0x08, MINECRAFT_1_19_1),
+            map(0x07, MINECRAFT_1_19_3),
+            map(0x08, MINECRAFT_1_19_4),
+            map(0x09, MINECRAFT_1_20_2),
+            map(0x0A, MINECRAFT_1_20_5),
+            map(0x0C, MINECRAFT_1_21_2),
+            map(0x0D, MINECRAFT_1_21_6),
+            map(0x0E, MINECRAFT_26_1))
+        // Answers to resource packs: the proxy keeps those for its own packs.
+        .register(
+            ResourcePackResponse.class,
+            ResourcePackResponse.CODEC,
+            map(0x19, MINECRAFT_1_8),
+            map(0x16, MINECRAFT_1_9),
+            map(0x18, MINECRAFT_1_12),
+            map(0x1D, MINECRAFT_1_13),
+            map(0x1F, MINECRAFT_1_14),
+            map(0x20, MINECRAFT_1_16),
+            map(0x21, MINECRAFT_1_16_2),
+            map(0x23, MINECRAFT_1_19),
+            map(0x24, MINECRAFT_1_19_1),
+            map(0x27, MINECRAFT_1_20_2),
+            map(0x28, MINECRAFT_1_20_3),
+            map(0x2B, MINECRAFT_1_20_5),
+            map(0x2D, MINECRAFT_1_21_2),
+            map(0x2F, MINECRAFT_1_21_4),
+            map(0x30, MINECRAFT_1_21_6),
+            map(0x31, MINECRAFT_26_1),
+            map(0x32, MINECRAFT_26_3))
+        .register(
+            CookieResponse.class,
+            CookieResponse.CODEC,
+            map(0x11, MINECRAFT_1_20_5),
+            map(0x13, MINECRAFT_1_21_2),
+            map(0x14, MINECRAFT_1_21_6),
+            map(0x15, MINECRAFT_26_1));
+  }
+
+  /** The configuration registry of the virtual world: the client's answer to Select Known Packs. */
+  private static PacketRegistry worldConfigurationServerbound() {
+    return serverboundConfiguration()
+        .register(KnownPacks.class, KnownPacks.CODEC, map(0x07, MINECRAFT_1_20_5))
+        .build();
+  }
+
+  /**
+   * The play registry of the virtual world: what the world check reads of the client, which a
+   * backend reads from the client directly otherwise.
+   */
+  private static PacketRegistry worldPlayServerbound() {
+    return serverboundPlay()
+        .register(TeleportConfirm.class, TeleportConfirm.CODEC, map(0x00, MINECRAFT_1_9))
+        .register(
+            ClientMovement.Position.class,
+            ClientMovement.Position.CODEC,
+            map(0x04, MINECRAFT_1_7_2),
+            map(0x0C, MINECRAFT_1_9),
+            map(0x0E, MINECRAFT_1_12),
+            map(0x0D, MINECRAFT_1_12_1),
+            map(0x10, MINECRAFT_1_13),
+            map(0x11, MINECRAFT_1_14),
+            map(0x12, MINECRAFT_1_16),
+            map(0x11, MINECRAFT_1_17),
+            map(0x13, MINECRAFT_1_19),
+            map(0x14, MINECRAFT_1_19_1),
+            map(0x13, MINECRAFT_1_19_3),
+            map(0x14, MINECRAFT_1_19_4),
+            map(0x16, MINECRAFT_1_20_2),
+            map(0x17, MINECRAFT_1_20_3),
+            map(0x1A, MINECRAFT_1_20_5),
+            map(0x1C, MINECRAFT_1_21_2),
+            map(0x1D, MINECRAFT_1_21_6),
+            map(0x1E, MINECRAFT_26_1))
+        .register(
+            ClientMovement.PositionRotation.class,
+            ClientMovement.PositionRotation.CODEC,
+            map(0x06, MINECRAFT_1_7_2),
+            map(0x0D, MINECRAFT_1_9),
+            map(0x0F, MINECRAFT_1_12),
+            map(0x0E, MINECRAFT_1_12_1),
+            map(0x11, MINECRAFT_1_13),
+            map(0x12, MINECRAFT_1_14),
+            map(0x13, MINECRAFT_1_16),
+            map(0x12, MINECRAFT_1_17),
+            map(0x14, MINECRAFT_1_19),
+            map(0x15, MINECRAFT_1_19_1),
+            map(0x14, MINECRAFT_1_19_3),
+            map(0x15, MINECRAFT_1_19_4),
+            map(0x17, MINECRAFT_1_20_2),
+            map(0x18, MINECRAFT_1_20_3),
+            map(0x1B, MINECRAFT_1_20_5),
+            map(0x1D, MINECRAFT_1_21_2),
+            map(0x1E, MINECRAFT_1_21_6),
+            map(0x1F, MINECRAFT_26_1))
+        .register(
+            ClientMovement.Rotation.class,
+            ClientMovement.Rotation.CODEC,
+            map(0x05, MINECRAFT_1_7_2),
+            map(0x0E, MINECRAFT_1_9),
+            map(0x10, MINECRAFT_1_12),
+            map(0x0F, MINECRAFT_1_12_1),
+            map(0x12, MINECRAFT_1_13),
+            map(0x13, MINECRAFT_1_14),
+            map(0x14, MINECRAFT_1_16),
+            map(0x13, MINECRAFT_1_17),
+            map(0x15, MINECRAFT_1_19),
+            map(0x16, MINECRAFT_1_19_1),
+            map(0x15, MINECRAFT_1_19_3),
+            map(0x16, MINECRAFT_1_19_4),
+            map(0x18, MINECRAFT_1_20_2),
+            map(0x19, MINECRAFT_1_20_3),
+            map(0x1C, MINECRAFT_1_20_5),
+            map(0x1E, MINECRAFT_1_21_2),
+            map(0x1F, MINECRAFT_1_21_6),
+            map(0x20, MINECRAFT_26_1))
+        .register(
+            ClientMovement.Flags.class,
+            ClientMovement.Flags.CODEC,
+            map(0x03, MINECRAFT_1_7_2),
+            map(0x0F, MINECRAFT_1_9),
+            map(0x0D, MINECRAFT_1_12),
+            map(0x0C, MINECRAFT_1_12_1),
+            map(0x0F, MINECRAFT_1_13),
+            map(0x14, MINECRAFT_1_14),
+            map(0x15, MINECRAFT_1_16),
+            map(0x14, MINECRAFT_1_17),
+            map(0x16, MINECRAFT_1_19),
+            map(0x17, MINECRAFT_1_19_1),
+            map(0x16, MINECRAFT_1_19_3),
+            map(0x17, MINECRAFT_1_19_4),
+            map(0x19, MINECRAFT_1_20_2),
+            map(0x1A, MINECRAFT_1_20_3),
+            map(0x1D, MINECRAFT_1_20_5),
+            map(0x1F, MINECRAFT_1_21_2),
+            map(0x20, MINECRAFT_1_21_6),
+            map(0x21, MINECRAFT_26_1))
+        .register(
+            PlayPong.class,
+            PlayPong.CODEC,
+            map(0x1D, MINECRAFT_1_17),
+            map(0x1F, MINECRAFT_1_19),
+            map(0x20, MINECRAFT_1_19_1),
+            map(0x1F, MINECRAFT_1_19_3),
+            map(0x20, MINECRAFT_1_19_4),
+            map(0x23, MINECRAFT_1_20_2),
+            map(0x24, MINECRAFT_1_20_3),
+            map(0x27, MINECRAFT_1_20_5),
+            map(0x29, MINECRAFT_1_21_2),
+            map(0x2B, MINECRAFT_1_21_4),
+            map(0x2C, MINECRAFT_1_21_6),
+            map(0x2D, MINECRAFT_26_1))
+        .register(
+            WindowConfirmation.class,
+            WindowConfirmation.CODEC,
+            map(0x0F, MINECRAFT_1_7_2),
+            map(0x05, MINECRAFT_1_9),
+            map(0x06, MINECRAFT_1_12),
+            map(0x05, MINECRAFT_1_12_1),
+            map(0x06, MINECRAFT_1_13),
+            map(0x07, MINECRAFT_1_14, MINECRAFT_1_16_4))
+        .register(
+            TickEnd.class,
+            TickEnd.CODEC,
+            map(0x0B, MINECRAFT_1_21_2),
+            map(0x0C, MINECRAFT_1_21_6),
+            map(0x0D, MINECRAFT_26_1))
+        .build();
   }
 }

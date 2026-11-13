@@ -82,7 +82,11 @@ class FrameLimitsTest {
     @DisplayName("should bound the handshake by the largest and smallest one its codec writes")
     void handshake() {
       FrameLimits limits = FrameLimits.HANDSHAKE;
-      int largest = size(Handshake.CODEC, new Handshake(-1, wide(255), 65535, -1), LATEST);
+      int largest =
+          size(
+              Handshake.CODEC,
+              new Handshake(-1, wide(Handshake.MAX_SERVER_ADDRESS), 65535, -1),
+              LATEST);
       int smallest = size(Handshake.CODEC, new Handshake(0, "", 0, 0), LATEST);
 
       assertEquals(largest, limits.largest(0x00));
@@ -223,6 +227,22 @@ class FrameLimitsTest {
       assertSame(FrameLimits.HANDSHAKE, FrameLimits.serverbound(ProtocolState.HANDSHAKE, version));
       assertSame(FrameLimits.STATUS, FrameLimits.serverbound(ProtocolState.STATUS, version));
       assertSame(cached(version, false), FrameLimits.serverbound(ProtocolState.LOGIN, version));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("dev.warp.protocol.netty.FrameLimitsTest#versions")
+    @DisplayName("should compute the cached pair as the limits without, then with cookies")
+    void cachedPair(ProtocolVersion version) {
+      FrameLimits[] pair = FrameLimits.login(version);
+
+      assertEquals(2, pair.length);
+      assertFalse(pair[0].allows(0x04));
+      assertEquals(
+          version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5), pair[1].allows(0x04), "cookies");
+      for (int packetId = 0; packetId < 8; packetId++) {
+        assertEquals(login(version, false).largest(packetId), pair[0].largest(packetId));
+        assertEquals(login(version, true).largest(packetId), pair[1].largest(packetId));
+      }
     }
 
     @ParameterizedTest(name = "{0}")

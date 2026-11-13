@@ -70,6 +70,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 @DisplayName("ManagementServer")
 class ManagementServerTest {
@@ -557,8 +558,8 @@ class ManagementServerTest {
 
     @Test
     @DisplayName("should describe the anti-bot in JSON and expose its metrics")
-    void statusAndMetrics() throws Exception {
-      health.antiBot = antiBot();
+    void statusAndMetrics(@TempDir Path directory) throws Exception {
+      health.antiBot = antiBot(directory);
       start();
 
       HttpResponse<String> status = get("/antibot");
@@ -576,8 +577,8 @@ class ManagementServerTest {
 
     @Test
     @DisplayName("should turn lockdown on with the token only, and list the blocklist as text")
-    void lockdownAndBlocklist() throws Exception {
-      AntiBotService antiBot = antiBot();
+    void lockdownAndBlocklist(@TempDir Path directory) throws Exception {
+      AntiBotService antiBot = antiBot(directory);
       health.antiBot = antiBot;
       start();
 
@@ -601,7 +602,7 @@ class ManagementServerTest {
       assertEquals(503, get("/antibot").statusCode());
     }
 
-    private AntiBotService antiBot() throws IOException {
+    private AntiBotService antiBot(Path directory) throws IOException {
       AntiBotConfig d = AntiBotConfig.DEFAULTS;
       AntiBotConfig.Verified v = d.verified();
       return new AntiBotService(
@@ -619,12 +620,13 @@ class ManagementServerTest {
               d.attack(),
               d.blocklist(),
               d.checkTimeout(),
-              d.verification()),
+              d.verification(),
+              d.world()),
           false,
           ClientLimits.unlimited(),
           new WarpEventBus(Runnable::run),
           LoggingConfig.DEFAULTS,
-          Path.of("."),
+          directory,
           _ -> null,
           System::currentTimeMillis);
     }

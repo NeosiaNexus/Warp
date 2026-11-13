@@ -129,8 +129,12 @@ public final class WarpConfig {
   private final boolean acceptsTransfers;
   private final ManagementConfig management;
   private final DrainConfig drain;
+  private final HandoffConfig handoff;
+  private final FleetConfig fleet;
   private final StatusSettings status;
+  private final QueryConfig query;
   private final ProxyProtocolConfig proxyProtocol;
+  private final BedrockConfig bedrock;
   private final LimitsConfig limits;
   private final AntiBotConfig antiBot;
   private final TimeoutsConfig timeouts;
@@ -164,7 +168,8 @@ public final class WarpConfig {
           "groups.*.weights",
           "groups.*.weights.*",
           "groups.*.capacity",
-          "routes.*");
+          "routes.*",
+          "servers.*.floodgate");
 
   /** Settings of earlier layouts, with what replaced them. */
   private static final Map<String, String> MOVED_KEYS =
@@ -197,8 +202,12 @@ public final class WarpConfig {
       boolean acceptsTransfers,
       ManagementConfig management,
       DrainConfig drain,
+      HandoffConfig handoff,
+      FleetConfig fleet,
       StatusSettings status,
+      QueryConfig query,
       ProxyProtocolConfig proxyProtocol,
+      BedrockConfig bedrock,
       LimitsConfig limits,
       AntiBotConfig antiBot,
       TimeoutsConfig timeouts,
@@ -223,8 +232,12 @@ public final class WarpConfig {
     this.acceptsTransfers = acceptsTransfers;
     this.management = management;
     this.drain = drain;
+    this.handoff = handoff;
+    this.fleet = fleet;
     this.status = status;
+    this.query = query;
     this.proxyProtocol = proxyProtocol;
+    this.bedrock = bedrock;
     this.limits = limits;
     this.antiBot = antiBot;
     this.timeouts = timeouts;
@@ -391,8 +404,12 @@ public final class WarpConfig {
 
     ManagementConfig management = ManagementConfig.parse(root, directory, System::getenv);
     DrainConfig drain = DrainConfig.parse(root);
+    HandoffConfig handoff = HandoffConfig.parse(root);
+    FleetConfig fleet = FleetConfig.parse(root, System::getenv);
     StatusSettings status = parseStatus(root, directory);
+    QueryConfig query = QueryConfig.parse(root, bind);
     ProxyProtocolConfig proxyProtocol = parseProxyProtocol(root);
+    BedrockConfig bedrock = BedrockConfig.parse(root, directory);
     LimitsConfig limits = parseLimits(root);
     AntiBotConfig antiBot = AntiBotConfig.parse(root);
     TimeoutsConfig timeouts = TimeoutsConfig.parse(root);
@@ -434,8 +451,12 @@ public final class WarpConfig {
         acceptsTransfers,
         management,
         drain,
+        handoff,
+        fleet,
         status,
+        query,
         proxyProtocol,
+        bedrock,
         limits,
         antiBot,
         timeouts,
@@ -609,8 +630,26 @@ public final class WarpConfig {
    *
    * @return the {@code drain} section
    */
+  public FleetConfig fleet() {
+    return fleet;
+  }
+
+  /**
+   * Returns the drain section.
+   *
+   * @return the drain settings
+   */
   public DrainConfig drain() {
     return drain;
+  }
+
+  /**
+   * Returns the {@code transfers.handoff} section: the seamless handoff between Warp proxies.
+   *
+   * @return the section
+   */
+  public HandoffConfig handoff() {
+    return handoff;
   }
 
   /**
@@ -623,6 +662,15 @@ public final class WarpConfig {
   }
 
   /**
+   * Returns the GS4 Query listener's settings, from the {@code query} block.
+   *
+   * @return the query settings
+   */
+  public QueryConfig query() {
+    return query;
+  }
+
+  /**
    * Returns whether connections arrive through a load balancer that sends the PROXY protocol, and
    * which load balancers are trusted to send it.
    *
@@ -630,6 +678,16 @@ public final class WarpConfig {
    */
   public ProxyProtocolConfig proxyProtocol() {
     return proxyProtocol;
+  }
+
+  /**
+   * Returns how Bedrock players reach the proxy: Floodgate's key and prefix, the trusted Geyser
+   * hosts, and which backends get the Floodgate data.
+   *
+   * @return the Bedrock settings
+   */
+  public BedrockConfig bedrock() {
+    return bedrock;
   }
 
   /**
@@ -1176,6 +1234,11 @@ public final class WarpConfig {
             section.node("max-pending-connections"),
             "limits.max-pending-connections",
             defaults.maxPendingConnections());
+    Duration evictPendingAfter =
+        parseDuration(
+            section.node("evict-pending-after"),
+            "limits.evict-pending-after",
+            defaults.pendingEvictionAfter());
     Duration handshakeTimeout =
         parseDuration(
             section.node("handshake-timeout"),
@@ -1224,7 +1287,8 @@ public final class WarpConfig {
         queue,
         queueWait,
         loginsUnderAttack,
-        perAddressUnderAttack);
+        perAddressUnderAttack,
+        evictPendingAfter);
   }
 
   /**
@@ -1365,7 +1429,7 @@ public final class WarpConfig {
       }
       String generated = generateSecret();
       try {
-        Files.writeString(file, generated, StandardCharsets.UTF_8);
+        SecretFiles.create(file, generated);
       } catch (IOException e) {
         throw ConfigurationException.at(
             key,
@@ -1480,6 +1544,8 @@ public final class WarpConfig {
         # Players connect to the default-server on join.
         # Leave the block empty (servers {}) to only use servers that plugins register at runtime,
         # and remove default-server and fallback-order in that case.
+        # A server running Floodgate for its plugins takes floodgate = true, and gets the Bedrock
+        # players' Floodgate data in its handshake (see bedrock.floodgate.forward for the default).
         servers {
           lobby {
             address = "localhost:25565"
@@ -1579,6 +1645,33 @@ public final class WarpConfig {
           # The version shown in red, in place of the counts, to clients whose version Warp does
           # not support. Defaults to the versions Warp supports: "{default-version-name}".
           # version-name = "{default-version-name}"
+        }
+
+        # GS4 Query, the UDP protocol server lists, hosting panels and monitoring agents use to read
+        # the MOTD, the counts and the player names (enable-query in a vanilla server). Off unless
+        # something you run asks for it: the server list ping gives clients everything already.
+        query {
+          enabled = false
+          # The UDP address: empty takes bind's address and port number (the TCP port stays the
+          # players', the UDP port answers queries).
+          bind = ""
+          # The map field of the replies.
+          map = "Warp"
+          # List the plugins after Warp's version in a full stat ("Warp 1.0: foo 1.2; bar 2.0").
+          show-plugins = false
+          # Player names a full stat lists, 0 to 1000. 0 lists none: a reply never exceeds 1400
+          # bytes and names stop at that size anyway.
+          player-names = 0
+          # The hostip of the replies. Empty: the host of drain.transfer-to when set (the public
+          # address), otherwise the listener's address, which is useless behind 0.0.0.0 or NAT.
+          advertise-host = ""
+          # Datagrams allowed before anything is read: per source address (one IPv6 /64) per
+          # second, with a burst, and over every source together. Beyond, dropped and counted.
+          rate-limit {
+            per-address = 5
+            burst = 10
+            global = 2000
+          }
         }
 
 
@@ -1730,9 +1823,40 @@ public final class WarpConfig {
         #   phase 2  wait for the players kept to leave, at most timeout
         #   phase 3  disconnect whoever is left, disable plugins and exit
         #            (exit code 0 once empty, 2 when the time-out expired)
+        # Seamless handoff between Warp proxies (Minecraft 1.20.5+), off by default. Before a
+        # transfer to a peer (the drain's transfer-to, or an address below), Warp stores a sealed,
+        # single-use ticket in the player's client. The Warp it lands on logs the player in without
+        # asking Mojang again (the connection is still encrypted) and sends it back to the server
+        # it was on. A ticket stands in for Mojang's authentication: turn it on only between
+        # proxies you run, which share the key below. Needs accepts-transfers = true on the
+        # receiving proxy. See docs/transfers.md for the security model.
+        transfers {
+          handoff {
+            enabled = false
+            # The key tickets are sealed with, generated at first start (readable by its owner
+            # only). Give every proxy the same key: copy this file, or set WARP_TRANSFER_SECRET on
+            # each (16 random characters or more). Never the forwarding secret: backends hold it.
+            # With a key of its own, a proxy only accepts the tickets it wrote itself.
+            secret-file = "transfer.secret"
+            # How long a ticket stays valid once written, 1s to 60s: a transfer takes about one.
+            max-age = 15s
+            # A ticket is only valid from the address its player had on the proxy that wrote it.
+            # Turn it off only if your proxies do not see the same client address (some load
+            # balancers, mixed IPv4 and IPv6 paths): players then log in through Mojang, and
+            # warp_transfer_handoffs_rejected_total{reason="address"} counts them.
+            bind-address = true
+            # Where a transfer carries a ticket, besides drain.transfer-to: the other proxies of
+            # this network, as players reach them, e.g. ["play.example.com:25565"]. Never a server
+            # you do not run: whoever holds a fresh ticket can log in as its player. With
+            # drain.transfer-to = fleet, list the fleet.public-address of every proxy here.
+            peers = []
+          }
+        }
+
         drain {
           # Where players go: your public address (the load balancer), never this proxy or a
-          # backend. Empty: nobody is transferred, the drain waits for players to leave.
+          # backend; or fleet, the least loaded ready proxy of the fleet (its fleet.public-address).
+          # Empty: nobody is transferred, the drain waits for players to leave.
           transfer-to = ""
           # Drain on SIGTERM instead of stopping at once (a second SIGTERM stops at once). Turn it
           # on under Kubernetes, with a terminationGracePeriodSeconds longer than the drain.
@@ -1754,6 +1878,56 @@ public final class WarpConfig {
           # warp.disconnect.restarting, in their language: override it in the messages directory.
         }
 
+        # ---------------------------------------------------------------------------
+        # Fleet: several proxies as one network
+        # ---------------------------------------------------------------------------
+        # Proxies that share a store see one list of players: /glist, /find and /send reach every
+        # proxy, the server list shows the network's count, a player logged in elsewhere is kicked
+        # or refused as duplicate-login-policy says, and a draining proxy can transfer its players
+        # to the least loaded peer (drain.transfer-to = fleet). Plugins get the same through the
+        # Fleet API. With no store, everything below is ignored and the fleet is this proxy alone.
+        fleet {
+          store {
+            # none, or valkey (Valkey 7+, Redis 6.2+, standalone or cluster).
+            type = none
+            valkey {
+              address = "valkey:6379"
+              tls = false
+              # ACL user, empty for the default user.
+              username = ""
+              # A file holding the password, or set the WARP_FLEET_PASSWORD variable. Empty: none.
+              password-file = ""
+              # Logical database; 0 on a cluster.
+              database = 0
+            }
+          }
+          # Proxies of the same network share players; keys in the store start with warp:<network>:.
+          network = "main"
+          # This proxy's name in the network. Empty: the host name (the pod name on Kubernetes), so
+          # that a restarted proxy keeps its name and cleans up after its previous life at once.
+          node-id = ""
+          # The host:port other proxies transfer players to when they drain towards the fleet: this
+          # proxy's public address, as players reach it. Empty: no transfers come here.
+          public-address = ""
+          # How often this proxy renews its heartbeat, and how long the heartbeat lives in the store:
+          # a proxy silent for heartbeat-ttl is dead, on the store's clock, whatever the proxies'
+          # clocks say. The ttl must be at least twice the heartbeat.
+          heartbeat = 2s
+          heartbeat-ttl = 10s
+          # How often this proxy compares its view with the store and repairs both.
+          reconcile = 30s
+          # How long a login waits for the store to settle who owns the account.
+          claim-timeout = 2s
+          # While the store is unreachable: allow (logins go on, duplicates are settled on this proxy
+          # alone) or refuse-new-logins (connected players stay).
+          on-store-down = allow
+          status {
+            # Show the network's player count in the server list, not this proxy's. Default: true
+            # with a store, false without.
+            network-count = true
+          }
+        }
+
         # PROXY protocol (v1 and v2), for a load balancer in front of Warp that sends it: HAProxy
         # (send-proxy, send-proxy-v2), AWS NLB, Cloudflare Spectrum, TCPShield, or a Kubernetes
         # LoadBalancer Service with the PROXY protocol on. The header carries each player's real
@@ -1769,6 +1943,42 @@ public final class WarpConfig {
           # e.g. ["10.0.0.0/8", "2001:db8::/32"]. Required when enabled. Never list an address
           # players can connect from: whoever sends the header chooses the address Warp sees.
           trusted-proxies = []
+        }
+
+        # Bedrock players, through Geyser. Geyser (standalone, or on another proxy) sends Bedrock
+        # players to Warp as Java connections carrying Floodgate's encrypted data in the handshake.
+        # Warp reads and verifies that data itself, with Floodgate's key: no Floodgate plugin is
+        # needed on Warp, and backends need one only for plugins that use the Floodgate API.
+        # See docs/bedrock.md.
+        bedrock {
+          floodgate {
+            # Read Floodgate data. Off, Bedrock players cannot join: a name with the prefix below
+            # is refused like any other invalid name.
+            enabled = false
+
+            # Floodgate's key.pem, the file Geyser encrypts the data with: copy it from Geyser's
+            # (or Floodgate's) folder, as it is. Whoever holds it can log in as any Bedrock player,
+            # so keep it as private as the forwarding secret.
+            key-file = "key.pem"
+
+            # What Bedrock names start with, so that they never collide with Java names. Only a
+            # verified Bedrock player may use a name with the prefix; "" for no prefix.
+            username-prefix = "."
+
+            # Append the Floodgate data to the handshake of every backend, re-encrypted with the
+            # same key, for the Floodgate plugin on it (its API: isFloodgatePlayer, device, skins).
+            # A backend without Floodgate ignores it. Each server may override this with its own
+            # floodgate = true or false.
+            forward = false
+          }
+
+          geyser {
+            # Addresses Geyser connects to Warp from. Floodgate's data names the Bedrock player's
+            # own address: from a Geyser here, Warp takes it as the player's (for limits, logs and
+            # forwarding); from anywhere else, the data must name the connection's own address.
+            # With the PROXY protocol from Geyser (proxy-protocol.trusted-proxies), the two match.
+            trusted = ["127.0.0.1/32", "::1/128"]
+          }
         }
 
         # Limits on what one client address may do, against connection floods and bot attacks.
@@ -1794,9 +2004,18 @@ public final class WarpConfig {
 
           # Connections that have not logged in yet (server list pings, logins in progress,
           # connections that sent nothing), for the whole proxy, whatever their address: what a
-          # botnet of many addresses can hold at once. Over it, new connections are refused before
-          # Warp reads anything from them. 0 for no limit.
+          # botnet of many addresses can hold at once. 0 for no limit.
           max-pending-connections = 8192
+
+          # At that limit, a new connection takes the place of the one that has kept Warp waiting
+          # the longest, which is closed: first those that never sent a handshake, then those that
+          # sent one and stalled before a login gave its name. A flood of silent connections then
+          # no longer locks the players out. A connection is only closed after it kept Warp
+          # waiting this long (a game speaks within milliseconds); a new connection is refused
+          # only when none can be closed. Lower it to withstand a faster flood: the limit divided
+          # by this is the connections per second Warp takes in without refusing any (32768 here).
+          # 0 to never close one and refuse the new connections instead.
+          evict-pending-after = 250ms
 
           # The longest a connection may take to send its handshake (the PROXY protocol header
           # included), counted from the moment it connects, and the longest a server list ping may
@@ -1958,6 +2177,24 @@ public final class WarpConfig {
               port = 0
             }
           }
+
+          # The virtual world: a void with one platform inside the proxy, for every version.
+          # `check` makes unknown players fall through it after the probe (a teleport to echo,
+          # the vanilla gravity over a few ticks, a landing on the platform, a ping): what tells a
+          # game from a script in offline mode. Physics mismatches get one retry and never count
+          # against the address. Turn it off for listeners whose backends are modded: Forge and
+          # NeoForge clients refuse a vanilla-looking world. `hold` keeps players in the world
+          # when their server is down or no server of their group is healthy, with a countdown
+          # in the action bar, and tries again every `retry-every` for up to `max-wait`, instead
+          # of disconnecting them.
+          world {
+            check = true
+            hold {
+              enabled = true
+              retry-every = 5s
+              max-wait = 5m
+            }
+          }
         }
 
         # BungeeCord's plugin messaging channel ("BungeeCord" before 1.13, "bungeecord:main"
@@ -2064,6 +2301,7 @@ public final class WarpConfig {
         status.showPlayerCount(),
         status.sampleSize(),
         favicon == null ? "none" : favicon.uri().length() + " characters");
+    logger.info(ConsoleMarkers.FILE_ONLY, "  query: {}", config.query);
     if (config.proxyProtocol.enabled()) {
       logger.info(
           ConsoleMarkers.FILE_ONLY,
@@ -2072,6 +2310,7 @@ public final class WarpConfig {
     } else {
       logger.info(ConsoleMarkers.FILE_ONLY, "  proxy-protocol: disabled");
     }
+    logger.info(ConsoleMarkers.FILE_ONLY, "  bedrock: {}", config.bedrock.describe());
     logger.info(ConsoleMarkers.FILE_ONLY, "  timeouts: {}", config.timeouts);
     logger.info(ConsoleMarkers.FILE_ONLY, "  tcp-fast-open: {}", config.tcpFastOpen);
     LoggingConfig logging = config.logging;
@@ -2105,9 +2344,12 @@ public final class WarpConfig {
           limits.loginTimeout().isZero() ? "never" : LimitsConfig.format(limits.loginTimeout()));
       logger.info(
           ConsoleMarkers.FILE_ONLY,
-          "  limits: {} connections not logged in at once, handshakes within {}, server list pings"
-              + " within {}",
+          "  limits: {} connections not logged in at once, stalled ones closed to make room {},"
+              + " handshakes within {}, server list pings within {}",
           limits.maxPendingConnections() == 0 ? "any number of" : limits.maxPendingConnections(),
+          limits.pendingEvictionAfter().isZero()
+              ? "never"
+              : "after " + LimitsConfig.format(limits.pendingEvictionAfter()),
           limits.handshakeTimeout().isZero()
               ? "any time"
               : LimitsConfig.format(limits.handshakeTimeout()),

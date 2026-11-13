@@ -290,7 +290,7 @@ public final class ServerHealth {
         if (current.state() == State.CLOSED) {
           logger.warn(
               LogCode.SERVER_BREAKER_OPENED.marker(),
-              "Server '{}' is skipped by the balancers for {} seconds: {}",
+              "Server '{}' is skipped for {} s when choosing a server for a player: {}",
               server,
               cooldownNanos / 1_000_000_000L,
               why);

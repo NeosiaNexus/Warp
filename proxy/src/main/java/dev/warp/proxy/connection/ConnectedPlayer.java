@@ -16,6 +16,7 @@
  */
 package dev.warp.proxy.connection;
 
+import dev.warp.api.antibot.VerificationFailure;
 import dev.warp.api.command.CommandExecuteEvent;
 import dev.warp.api.event.player.DisconnectEvent;
 import dev.warp.api.event.player.KickedFromServerEvent;
@@ -43,6 +44,7 @@ import dev.warp.protocol.packet.ComponentPackets;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.config.ClientInformation;
 import dev.warp.protocol.packet.config.ConfigPluginMessage;
+import dev.warp.protocol.packet.config.KnownPacks;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatAcknowledgement;
 import dev.warp.protocol.packet.play.ClearDialog;
@@ -76,6 +78,9 @@ import dev.warp.proxy.messaging.PluginMessageEventImpl;
 import dev.warp.proxy.metrics.ProxyMetrics;
 import dev.warp.proxy.metrics.ServerConnectOutcome;
 import dev.warp.proxy.server.BackendServer;
+import dev.warp.proxy.server.ServerRegistry;
+import dev.warp.proxy.transfer.TransferHandoff;
+import dev.warp.proxy.world.ProxyWorld;
 
 import java.net.InetSocketAddress;
 import java.time.Duration;
@@ -163,7 +168,7 @@ public final class ConnectedPlayer {
   public static final String LOG_SESSION = "session";
 
   /** Interval between KeepAlive packets sent to the client. */
-  private static final long KEEP_ALIVE_INTERVAL_MS = 15_000;
+  private static final long KEEP_ALIVE_INTERVAL_MS = KeepAliveWheel.INTERVAL_MS;
 
   /** Maximum time to wait for a KeepAlive response before disconnecting. */
   private static final long KEEP_ALIVE_TIMEOUT_MS = 30_000;
@@ -230,6 +235,22 @@ public final class ConnectedPlayer {
 
   /** Whether this player was authenticated with Mojang. */
   private volatile boolean onlineMode;
+
+  /**
+   * The server another Warp proxy handed this player off from, which it joins first if this proxy
+   * has it and it is healthy; {@code null} without a handoff.
+   */
+  private volatile @Nullable String handoffServer;
+
+  /** Whether another Warp proxy handed this player off with a valid ticket. */
+  private volatile boolean handedOff;
+
+  /**
+   * The profile the login authenticated as, before plugins changed it: what a handoff ticket
+   * carries, so that the next proxy starts from what Mojang said. The player's profile until the
+   * login says otherwise.
+   */
+  private volatile GameProfile authenticatedProfile;
 
   /** Whether {@link PostLoginEvent} was fired: a {@link DisconnectEvent} must follow. */
   private volatile boolean sessionStarted;
@@ -347,7 +368,35 @@ public final class ConnectedPlayer {
 
   private boolean keepAliveStale;
   private volatile long clientLatencyNanos;
-  private volatile @Nullable ScheduledFuture<?> keepAliveTask;
+
+  /**
+   * The player's seat in the keep-alive wheel of its event loop, while its keep-alive task runs.
+   * Read and written on the event loop only.
+   */
+  private KeepAliveWheel.@Nullable Seat keepAliveSeat;
+
+  // Virtual world: whether the player stands in it, and the hold for want of a server.
+  private volatile boolean inWorld;
+  private boolean pluginHeld;
+  private boolean holding;
+  private long holdDeadlineNanos;
+  private int holdTicks;
+  private @Nullable ScheduledFuture<?> holdRetryTask;
+  private @Nullable ScheduledFuture<?> holdCountdownTask;
+  private @Nullable WorldEntry worldEntry;
+
+  /**
+   * The client's answer to the world's Select Known Packs when the world was skipped for want of a
+   * core pack in common (1.20.5+): the client stays in the configuration phase it answered in, and
+   * its first server asks the same question. Some clients answer it once per phase
+   * (node-minecraft-protocol's bots), so the proxy answers the server with what it holds and the
+   * client never sees the second offer. Set on the client's event loop, read on the backend's,
+   * cleared when the client leaves the phase (the play state, or the world).
+   */
+  private volatile @Nullable KnownPacks worldKnownPacks;
+
+  /** An entry into the world that waits for the client to acknowledge Start Configuration. */
+  private record WorldEntry(Runnable then, Consumer<String> failed) {}
 
   // ---------------------------------------------------------------------------
   // Constructor
@@ -365,6 +414,7 @@ public final class ConnectedPlayer {
     this.uuid = profile.uuid();
     this.username = profile.name();
     this.profileProperties = profile.properties();
+    this.authenticatedProfile = profile;
     this.remoteAddress = remoteAddress;
     this.loginContext = loginContext;
     this.serverSwitch = ServerSwitch.of(this);
@@ -713,22 +763,94 @@ public final class ConnectedPlayer {
    * settings) for that server.
    */
   void join() {
+    beginSession();
+    chooseInitialServer();
+  }
+
+  /**
+   * Starts the session without choosing a server yet: {@link PostLoginEvent} and the proxy's
+   * keep-alives. For a player about to be checked in the virtual world, whose first server comes
+   * once it passed ({@link #chooseInitialServer}).
+   */
+  void beginSession() {
     startSession();
     if (!loginQueries.isHeld()) {
       // A client held in its login state for a backend's login queries reads no keep-alive: the
       // release of its Login Success starts them.
       startKeepAliveTask();
     }
-    if (clientConnection.decoder().state() == ProtocolState.CONFIGURATION) {
+  }
+
+  /**
+   * Chooses the player's first server and connects it: through {@link
+   * PlayerChooseInitialServerEvent} when plugins listen. From the configuration phase the client
+   * waits in a {@link SwitchWaitSessionHandler}; from the virtual world it leaves through the
+   * switch machinery. Client event loop.
+   */
+  void chooseInitialServer() {
+    if (clientConnection.decoder().state() == ProtocolState.CONFIGURATION
+        && !(clientConnection.sessionHandler() instanceof SwitchWaitSessionHandler)) {
       clientConnection.setSessionHandler(new SwitchWaitSessionHandler(this));
     }
-    BackendServer proposed = loginContext.serverRegistry().initialServer(clientConnection.route());
+    BackendServer proposed = handedOffServer();
+    if (proposed == null) {
+      proposed = loginContext.serverRegistry().initialServer(clientConnection.route());
+    }
     WarpEventBus events = loginContext.events();
     if (!events.hasHandlers(PlayerChooseInitialServerEventImpl.class)) {
       joinServer(proposed);
       return;
     }
     holdFor(new PlayerChooseInitialServerEventImpl(api, proposed), this::joinChosen);
+  }
+
+  /**
+   * The server a handoff named, if this proxy has it and its breaker is closed: proposed first, to
+   * plugins as to the player, so that a drain leaves the player where it played.
+   */
+  private @Nullable BackendServer handedOffServer() {
+    String server = handoffServer;
+    if (server == null) {
+      return null;
+    }
+    BackendServer found = loginContext.serverRegistry().handoffServer(server);
+    if (found == null) {
+      logger.debug(
+          "{} was handed off from server {}, which is not here or not healthy: the default instead",
+          username,
+          server);
+    }
+    return found;
+  }
+
+  /**
+   * Records a handoff and the server it named: the player joins it first. Called once, by the
+   * login.
+   *
+   * @param server the server's name on the proxy the player came from, or {@code null}
+   */
+  void handedOffFrom(@Nullable String server) {
+    this.handedOff = true;
+    this.handoffServer = server;
+  }
+
+  /**
+   * Returns whether another Warp proxy handed this player off with a valid ticket.
+   *
+   * @return {@code true} for a handoff
+   */
+  public boolean isHandedOff() {
+    return handedOff;
+  }
+
+  /**
+   * Records the profile the login authenticated as, before plugins changed it. Called once, by the
+   * login.
+   *
+   * @param profile Mojang's profile, a handoff's, or the offline one
+   */
+  void authenticatedAs(GameProfile profile) {
+    this.authenticatedProfile = profile;
   }
 
   /** Applies the result {@link PlayerChooseInitialServerEvent} settled on. Client event loop. */
@@ -741,6 +863,10 @@ public final class ConnectedPlayer {
           return;
         }
         if (reason.equals(PlayerChooseInitialServerEventImpl.NO_SERVER_AVAILABLE)) {
+          if (canHold()) {
+            holdForServer();
+            return;
+          }
           logger.warn(
               LogCode.NO_SERVER_AVAILABLE.marker(),
               "No server available for {}, disconnecting",
@@ -764,6 +890,10 @@ public final class ConnectedPlayer {
       return;
     }
     if (initial == null) {
+      if (canHold()) {
+        holdForServer();
+        return;
+      }
       logger.warn(
           LogCode.NO_SERVER_AVAILABLE.marker(),
           "No server available for {}, disconnecting",
@@ -859,7 +989,28 @@ public final class ConnectedPlayer {
       @Nullable CompletableFuture<ConnectionResult> result,
       boolean tell) {
     if (initial) {
+      if (inWorld && switching) {
+        // A first server is already on its way from the world (the hold's retry, or a release
+        // whose choice a plugin held): one backend login per player.
+        BackendServer underWay = connectingTo;
+        if (result != null) {
+          result.complete(new ConnectionResult.InProgress(underWay != null ? underWay : target));
+        }
+        return;
+      }
       connectingTo = target;
+      if (inWorld) {
+        // From the virtual world the first server is a switch: the client leaves one world for
+        // another, through the configuration phase or a respawn. A release's result, set before
+        // the server was chosen, waits for this connection.
+        if (result != null) {
+          pendingResult = result;
+        }
+        beginSwitch(target.info());
+        logConnection("Connecting {} from the world to server '{}'", username, target.name());
+        serverSwitch.start(target.info());
+        return;
+      }
       currentServerName = target.name();
       logConnection("Connecting {} to server '{}'", username, target.name());
       connect(target.info());
@@ -1115,6 +1266,11 @@ public final class ConnectedPlayer {
    * after the Join Game. Idempotent.
    */
   void switchComplete() {
+    if (holding) {
+      holding = false;
+      cancelHoldTasks();
+      world().holdReleased();
+    }
     if (switching) {
       loginContext.metrics().serverSwitch(ProxyMetrics.SwitchOutcome.SUCCESS);
       cancelSwitchTimeout();
@@ -2110,6 +2266,14 @@ public final class ConnectedPlayer {
       case KickedFromServerEvent.DisconnectPlayer(Component message) -> {
         failedFallbackServers = null;
         switching = false;
+        if (result.equals(proposed) && canHold()) {
+          // No server left: wait in the virtual world instead, told why.
+          if (!message.equals(Message.NO_SERVER_LEFT.of())) {
+            sendMessage(message);
+          }
+          holdForServer();
+          return;
+        }
         disconnectFor(
             result.equals(proposed)
                 ? DisconnectEvent.Cause.NO_SERVER_AVAILABLE
@@ -2194,6 +2358,383 @@ public final class ConnectedPlayer {
   }
 
   // ---------------------------------------------------------------------------
+  // Virtual world
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns whether the player stands in the proxy's virtual world: being checked, held for a
+   * server, or held by a plugin.
+   *
+   * @return {@code true} while in the world
+   */
+  public boolean isInWorld() {
+    return inWorld;
+  }
+
+  ProxyWorld world() {
+    return loginContext.antiBot().world();
+  }
+
+  /**
+   * The world asked the client which packs it knows and skipped itself on the answer: kept for the
+   * first server's offer, which the proxy answers in the client's stead.
+   *
+   * @param answer what the client knows of the proxy's offer
+   */
+  void worldKnownPacksAnswered(KnownPacks answer) {
+    worldKnownPacks = answer;
+  }
+
+  /**
+   * Returns the client's answer to the world's Select Known Packs, if the world was skipped on it
+   * in the configuration phase the client is still in. Kept for the whole phase: a server that
+   * fails during its configuration is followed by a fallback, which asks again.
+   *
+   * @return the answer; {@code null} when the client answers servers itself
+   */
+  @Nullable KnownPacks worldKnownPacks() {
+    return worldKnownPacks;
+  }
+
+  /** The world's session handler took the client: it stands in the world, on no server. */
+  void worldEntered() {
+    inWorld = true;
+    worldKnownPacks = null;
+    leaveServer();
+    currentServerName = null;
+    world().entered(this);
+  }
+
+  /** The world's session handler was replaced, or the player left. */
+  void worldLeft() {
+    if (inWorld) {
+      inWorld = false;
+      world().left(this);
+    }
+  }
+
+  /**
+   * Puts the player in the virtual world, from wherever it is: the configuration phase it waits in,
+   * a server it plays on (1.20.2+ through Start Configuration, older clients through a respawn into
+   * the world), or nowhere yet. Client event loop.
+   *
+   * @param then what to do once the player stands in the world
+   * @param failed what to do if it cannot: the detail
+   */
+  void enterWorld(Runnable then, Consumer<String> failed) {
+    if (disconnected.get() || !clientConnection.channel().isActive()) {
+      failed.accept("the player left");
+      return;
+    }
+    if (inWorld) {
+      then.run();
+      return;
+    }
+    ProxyWorld world = world();
+    if (!world.accepts(protocolVersion, clientConnection.clientPlatform())) {
+      failed.accept(
+          "no world for " + protocolVersion.name() + " " + clientConnection.clientPlatform());
+      return;
+    }
+    BackendConnection previous = backendConnection;
+    if (protocolVersion.supportsConfigurationState()) {
+      if (clientConnection.decoder().state() == ProtocolState.CONFIGURATION) {
+        setBackendConnection(null);
+        if (previous != null) {
+          previous.disconnect();
+        }
+        enterWorldFromConfiguration(then, failed);
+        return;
+      }
+      // Playing: the configuration phase resets the client, and the world follows it.
+      playOn(null);
+      worldEntry = new WorldEntry(then, failed);
+      startConfiguration();
+      return;
+    }
+    setBackendConnection(null);
+    if (previous != null) {
+      previous.disconnect();
+    }
+    playOn(null);
+    WorldSessionHandler.Entry entry = WorldSessionHandler.Entry.FRESH;
+    if (serverSwitch instanceof RespawnSwitch respawn) {
+      if (respawn.isSpawned()) {
+        entry = WorldSessionHandler.Entry.REJOIN;
+      }
+      respawn.spawnedInWorld();
+    }
+    clientConnection.setSessionHandler(
+        new WorldSessionHandler(
+            clientConnection, protocolVersion, world, this, null, null, world.nanoClock(), entry));
+    then.run();
+  }
+
+  /**
+   * Continues an entry into the world once the client acknowledged Start Configuration (1.20.2+),
+   * from the client's play handler.
+   *
+   * @return {@code true} if an entry was waiting and is now under way
+   */
+  boolean continueWorldEntry() {
+    WorldEntry pending = worldEntry;
+    if (pending == null) {
+      return false;
+    }
+    worldEntry = null;
+    clientStateChanged(ProtocolState.CONFIGURATION);
+    BackendConnection previous = backendConnection;
+    setBackendConnection(null);
+    if (previous != null) {
+      previous.disconnect();
+    }
+    enterWorldFromConfiguration(pending.then(), pending.failed());
+    return true;
+  }
+
+  /** Gives a 1.20.2+ client in its configuration phase the world's registries, then the world. */
+  private void enterWorldFromConfiguration(Runnable then, Consumer<String> failed) {
+    ProxyWorld world = world();
+    clientConnection.setSessionHandler(
+        new WorldConfigSessionHandler(
+            clientConnection,
+            protocolVersion,
+            world.layouts().of(protocolVersion),
+            this,
+            loginContext.antiBot().stageTimeout(),
+            world.nanoClock(),
+            new WorldConfigSessionHandler.Listener() {
+              @Override
+              public void play() {
+                clientConnection.setSessionHandler(
+                    new WorldSessionHandler(
+                        clientConnection,
+                        protocolVersion,
+                        world,
+                        ConnectedPlayer.this,
+                        null,
+                        null,
+                        world.nanoClock(),
+                        WorldSessionHandler.Entry.FRESH));
+                then.run();
+              }
+
+              @Override
+              public void unsupported(String detail) {
+                failed.accept(detail);
+              }
+
+              @Override
+              public void failed(VerificationFailure reason, String detail) {
+                failed.accept(detail);
+              }
+
+              @Override
+              public void left() {
+                disconnect();
+              }
+            }));
+  }
+
+  // --- The hold for want of a server
+
+  /** Whether a player with no server left is held in the world rather than disconnected. */
+  private boolean canHold() {
+    if (pluginHeld || disconnected.get() || !clientConnection.channel().isActive()) {
+      return false;
+    }
+    if (!world().holdsFor(protocolVersion, clientConnection.clientPlatform())) {
+      return false;
+    }
+    return !holding || clock() - holdDeadlineNanos < 0;
+  }
+
+  /** Holds the player in the world until a server takes it or the wait runs out. */
+  private void holdForServer() {
+    if (!holding) {
+      holding = true;
+      holdTicks = 0;
+      holdDeadlineNanos = clock() + world().config().holdMaxWait().toNanos();
+      world().holdStarted();
+      logConnection("Holding {} in the world: no server available", username);
+    }
+    switching = false;
+    pendingSwitchTarget = null;
+    failedFallbackServers = null;
+    connectingTo = null;
+    cancelSwitchTimeout();
+    boolean announce = holdRetryTask == null;
+    enterWorld(
+        () -> {
+          if (!holding) {
+            return;
+          }
+          if (announce) {
+            sendMessage(Message.HOLD_ENTERED.of());
+          }
+          scheduleHoldTasks();
+        },
+        detail -> {
+          logger.warn(
+              LogCode.WORLD_ENTRY_FAILED.marker(),
+              "Cannot hold {} ({}) in the world: {}; disconnecting",
+              username,
+              protocolVersion.name(),
+              detail);
+          holding = false;
+          cancelHoldTasks();
+          disconnectFor(DisconnectEvent.Cause.NO_SERVER_AVAILABLE, Message.NO_SERVER_LEFT.of());
+        });
+  }
+
+  private void scheduleHoldTasks() {
+    if (holdRetryTask != null) {
+      return;
+    }
+    long retryMs = world().config().holdRetryEvery().toMillis();
+    holdRetryTask =
+        clientConnection
+            .channel()
+            .eventLoop()
+            .scheduleAtFixedRate(this::retryHold, retryMs, retryMs, TimeUnit.MILLISECONDS);
+    holdCountdownTask =
+        clientConnection
+            .channel()
+            .eventLoop()
+            .scheduleAtFixedRate(this::tickHold, 1, 1, TimeUnit.SECONDS);
+  }
+
+  private void cancelHoldTasks() {
+    ScheduledFuture<?> retry = holdRetryTask;
+    if (retry != null) {
+      retry.cancel(false);
+      holdRetryTask = null;
+    }
+    ScheduledFuture<?> countdown = holdCountdownTask;
+    if (countdown != null) {
+      countdown.cancel(false);
+      holdCountdownTask = null;
+    }
+  }
+
+  /** Every retry interval: a server again, or the end of the wait. */
+  private void retryHold() {
+    if (!holding || disconnected.get() || !clientConnection.channel().isActive()) {
+      cancelHoldTasks();
+      return;
+    }
+    if (clock() - holdDeadlineNanos >= 0) {
+      holding = false;
+      cancelHoldTasks();
+      world().holdExpired();
+      logConnection("Hold of {} expired: no server came back", username);
+      disconnectFor(DisconnectEvent.Cause.NO_SERVER_AVAILABLE, Message.HOLD_EXPIRED.of());
+      return;
+    }
+    if (switching || !inWorld) {
+      return; // an attempt is under way, or the player is on its way into the world
+    }
+    ServerRegistry registry = loginContext.serverRegistry();
+    BackendServer target = registry.initialServer(clientConnection.route());
+    if (target == null || !registry.health().allows(target.name())) {
+      return;
+    }
+    sendMessage(Message.HOLD_RETRYING.of(target.name()));
+    connectingTo = target;
+    beginSwitch(target.info());
+    logConnection("Trying '{}' again for {}", target.name(), username);
+    serverSwitch.start(target.info());
+  }
+
+  /** Every second: the countdown, in the action bar (1.8+) or in chat now and then (1.7). */
+  private void tickHold() {
+    if (!holding || !inWorld) {
+      return;
+    }
+    long left = Math.max(0, TimeUnit.NANOSECONDS.toSeconds(holdDeadlineNanos - clock()));
+    if (protocolVersion.isAtLeast(ProtocolVersion.MINECRAFT_1_8)) {
+      sendActionBar(Message.HOLD_WAITING.of(left));
+    } else if (holdTicks % 15 == 0) {
+      sendMessage(Message.HOLD_WAITING.of(left));
+    }
+    holdTicks++;
+  }
+
+  // --- The plugin API
+
+  /**
+   * Returns whether a plugin holds the player in the world. Client event loop.
+   *
+   * @return {@code true} between {@link #holdInWorld()} and {@link #releaseFromWorld()}
+   */
+  boolean isPluginHeld() {
+    return pluginHeld;
+  }
+
+  /**
+   * Puts the player in the virtual world at a plugin's request, and keeps it there: the proxy's own
+   * retries for a server stop. Thread-safe.
+   *
+   * @return completed once the player stands in the world; failed if it cannot be placed
+   */
+  public CompletableFuture<Void> holdInWorld() {
+    CompletableFuture<Void> result = new CompletableFuture<>();
+    onEventLoop(
+        () -> {
+          if (switching) {
+            result.completeExceptionally(
+                new IllegalStateException(username + " is switching servers"));
+            return;
+          }
+          pluginHeld = true;
+          if (holding) {
+            holding = false;
+            cancelHoldTasks();
+          }
+          enterWorld(
+              () -> result.complete(null),
+              detail -> {
+                pluginHeld = false;
+                result.completeExceptionally(new IllegalStateException(detail));
+              });
+        });
+    return result;
+  }
+
+  /**
+   * Sends a player held in the world to the server it would have joined: its route's or the default
+   * order's, through {@link PlayerChooseInitialServerEvent}. With no server available the player is
+   * held for one as a player whose server went down is, and the result waits for it. Thread-safe.
+   *
+   * @return the outcome of the connection
+   */
+  public CompletableFuture<ConnectionResult> releaseFromWorld() {
+    CompletableFuture<ConnectionResult> result = new CompletableFuture<>();
+    onEventLoop(
+        () -> {
+          pluginHeld = false;
+          if (disconnected.get() || !clientConnection.channel().isActive()) {
+            result.complete(new ConnectionResult.Disconnected());
+            return;
+          }
+          if (switching) {
+            BackendServer pending = connectingTo;
+            result.complete(
+                pending != null
+                    ? new ConnectionResult.InProgress(pending)
+                    : new ConnectionResult.Disconnected());
+            return;
+          }
+          // The proxy's own retries stop: this attempt is the one under way, and a retry landing
+          // while a plugin chooses the server would open a second backend login.
+          cancelHoldTasks();
+          pendingResult = result;
+          chooseInitialServer();
+        });
+    return result;
+  }
+
+  // ---------------------------------------------------------------------------
   // KeepAlive system
   // ---------------------------------------------------------------------------
 
@@ -2202,24 +2743,33 @@ public final class ConnectedPlayer {
    * keep-alive every {@value #KEEP_ALIVE_INTERVAL_MS} ms once the previous one was answered, the
    * client timed out when an answer is more than {@value #KEEP_ALIVE_TIMEOUT_MS} ms late. Called
    * once the client reads configuration or play packets; does nothing if the task runs already.
+   * Safe from any thread.
+   *
+   * <p>The task is not a timer of its own: the player takes a seat in the {@link KeepAliveWheel} of
+   * its event loop, which serves every player of the loop from one tick. Its first keep-alive
+   * leaves within the interval, the following ones exactly one interval apart.
    *
    * <p>The task runs whoever the client waits for, a server or plugins: a vanilla client drops a
    * connection that sent it nothing for 30 s ({@code ReadTimeoutHandler(30)} on its channel, in
    * every state), and no server sends it anything while it waits between two.
    */
   void startKeepAliveTask() {
-    if (keepAliveTask != null || disconnected.get()) {
-      return;
+    onEventLoop(this::joinKeepAliveWheel);
+  }
+
+  private void joinKeepAliveWheel() {
+    if (keepAliveSeat == null && !disconnected.get()) {
+      keepAliveSeat =
+          KeepAliveWheel.of(clientConnection.channel().eventLoop())
+              .join(this::sendKeepAlive, this::keepAliveFailed);
     }
-    keepAliveTask =
-        clientConnection
-            .channel()
-            .eventLoop()
-            .scheduleAtFixedRate(
-                this::sendKeepAlive,
-                KEEP_ALIVE_INTERVAL_MS,
-                KEEP_ALIVE_INTERVAL_MS,
-                TimeUnit.MILLISECONDS);
+  }
+
+  /**
+   * A failure of the keep-alive task ends the connection like any other failure in its pipeline.
+   */
+  private void keepAliveFailed(RuntimeException failure) {
+    var _ = clientConnection.channel().pipeline().fireExceptionCaught(failure);
   }
 
   /**
@@ -2245,14 +2795,22 @@ public final class ConnectedPlayer {
       }
     }
     keepAliveHeld = false;
+    if (state == ProtocolState.PLAY) {
+      worldKnownPacks = null; // the next configuration phase is a new question
+    }
     clientConnection.setState(state);
   }
 
-  /** Cancels the KeepAlive task. */
+  /** Cancels the KeepAlive task. Safe from any thread. */
   void cancelKeepAliveTask() {
-    if (keepAliveTask != null) {
-      keepAliveTask.cancel(false);
-      keepAliveTask = null;
+    onEventLoop(this::leaveKeepAliveWheel);
+  }
+
+  private void leaveKeepAliveWheel() {
+    KeepAliveWheel.Seat seat = keepAliveSeat;
+    if (seat != null) {
+      seat.leave();
+      keepAliveSeat = null;
     }
   }
 
@@ -2341,6 +2899,15 @@ public final class ConnectedPlayer {
    */
   public long clientLatencyMs() {
     return TimeUnit.NANOSECONDS.toMillis(clientLatencyNanos);
+  }
+
+  /**
+   * Returns the client's latency as last measured, in nanoseconds.
+   *
+   * @return the round trip, zero before the first keep-alive is answered
+   */
+  long clientLatencyNanos() {
+    return clientLatencyNanos;
   }
 
   // ---------------------------------------------------------------------------
@@ -2499,8 +3066,62 @@ public final class ConnectedPlayer {
       // Inside an open bundle, the client would only act on it once the bundle closes.
       closeBundle();
     }
-    logger.info("Transferring {} to {}:{}", username, packet.host(), packet.port());
+    boolean handedOff = storeHandoff(packet.host(), packet.port());
+    loginContext
+        .metrics()
+        .transfer(
+            ProxyMetrics.TransferDirection.OUT,
+            handedOff ? ProxyMetrics.HandoffUse.USED : ProxyMetrics.HandoffUse.ABSENT);
+    logger.info(
+        "Transferring {} to {}:{}{}",
+        username,
+        packet.host(),
+        packet.port(),
+        handedOff ? " with a handoff" : "");
     clientConnection.writeWhenSettled(packet, promise);
+  }
+
+  /**
+   * Stores the handoff cookies before a transfer to a peer: the sealed ticket, and its proof for a
+   * player whose connection is encrypted. Written ahead of the Transfer packet, in order, so the
+   * client holds them when it connects to the peer. On the client event loop.
+   *
+   * @return whether the cookies were stored
+   */
+  private boolean storeHandoff(String host, int port) {
+    TransferHandoff handoff = loginContext.handoff();
+    if (!handoff.isPeer(host, port) || !cookies.supported()) {
+      return false;
+    }
+    if (clientConnection.bedrock() != null) {
+      // A Bedrock player logs in again through Geyser, with Floodgate's data: no ticket stands in
+      // for it, and none is read from a connection that carries it.
+      return false;
+    }
+    GameProfile original = authenticatedProfile;
+    boolean authenticated = onlineMode;
+    TransferHandoff.Issued issued =
+        handoff.issue(
+            new TransferHandoff.Subject(
+                original.uuid(),
+                original.name(),
+                original.properties(),
+                protocolVersion().protocol(),
+                remoteAddress().getAddress(),
+                currentServerName,
+                authenticated,
+                authenticated && loginContext.antiBot().trustsAccount(original.uuid())),
+            host,
+            port);
+    if (issued == null) {
+      return false;
+    }
+    cookies.store(TransferHandoff.TICKET_COOKIE, issued.ticket());
+    byte[] proof = issued.proof();
+    if (proof != null) {
+      cookies.store(TransferHandoff.PROOF_COOKIE, proof);
+    }
+    return true;
   }
 
   /**
@@ -2626,6 +3247,8 @@ public final class ConnectedPlayer {
     endSession();
     cancelKeepAliveTask();
     cancelSwitchTimeout();
+    cancelHoldTasks();
+    worldLeft();
     if (last == null) {
       clientConnection.close();
     } else {

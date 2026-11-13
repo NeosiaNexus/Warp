@@ -61,13 +61,13 @@ Histogram buckets are fixed per metric. Durations use one of three sets: `fast` 
 | `warp_connections_active` | gauge | `state` (`handshake`, `status`, `login`, `configuration`, `play`) | Live client connections by protocol state. |
 | `warp_connections_pending` | gauge | | Connections not logged in yet (anti-bot). |
 | `warp_connections_pending_max` | gauge | | The cap on connections not logged in; 0 for none. |
-| `warp_connections_refused_total` | counter | `reason` | Connections refused or closed before login, by reason (anti-bot and limits). |
+| `warp_connections_refused_total` | counter | `reason` | Connections refused or closed before login, by reason (anti-bot and limits). At `limits.max-pending-connections`, `pending_evicted` counts the stalled connections closed to give their place to new ones, and `pending_connections` the new ones refused because none could be closed. |
 | `warp_logins_total` | counter | `outcome` (`success`, `refused_antibot`, `refused_duplicate`, `refused_full`, `auth_failed`, `auth_timeout`, `protocol_unsupported`, `cancelled_plugin`, `disconnected`, `other`) | One per login attempt. |
 | `warp_login_duration_seconds` | histogram (`network`) | `outcome` (`success`, `failed`) | From the handshake to the login's end. |
 | `warp_status_pings_total` | counter | `cached` (`true`, `false`) | Server list pings: answered from the cache, or built for a plugin listening to `ProxyPingEvent`. |
 | `warp_client_protocol_version` | gauge | `version` (protocol number) | Players online by their client's protocol version. |
 | `warp_players_online` | gauge | | Players in PLAY on this proxy. |
-| `warp_players_online_network` | gauge | | Players on the whole network; equals the local value until a fleet store exists. |
+| `warp_players_online_network` | gauge | | Players on the whole network: the sum of the live fleet nodes' heartbeats, this proxy's count alone without a fleet store. |
 
 ### Forwarding
 
@@ -109,8 +109,13 @@ backend towards the client. The blind ratio of a proxy is
 | `warp_drain_players_remaining` | gauge | | Players the drain still waits for. |
 | `warp_drain_duration_seconds` | gauge | | How long the current or last drain has run. |
 | `warp_drain_transfers_total` | counter | `outcome` (`sent`, `unsupported`, `not_ready`, `disconnected`) | Transfers the drain attempted, by `TransferResult`. |
+| `warp_transfers_total` | counter | `direction` (`out`, `in`), `handoff` (`used`, `absent`, `invalid`) | Transfers sent to another server (out) and logins that arrived by one (in), by whether a handoff ticket went with them. See [transfers](transfers.md). |
+| `warp_transfer_handoffs_rejected_total` | counter | `reason` (`malformed`, `version`, `key`, `tampered`, `expired`, `clock`, `restart`, `target`, `protocol`, `address`, `name`, `uuid`, `replayed`, `busy`, `proof`) | Handoff tickets a transferred client presented and the proxy did not use. |
+| `warp_transfer_handoff_login_duration_seconds` | histogram (`network`) | | From the handshake to Login Success, for the logins a handoff ticket carried. |
 | `warp_plugin_event_duration_seconds` | histogram (`fast`) | `event` (the API event's name) | Time one handler took on one event. |
 | `warp_plugin_handler_errors_total` | counter | `plugin` | Uncaught exceptions from event handlers. |
+| `warp_query_requests_total` | counter | `type` (`handshake`, `basic`, `full`, `unknown`), `outcome` (`answered`, `no_token`, `rate_limited`, `malformed`, `ignored`) | GS4 query datagrams. `unknown` is a datagram dropped before its type was read: over a rate limit, too short or with a wrong magic. `ignored` is a stat dropped while a plugin hides the proxy from pings. |
+| `warp_query_reply_bytes_total` | counter | | Bytes the query listener sent, to watch for amplification. |
 | `warp_metrics_label_overflow_total` | counter | `metric` | Label values recorded as `other`. |
 | `warp_metrics_collector_errors_total` | counter | `collector` | Scrapes a collector failed and was skipped from. |
 | `warp_antibot_level`, `warp_antibot_lockdown`, `warp_antibot_verified_identities`, `warp_antibot_verified_capacity`, `warp_antibot_blocklisted` | gauge | | The anti-bot, as before. |
@@ -121,6 +126,25 @@ backend towards the client. The blind ratio of a proxy is
 | `warp_antibot_queue_wait_seconds` | summary | | How long logins granted a verification from the line waited. |
 | `warp_antibot_verifications_total` | counter | `result` | Verifications by result: `passed`, `escalated`, `busy`, or `failed_<reason>`. |
 | `warp_antibot_tokens_total` | counter | `result` | Verification tokens `issued` to transferred clients, and `accepted` or `rejected` on return. |
+| `warp_antibot_world_players` | gauge | | Players in the virtual world right now: being checked, held for a server, or held by a plugin. |
+| `warp_antibot_world_checks_total` | counter | `result` | World checks by result: `passed`, `retried` (a physics mismatch given its second fall), `mismatched` (off the gravity after the retry too: the client is let in, untrusted), `failed` (a protocol impossibility). |
+| `warp_antibot_holds_total` | counter | `result` | Players held in the world for want of a server: `started`, `released` to a server, `expired`. |
+
+### The fleet
+
+Present always; on a single node the store is up, there is one node and nothing remote.
+
+| Metric | Type | Labels | Meaning |
+|--------|------|--------|---------|
+| `warp_fleet_store_up` | gauge | | 1 while the fleet store answers (always 1 on a single node), 0 while it is unreachable. |
+| `warp_fleet_nodes` | gauge | `state` (`ready`, `draining`, `down`) | Proxies of the fleet, this one included, by the state of their last heartbeat. |
+| `warp_fleet_players_remote` | gauge | | Players on the other proxies, as the local replica knows them. |
+| `warp_fleet_claims_total` | counter | `outcome` (`claimed`, `owned_kicked`, `owned_refused`, `timeout`, `store_down`) | Logins settled against the fleet: the account was free, held elsewhere and kicked, held elsewhere and refused, not settled in `claim-timeout`, or settled locally because the store was down. |
+| `warp_fleet_bus_messages_total` | counter | `direction` (`in`, `out`) | Messages on the fleet's channels: presence notices, requests and replies, plugin messages. |
+| `warp_fleet_reaped_players_total` | counter | | Player records this proxy removed for a proxy whose heartbeat expired, or for its own previous life. |
+| `warp_fleet_reconcile_corrections_total` | counter | `kind` (`node_added`, `node_removed`, `player_added`, `player_removed`, `player_moved`, `own_replayed`, `own_released`, `own_conflict`) | What a refresh or a reconcile repaired: non-zero means a notice was lost or a node died without a goodbye; `own_conflict` counts a player connected here whose record another node holds, a duplicate session the store did not prevent. |
+| `warp_fleet_store_commands_total` | counter | `command`, `outcome` (`ok`, `failed`) | Calls to the store: `heartbeat`, `nodes`, `players`, `claim`, `release`, `move`, `reap`, `incr`. |
+| `warp_fleet_store_latency_seconds` | histogram | `command` | How long the store takes to answer each command. |
 
 ### The JVM and the process
 

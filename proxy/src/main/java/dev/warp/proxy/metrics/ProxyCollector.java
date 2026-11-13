@@ -45,6 +45,7 @@ public final class ProxyCollector implements Collector {
   private static final List<String> LOOP = List.of("loop");
 
   private final IntSupplier players;
+  private final IntSupplier networkPlayers;
   private final ServerRegistry servers;
   private final Supplier<DrainStatus> drain;
   private final Supplier<@Nullable EventExecutorGroup> loops;
@@ -54,16 +55,19 @@ public final class ProxyCollector implements Collector {
    * Creates the collector.
    *
    * @param players how many players are in PLAY on this proxy
+   * @param networkPlayers how many players are on the whole fleet
    * @param servers the backends
    * @param drain where the drain stands
    * @param loops the worker loops, {@code null} before they start
    */
   public ProxyCollector(
       IntSupplier players,
+      IntSupplier networkPlayers,
       ServerRegistry servers,
       Supplier<DrainStatus> drain,
       Supplier<@Nullable EventExecutorGroup> loops) {
     this.players = players;
+    this.networkPlayers = networkPlayers;
     this.servers = servers;
     this.drain = drain;
     this.loops = loops;
@@ -90,7 +94,7 @@ public final class ProxyCollector implements Collector {
         "warp_players_online_network",
         MetricType.GAUGE,
         "Players on the whole network; this proxy's alone until a fleet store is configured.");
-    out.sample("warp_players_online_network", NONE, NONE, online);
+    out.sample("warp_players_online_network", NONE, NONE, networkPlayers.getAsInt());
 
     out.family(
         "warp_server_connections_active", MetricType.GAUGE, "Players attached to each backend.");

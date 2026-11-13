@@ -1,0 +1,28 @@
+apiVersion: v2
+name: warp
+description: >-
+  Warp, a high-performance Minecraft proxy: blind forwarding, compression passthrough, and a drain
+  that lets a rolling update move players without disconnecting them.
+type: application
+# Both follow Warp's releases (release-please updates them from version.txt).
+version: 0.1.0-beta.7 # x-release-please-version
+appVersion: 0.1.0-beta.7 # x-release-please-version
+kubeVersion: '>=1.26.0-0'
+home: https://github.com/NeosiaNexus/Warp
+sources:
+  - https://github.com/NeosiaNexus/Warp
+keywords:
+  - minecraft
+  - proxy
+  - game-server
+maintainers:
+  - name: Warp Contributors
+    url: https://github.com/NeosiaNexus/Warp
+annotations:
+  artifacthub.io/license: AGPL-3.0-only
+  artifacthub.io/links: |
+    - name: Deploying on Kubernetes
+      url: https://github.com/NeosiaNexus/Warp/blob/main/docs/deploy/kubernetes.md
+  artifacthub.io/signKey: |
+    fingerprint: keyless
+    url: https://github.com/NeosiaNexus/Warp/blob/main/docs/deploy/kubernetes.md#verifying-the-chart

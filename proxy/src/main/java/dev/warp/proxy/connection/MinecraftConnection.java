@@ -34,6 +34,7 @@ import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.netty.TrafficObserver;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.PacketDirection;
+import dev.warp.proxy.bedrock.BedrockIdentity;
 import dev.warp.proxy.compression.Compression;
 import dev.warp.proxy.limit.Refusal;
 import dev.warp.proxy.logging.LogCode;
@@ -146,6 +147,9 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
 
   /** The marker of the client's handshake to forward to a backend, normalized; empty without. */
   private volatile String handshakeMarker = "";
+
+  /** The Bedrock identity Floodgate's data gave this connection, or {@code null} for a Java one. */
+  private volatile @Nullable BedrockIdentity bedrock;
 
   /**
    * Whether a packet that moves the peer to another state was written ({@link #writeTerminal}) and
@@ -1025,6 +1029,28 @@ public final class MinecraftConnection extends ChannelInboundHandlerAdapter
   void setHandshakeMarker(HandshakeMarkers.Detected detected) {
     this.clientPlatform = detected.platform();
     this.handshakeMarker = detected.marker();
+  }
+
+  /**
+   * Returns the Bedrock identity Floodgate's data gave this connection.
+   *
+   * @return the identity, or {@code null} for a Java connection
+   */
+  public @Nullable BedrockIdentity bedrock() {
+    return bedrock;
+  }
+
+  /**
+   * Makes this connection a verified Bedrock player's. Called once, by the handshake, after the
+   * Floodgate data decrypted: the platform becomes {@link ClientPlatform.Bedrock}, and a Forge
+   * marker, which Geyser never sends, is dropped.
+   *
+   * @param identity who the player is
+   */
+  void setBedrock(BedrockIdentity identity) {
+    this.bedrock = identity;
+    this.clientPlatform = identity.platform();
+    this.handshakeMarker = "";
   }
 
   // ---------------------------------------------------------------------------
