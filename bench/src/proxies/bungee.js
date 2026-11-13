@@ -26,6 +26,10 @@ export class BungeeProxy extends Proxy {
     ];
   }
 
+  get protectionPatterns() {
+    return [/throttle/i];
+  }
+
   async spawnSpec() {
     this.failurePatterns = [/Could not (bind|start)/i];
     this.stopCommand = 'end';
@@ -33,7 +37,9 @@ export class BungeeProxy extends Proxy {
     const jar = await download(this.spec.url, join(this.cacheDir, 'proxies', `bungeecord-${this.spec.version}.jar`), { sha256: this.spec.sha256 });
     mkdirSync(join(dir, 'plugins'), { recursive: true });
     writeFileSync(join(dir, 'config.yml'), this.config());
-    const java = await findJava(this.spec.java, this.cacheDir);
+    // A full JDK, not a JRE: the harness reads the live heap with its jcmd (heap.js).
+    const java = await findJava(this.spec.java, this.cacheDir, { tools: true });
+    this.javaPath = java;
     return {
       command: java,
       args: [...JVM_HEADLINE_FLAGS, '-jar', jar],

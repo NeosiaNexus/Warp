@@ -3,10 +3,12 @@ name: Benchmark smoke
 # The macro benchmark harness (bench/) is large, downloads several proxies, and only produces
 # credible numbers on dedicated hardware, so it does not run on every push. This workflow runs it in
 # smoke mode, one job per proxy (Warp from the locally built jar, Velocity, Gate, Gate Lite and
-# BungeeCord), about fifty bots each, roughly two minutes each: weekly, and on demand. It exists so
-# the harness never rots: a change that breaks any proxy adapter, the raw client, the bot path or
-# the report generator fails here (the harness exits non-zero when a proxy does not launch, a
-# scenario throws, or no bot gets through). It makes no performance claims (a GitHub runner is T0).
+# BungeeCord), a handful of bots each, roughly three minutes each: weekly, and on demand. It exists
+# so the harness never rots: a change that breaks any proxy adapter, the raw client, the stub
+# backend, the bot path or the report generator fails here (the harness exits non-zero when a proxy
+# does not launch, a scenario throws, or no bot gets through), and the harness's own unit tests run
+# first. It makes no performance claims (a GitHub runner is T0): a measurement the validity gate
+# rejects there is reported as INVALID in the uploaded report and does not fail the job.
 on:
   schedule:
     - cron: '17 5 * * 1' # Mondays 05:17 UTC
@@ -46,6 +48,32 @@ jobs:
           json=$(printf '%s' "$list" | tr -d ' ' | tr ',' '\n' | sed '/^$/d' | jq -R . | jq -cs .)
           echo "proxies=$json" >> "$GITHUB_OUTPUT"
           echo "Proxies: $json"
+
+  unit:
+    name: Harness unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read # check out the harness
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: e2e/.nvmrc
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      # The validity gate, the stub backend, the CPU plan and the report, from fixed inputs. The
+      # e2e dependencies are installed because one test decodes the stub's Join Game with them.
+      - name: Test the harness
+        run: |
+          (cd e2e && npm ci --no-audit --no-fund)
+          cd bench && npm test
 
   build:
     name: Build Warp

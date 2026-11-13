@@ -26,6 +26,10 @@ export class VelocityProxy extends Proxy {
     ];
   }
 
+  get protectionPatterns() {
+    return [/rate.?limit/i];
+  }
+
   async spawnSpec() {
     this.stopCommand = 'shutdown';
     this.failurePatterns = [/Unable to start Velocity/i];
@@ -36,7 +40,9 @@ export class VelocityProxy extends Proxy {
     // No plugins, and bStats telemetry off (its opt-out lives in plugins/bStats/config.txt).
     mkdirSync(join(dir, 'plugins', 'bStats'), { recursive: true });
     writeFileSync(join(dir, 'plugins', 'bStats', 'config.txt'), 'enabled=false\nserverUuid=00000000-0000-0000-0000-000000000000\nlogFailedRequests=false\n');
-    const java = await findJava(this.spec.java, this.cacheDir);
+    // A full JDK, not a JRE: the harness reads the live heap with its jcmd (heap.js).
+    const java = await findJava(this.spec.java, this.cacheDir, { tools: true });
+    this.javaPath = java;
     return {
       command: java,
       // Decode failures name the packet instead of a generic error: diagnostics only, no cost otherwise.

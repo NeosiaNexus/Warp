@@ -28,6 +28,10 @@ export class GateProxy extends Proxy {
     return [{ label: 'listening', pattern: /listening|Serving|bind/i, required: false }];
   }
 
+  get protectionPatterns() {
+    return [/rate.?limit|quota exceeded/i];
+  }
+
   async spawnSpec() {
     this.failurePatterns = [/panic:/, /FATAL/];
     this.stopCommand = null;

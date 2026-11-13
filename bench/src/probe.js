@@ -33,8 +33,8 @@ export async function settle(read, { quietMs, maxMs, sleep, now = Date.now }) {
 }
 
 /**
- * Runs `warmup + samples` rounds at `intervalMs`, timing each from its intended start (the
- * coordinated-omission guard), discarding the warm-up rounds, and counting a timed-out or failed
+ * Runs `warmup + samples` rounds at `intervalMs`, timing each from its send time, or from its
+ * intended start when the loop is behind schedule (the coordinated-omission guard), discarding the warm-up rounds, and counting a timed-out or failed
  * round at `timeoutMs`.
  * @param {object} options
  * @param {() => Promise<unknown>} options.round one request-response
@@ -55,10 +55,15 @@ export async function probeRounds({ round, samples, warmup, intervalMs, timeoutM
       const intended = start + i * intervalMs;
       const wait = intended - now();
       if (wait > 0) await sleep(wait);
+      // On schedule, the round is timed from the moment it is sent: the timer that woke this loop
+      // is up to a millisecond late, and charging that to the round would drown a sub-millisecond
+      // hop. Behind schedule (the previous round overran its slot), it is timed from the moment it
+      // should have been sent, so the stall is charged and not hidden.
+      const from = wait > 0 ? now() : intended;
       let latency;
       try {
         await withTimeout(round(), timeoutMs);
-        latency = Math.min(timeoutMs, now() - intended);
+        latency = Math.min(timeoutMs, now() - from);
       } catch {
         latency = timeoutMs;
         if (counted) timeouts++;

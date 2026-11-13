@@ -1,14 +1,61 @@
-// A Paper backend for the benchmark: downloaded once, configured for whichever forwarding the proxy
-// under test uses, booted, and driven through its console. Three of these run behind each proxy so
-// that bots can switch between them. The configuration mirrors the e2e harness (offline mode, flat
-// pre-generated world, no mobs, native transport) so the backend is never the bottleneck.
+// The backends of the benchmark. A Paper backend is downloaded once, configured for whichever
+// forwarding the proxy under test uses, booted, pinned to the backend cores, and driven through its
+// console; three of these run behind each proxy so that bots can switch between them. The
+// configuration (offline mode, flat world, no mobs, native transport, no player-data saving, a
+// bounded player tracking range) keeps the cost of a player low, and each backend reports its own
+// health (ticks per second, tick time, overload and error lines) so the validity gate can reject a
+// measurement the backend, not the proxy, limited. The idle scenario uses the stub backend
+// (stubbackend.js) instead, started and watched by `StubBackend` here.
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { download, findJava, ManagedProcess } from './reuse.js';
 
 const READY = /Done \(\d+[.,]\d+s\)!/;
 const BOOT_TIMEOUT_MS = 240_000;
+const STUB = join(dirname(fileURLToPath(import.meta.url)), 'stubbackend.js');
+
+/**
+ * Blocks within which a player is sent the other players. Paper's default (128) makes every player
+ * of a crowded world track every other one, a load that grows with the square of the player count
+ * and saturates the backend's tick long before the proxy: bounded so that a player sees the crowd
+ * around it, not the whole server. The same for every proxy.
+ */
+export const PLAYER_TRACKING_RANGE = 32;
+
+/** Console lines that mean the backend fell behind or failed at something. */
+const OVERLOAD = /Can't keep up!/;
+const ERROR_LINE = /\bERROR\]|Exception|Failed to /;
+
+/** Wraps argv in taskset when the process is pinned. */
+function pinned(command, args, cpus) {
+  return cpus?.length ? ['taskset', ['-c', cpus.join(','), command, ...args]] : [command, args];
+}
+
+/**
+ * Reads Paper's answers to the `tps` and `mspt` console commands.
+ * @param {string[]} lines console lines printed after the commands were sent
+ * @returns {{tps: number|null, msptAvg: number|null, msptMax: number|null}} the one-minute ticks per
+ *   second, and the average and worst tick time in milliseconds over the last ten seconds
+ */
+export function parseTickHealth(lines) {
+  const clean = lines.map((l) => l.replace(/§./g, ''));
+  let tps = null;
+  let msptAvg = null;
+  let msptMax = null;
+  for (const line of clean) {
+    const t = /TPS from last 1m, 5m, 15m:\s*\*?([\d.]+)/.exec(line);
+    if (t) tps = Number(t[1]);
+    // "avg/min/max" for 5 s, 10 s and 1 min: the middle group is the last ten seconds.
+    const m = /([\d.]+)\/([\d.]+)\/([\d.]+),\s*([\d.]+)\/([\d.]+)\/([\d.]+),\s*([\d.]+)\/([\d.]+)\/([\d.]+)/.exec(line);
+    if (m) {
+      msptAvg = Number(m[4]);
+      msptMax = Number(m[6]);
+    }
+  }
+  return { tps, msptAvg, msptMax };
+}
 
 /** Backend log lines that mean a client connection broke on the server side (a mangled packet). */
 const BACKEND_ERRORS = [
@@ -37,6 +84,7 @@ export class Backend {
    * @param {'modern'|'legacy'|'none'} options.forwarding what the proxy forwards
    * @param {string} options.secret the forwarding secret (modern)
    * @param {string} options.logDir
+   * @param {string[]|null} [options.cpus] CPU ids the server is pinned to with taskset, or null
    */
   constructor(options) {
     Object.assign(this, options);
@@ -53,16 +101,44 @@ export class Backend {
     // No telemetry.
     mkdirSync(join(this.dir, 'plugins', 'bStats'), { recursive: true });
     writeFileSync(join(this.dir, 'plugins', 'bStats', 'config.yml'), 'enabled: false\n');
-    if (this.forwarding === 'legacy') {
-      writeFileSync(join(this.dir, 'spigot.yml'), 'settings:\n  bungeecord: true\n');
-    } else if (this.forwarding === 'modern') {
+    writeFileSync(join(this.dir, 'spigot.yml'), this.spigotYml());
+    const paperGlobal = this.paperGlobalYml();
+    if (paperGlobal) {
       const file = join(this.dir, 'config', 'paper-global.yml');
       mkdirSync(dirname(file), { recursive: true });
-      writeFileSync(
-        file,
-        `proxies:\n  velocity:\n    enabled: true\n    online-mode: false\n    secret: '${this.secret}'\n`,
-      );
+      writeFileSync(file, paperGlobal);
     }
+  }
+
+  /**
+   * paper-global.yml: the proxy section for this forwarding, or null when there is none. With
+   * BungeeCord forwarding Paper assumes by default that the proxy authenticated the players
+   * (`bungee-cord.online-mode: true`) and asks Mojang's session server for the profile of every
+   * player that joins; the bots are offline players, so each lookup fails, is logged as an error,
+   * and costs the backend a request per login that the backends of the other proxies do not make.
+   */
+  paperGlobalYml() {
+    if (this.forwarding === 'modern') return `proxies:\n  velocity:\n    enabled: true\n    online-mode: false\n    secret: '${this.secret}'\n`;
+    if (this.forwarding === 'legacy') return 'proxies:\n  bungee-cord:\n    online-mode: false\n';
+    return null;
+  }
+
+  /**
+   * spigot.yml: BungeeCord forwarding when the proxy uses it, no player-data files (thousands of
+   * bots would each leave one, written on the server's main thread), and the bounded tracking range.
+   */
+  spigotYml() {
+    return [
+      'settings:',
+      `  bungeecord: ${this.forwarding === 'legacy'}`,
+      'players:',
+      '  disable-saving: true',
+      'world-settings:',
+      '  default:',
+      '    entity-tracking-range:',
+      `      players: ${PLAYER_TRACKING_RANGE}`,
+      '',
+    ].join('\n');
   }
 
   serverProperties() {
@@ -114,7 +190,8 @@ export class Backend {
       this.jar,
       'nogui',
     ];
-    this.process = new ManagedProcess(this.name, this.java, args, {
+    const [command, argv] = pinned(this.java, args, this.cpus);
+    this.process = new ManagedProcess(this.name, command, argv, {
       cwd: this.dir,
       logFile: join(this.logDir, `backend-${this.name}.log`),
       failures: BACKEND_ERRORS,
@@ -136,6 +213,39 @@ export class Backend {
 
   send(line) {
     this.process?.send(line);
+  }
+
+  /** A point in the console log; pass it to {@link health} to look only at what follows. */
+  mark() {
+    return this.process?.mark() ?? 0;
+  }
+
+  /**
+   * The backend's health since `mark`: ticks per second over the last minute and tick times over
+   * the last ten seconds (asked on the console now), and how many overload and error lines it
+   * printed since the mark.
+   */
+  async health(mark = 0) {
+    const health = { name: this.name, kind: 'paper', tps: null, msptAvg: null, msptMax: null, overloads: 0, errors: 0, errorSample: null };
+    if (!this.process?.alive) return { ...health, dead: true };
+    const lines = this.process.lines;
+    for (let i = mark; i < lines.length; i++) {
+      if (OVERLOAD.test(lines[i])) health.overloads++;
+      else if (ERROR_LINE.test(lines[i])) {
+        health.errors++;
+        health.errorSample ??= lines[i].trim().slice(0, 160);
+      }
+    }
+    const asked = this.process.mark();
+    this.send('tps');
+    this.send('mspt');
+    try {
+      await this.process.waitFor(/TPS from last 1m/, 5_000, asked);
+      await this.process.waitFor(/[\d.]+\/[\d.]+\/[\d.]+,/, 5_000, asked);
+    } catch {
+      // No answer within five seconds: the main thread is that far behind. tps stays null.
+    }
+    return { ...health, ...parseTickHealth(lines.slice(asked)) };
   }
 
   stop() {
@@ -165,7 +275,7 @@ export async function bootAll(backends) {
  * uses.
  * @returns {Backend[]}
  */
-export function createBackends({ jar, java, baseDir, logDir, basePort, backend, forwarding, secret, compressionThreshold, maxHeapMb }) {
+export function createBackends({ jar, java, baseDir, logDir, basePort, backend, forwarding, secret, compressionThreshold, maxHeapMb, cpus = null }) {
   const names = ['lobby', 'survival', 'mini'];
   return names.map(
     (name, i) =>
@@ -182,6 +292,7 @@ export function createBackends({ jar, java, baseDir, logDir, basePort, backend, 
         secret,
         logDir,
         maxHeapMb,
+        cpus,
       }),
   );
 }
@@ -194,4 +305,75 @@ export function createBackends({ jar, java, baseDir, logDir, basePort, backend, 
 export async function bootBackends({ javaMajor, cacheDir, ...rest }) {
   const java = await findJava(javaMajor, cacheDir);
   return bootAll(createBackends({ java, ...rest }));
+}
+
+// ---------------------------------------------------------------------------
+// Stub backend (idle scenario)
+// ---------------------------------------------------------------------------
+
+/** The stub backend's process: started, pinned and watched like a Paper backend. */
+export class StubBackend {
+  /**
+   * @param {object} options
+   * @param {string} options.name
+   * @param {number} options.port
+   * @param {'modern'|'legacy'|'none'} options.forwarding
+   * @param {string} options.secret
+   * @param {number} options.compressionThreshold
+   * @param {string} options.logDir
+   * @param {string[]|null} [options.cpus]
+   */
+  constructor(options) {
+    Object.assign(this, options);
+    this.process = null;
+    this.last = { refused: 0, keepAliveTimeouts: 0 };
+  }
+
+  async boot() {
+    const args = [STUB, '--port', String(this.port), '--forwarding', this.forwarding, '--compression-threshold', String(this.compressionThreshold)];
+    const [command, argv] = pinned(process.execPath, args, this.cpus);
+    this.process = new ManagedProcess(this.name, command, argv, {
+      cwd: this.logDir,
+      env: { STUB_FORWARDING_SECRET: this.secret },
+      logFile: join(this.logDir, `backend-${this.name}.log`),
+    }).start();
+    await this.process.waitFor(/^Done/, 20_000);
+    return this;
+  }
+
+  async stats() {
+    const asked = this.process.mark();
+    this.process.send('stats');
+    const line = await this.process.waitFor(/^STATS /, 5_000, asked);
+    return JSON.parse(line.slice(6));
+  }
+
+  /** A point in time; pass it to {@link health} to count only what happened since. */
+  async mark() {
+    const { refused, keepAliveTimeouts } = await this.stats();
+    return { refused, keepAliveTimeouts };
+  }
+
+  /** Players held, logins refused and keep-alive timeouts since `mark`, and the event-loop lag. */
+  async health(mark = { refused: 0, keepAliveTimeouts: 0 }) {
+    if (!this.process?.alive) return { name: this.name, kind: 'stub', dead: true };
+    try {
+      const s = await this.stats();
+      return {
+        name: this.name,
+        kind: 'stub',
+        players: s.players,
+        refused: s.refused - mark.refused,
+        keepAliveTimeouts: s.keepAliveTimeouts - mark.keepAliveTimeouts,
+        lagP99Ms: s.lagP99Ms,
+        lagMaxMs: s.lagMaxMs,
+      };
+    } catch {
+      return { name: this.name, kind: 'stub', unresponsive: true };
+    }
+  }
+
+  stop() {
+    return this.process ? this.process.stop({ command: 'stop', graceMs: 5_000 }) : Promise.resolve(null);
+  }
 }
