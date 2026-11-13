@@ -168,7 +168,7 @@ public final class ConnectedPlayer {
   public static final String LOG_SESSION = "session";
 
   /** Interval between KeepAlive packets sent to the client. */
-  private static final long KEEP_ALIVE_INTERVAL_MS = 15_000;
+  private static final long KEEP_ALIVE_INTERVAL_MS = KeepAliveWheel.INTERVAL_MS;
 
   /** Maximum time to wait for a KeepAlive response before disconnecting. */
   private static final long KEEP_ALIVE_TIMEOUT_MS = 30_000;
@@ -368,7 +368,12 @@ public final class ConnectedPlayer {
 
   private boolean keepAliveStale;
   private volatile long clientLatencyNanos;
-  private volatile @Nullable ScheduledFuture<?> keepAliveTask;
+
+  /**
+   * The player's seat in the keep-alive wheel of its event loop, while its keep-alive task runs.
+   * Read and written on the event loop only.
+   */
+  private KeepAliveWheel.@Nullable Seat keepAliveSeat;
 
   // Virtual world: whether the player stands in it, and the hold for want of a server.
   private volatile boolean inWorld;
@@ -2738,24 +2743,33 @@ public final class ConnectedPlayer {
    * keep-alive every {@value #KEEP_ALIVE_INTERVAL_MS} ms once the previous one was answered, the
    * client timed out when an answer is more than {@value #KEEP_ALIVE_TIMEOUT_MS} ms late. Called
    * once the client reads configuration or play packets; does nothing if the task runs already.
+   * Safe from any thread.
+   *
+   * <p>The task is not a timer of its own: the player takes a seat in the {@link KeepAliveWheel} of
+   * its event loop, which serves every player of the loop from one tick. Its first keep-alive
+   * leaves within the interval, the following ones exactly one interval apart.
    *
    * <p>The task runs whoever the client waits for, a server or plugins: a vanilla client drops a
    * connection that sent it nothing for 30 s ({@code ReadTimeoutHandler(30)} on its channel, in
    * every state), and no server sends it anything while it waits between two.
    */
   void startKeepAliveTask() {
-    if (keepAliveTask != null || disconnected.get()) {
-      return;
+    onEventLoop(this::joinKeepAliveWheel);
+  }
+
+  private void joinKeepAliveWheel() {
+    if (keepAliveSeat == null && !disconnected.get()) {
+      keepAliveSeat =
+          KeepAliveWheel.of(clientConnection.channel().eventLoop())
+              .join(this::sendKeepAlive, this::keepAliveFailed);
     }
-    keepAliveTask =
-        clientConnection
-            .channel()
-            .eventLoop()
-            .scheduleAtFixedRate(
-                this::sendKeepAlive,
-                KEEP_ALIVE_INTERVAL_MS,
-                KEEP_ALIVE_INTERVAL_MS,
-                TimeUnit.MILLISECONDS);
+  }
+
+  /**
+   * A failure of the keep-alive task ends the connection like any other failure in its pipeline.
+   */
+  private void keepAliveFailed(RuntimeException failure) {
+    var _ = clientConnection.channel().pipeline().fireExceptionCaught(failure);
   }
 
   /**
@@ -2787,11 +2801,16 @@ public final class ConnectedPlayer {
     clientConnection.setState(state);
   }
 
-  /** Cancels the KeepAlive task. */
+  /** Cancels the KeepAlive task. Safe from any thread. */
   void cancelKeepAliveTask() {
-    if (keepAliveTask != null) {
-      keepAliveTask.cancel(false);
-      keepAliveTask = null;
+    onEventLoop(this::leaveKeepAliveWheel);
+  }
+
+  private void leaveKeepAliveWheel() {
+    KeepAliveWheel.Seat seat = keepAliveSeat;
+    if (seat != null) {
+      seat.leave();
+      keepAliveSeat = null;
     }
   }
 
