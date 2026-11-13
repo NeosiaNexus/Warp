@@ -329,6 +329,41 @@ class PreLoginHardeningTest {
     }
 
     @Test
+    @DisplayName("should give the place back at once, before the close reaches the connection")
+    void placeGivenBackBeforeTheClose() {
+      ClientLimits limits = limits(pendingCap(2), clock);
+      EmbeddedChannel oldest = connect(limits, 1);
+      EmbeddedChannel second = connect(limits, 2);
+      // As on a real event loop, where the close is only heard of after the newcomer is counted.
+      oldest.pipeline().remove(ServerChannelInitializer.CONNECTION_HANDLER);
+      pass(EVICT_AFTER);
+
+      assertTrue(connect(limits, 3).isActive());
+
+      assertFalse(oldest.isActive());
+      assertTrue(second.isActive());
+      assertEquals(2, limits.pendingConnections());
+      assertEquals(1, limits.refusals(Refusal.PENDING_EVICTED));
+    }
+
+    @Test
+    @DisplayName("should not count a connection that left by itself as closed to make room")
+    void goneConnectionsAreForgotten() {
+      ClientLimits limits = limits(pendingCap(2), clock);
+      EmbeddedChannel leaving = connect(limits, 1);
+      EmbeddedChannel staying = connect(limits, 2);
+      leaving.close();
+      connect(limits, 3);
+      pass(EVICT_AFTER);
+
+      assertTrue(connect(limits, 4).isActive());
+
+      assertFalse(staying.isActive());
+      assertEquals(2, limits.pendingConnections());
+      assertEquals(1, limits.refusals(Refusal.PENDING_EVICTED));
+    }
+
+    @Test
     @DisplayName("should report the connections closed to make room in the line of counts")
     void reported() {
       ClientLimits limits = limits(pendingCap(1), clock);

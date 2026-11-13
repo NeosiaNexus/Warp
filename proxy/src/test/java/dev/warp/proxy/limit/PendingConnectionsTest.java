@@ -348,6 +348,30 @@ class PendingConnectionsTest {
     }
 
     @Test
+    @DisplayName("should close a connection once, even if it does not leave the table by itself")
+    void closedOnce() {
+      PendingConnections table = table(2);
+      for (String name : List.of("first", "second")) {
+        assertTrue(table.tryStart());
+        table.track(
+            new PendingConnections.Entry() {
+              @Override
+              protected void evicted() {
+                closed.add(name);
+                table.end();
+              }
+            },
+            Runnable::run);
+      }
+      pass(GRACE);
+
+      assertTrue(table.tryStart());
+      assertTrue(table.tryStart());
+
+      assertEquals(List.of("first", "second"), closed);
+    }
+
+    @Test
     @DisplayName("should give each place back exactly once, closed to make room or not")
     void onePlacePerConnection() {
       PendingConnections table = table(2);
@@ -418,6 +442,20 @@ class PendingConnectionsTest {
       assertEquals(16, table.count());
 
       assertTrue(table.tryStart());
+      assertEquals(1, asked.size());
+    }
+
+    @Test
+    @DisplayName("should compare ages on a clock whose values are about to overflow twice over")
+    void clockFarFromZero() throws Exception {
+      clock.set((1L << 62) - GRACE.toNanos() / 2);
+      PendingConnections table = table(1);
+      ExecutorService other = thread();
+      on(other, () -> accept(table, "first", asked::add));
+      pass(GRACE);
+
+      assertTrue(table.tryStart());
+
       assertEquals(1, asked.size());
     }
 

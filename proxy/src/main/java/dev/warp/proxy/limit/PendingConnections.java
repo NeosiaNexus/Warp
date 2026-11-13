@@ -120,7 +120,7 @@ public final class PendingConnections {
    */
   public boolean tryStart() {
     int now = count.incrementAndGet();
-    if (max == 0 || now <= max || (graceNanos != 0 && makeRoom(now))) {
+    if (max == 0 || now <= max || makeRoom(now)) {
       return true;
     }
     count.decrementAndGet();
@@ -182,7 +182,6 @@ public final class PendingConnections {
       local.set(loop);
       loops.add(loop);
     }
-    connection.home = loop;
     loop.append(loop.silent, connection, elapsed());
   }
 
@@ -194,10 +193,11 @@ public final class PendingConnections {
    * @param connection the connection
    */
   public void progressed(Entry connection) {
-    Loop loop = connection.home;
-    if (loop == null || connection.queue == null) {
+    Fifo queue = connection.queue;
+    if (queue == null) {
       return;
     }
+    Loop loop = queue.loop;
     loop.remove(connection);
     loop.append(loop.engaged, connection, elapsed());
   }
@@ -210,9 +210,9 @@ public final class PendingConnections {
    * @param connection the connection
    */
   public void settle(Entry connection) {
-    Loop loop = connection.home;
-    if (loop != null) {
-      loop.remove(connection);
+    Fifo queue = connection.queue;
+    if (queue != null) {
+      queue.loop.remove(connection);
     }
   }
 
@@ -235,16 +235,17 @@ public final class PendingConnections {
     if (counted > max + slack) {
       return false;
     }
+    // The loop whose oldest connection made progress the longest ago, the grace ago or before.
     Loop oldest = null;
-    long oldestSince = Long.MAX_VALUE;
+    long oldestSince = time - graceNanos;
     for (Loop loop : loops) {
       long since = loop.oldest;
-      if (loop != own && since < oldestSince) {
+      if (since <= oldestSince) {
         oldest = loop;
         oldestSince = since;
       }
     }
-    if (oldest == null || time - oldestSince < graceNanos) {
+    if (oldest == null) {
       return false;
     }
     oldest.request();
@@ -266,9 +267,6 @@ public final class PendingConnections {
    * nothing. Every field is read and written on the connection's event loop only.
    */
   public abstract static class Entry {
-
-    /** The event loop's lists the connection was tracked on, or {@code null} if it never was. */
-    private @Nullable Loop home;
 
     /** The list the connection is in, or {@code null} while nothing may close it. */
     private @Nullable Fifo queue;
@@ -300,10 +298,13 @@ public final class PendingConnections {
   /** A list of connections in order of last progress; touched by its event loop only. */
   private static final class Fifo {
 
+    private final Loop loop;
     private @Nullable Entry oldest;
     private @Nullable Entry newest;
 
-    private Fifo() {}
+    private Fifo(Loop loop) {
+      this.loop = loop;
+    }
   }
 
   /**
@@ -313,8 +314,8 @@ public final class PendingConnections {
   private final class Loop implements Runnable {
 
     private final Executor executor;
-    private final Fifo silent = new Fifo();
-    private final Fifo engaged = new Fifo();
+    private final Fifo silent = new Fifo(this);
+    private final Fifo engaged = new Fifo(this);
 
     /**
      * When the connection of this loop that made progress the longest ago did, or {@link
@@ -420,9 +421,7 @@ public final class PendingConnections {
           Math.min(
               first == null ? Long.MAX_VALUE : first.since,
               second == null ? Long.MAX_VALUE : second.since);
-      if (oldest != since) {
-        oldest = since;
-      }
+      oldest = since;
     }
   }
 }
