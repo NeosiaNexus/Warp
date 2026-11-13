@@ -61,7 +61,7 @@ Histogram buckets are fixed per metric. Durations use one of three sets: `fast` 
 | `warp_connections_active` | gauge | `state` (`handshake`, `status`, `login`, `configuration`, `play`) | Live client connections by protocol state. |
 | `warp_connections_pending` | gauge | | Connections not logged in yet (anti-bot). |
 | `warp_connections_pending_max` | gauge | | The cap on connections not logged in; 0 for none. |
-| `warp_connections_refused_total` | counter | `reason` | Connections refused or closed before login, by reason (anti-bot and limits). |
+| `warp_connections_refused_total` | counter | `reason` | Connections refused or closed before login, by reason (anti-bot and limits). At `limits.max-pending-connections`, `pending_evicted` counts the stalled connections closed to give their place to new ones, and `pending_connections` the new ones refused because none could be closed. |
 | `warp_logins_total` | counter | `outcome` (`success`, `refused_antibot`, `refused_duplicate`, `refused_full`, `auth_failed`, `auth_timeout`, `protocol_unsupported`, `cancelled_plugin`, `disconnected`, `other`) | One per login attempt. |
 | `warp_login_duration_seconds` | histogram (`network`) | `outcome` (`success`, `failed`) | From the handshake to the login's end. |
 | `warp_status_pings_total` | counter | `cached` (`true`, `false`) | Server list pings: answered from the cache, or built for a plugin listening to `ProxyPingEvent`. |

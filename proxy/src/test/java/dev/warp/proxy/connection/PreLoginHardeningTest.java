@@ -42,6 +42,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -64,6 +65,8 @@ import org.junit.jupiter.api.Test;
 class PreLoginHardeningTest {
 
   private static final ProtocolVersion VERSION = ProtocolVersion.MINECRAFT_1_21_4;
+
+  private static final Duration EVICT_AFTER = LimitsConfig.DEFAULTS.pendingEvictionAfter();
 
   /** The classes a flood of hostile connections could make log, one line per connection. */
   private final List<LogCapture> logs =
@@ -241,7 +244,8 @@ class PreLoginHardeningTest {
     @Test
     @DisplayName("should reset new connections over the cap, whatever their address")
     void overCap() {
-      ClientLimits limits = limits(pendingCap(2));
+      // On a clock that stands still: the two connections are too young to make room.
+      ClientLimits limits = limits(pendingCap(2), new AtomicLong());
       connect(limits, 1);
       connect(limits, 2);
 
@@ -266,6 +270,277 @@ class PreLoginHardeningTest {
       assertEquals(0, limits.pendingConnections());
       assertTrue(connect(limits, 3).isActive());
       assertTrue(connect(limits, 4).isActive());
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Making room at the cap
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("making room when the proxy holds as many connections not logged in as it may")
+  class MakingRoom {
+
+    private final AtomicLong clock = new AtomicLong();
+
+    @Test
+    @DisplayName("should close the oldest silent connection so that a newcomer logs in")
+    void silentFloodLetsThePlayerIn() {
+      ClientLimits limits = limits(pendingCap(3), clock);
+      EmbeddedChannel oldest = connect(limits, 1);
+      pass(Duration.ofMillis(5));
+      EmbeddedChannel second = connect(limits, 2);
+      pass(Duration.ofMillis(5));
+      EmbeddedChannel third = connect(limits, 3);
+      pass(EVICT_AFTER);
+
+      EmbeddedChannel player = connect(limits, 4);
+
+      assertTrue(player.isActive());
+      assertFalse(oldest.isActive());
+      assertTrue(second.isActive());
+      assertTrue(third.isActive());
+      assertEquals(3, limits.pendingConnections());
+      assertEquals(1, limits.refusals(Refusal.PENDING_EVICTED));
+      assertEquals(0, limits.refusals(Refusal.PENDING_CONNECTIONS));
+
+      player.writeInbound(handshake(2), loginStart("Steve"));
+
+      assertTrue(player.isActive());
+      assertEquals(2, limits.pendingConnections());
+    }
+
+    @Test
+    @DisplayName("should give the place of a closed connection back once, not again as it closes")
+    void placeGivenBackOnce() {
+      ClientLimits limits = limits(pendingCap(2), clock);
+      EmbeddedChannel oldest = connect(limits, 1);
+      connect(limits, 2);
+      pass(EVICT_AFTER);
+      connect(limits, 3);
+
+      // The handshake deadline of the closed connection, and its close, change nothing more.
+      advance(oldest, Duration.ofSeconds(10));
+      oldest.close();
+
+      assertEquals(2, limits.pendingConnections());
+      assertEquals(0, limits.refusals(Refusal.HANDSHAKE_TIMEOUT));
+      assertNoLines();
+    }
+
+    @Test
+    @DisplayName("should give the place back at once, before the close reaches the connection")
+    void placeGivenBackBeforeTheClose() {
+      ClientLimits limits = limits(pendingCap(2), clock);
+      EmbeddedChannel oldest = connect(limits, 1);
+      EmbeddedChannel second = connect(limits, 2);
+      // As on a real event loop, where the close is only heard of after the newcomer is counted.
+      oldest.pipeline().remove(ServerChannelInitializer.CONNECTION_HANDLER);
+      pass(EVICT_AFTER);
+
+      assertTrue(connect(limits, 3).isActive());
+
+      assertFalse(oldest.isActive());
+      assertTrue(second.isActive());
+      assertEquals(2, limits.pendingConnections());
+      assertEquals(1, limits.refusals(Refusal.PENDING_EVICTED));
+    }
+
+    @Test
+    @DisplayName("should not count a connection that left by itself as closed to make room")
+    void goneConnectionsAreForgotten() {
+      ClientLimits limits = limits(pendingCap(2), clock);
+      EmbeddedChannel leaving = connect(limits, 1);
+      EmbeddedChannel staying = connect(limits, 2);
+      leaving.close();
+      connect(limits, 3);
+      pass(EVICT_AFTER);
+
+      assertTrue(connect(limits, 4).isActive());
+
+      assertFalse(staying.isActive());
+      assertEquals(2, limits.pendingConnections());
+      assertEquals(1, limits.refusals(Refusal.PENDING_EVICTED));
+    }
+
+    @Test
+    @DisplayName("should report the connections closed to make room in the line of counts")
+    void reported() {
+      ClientLimits limits = limits(pendingCap(1), clock);
+      connect(limits, 1);
+      pass(EVICT_AFTER);
+      connect(limits, 2);
+
+      limits.report();
+
+      assertEquals(
+          List.of(
+              "Refused before login over the last 60 s: stalled connections closed to make room"
+                  + " for new ones: 1"),
+          limitsLog.events().stream()
+              .map(event -> event.getMessage().getFormattedMessage())
+              .toList());
+      assertEquals(
+          "1",
+          limitsLog.events().getFirst().getContextData().toMap().get("refused.pending_evicted"));
+    }
+
+    @Test
+    @DisplayName(
+        "should refuse the newcomer, as before, when every connection just sent a handshake")
+    void recentHandshakesAreKept() {
+      ClientLimits limits = limits(pendingCap(2), clock);
+      EmbeddedChannel pinging = connect(limits, 1);
+      EmbeddedChannel joining = connect(limits, 2);
+      pass(EVICT_AFTER);
+      pinging.writeInbound(handshake(1));
+      joining.writeInbound(handshake(2));
+      pass(EVICT_AFTER.minusNanos(1));
+
+      EmbeddedChannel newcomer = connect(limits, 3);
+
+      assertFalse(newcomer.isActive());
+      assertNull(newcomer.pipeline().get(ServerChannelInitializer.CONNECTION_HANDLER));
+      assertTrue(pinging.isActive());
+      assertTrue(joining.isActive());
+      assertEquals(2, limits.pendingConnections());
+      assertEquals(1, limits.refusals(Refusal.PENDING_CONNECTIONS));
+      assertEquals(0, limits.refusals(Refusal.PENDING_EVICTED));
+    }
+
+    @Test
+    @DisplayName("should refuse the newcomer when the connections are younger than the grace")
+    void youngConnectionsAreKept() {
+      ClientLimits limits = limits(pendingCap(2), clock);
+      EmbeddedChannel first = connect(limits, 1);
+      EmbeddedChannel second = connect(limits, 2);
+      pass(EVICT_AFTER.minusNanos(1));
+
+      EmbeddedChannel newcomer = connect(limits, 3);
+
+      assertFalse(newcomer.isActive());
+      assertTrue(first.isActive());
+      assertTrue(second.isActive());
+      assertEquals(1, limits.refusals(Refusal.PENDING_CONNECTIONS));
+    }
+
+    @Test
+    @DisplayName("should close a silent connection before one that stalled after its handshake")
+    void silentBeforeStalled() {
+      ClientLimits limits = limits(pendingCap(3), clock);
+      EmbeddedChannel pinging = connect(limits, 1);
+      EmbeddedChannel joining = connect(limits, 2);
+      pinging.writeInbound(handshake(1));
+      joining.writeInbound(handshake(2));
+      pass(EVICT_AFTER);
+      EmbeddedChannel silent = connect(limits, 3);
+      pass(EVICT_AFTER);
+
+      assertTrue(connect(limits, 4).isActive());
+
+      assertFalse(silent.isActive());
+      assertTrue(pinging.isActive());
+      assertTrue(joining.isActive());
+    }
+
+    @Test
+    @DisplayName(
+        "should close the pings and logins that stalled after their handshake, oldest first")
+    void stalledAfterHandshake() {
+      ClientLimits limits = limits(pendingCap(2), clock);
+      EmbeddedChannel joining = connect(limits, 1);
+      EmbeddedChannel pinging = connect(limits, 2);
+      joining.writeInbound(handshake(2));
+      pass(Duration.ofMillis(1));
+      pinging.writeInbound(handshake(1));
+      pass(EVICT_AFTER);
+
+      assertTrue(connect(limits, 3).isActive());
+      assertFalse(joining.isActive());
+      assertTrue(pinging.isActive());
+
+      assertTrue(connect(limits, 4).isActive());
+      assertFalse(pinging.isActive());
+      assertEquals(2, limits.refusals(Refusal.PENDING_EVICTED));
+    }
+
+    @Test
+    @DisplayName("should count the grace of a server list ping from its request")
+    void statusRequestIsProgress() {
+      ClientLimits limits = limits(pendingCap(1), clock);
+      EmbeddedChannel pinging = connect(limits, 1);
+      pinging.writeInbound(handshake(1));
+      pass(EVICT_AFTER);
+      pinging.writeInbound(frame(0x00));
+      skipOutbound(pinging);
+      pass(EVICT_AFTER.minusNanos(1));
+
+      assertFalse(connect(limits, 2).isActive());
+      assertTrue(pinging.isActive());
+
+      pass(Duration.ofNanos(1));
+
+      assertTrue(connect(limits, 3).isActive());
+      assertFalse(pinging.isActive());
+    }
+
+    @Test
+    @DisplayName("should never close a login that gave its name, however long it takes")
+    void namedLoginsAreKept() {
+      ClientLimits limits = limits(pendingCap(1), clock);
+      EmbeddedChannel authenticating = connect(limits, 1, true);
+      authenticating.writeInbound(handshake(2), loginStart("Steve"));
+      pass(EVICT_AFTER.multipliedBy(40));
+
+      EmbeddedChannel newcomer = connect(limits, 2);
+
+      assertFalse(newcomer.isActive());
+      assertTrue(authenticating.isActive());
+      assertEquals(1, limits.pendingConnections());
+      assertEquals(1, limits.refusals(Refusal.PENDING_CONNECTIONS));
+      assertEquals(0, limits.refusals(Refusal.PENDING_EVICTED));
+    }
+
+    @Test
+    @DisplayName(
+        "should not let an address over its connection rate take a place, nor close anyone")
+    void overRateTakesNoPlace() {
+      LimitsConfig d = pendingCap(1);
+      ClientLimits limits =
+          limits(
+              new LimitsConfig(
+                  true,
+                  d.exempt(),
+                  new LimitsConfig.Rate(1, Duration.ofHours(1)),
+                  d.statusPings(),
+                  d.logins(),
+                  d.maxConcurrentLoginsPerAddress(),
+                  d.maxConcurrentAuthentications(),
+                  d.loginTimeout(),
+                  d.reportInterval(),
+                  d.maxPendingConnections(),
+                  d.handshakeTimeout(),
+                  d.statusTimeout(),
+                  d.authenticationQueue(),
+                  d.authenticationQueueWait(),
+                  d.loginsUnderAttack(),
+                  d.maxConcurrentLoginsPerAddressUnderAttack(),
+                  d.pendingEvictionAfter()),
+              clock);
+      EmbeddedChannel silent = connect(limits, 1);
+      pass(EVICT_AFTER);
+
+      EmbeddedChannel again = connect(limits, 1);
+
+      assertFalse(again.isActive());
+      assertTrue(silent.isActive());
+      assertEquals(1, limits.pendingConnections());
+      assertEquals(1, limits.refusals(Refusal.CONNECTION_RATE));
+      assertEquals(0, limits.refusals(Refusal.PENDING_EVICTED));
+    }
+
+    private void pass(Duration time) {
+      clock.addAndGet(time.toNanos());
     }
   }
 
@@ -327,6 +602,11 @@ class PreLoginHardeningTest {
     return new ClientLimits(config, CidrRanges.none());
   }
 
+  /** Limits on a clock the test moves: what makes room at the cap depends on ages. */
+  private static ClientLimits limits(LimitsConfig config, AtomicLong nanoClock) {
+    return new ClientLimits(config, CidrRanges.none(), null, nanoClock::get);
+  }
+
   /** The defaults with other handshake and status timeouts and no login timeout. */
   private static LimitsConfig deadlines(Duration handshake, Duration status) {
     LimitsConfig d = LimitsConfig.DEFAULTS;
@@ -346,7 +626,8 @@ class PreLoginHardeningTest {
         d.authenticationQueue(),
         d.authenticationQueueWait(),
         d.loginsUnderAttack(),
-        d.maxConcurrentLoginsPerAddressUnderAttack());
+        d.maxConcurrentLoginsPerAddressUnderAttack(),
+        d.pendingEvictionAfter());
   }
 
   private static LimitsConfig pendingCap(int cap) {
@@ -367,18 +648,23 @@ class PreLoginHardeningTest {
         d.authenticationQueue(),
         d.authenticationQueueWait(),
         d.loginsUnderAttack(),
-        d.maxConcurrentLoginsPerAddressUnderAttack());
+        d.maxConcurrentLoginsPerAddressUnderAttack(),
+        d.pendingEvictionAfter());
   }
 
   /** Connects from its own address, so that no per-address limit interferes. */
   private static EmbeddedChannel connect(ClientLimits limits, int host) {
+    return connect(limits, host, false);
+  }
+
+  private static EmbeddedChannel connect(ClientLimits limits, int host, boolean onlineMode) {
     EmbeddedChannel channel = new ProxyProtocolTest.PeerChannel(address(host));
     channel.freezeTime();
     channel
         .pipeline()
         .addLast(
             new ServerChannelInitializer(
-                TestLoginContexts.limited(false, new MojangSessionService(), limits)));
+                TestLoginContexts.limited(onlineMode, new MojangSessionService(), limits)));
     return channel;
   }
 

@@ -18,6 +18,7 @@ package dev.warp.proxy.connection;
 
 import dev.warp.protocol.netty.FrameLimitException;
 import dev.warp.proxy.limit.ClientLimits;
+import dev.warp.proxy.limit.PendingConnections;
 import dev.warp.proxy.limit.Refusal;
 
 import java.time.Duration;
@@ -36,6 +37,11 @@ import org.jspecify.annotations.Nullable;
  * <ul>
  *   <li>It holds the connection's place among the connections not logged in ({@link
  *       ClientLimits#tryStartPending()}), given back once the client is logged in or gone.
+ *   <li>It tells the proxy how far the client got ({@link PendingConnections}): while the client
+ *       has sent no handshake, or sent one and keeps the proxy waiting for what follows, the
+ *       connection is one the proxy may close to make room for a new one when it holds as many
+ *       connections not logged in as it may ({@link #evicted()}). A login that gave its name no
+ *       longer is.
  *   <li>It enforces the absolute deadlines of the states before login: the handshake within {@link
  *       ClientLimits#handshakeTimeout()} of the accept (a PROXY protocol header included), then a
  *       server list ping within {@link ClientLimits#statusTimeout()} of its handshake. Bytes
@@ -49,7 +55,7 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>Used on the connection's event loop only.
  */
-final class ConnectionGuard {
+final class ConnectionGuard extends PendingConnections.Entry {
 
   private final MinecraftConnection connection;
   private final Channel channel;
@@ -73,6 +79,7 @@ final class ConnectionGuard {
     this.connection = connection;
     this.channel = connection.channel();
     this.limits = limits;
+    limits.pending().track(this, channel.eventLoop());
     schedule(limits.handshakeTimeout(), Refusal.HANDSHAKE_TIMEOUT);
   }
 
@@ -82,12 +89,27 @@ final class ConnectionGuard {
 
   /** The handshake asked for the server list: the whole ping now has the status timeout. */
   void statusStarted() {
+    limits.pending().progressed(this);
     schedule(limits.statusTimeout(), Refusal.STATUS_TIMEOUT);
+  }
+
+  /** The server list ping sent its request: the client spoke again. */
+  void statusRequested() {
+    limits.pending().progressed(this);
   }
 
   /** The handshake asked to log in: the login handler's own timeout takes over. */
   void loginStarted() {
+    limits.pending().progressed(this);
     cancelDeadline();
+  }
+
+  /**
+   * The login gave its name: from now on the proxy works on it (authentication, verification), and
+   * never closes it to make room. The limits per address and the anti-bot bound these.
+   */
+  void loginNamed() {
+    limits.pending().settle(this);
   }
 
   /** The client is logged in, or the connection closed: gives everything back. Idempotent. */
@@ -97,7 +119,19 @@ final class ConnectionGuard {
     }
     ended = true;
     cancelDeadline();
+    limits.pending().settle(this);
     limits.endPending();
+  }
+
+  /**
+   * Closes the connection to give its place to a new one: counted, never logged one by one. The
+   * place is given back at once, not when the close completes, so that the new connection finds it.
+   */
+  @Override
+  protected void evicted() {
+    limits.refused(Refusal.PENDING_EVICTED, connection.remoteAddress());
+    end();
+    ServerChannelInitializer.reset(channel);
   }
 
   // ---------------------------------------------------------------------------

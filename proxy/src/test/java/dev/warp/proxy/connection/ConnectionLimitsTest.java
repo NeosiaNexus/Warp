@@ -596,7 +596,8 @@ class ConnectionLimitsTest {
         d.authenticationQueue(),
         d.authenticationQueueWait(),
         d.loginsUnderAttack(),
-        d.maxConcurrentLoginsPerAddressUnderAttack());
+        d.maxConcurrentLoginsPerAddressUnderAttack(),
+        d.pendingEvictionAfter());
   }
 
   private static LimitsConfig withLogins(
@@ -617,7 +618,8 @@ class ConnectionLimitsTest {
         LimitsConfig.DEFAULTS.authenticationQueue(),
         LimitsConfig.DEFAULTS.authenticationQueueWait(),
         LimitsConfig.DEFAULTS.loginsUnderAttack(),
-        LimitsConfig.DEFAULTS.maxConcurrentLoginsPerAddressUnderAttack());
+        LimitsConfig.DEFAULTS.maxConcurrentLoginsPerAddressUnderAttack(),
+        LimitsConfig.DEFAULTS.pendingEvictionAfter());
   }
 
   private static List<String> info(LogCapture log) {

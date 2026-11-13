@@ -33,8 +33,17 @@ public enum Refusal {
   /** A new connection over its address's connection rate. */
   CONNECTION_RATE("connections over their address's rate"),
 
-  /** A new connection while the proxy holds as many connections not logged in as it may. */
+  /**
+   * A new connection while the proxy holds as many connections not logged in as it may, none of
+   * which could be closed to make room.
+   */
   PENDING_CONNECTIONS("connections over the cap on connections not logged in"),
+
+  /**
+   * A connection that sent nothing, or stalled before its login, closed to give its place to a new
+   * one while the proxy held as many connections not logged in as it may.
+   */
+  PENDING_EVICTED("stalled connections closed to make room for new ones"),
 
   /** A server list ping over its address's ping rate. */
   STATUS_RATE("server list pings over their address's rate"),

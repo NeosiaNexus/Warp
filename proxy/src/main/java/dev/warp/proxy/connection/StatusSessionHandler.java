@@ -143,6 +143,10 @@ final class StatusSessionHandler implements SessionHandler {
       return; // A duplicate: ignored, as vanilla does.
     }
     state = State.ANSWERING;
+    ConnectionGuard guard = connection.guard();
+    if (guard != null) {
+      guard.statusRequested();
+    }
     if (context.logging().pings() && context.antiBot().logs(RoutineLine.PING)) {
       logger.info(
           "Server list ping from {} (protocol {})", connection.remoteAddress(), clientProtocol);
