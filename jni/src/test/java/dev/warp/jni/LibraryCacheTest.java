@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
@@ -123,6 +124,28 @@ class LibraryCacheTest {
       // then
       assertEquals(file, again);
       assertEquals(old, Files.getLastModifiedTime(again), "not rewritten");
+    }
+
+    @Test
+    @DisplayName("should use a library installed in a read-only directory, as in a container image")
+    void readOnlyDirectory() throws IOException {
+      assumeTrue(POSIX, "needs POSIX permissions");
+      // given
+      Path file = LibraryCache.install(temp, "lib.so", LIBRARY);
+      Files.setPosixFilePermissions(temp, PosixFilePermissions.fromString("r-x------"));
+      assumeFalse(Files.isWritable(temp), "the directory stays writable (running as root)");
+      try {
+        // when
+        Path again = LibraryCache.install(temp, "lib.so", LIBRARY);
+
+        // then
+        assertEquals(file, again);
+        IOException other =
+            assertThrows(IOException.class, () -> LibraryCache.install(temp, "other.so", LIBRARY));
+        assertTrue(String.valueOf(other.getMessage()).contains("read-only"));
+      } finally {
+        Files.setPosixFilePermissions(temp, PosixFilePermissions.fromString("rwx------"));
+      }
     }
 
     @Test

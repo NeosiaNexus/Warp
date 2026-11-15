@@ -56,6 +56,37 @@ class SummariesTest {
   class Banner {
 
     @Test
+    @DisplayName("shows a server whose ping has not answered yet as still pinging")
+    void pendingServer() {
+      Summaries.Startup facts =
+          new Summaries.Startup(
+              "25.0.2 (Eclipse Adoptium)",
+              8,
+              512L << 20,
+              "epoll",
+              "0.0.0.0:25565",
+              false,
+              "libdeflate 1.26, native",
+              true,
+              true,
+              "modern",
+              false,
+              List.of(
+                  new Summaries.Server("lobby", "127.0.0.1:30066", 3, "Paper 1.21.4"),
+                  Summaries.Server.pending("creative", "127.0.0.1:30068")),
+              List.of(),
+              0,
+              "on, calm",
+              null);
+
+      String text = Summaries.startup(facts).getFormattedMessage();
+
+      assertTrue(text.contains("  servers      1 of 2 reachable, 1 still pinging"), text);
+      assertTrue(text.contains("- creative  127.0.0.1:30068  still pinging"), text);
+      assertFalse(text.contains("unreachable"), text);
+    }
+
+    @Test
     @DisplayName("keeps the startup line of the log file")
     void plain() {
       ConsoleBlock banner = Summaries.banner("1.0.0", "abc1234", "main");
@@ -162,11 +193,11 @@ class SummariesTest {
       String line =
           StatusLine.render(
               new StatusLine.Snapshot(
-                  1, 0, 2, 900, true, true, "draining, 1 left", 100L << 20, 512L << 20),
+                  1, 0, 2, 900, true, true, "draining, 1 still connected", 100L << 20, 512L << 20),
               mode);
 
       assertTrue(line.contains("1 player ·"));
-      assertTrue(line.contains("under attack · lockdown · draining, 1 left"));
+      assertTrue(line.contains("under attack · lockdown · draining, 1 still connected"));
     }
   }
 }

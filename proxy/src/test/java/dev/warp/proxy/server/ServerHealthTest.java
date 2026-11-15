@@ -21,6 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.warp.proxy.logging.LogCapture;
+
 import java.time.Duration;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
@@ -235,5 +237,48 @@ class ServerHealthTest {
   @DisplayName("should reject a cool-down that is not positive")
   void rejectsBadCooldown() {
     assertThrows(IllegalArgumentException.class, () -> new ServerHealth(now::get, Duration.ZERO));
+  }
+
+  @Nested
+  @DisplayName("logging")
+  class Logging {
+
+    @Test
+    @DisplayName("should log an outage once, however many pings fail while it lasts")
+    void logsOncePerOutage() throws InterruptedException {
+      try (LogCapture logs = new LogCapture()) {
+        health.pingFailed("lobby");
+        for (int i = 0; i < 5; i++) {
+          advance(COOLDOWN);
+          health.pingFailed("lobby");
+        }
+        health.picked("lobby");
+        health.connectFailed("lobby");
+
+        String opened = logs.await(r -> r.message().contains("skipped")).message();
+        assertEquals(
+            "Server 'lobby' is skipped for 10 s when choosing a server for a player: it did not"
+                + " answer a ping",
+            opened);
+        assertFalse(logs.anyAfterSettling(r -> r.message().contains("could not connect")));
+        assertEquals(1, logs.count(r -> r.message().contains("skipped")));
+      }
+    }
+
+    @Test
+    @DisplayName("should log the end of an outage once, then a new outage again")
+    void logsRecoveryThenNewOutage() throws InterruptedException {
+      try (LogCapture logs = new LogCapture()) {
+        health.pingFailed("lobby");
+        health.pingSucceeded("lobby", Duration.ofMillis(5));
+        health.pingSucceeded("lobby", Duration.ofMillis(5));
+        health.pingFailed("lobby");
+
+        var _ = logs.await(r -> r.message().startsWith("Server 'lobby' answers again"));
+        assertTrue(logs.anyAfterSettling(r -> r.message().contains("skipped")));
+        assertEquals(1, logs.count(r -> r.message().startsWith("Server 'lobby' answers again")));
+        assertEquals(2, logs.count(r -> r.message().contains("skipped")));
+      }
+    }
   }
 }

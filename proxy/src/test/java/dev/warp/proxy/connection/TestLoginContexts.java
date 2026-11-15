@@ -19,6 +19,7 @@ package dev.warp.proxy.connection;
 import dev.warp.proxy.antibot.AntiBotService;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.auth.ProfileKeys;
+import dev.warp.proxy.bedrock.FloodgateService;
 import dev.warp.proxy.command.ProxyCommands;
 import dev.warp.proxy.command.WarpCommandManager;
 import dev.warp.proxy.config.DuplicateLoginPolicy;
@@ -26,6 +27,7 @@ import dev.warp.proxy.config.ForwardingMode;
 import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.config.TimeoutsConfig;
 import dev.warp.proxy.event.WarpEventBus;
+import dev.warp.proxy.fleet.FleetService;
 import dev.warp.proxy.i18n.PlayerMessages;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.messaging.ChannelRegistry;
@@ -37,6 +39,7 @@ import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 import dev.warp.proxy.status.ServerList;
 import dev.warp.proxy.status.StatusSettings;
+import dev.warp.proxy.transfer.TransferHandoff;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -142,6 +145,53 @@ final class TestLoginContexts {
         events,
         false,
         status);
+  }
+
+  /**
+   * Returns an offline context reading Floodgate data with the given service.
+   *
+   * @param floodgate the Floodgate service
+   * @param registry the servers
+   * @return the context
+   */
+  static ServerLoginContext offline(FloodgateService floodgate, ServerRegistry registry) {
+    ClientLimits limits = ClientLimits.unlimited();
+    return floodgate(false, floodgate, registry, limits, AntiBotService.disabled(limits, EVENTS));
+  }
+
+  /**
+   * Returns a context without compression whose Bedrock players log in through {@code floodgate},
+   * with the given servers, limits and anti-bot.
+   *
+   * @param onlineMode whether Java players authenticate with Mojang
+   * @param floodgate the Floodgate service
+   * @param registry the servers
+   * @param limits the limits, which the anti-bot must share
+   * @param antiBot the anti-bot
+   * @return the context
+   */
+  static ServerLoginContext floodgate(
+      boolean onlineMode,
+      FloodgateService floodgate,
+      ServerRegistry registry,
+      ClientLimits limits,
+      AntiBotService antiBot) {
+    return context(
+        onlineMode,
+        -1,
+        new MojangSessionService(),
+        ProfileKeys.mojang(),
+        DuplicateLoginPolicy.AUTO,
+        EVENTS,
+        false,
+        StatusSettings.defaults(),
+        limits,
+        registry,
+        ForwardingMode.NONE,
+        new byte[0],
+        NioSocketChannel.class,
+        antiBot,
+        floodgate);
   }
 
   /**
@@ -287,7 +337,43 @@ final class TestLoginContexts {
       byte[] forwardingSecret,
       Class<? extends io.netty.channel.Channel> channelClass,
       AntiBotService antiBot) {
+    return context(
+        onlineMode,
+        compressionThreshold,
+        sessionService,
+        profileKeys,
+        policy,
+        events,
+        acceptsTransfers,
+        status,
+        limits,
+        registry,
+        forwardingMode,
+        forwardingSecret,
+        channelClass,
+        antiBot,
+        FloodgateService.DISABLED);
+  }
+
+  @SuppressWarnings("ParameterNumber") // every knob of the context, for the factories above
+  private static ServerLoginContext context(
+      boolean onlineMode,
+      int compressionThreshold,
+      MojangSessionService sessionService,
+      ProfileKeys profileKeys,
+      DuplicateLoginPolicy policy,
+      WarpEventBus events,
+      boolean acceptsTransfers,
+      StatusSettings status,
+      ClientLimits limits,
+      ServerRegistry registry,
+      ForwardingMode forwardingMode,
+      byte[] forwardingSecret,
+      Class<? extends io.netty.channel.Channel> channelClass,
+      AntiBotService antiBot,
+      FloodgateService floodgate) {
     PlayerRegistry players = new PlayerRegistry();
+    MetricRegistry metrics = new MetricRegistry(0);
     return new ServerLoginContext(
         KEY_PAIR,
         onlineMode,
@@ -316,7 +402,10 @@ final class TestLoginContexts {
         antiBot,
         new PipelineRegistry(),
         PlayerMessages.bundled(),
-        new ProxyMetrics(new MetricRegistry(0)));
+        new ProxyMetrics(metrics),
+        FleetService.singleNode(players, registry, events, metrics, policy, onlineMode),
+        floodgate,
+        TransferHandoff.disabled());
   }
 
   /**
@@ -332,6 +421,18 @@ final class TestLoginContexts {
     org.mockito.Mockito.when(context.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
     org.mockito.Mockito.when(context.antiBot()).thenReturn(calmAntiBot());
     org.mockito.Mockito.when(context.messages()).thenReturn(PlayerMessages.bundled());
+    PlayerRegistry players = new PlayerRegistry();
+    org.mockito.Mockito.when(context.playerRegistry()).thenReturn(players);
+    org.mockito.Mockito.when(context.fleet())
+        .thenReturn(
+            FleetService.singleNode(
+                players,
+                new ServerRegistry(java.util.Map.of(), null, java.util.List.of()),
+                EVENTS,
+                new MetricRegistry(0),
+                DuplicateLoginPolicy.AUTO,
+                false));
+    org.mockito.Mockito.when(context.handoff()).thenReturn(TransferHandoff.disabled());
     return context;
   }
 
@@ -376,6 +477,120 @@ final class TestLoginContexts {
       ServerRegistry servers,
       TimeoutsConfig timeouts,
       LoggingConfig logging) {
+    return rebuild(base, servers, timeouts, logging, base.acceptsTransfers(), base.handoff());
+  }
+
+  /**
+   * A context that accepts transfers, with a seamless handoff and servers of its own.
+   *
+   * @param onlineMode whether players authenticate
+   * @param sessionService the session service, usually a mock
+   * @param events the event bus
+   * @param servers the servers players join and fall back to
+   * @param handoff the handoff
+   * @return the context
+   */
+  static ServerLoginContext acceptingHandoffs(
+      boolean onlineMode,
+      MojangSessionService sessionService,
+      WarpEventBus events,
+      ServerRegistry servers,
+      TransferHandoff handoff) {
+    return acceptingHandoffs(
+        context(
+            onlineMode,
+            -1,
+            sessionService,
+            ProfileKeys.mojang(),
+            DuplicateLoginPolicy.AUTO,
+            events,
+            true,
+            StatusSettings.defaults(),
+            ClientLimits.unlimited(),
+            servers,
+            ForwardingMode.NONE,
+            new byte[0],
+            NioSocketChannel.class),
+        handoff);
+  }
+
+  /**
+   * Returns a context like {@code base} that accepts transfers, with a seamless handoff.
+   *
+   * @param base the context to copy
+   * @param handoff the handoff
+   * @return the context
+   */
+  static ServerLoginContext acceptingHandoffs(ServerLoginContext base, TransferHandoff handoff) {
+    return rebuild(base, base.serverRegistry(), base.timeouts(), base.logging(), true, handoff);
+  }
+
+  /**
+   * Returns a context like {@code base}, with another seamless handoff and other servers.
+   *
+   * @param base the context to copy
+   * @param servers the servers players join and fall back to
+   * @param handoff the handoff
+   * @return the context
+   */
+  static ServerLoginContext withHandoff(
+      ServerLoginContext base, ServerRegistry servers, TransferHandoff handoff) {
+    return rebuild(
+        base, servers, base.timeouts(), base.logging(), base.acceptsTransfers(), handoff);
+  }
+
+  /**
+   * Returns a context like {@code base} whose accounts {@code fleet} settles across proxies, under
+   * the duplicate login policy {@code policy}.
+   *
+   * @param base the context to copy
+   * @param policy what happens to a second login of an account
+   * @param fleet the fleet
+   * @return the context
+   */
+  static ServerLoginContext withFleet(
+      ServerLoginContext base, DuplicateLoginPolicy policy, FleetService fleet) {
+    return rebuild(
+        base,
+        base.serverRegistry(),
+        base.timeouts(),
+        base.logging(),
+        base.acceptsTransfers(),
+        base.handoff(),
+        policy,
+        base.antiBot(),
+        fleet);
+  }
+
+  private static ServerLoginContext rebuild(
+      ServerLoginContext base,
+      ServerRegistry servers,
+      TimeoutsConfig timeouts,
+      LoggingConfig logging,
+      boolean acceptsTransfers,
+      TransferHandoff handoff) {
+    return rebuild(
+        base,
+        servers,
+        timeouts,
+        logging,
+        acceptsTransfers,
+        handoff,
+        base.duplicateLoginPolicy(),
+        base.antiBot(),
+        base.fleet());
+  }
+
+  private static ServerLoginContext rebuild(
+      ServerLoginContext base,
+      ServerRegistry servers,
+      TimeoutsConfig timeouts,
+      LoggingConfig logging,
+      boolean acceptsTransfers,
+      TransferHandoff handoff,
+      DuplicateLoginPolicy policy,
+      AntiBotService antiBot,
+      FleetService fleet) {
     return new ServerLoginContext(
         base.rsaKeyPair(),
         base.onlineMode(),
@@ -388,7 +603,7 @@ final class TestLoginContexts {
         servers,
         base.playerRegistry(),
         base.serverList(),
-        base.duplicateLoginPolicy(),
+        policy,
         base.events(),
         base.channels(),
         base.commands(),
@@ -396,15 +611,18 @@ final class TestLoginContexts {
         base.forwardingMode(),
         base.forwardingSecret(),
         base.channelClass(),
-        base.acceptsTransfers(),
+        acceptsTransfers,
         base.limits(),
         timeouts,
         logging,
         base.tcpFastOpen(),
-        base.antiBot(),
+        antiBot,
         base.pipelines(),
         base.messages(),
-        base.metrics());
+        base.metrics(),
+        fleet,
+        base.floodgate(),
+        handoff);
   }
 
   /**
@@ -431,6 +649,27 @@ final class TestLoginContexts {
         ForwardingMode.VELOCITY,
         secret,
         NioSocketChannel.class);
+  }
+
+  /**
+   * Returns a context like {@code base} whose anti-bot is {@code antiBot}, which must be built on
+   * {@code base}'s limits.
+   *
+   * @param base the context to copy
+   * @param antiBot the anti-bot
+   * @return the context
+   */
+  static ServerLoginContext withAntiBot(ServerLoginContext base, AntiBotService antiBot) {
+    return rebuild(
+        base,
+        base.serverRegistry(),
+        base.timeouts(),
+        base.logging(),
+        base.acceptsTransfers(),
+        base.handoff(),
+        base.duplicateLoginPolicy(),
+        antiBot,
+        base.fleet());
   }
 
   /**

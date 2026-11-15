@@ -1,0 +1,48 @@
+{{- $v := .Values.service -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "warp.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "warp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+    {{- with $v.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with $v.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $v.type }}
+  {{- if and (ne $v.type "ClusterIP") $v.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ $v.externalTrafficPolicy }}
+  {{- end }}
+  {{- if and (eq $v.type "LoadBalancer") $v.loadBalancerIP }}
+  loadBalancerIP: {{ $v.loadBalancerIP }}
+  {{- end }}
+  {{- if and (eq $v.type "LoadBalancer") $v.loadBalancerClass }}
+  loadBalancerClass: {{ $v.loadBalancerClass }}
+  {{- end }}
+  {{- if and (eq $v.type "LoadBalancer") $v.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml $v.loadBalancerSourceRanges | nindent 4 }}
+  {{- end }}
+  {{- with $v.ipFamilyPolicy }}
+  ipFamilyPolicy: {{ . }}
+  {{- end }}
+  {{- with $v.ipFamilies }}
+  ipFamilies:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  ports:
+    - name: minecraft
+      port: {{ $v.port }}
+      targetPort: minecraft
+      protocol: TCP
+      {{- if and (ne $v.type "ClusterIP") $v.nodePort }}
+      nodePort: {{ $v.nodePort }}
+      {{- end }}
+  selector:
+    {{- include "warp.selectorLabels" . | nindent 4 }}

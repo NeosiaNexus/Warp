@@ -1,0 +1,60 @@
+{{- $m := .Values.management.metrics -}}
+{{- if and $m.enabled $m.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "warp.fullname" . }}
+  namespace: {{ $m.serviceMonitor.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "warp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+    {{- with $m.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "warp.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: management
+  endpoints:
+    - port: management
+      path: /metrics
+      scheme: {{ include "warp.managementScheme" . | lower }}
+      interval: {{ $m.serviceMonitor.interval }}
+      scrapeTimeout: {{ $m.serviceMonitor.scrapeTimeout }}
+      {{- if .Values.management.tls.enabled }}
+      tlsConfig:
+        {{- if $m.serviceMonitor.insecureSkipVerify }}
+        {{- if $m.requireToken }}
+        {{- fail "management.metrics.serviceMonitor.insecureSkipVerify would send the management token to an unverified server: verify the certificate (the default) or turn off management.metrics.requireToken" }}
+        {{- end }}
+        insecureSkipVerify: true
+        {{- else }}
+        # The certificate is verified against the CA of the TLS Secret (key ca.crt, as cert-manager
+        # writes it), for the management Service's name.
+        ca:
+          secret:
+            name: {{ .Values.management.tls.secretName }}
+            key: ca.crt
+        serverName: {{ printf "%s.%s.svc" (include "warp.managementServiceName" .) .Release.Namespace }}
+        {{- end }}
+      {{- end }}
+      {{- if $m.requireToken }}
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ include "warp.secretName" . }}
+          key: {{ .Values.secrets.managementTokenKey }}
+      {{- end }}
+      {{- with $m.serviceMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $m.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

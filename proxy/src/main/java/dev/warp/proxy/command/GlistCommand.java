@@ -18,6 +18,8 @@ package dev.warp.proxy.command;
 
 import dev.warp.api.Warp;
 import dev.warp.api.command.CommandSource;
+import dev.warp.api.fleet.Fleet;
+import dev.warp.api.fleet.ProxyNode;
 import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
 import dev.warp.proxy.i18n.Message;
@@ -47,6 +49,9 @@ import net.kyori.adventure.text.format.NamedTextColor;
  *       page, alphabetical
  *   <li>{@code /glist all [page]}: every name, grouped by server, {@value #PAGE_SIZE} a page
  * </ul>
+ *
+ * <p>On a fleet, the total and the servers' counts cover every proxy, and one line per proxy
+ * follows; the names listed are this proxy's, each proxy lists its own.
  */
 final class GlistCommand {
 
@@ -107,13 +112,15 @@ final class GlistCommand {
    * @return the message
    */
   static Component overview(Warp proxy) {
-    int total = proxy.playerCount();
+    Fleet fleet = proxy.fleet();
+    boolean networked = fleet.nodes().size() > 1;
+    int total = networked ? fleet.playerCount() : proxy.playerCount();
     List<Component> lines = new ArrayList<>();
     lines.add(Message.GLIST_TOTAL.with(Message.count(total)));
     List<String> empty = new ArrayList<>();
     int onServers = 0;
     for (RegisteredServer server : proxy.servers().servers()) {
-      int count = server.playerCount();
+      int count = networked ? fleet.playerCount(server.name()) : server.playerCount();
       if (count == 0) {
         empty.add(server.name());
         continue;
@@ -129,6 +136,15 @@ final class GlistCommand {
     }
     if (total > onServers) {
       lines.add(Message.GLIST_CONNECTING.with(Message.number("count", total - onServers)));
+    }
+    if (networked) {
+      List<ProxyNode> nodes = new ArrayList<>(fleet.nodes());
+      nodes.sort(java.util.Comparator.comparing(ProxyNode::id));
+      for (ProxyNode node : nodes) {
+        lines.add(
+            Message.GLIST_NODE.with(
+                Message.text("node", node.id()), Message.number("count", node.players())));
+      }
     }
     return Component.join(JoinConfiguration.newlines(), lines);
   }

@@ -108,6 +108,10 @@ final class SwitchHarness implements AutoCloseable {
 
   final ProtocolVersion version;
   final ConnectedPlayer player;
+
+  /** The mocked context of the player, for tests that stub more of it. */
+  final ServerLoginContext loginContext;
+
   final MinecraftConnection client;
   private final List<EmbeddedChannel> channels = new ArrayList<>();
 
@@ -160,6 +164,8 @@ final class SwitchHarness implements AutoCloseable {
       servers.put(server.name(), server.address());
     }
     ServerLoginContext loginContext = mock(ServerLoginContext.class);
+    this.loginContext = loginContext;
+    when(loginContext.handoff()).thenReturn(dev.warp.proxy.transfer.TransferHandoff.disabled());
     when(loginContext.metrics()).thenReturn(new ProxyMetrics(new MetricRegistry(0)));
     when(loginContext.messages()).thenReturn(dev.warp.proxy.i18n.PlayerMessages.bundled());
     when(loginContext.logging()).thenReturn(LoggingConfig.DEFAULTS);

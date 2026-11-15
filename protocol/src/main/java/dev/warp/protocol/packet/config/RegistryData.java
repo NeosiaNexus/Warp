@@ -39,7 +39,8 @@ public record RegistryData(String registryId, byte[] rawEntries) implements Conf
       new PacketCodec<>() {
         @Override
         public RegistryData decode(ByteBuf buf, ProtocolVersion version) {
-          String registryId = McString.read(buf);
+          String registryId =
+              version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5) ? McString.read(buf) : "";
           byte[] rawEntries = new byte[buf.readableBytes()];
           buf.readBytes(rawEntries);
           return new RegistryData(registryId, rawEntries);
@@ -47,7 +48,10 @@ public record RegistryData(String registryId, byte[] rawEntries) implements Conf
 
         @Override
         public void encode(RegistryData packet, ByteBuf buf, ProtocolVersion version) {
-          McString.write(buf, packet.registryId());
+          // 1.20.2 to 1.20.4 send every registry in one NBT compound, with no registry id.
+          if (version.isAtLeast(ProtocolVersion.MINECRAFT_1_20_5)) {
+            McString.write(buf, packet.registryId());
+          }
           buf.writeBytes(packet.rawEntries());
         }
       };

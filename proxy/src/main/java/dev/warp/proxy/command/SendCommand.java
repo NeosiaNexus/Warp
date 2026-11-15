@@ -18,6 +18,8 @@ package dev.warp.proxy.command;
 
 import dev.warp.api.Warp;
 import dev.warp.api.command.CommandSource;
+import dev.warp.api.fleet.FleetPlayer;
+import dev.warp.api.fleet.SendResult;
 import dev.warp.api.player.ConnectionResult;
 import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
@@ -106,6 +108,13 @@ final class SendCommand {
    * @param message what the sender is told
    */
   private record Refusal(Component message) implements Selection {}
+
+  /**
+   * A player on another proxy of the fleet, moved through its own proxy.
+   *
+   * @param player the player
+   */
+  private record Remote(FleetPlayer player) implements Selection {}
 
   /**
    * What became of one player.
@@ -214,7 +223,17 @@ final class SendCommand {
     return proxy
         .player(name)
         .<Selection>map(player -> new Players(List.of(player), Component.empty(), true))
+        .or(() -> remote(proxy, name))
         .orElseGet(() -> new Refusal(Message.UNKNOWN_PLAYER.with(Message.text("player", name))));
+  }
+
+  /** A player on another proxy of the fleet, if the name is one's. */
+  private static Optional<Selection> remote(Warp proxy, String name) {
+    return proxy
+        .fleet()
+        .player(name)
+        .filter(player -> !player.proxyId().equals(proxy.fleet().local().id()))
+        .map(Remote::new);
   }
 
   private static Selection server(Warp proxy, String name) {
@@ -235,7 +254,7 @@ final class SendCommand {
   /** A bare name: a player or a server, refused when it is both. */
   private static Selection target(Warp proxy, String name) {
     boolean isServer = proxy.servers().server(name).isPresent();
-    boolean isPlayer = proxy.player(name).isPresent();
+    boolean isPlayer = proxy.player(name).isPresent() || remote(proxy, name).isPresent();
     if (isServer && isPlayer) {
       return new Refusal(Message.SEND_AMBIGUOUS.with(Message.text("target", name)));
     }
@@ -254,6 +273,9 @@ final class SendCommand {
 
   private static int send(
       Warp proxy, CommandSource source, Selection selection, String destinationName) {
+    if (selection instanceof Remote(FleetPlayer player)) {
+      return sendRemote(proxy, source, player, destinationName);
+    }
     Optional<RegisteredServer> found = proxy.servers().server(destinationName);
     if (found.isEmpty()) {
       source.sendMessage(Message.UNKNOWN_SERVER.with(Message.text("server", destinationName)));
@@ -299,6 +321,46 @@ final class SendCommand {
     }
     source.sendMessage(summary(outcomes, from, destination, single));
     return Command.SINGLE_SUCCESS;
+  }
+
+  /** Moves a player of another proxy through that proxy, which knows its own servers. */
+  private static int sendRemote(
+      Warp proxy, CommandSource source, FleetPlayer player, String destination) {
+    SendResult result;
+    try {
+      result =
+          proxy
+              .fleet()
+              .send(player.uuid(), destination)
+              .get(MOVE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      result = SendResult.FAILED;
+    } catch (ExecutionException | TimeoutException e) {
+      result = SendResult.TIMED_OUT;
+    }
+    if (result == SendResult.SENT) {
+      source.sendMessage(
+          Message.SEND_REMOTE_DONE.with(
+              Message.text("player", player.name()),
+              Message.text("server", destination),
+              Message.text("node", player.proxyId())));
+      return Command.SINGLE_SUCCESS;
+    }
+    Message reason =
+        switch (result) {
+          case UNKNOWN_SERVER -> Message.FLEET_RESULT_UNKNOWN_SERVER;
+          case UNKNOWN_PLAYER -> Message.FLEET_RESULT_UNKNOWN_PLAYER;
+          case TIMED_OUT -> Message.FLEET_RESULT_TIMED_OUT;
+          case SENT, FAILED -> Message.FLEET_RESULT_FAILED;
+        };
+    source.sendMessage(
+        Message.SEND_REMOTE_FAILED.with(
+            Message.text("player", player.name()),
+            Message.text("server", destination),
+            Message.text("node", player.proxyId()),
+            Message.component("reason", reason.of())));
+    return 0;
   }
 
   private static boolean isOn(Player player, RegisteredServer server) {

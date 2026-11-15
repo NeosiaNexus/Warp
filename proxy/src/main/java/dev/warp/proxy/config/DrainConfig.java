@@ -28,7 +28,8 @@ import org.spongepowered.configurate.CommentedConfigurationNode;
 /**
  * The {@code drain} section of {@code warp.conf}: how the proxy empties itself before it stops.
  *
- * @param transferTo where players are transferred (1.20.5+), or {@code null} to transfer nobody
+ * @param transferTo where players are transferred (1.20.5+), {@link Target#FLEET} for the least
+ *     loaded ready proxy of the fleet, or {@code null} to transfer nobody
  * @param onSigterm whether SIGTERM starts a drain instead of stopping at once
  * @param propagationDelay how long load balancers get to see the drain before players move
  * @param transferInterval the time between two transfers (or kicks)
@@ -63,8 +64,27 @@ public record DrainConfig(
    */
   public record Target(String host, int port) {
 
+    /** The word that makes the drain pick the least loaded proxy of the fleet. */
+    public static final String FLEET_WORD = "fleet";
+
+    /** {@code transfer-to = fleet}: the target is chosen among the fleet's ready proxies. */
+    public static final Target FLEET = new Target(FLEET_WORD, 0);
+
+    /**
+     * Returns whether players go to the fleet's least loaded ready proxy rather than a fixed
+     * address.
+     *
+     * @return {@code true} for {@code transfer-to = fleet}
+     */
+    public boolean isFleet() {
+      return port == 0 && host.equals(FLEET_WORD);
+    }
+
     @Override
     public String toString() {
+      if (isFleet()) {
+        return FLEET_WORD;
+      }
       return host.indexOf(':') >= 0 ? "[" + host + "]:" + port : host + ":" + port;
     }
   }
@@ -97,7 +117,8 @@ public record DrainConfig(
    */
   static DrainConfig parse(CommentedConfigurationNode root) throws ConfigurationException {
     CommentedConfigurationNode node = root.node("drain");
-    Target transferTo = parseTarget(WarpConfig.stringValue(node.node("transfer-to"), ""));
+    Target transferTo =
+        parseTarget("drain.transfer-to", WarpConfig.stringValue(node.node("transfer-to"), ""));
     boolean onSigterm = WarpConfig.booleanValue(node.node("on-sigterm"), false);
     Duration propagationDelay =
         parseDuration(node, "propagation-delay", DEFAULT_PROPAGATION_DELAY, false);
@@ -122,53 +143,59 @@ public record DrainConfig(
   /**
    * Parses {@code host}, {@code host:port} or {@code [ipv6]:port}.
    *
+   * @param key the setting's key, for the error messages
+   * @param value the setting's value
    * @return the target, or {@code null} for a blank value
+   * @throws ConfigurationException if the value is not an address
    */
-  static @Nullable Target parseTarget(String value) throws ConfigurationException {
+  public static @Nullable Target parseTarget(String key, String value)
+      throws ConfigurationException {
     String trimmed = value.trim();
     if (trimmed.isEmpty()) {
       return null;
+    }
+    if (trimmed.equalsIgnoreCase(Target.FLEET_WORD)) {
+      return Target.FLEET;
     }
     String host;
     String port;
     if (trimmed.startsWith("[")) {
       int end = trimmed.indexOf(']');
       if (end < 0) {
-        throw new ConfigurationException("drain.transfer-to has an unclosed '[': '" + value + "'");
+        throw new ConfigurationException(key + " has an unclosed '[': '" + value + "'");
       }
       host = trimmed.substring(1, end);
       String rest = trimmed.substring(end + 1);
       if (!rest.isEmpty() && !rest.startsWith(":")) {
         throw new ConfigurationException(
-            "drain.transfer-to must be host, host:port or [ipv6]:port, got '" + value + "'");
+            key + " must be host, host:port or [ipv6]:port, got '" + value + "'");
       }
       port = rest.isEmpty() ? null : rest.substring(1);
     } else {
       int colon = trimmed.indexOf(':');
       if (colon >= 0 && trimmed.indexOf(':', colon + 1) >= 0) {
         throw new ConfigurationException(
-            "drain.transfer-to: write an IPv6 address in brackets, as [::1]:25565, got '"
-                + value
-                + "'");
+            key + ": write an IPv6 address in brackets, as [::1]:25565, got '" + value + "'");
       }
       host = colon < 0 ? trimmed : trimmed.substring(0, colon);
       port = colon < 0 ? null : trimmed.substring(colon + 1);
     }
     if (host.isBlank()) {
-      throw new ConfigurationException("drain.transfer-to has no host: '" + value + "'");
+      throw new ConfigurationException(key + " has no host: '" + value + "'");
     }
-    return new Target(host, port == null ? DEFAULT_PORT : parsePort(port, value));
+    return new Target(host, port == null ? DEFAULT_PORT : parsePort(key, port, value));
   }
 
-  private static int parsePort(String port, String value) throws ConfigurationException {
+  private static int parsePort(String key, String port, String value)
+      throws ConfigurationException {
     int parsed;
     try {
       parsed = Integer.parseInt(port);
     } catch (NumberFormatException e) {
-      throw new ConfigurationException("drain.transfer-to has an invalid port: '" + value + "'", e);
+      throw new ConfigurationException(key + " has an invalid port: '" + value + "'", e);
     }
     if (parsed < 1 || parsed > 65_535) {
-      throw new ConfigurationException("drain.transfer-to port must be 1-65535, got " + parsed);
+      throw new ConfigurationException(key + " port must be 1-65535, got " + parsed);
     }
     return parsed;
   }

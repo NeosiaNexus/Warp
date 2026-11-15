@@ -65,12 +65,14 @@ import dev.warp.proxy.antibot.Probe;
 import dev.warp.proxy.antibot.VerificationTokens;
 import dev.warp.proxy.auth.MojangSessionService;
 import dev.warp.proxy.config.AntiBotConfig;
+import dev.warp.proxy.config.DrainConfig;
 import dev.warp.proxy.config.LoggingConfig;
 import dev.warp.proxy.event.PluginEventBus;
 import dev.warp.proxy.event.WarpEventBus;
 import dev.warp.proxy.limit.ClientLimits;
 import dev.warp.proxy.limit.Refusal;
 import dev.warp.proxy.network.CidrRanges;
+import dev.warp.proxy.transfer.TransferHandoff;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -131,12 +133,17 @@ class VerificationLoginTest {
   /** Another proxy of the fleet, which the client connects to instead when set. */
   private @Nullable AntiBotService peer;
 
+  /** The seamless handoff of the proxy the client connects to, which then accepts transfers. */
+  private @Nullable TransferHandoff handoff;
+
   /** The context of the last connection opened, with the players it registers. */
   private @Nullable ServerLoginContext lastContext;
 
   private UnaryOperator<@Nullable String> env = _ -> null;
   private boolean onlineMode;
   private AntiBotConfig.@Nullable Verification verification;
+  private AntiBotConfig.World world =
+      new AntiBotConfig.World(false, false, Duration.ofSeconds(5), Duration.ofMinutes(5));
   private int compressionThreshold = -1;
 
   /** Whether frames carry the data-length prefix of compressed framing, from Set Compression on. */
@@ -730,6 +737,76 @@ class VerificationLoginTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Handoffs
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("a player handed off by a peer, during an attack")
+  class HandedOff {
+
+    @Test
+    @DisplayName("should spare an account the peer trusts its verification and its token")
+    void trusted() throws Exception {
+      start(true, AntiBotConfig.Verification.DEFAULTS);
+      attackWaves();
+      EmbeddedChannel channel = presenting(true);
+
+      EncryptionRequest request =
+          nextPacket(channel, ProtocolState.LOGIN, EncryptionRequest.class, MODERN);
+
+      assertFalse(request.shouldAuthenticate());
+    }
+
+    @Test
+    @DisplayName("should verify an account the peer did not trust like any other")
+    void untrusted() throws Exception {
+      start(true, AntiBotConfig.Verification.DEFAULTS);
+      attackWaves();
+      EmbeddedChannel channel = presenting(false);
+
+      CookieRequest request = nextPacket(channel, ProtocolState.LOGIN, CookieRequest.class, MODERN);
+
+      assertEquals(VerificationTokens.COOKIE_KEY, request.key());
+    }
+
+    /** A transferred login that answers the ticket request with a ticket of its account. */
+    private EmbeddedChannel presenting(boolean trusted) {
+      TransferHandoff shared =
+          TransferHandoff.of(
+              "a-shared-secret-of-the-network".getBytes(StandardCharsets.UTF_8),
+              Duration.ofSeconds(15),
+              true,
+              List.of(new DrainConfig.Target(HOST, PORT)),
+              "warp-1",
+              millis::get);
+      handoff = shared;
+      TransferHandoff.Issued issued =
+          Objects.requireNonNull(
+              shared.issue(
+                  new TransferHandoff.Subject(
+                      UUID.nameUUIDFromBytes("Newbie".getBytes(StandardCharsets.UTF_8)),
+                      "Newbie",
+                      List.of(),
+                      MODERN.protocol(),
+                      address("198.51.100.7"),
+                      null,
+                      true,
+                      trusted),
+                  HOST,
+                  PORT));
+      EmbeddedChannel channel = transferLogin("Newbie", "198.51.100.7", MODERN);
+      CookieRequest request = nextPacket(channel, ProtocolState.LOGIN, CookieRequest.class, MODERN);
+      assertEquals(TransferHandoff.TICKET_COOKIE, request.key());
+      send(
+          channel,
+          ProtocolState.LOGIN,
+          new CookieResponse(TransferHandoff.TICKET_COOKIE, issued.ticket()),
+          MODERN);
+      return channel;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // The queue
   // ---------------------------------------------------------------------------
 
@@ -819,7 +896,8 @@ class VerificationLoginTest {
         d.attack(),
         d.blocklist(),
         d.checkTimeout(),
-        Objects.requireNonNull(verification, "start() first"));
+        Objects.requireNonNull(verification, "start() first"),
+        world);
   }
 
   /** An anti-bot on this test's clocks and secrets: the proxy's, or a fleet peer's. */
@@ -926,6 +1004,9 @@ class VerificationLoginTest {
     ServerLoginContext context =
         TestLoginContexts.withAntiBot(
             onlineMode, compressionThreshold, new MojangSessionService(), events, limits, reached);
+    if (handoff != null) {
+      context = TestLoginContexts.acceptingHandoffs(context, handoff);
+    }
     EmbeddedChannel channel =
         new ProxyProtocolTest.PeerChannel(new InetSocketAddress(address(address), 40000));
     channel.pipeline().addLast(new ServerChannelInitializer(context));

@@ -58,6 +58,15 @@ public final class WarpPlayer implements Player {
 
   private final ConnectedPlayer player;
 
+  /**
+   * Returns the connection this view is of.
+   *
+   * @return the player
+   */
+  public ConnectedPlayer connected() {
+    return player;
+  }
+
   WarpPlayer(ConnectedPlayer player) {
     this.player = player;
   }
@@ -120,6 +129,11 @@ public final class WarpPlayer implements Player {
   @Override
   public boolean isTransferred() {
     return player.isTransferred();
+  }
+
+  @Override
+  public boolean isHandedOff() {
+    return player.isHandedOff();
   }
 
   @Override

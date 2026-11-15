@@ -1,0 +1,99 @@
+# Every optional object on, for helm template and kubeconform.
+replicaCount: 3
+image:
+  tag: 0.1.0-beta.7-alpine
+config:
+  servers:
+    lobby-1: lobby-1.minecraft.svc:25565
+    lobby-2:
+      address: lobby-2.minecraft.svc:25565
+    survival:
+      address: survival.minecraft.svc:25565
+  defaultServer: lobbies
+  fallbackOrder: [lobbies]
+  groups:
+    lobbies:
+      servers: [lobby-1, lobby-2]
+      strategy: least-connections
+  routes:
+    play.example.com: lobbies
+    survival.example.com: survival
+    '*.mini.example.com': '$1'
+  status:
+    motd: '<gradient:#38bdf8:#a78bfa>Example network</gradient>'
+    maxPlayers: 1000
+  proxyProtocol:
+    enabled: true
+    trustedProxies: [10.0.0.0/8]
+  extra: |
+    limits {
+      connections { burst = 20 }
+    }
+drain:
+  transferTo: play.example.com
+  timeout: 15m
+  mode: preStop
+management:
+  tls:
+    enabled: true
+    secretName: warp-management-tls
+  metrics:
+    requireToken: true
+    serviceMonitor:
+      enabled: true
+      labels:
+        release: kube-prometheus-stack
+    podAnnotations: true
+  console:
+    enabled: true
+    tokens:
+      - name: ops
+        scopes: [logs, commands]
+        secretKey: console-ops-token
+        generate: true
+    trustedNetworks: [10.0.0.0/8]
+service:
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+    service.beta.kubernetes.io/aws-load-balancer-proxy-protocol: '*'
+  loadBalancerSourceRanges: [0.0.0.0/0]
+javaOpts: -Xlog:gc
+extraEnv:
+  - name: EXAMPLE
+    value: '{{ .Release.Name }}'
+extraVolumes:
+  - name: plugins
+    emptyDir: {}
+extraVolumeMounts:
+  - name: plugins
+    mountPath: /data/plugins
+initContainers:
+  - name: plugins
+    image: curlimages/curl:8.11.1
+    command: [sh, -c, 'echo would download plugins to /data/plugins']
+    volumeMounts:
+      - name: plugins
+        mountPath: /data/plugins
+autoscaling:
+  enabled: true
+  targetPlayersPerPod: 300
+podDisruptionBudget:
+  minAvailable: ''
+  maxUnavailable: 1
+networkPolicy:
+  enabled: true
+  managementFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+  egressTo:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: minecraft-server
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: '{{ include "warp.name" . }}'

@@ -40,6 +40,8 @@ import dev.warp.protocol.packet.config.ConfigPing;
 import dev.warp.protocol.packet.config.ConfigPluginMessage;
 import dev.warp.protocol.packet.config.ConfigPong;
 import dev.warp.protocol.packet.config.FinishConfiguration;
+import dev.warp.protocol.packet.config.KnownPacks;
+import dev.warp.protocol.packet.config.RegistryData;
 import dev.warp.protocol.packet.cookie.CookiePacket;
 import dev.warp.protocol.packet.cookie.CookieRequest;
 import dev.warp.protocol.packet.cookie.CookieResponse;
@@ -57,15 +59,19 @@ import dev.warp.protocol.packet.login.LoginStart;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.login.SetCompression;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
+import dev.warp.protocol.packet.play.BlockUpdate;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatAcknowledgement;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.ClearDialog;
 import dev.warp.protocol.packet.play.ClearTitles;
+import dev.warp.protocol.packet.play.ClientMovement;
 import dev.warp.protocol.packet.play.DeclareCommands;
 import dev.warp.protocol.packet.play.DeleteChat;
+import dev.warp.protocol.packet.play.EmptyChunk;
 import dev.warp.protocol.packet.play.EntitySoundEffect;
+import dev.warp.protocol.packet.play.GameEvent;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
@@ -73,7 +79,9 @@ import dev.warp.protocol.packet.play.LegacyPlayerInfo;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPacket;
+import dev.warp.protocol.packet.play.PlayPing;
 import dev.warp.protocol.packet.play.PlayPluginMessage;
+import dev.warp.protocol.packet.play.PlayPong;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
@@ -82,17 +90,22 @@ import dev.warp.protocol.packet.play.ResourcePackPush;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.Respawn;
 import dev.warp.protocol.packet.play.SetActionBarText;
+import dev.warp.protocol.packet.play.SetDefaultSpawnPosition;
 import dev.warp.protocol.packet.play.SetSubtitleText;
 import dev.warp.protocol.packet.play.SetTitleText;
 import dev.warp.protocol.packet.play.SetTitleTimes;
 import dev.warp.protocol.packet.play.SoundEffect;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.StopSound;
+import dev.warp.protocol.packet.play.SyncPlayerPosition;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
 import dev.warp.protocol.packet.play.TabListHeaderFooter;
+import dev.warp.protocol.packet.play.TeleportConfirm;
+import dev.warp.protocol.packet.play.TickEnd;
 import dev.warp.protocol.packet.play.Transfer;
+import dev.warp.protocol.packet.play.WindowConfirmation;
 import dev.warp.protocol.packet.status.PingRequest;
 import dev.warp.protocol.packet.status.PongResponse;
 import dev.warp.protocol.packet.status.StatusPacket;
@@ -132,6 +145,10 @@ class StateRegistryTest {
               PlayPacket.class,
               CookiePacket.class)
           .flatMap(family -> Arrays.stream(family.getPermittedSubclasses()))
+          // A sealed member (ClientMovement) stands for its records.
+          .flatMap(
+              type ->
+                  type.isSealed() ? Arrays.stream(type.getPermittedSubclasses()) : Stream.of(type))
           .<Class<? extends Packet>>map(type -> type.asSubclass(Packet.class))
           .toList();
 
@@ -215,6 +232,38 @@ class StateRegistryTest {
             new PacketName(
                 CONFIGURATION, CLIENTBOUND, ResourcePackPop.class, "minecraft:resource_pack_pop"),
             new PacketName(CONFIGURATION, CLIENTBOUND, ClearDialog.class, "minecraft:clear_dialog"),
+            new PacketName(
+                CONFIGURATION, CLIENTBOUND, RegistryData.class, "minecraft:registry_data"),
+            new PacketName(
+                CONFIGURATION, CLIENTBOUND, KnownPacks.class, "minecraft:select_known_packs"),
+            new PacketName(
+                CONFIGURATION, SERVERBOUND, KnownPacks.class, "minecraft:select_known_packs"),
+            new PacketName(
+                PLAY, SERVERBOUND, TeleportConfirm.class, "minecraft:accept_teleportation"),
+            new PacketName(
+                PLAY, SERVERBOUND, ClientMovement.Position.class, "minecraft:move_player_pos"),
+            new PacketName(
+                PLAY,
+                SERVERBOUND,
+                ClientMovement.PositionRotation.class,
+                "minecraft:move_player_pos_rot"),
+            new PacketName(
+                PLAY, SERVERBOUND, ClientMovement.Rotation.class, "minecraft:move_player_rot"),
+            new PacketName(
+                PLAY, SERVERBOUND, ClientMovement.Flags.class, "minecraft:move_player_status_only"),
+            new PacketName(PLAY, SERVERBOUND, PlayPong.class, "minecraft:pong"),
+            new PacketName(PLAY, SERVERBOUND, TickEnd.class, "minecraft:client_tick_end"),
+            new PacketName(PLAY, CLIENTBOUND, PlayPing.class, "minecraft:ping"),
+            new PacketName(
+                PLAY, CLIENTBOUND, SyncPlayerPosition.class, "minecraft:player_position"),
+            new PacketName(
+                PLAY,
+                CLIENTBOUND,
+                SetDefaultSpawnPosition.class,
+                "minecraft:set_default_spawn_position"),
+            new PacketName(PLAY, CLIENTBOUND, GameEvent.class, "minecraft:game_event"),
+            new PacketName(PLAY, CLIENTBOUND, BlockUpdate.class, "minecraft:block_update"),
+            new PacketName(PLAY, CLIENTBOUND, EmptyChunk.class, "minecraft:level_chunk_with_light"),
             new PacketName(PLAY, SERVERBOUND, KeepAlive.class, "minecraft:keep_alive"),
             new PacketName(PLAY, SERVERBOUND, CookieResponse.class, "minecraft:cookie_response"),
             new PacketName(PLAY, CLIENTBOUND, CookieRequest.class, "minecraft:cookie_request"),
@@ -520,7 +569,25 @@ class StateRegistryTest {
                 ProtocolVersion.MINECRAFT_1_20_3),
             new PacketName(PLAY, CLIENTBOUND, ResourcePackPop.class, "remove_resource_pack"),
             new PacketName(PLAY, CLIENTBOUND, DeleteChat.class, "hide_message"),
-            new PacketName(PLAY, CLIENTBOUND, ClearDialog.class, "clear_dialog"));
+            new PacketName(PLAY, CLIENTBOUND, ClearDialog.class, "clear_dialog"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, RegistryData.class, "registry_data"),
+            new PacketName(CONFIGURATION, CLIENTBOUND, KnownPacks.class, "select_known_packs"),
+            new PacketName(CONFIGURATION, SERVERBOUND, KnownPacks.class, "select_known_packs"),
+            new PacketName(PLAY, SERVERBOUND, TeleportConfirm.class, "teleport_confirm"),
+            new PacketName(PLAY, SERVERBOUND, ClientMovement.Position.class, "position"),
+            new PacketName(
+                PLAY, SERVERBOUND, ClientMovement.PositionRotation.class, "position_look"),
+            new PacketName(PLAY, SERVERBOUND, ClientMovement.Rotation.class, "look"),
+            new PacketName(PLAY, SERVERBOUND, ClientMovement.Flags.class, "flying"),
+            new PacketName(PLAY, SERVERBOUND, PlayPong.class, "pong"),
+            new PacketName(PLAY, SERVERBOUND, WindowConfirmation.class, "transaction"),
+            new PacketName(PLAY, CLIENTBOUND, WindowConfirmation.class, "transaction"),
+            new PacketName(PLAY, CLIENTBOUND, PlayPing.class, "ping"),
+            new PacketName(PLAY, CLIENTBOUND, SyncPlayerPosition.class, "position"),
+            new PacketName(PLAY, CLIENTBOUND, SetDefaultSpawnPosition.class, "spawn_position"),
+            new PacketName(PLAY, CLIENTBOUND, GameEvent.class, "game_state_change"),
+            new PacketName(PLAY, CLIENTBOUND, BlockUpdate.class, "block_change"),
+            new PacketName(PLAY, CLIENTBOUND, EmptyChunk.class, "map_chunk"));
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("unreportedProtocols")
@@ -700,6 +767,21 @@ class StateRegistryTest {
           } catch (IllegalArgumentException notRegistered) {
             // registered in another state, direction or range of versions
           }
+        }
+      }
+    }
+    // The virtual world's serverbound registries add the packets only the world reads.
+    for (ProtocolState state : List.of(ProtocolState.CONFIGURATION, ProtocolState.PLAY)) {
+      PacketRegistry world = StateRegistry.world(state);
+      for (Class<? extends Packet> type : PACKET_TYPES) {
+        try {
+          int id = world.packetId(version, type);
+          RegisteredPacket packet = new RegisteredPacket(state, SERVERBOUND, type, id);
+          if (!packets.contains(packet)) {
+            packets.add(packet);
+          }
+        } catch (IllegalArgumentException notRegistered) {
+          // registered in another state or range of versions
         }
       }
     }

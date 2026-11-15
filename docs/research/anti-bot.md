@@ -939,8 +939,10 @@ pre-join Keep Alive ID once per process start, §3.8):
    the platform. A Ping (1.17+) or Confirm Transaction (1.7 to 1.16.5) with a random ID is interleaved
    and must be echoed. Tick End (1.21.2+) cadence is a signal only (Sonar had to disable its strict
    version for 1.21.7/1.21.8).
-4. On a physics mismatch: one retry from a new random height, then the challenge if enabled, otherwise a
-   failure without a blacklist strike.
+4. On a physics mismatch: one retry from a new random height, then the challenge if enabled, otherwise
+   the client is let in without being trusted (`PHYSICS_MISMATCH` flag, `mismatched` in the metrics):
+   never a kick, never a blacklist strike. Until the challenge exists (phase 4), a stumble costs a
+   client nothing but the trust of its identity.
 
 Checks Sonar has and Warp does not take: the boat and minecart check, the arm swing, the held-slot
 echo. Each produced false positives (S#414, S#430, S#395, the 26.3 swing change) and needs a large
@@ -1161,8 +1163,13 @@ Every rule below answers a false positive another project shipped.
 
 1. **Hard verdicts only on protocol impossibilities**: a wrong echoed ID, a packet that is illegal in
    the state, a first position that is not the teleport target. Physics mismatches get a retry from a
-   new height, then the challenge; they never add a blacklist strike on their own. Sonar's physics and
-   ordering checks broke real clients on version edges again and again (S#51, S#380, PR S#496, 2.1.38).
+   new height, then the challenge, or, until it exists, admission without trust; they never kick and
+   never add a blacklist strike on their own. Sonar's physics and ordering checks broke real clients
+   on version edges again and again (S#51, S#380, PR S#496, 2.1.38). During the fall, two things a
+   client does for reasons of its own stay on the vanilla trajectory and are tolerated: a position
+   repeated at the height it already stands at (its chunk arrived after the teleport, so it has not
+   moved yet), and a position that skips up to three ticks (several ticks simulated between two
+   reports, as mineflayer catching up does).
 2. **A disconnect during verification is not a failure** (S#271), and neither is a time-out: only a
    wrong answer counts towards the blacklist.
 3. **Deadlines follow the measured round trip.** The probe's ping gives the RTT; each stage gets
@@ -1413,6 +1420,111 @@ packet of the probe; the headless harness run is the next step), `/warp antibot 
 Stops: headless bots without physics (A8, A9). Tests: raw clients and mineflayer without physics fail,
 mineflayer with physics passes (documented limit), real vanilla clients pass on every version family;
 JMH for the cost per verification; a soak test at the bounds of §9.11.
+
+**Delivered** (`feat(proxy): virtual world with the anti-bot world check, the hold for players
+without a server and a plugin API`):
+
+- The world (`dev.warp.proxy.world`, `WorldLayouts`): a void with one 3x3 stone platform in the chunk
+  at (0, 0), for every version from 1.7.2 to 26.3. Registries as §9.8.2 decided, with one change of
+  source: no generated table per release. From 1.20.5 the proxy offers Select Known Packs with
+  `minecraft:core` at every release of the client's protocol (1.21.7 and 1.21.8 share one; the
+  client acknowledges the one that is its own) and sends three Registry Data packets whose entries
+  are ids without data: `minecraft:overworld`, `minecraft:plains`, and the damage types the client
+  resolves when it creates its level (the 23 of 1.19.4, `campfire` from 1.21), which must exist or
+  the client crashes on join (the LimboAPI 1.19.4 lesson). The client's built-in pack supplies the
+  data, so a release adds nothing until Mojang adds an eagerly resolved entry. 1.16 to 1.20.4 get
+  a hand-written minimal codec (one dimension, one biome, chat types from 1.19, the eager damage
+  types and empty trim registries from 1.19.4), inside Join Game until 1.20.1 and as one nameless
+  Registry Data in 1.20.2 to 1.20.4. 1.7 to 1.15 need nothing. A client that acknowledges none of
+  the offered packs (a version-translating mod, node-minecraft-protocol's bots, which answer every
+  offer with nothing) is let through without the world, untrusted. It stays in the configuration
+  phase it answered in, and its first server asks the same question: node-minecraft-protocol answers
+  one offer per phase (§9.7, item 2), so the proxy answers the server's offer with what the client
+  said it knows of it (`BackendConfigSessionHandler`, the client never sees the second offer; a
+  vanilla client would have answered it the same) instead of letting the server wait forever.
+- Packets (`protocol`): the 1.20.2+ Join Game body is built verbatim per layout (1.20.2, 1.20.5,
+  1.21.2 sea level, 26.2 online mode); encode-only clientbound `SyncPlayerPosition`,
+  `SetDefaultSpawnPosition`, `GameEvent`, `EmptyChunk` (fourteen layouts, 1.7 to 1.21.5; 1.7 to
+  1.16 carry one section of air, see the e2e findings below),
+  `BlockUpdate`, `PlayPing`, `WindowConfirmation`, config `RegistryData` and `KnownPacks`; the
+  serverbound `TeleportConfirm`, the four `ClientMovement` packets, `PlayPong`, `TickEnd` and the
+  client's Known Packs live in a separate registry (`StateRegistry.world`) that a decoder reads only
+  while its client stands in the world (`MinecraftDecoder.useRegistry`): nothing is registered for
+  players on servers, so the PLAY path is untouched. Every id is checked against Mojang's reports
+  (1.21 to 26.3) and minecraft-data (1.7.6 to 26.1) by `StateRegistryTest`.
+- The check (`WorldCheck`, `WorldSessionHandler`, `WorldConfigSessionHandler`): teleport to a random
+  height over a platform at a random height, Default Spawn Position (1.19.3+), Game Event 13
+  (1.20.3+), one empty chunk (Sonar's nine were not needed: the client waits for the chunk under
+  it only), nine Block Updates, a Ping (1.17+) or Confirm Transaction (1.7 to 1.16.5). Expected: the
+  confirmation (1.9+), a first position exactly at the target and off the ground, `v' = (v - 0.08)
+  * 0.98f` per position within 1e-6 (1.8 multiplied by 0.98 as a double), a landing exactly on the
+  platform 8 to 12 ticks later, the echo. Only one block type: a slab, carpet or snow layer has a
+  different block state id in every release since 1.13, so the platform is stone (state 1 in every
+  version) and the random heights carry the entropy. Verdicts per §10: a wrong id, a packet illegal
+  in the state or a first position elsewhere fail and strike; a wrong fall gets one retry from a new
+  height and then lets the player in untrusted (`PHYSICS_MISMATCH`, counted as `mismatched`), never
+  a kick, never a strike; a time-out never strikes; a late echo or the retry are flags, two flags
+  across probe and world let the player in without trusting it. Deadlines are `probe-timeout + 4
+  RTT` per stage, 30 s in all. Tick End is counted only. Modded and Bedrock platforms skip the world
+  (`anti-bot.world.check` for listeners whose backends are modded). The identity is trusted only
+  after the world, so a probe pass alone no longer stores it when the check is on.
+- The hand-off: the player's first server is a switch from the world. A 1.20.2+ client goes through
+  `ReconfigurationSwitch` (Start Configuration from the world, the acknowledgement read by the
+  world's handler, then the server's configuration); an older client through `RespawnSwitch`, whose
+  Join Game and Respawn replace the world. The backend is opened only after the pass.
+- The hold (`anti-bot.world.hold`): a player with no server left (none at login, every fallback
+  failed) is put in the world instead of being disconnected, from the configuration phase, from a
+  game (Start Configuration, then the world's registries) or as a respawn before 1.20.2. It is told
+  once in chat, sees the time left in its action bar every second (chat every 15 s on 1.7), keeps
+  the proxy's commands, and the proxy tries its route's or the default server again every
+  `retry-every` (5 s) while it is healthy, up to `max-wait` (5 min), then disconnects it with its
+  own reason. `warp_antibot_holds_total` and `warp_antibot_world_players` count them.
+- The API (`dev.warp.api.world.VirtualWorld`, `Warp.world()`): `supports`, `hold` (from anywhere,
+  the proxy's own retries stop), `holds`, `players`, `release(player, server)` and `release(player)`
+  (the server the player would have joined). A held player is a full `Player`: messages, titles,
+  boss bars and sounds reach it.
+
+**What the e2e matrix found** (the first run of real-protocol clients, mineflayer 4.39 on
+node-minecraft-protocol 1.68, through the world on every version from 1.7.10 to 26.3; 42 of 56 jobs
+failed, four root causes, none a wrong packet id: every id matched minecraft-data and Mojang's
+reports, and 1.7.10 passed untouched):
+
+1. *The retry forgot the echo.* The ping (or transaction) is answered at once, before the fall; the
+   retry's placement reset the "echoed" state and never asked again (same id), so every client that
+   stumbled once ended in "no echo of the ping" after its second, correct fall: a time-out kick on
+   1.8.8 and 1.17 to 1.20.4. The echo now survives the retry (`WorldCheckTest`, every family).
+2. *A zero bitmask unloads the chunk to mineflayer.* A full chunk with no section is a legal empty
+   chunk to the vanilla client from 1.9 (1.8 read it as an unload, which the world already avoided
+   with one empty section), but prismarine's loader kept 1.8's reading for every version up to 1.16:
+   the bot had no column under it, ran no physics and sent no position ("the fall stopped after 0
+   positions", twice), kicked under `WORLD_CHECK_FAILED` on 1.9 to 1.16.5 and on 1.12.2 bots behind
+   ViaBackwards. 1.9 to 1.16 now carry one section of air (a 4-bit palette of one entry, 2 KiB before
+   compression; with its light 6 KiB up to 1.13), which both readers load; the vanilla client's
+   reading is unchanged.
+3. *A position repeated before the chunk.* The client reports the teleport target again while its
+   chunk is still on its way (mineflayer at once, the vanilla client within a second when idle); the
+   check read it as a tick without gravity and spent the retry on it. Idle reports at the expected
+   height are no longer ticks, and a report up to three ticks ahead is accepted when it is on the
+   trajectory, which the tolerances of §10 now state.
+4. *The skipped world spent the client's one Known Packs answer.* node-minecraft-protocol answers
+   one Select Known Packs per configuration phase and always with nothing; the world's offer took
+   that answer, the world was skipped, and the first server's own offer waited forever ("no spawn
+   within 45 s" on 1.20.5 to 26.3, half the matrix). The proxy now answers the server's offer for a
+   client whose answer it holds from a skipped world (above); a vanilla client, which knows its core
+   pack, never skips the world and is not concerned.
+
+Fixed, the whole matrix passes the check trusted, which is rule 12's documented limit: mineflayer
+with physics is a game as far as the world can tell, and the probe plus the budgets of §9.11 are
+what stand against it (A10). A mismatch after the retry no longer kicks anybody; it was the one
+verdict that would have turned a bug in the world into a kick of real players.
+
+**Left for later**: pre-compressing the static packets per version (they are pre-encoded and go
+through the connection's compressor like any packet; the chunk is about 300 bytes before 1.18, 2 to
+6 KiB with the air section of 1.9 to 1.16, under 1 KiB after); Update Tags for 26.1+ (Sonar sends
+them; the e2e bots needed none without a server); a Bedrock proof (`ClientPlatform.Bedrock` exists
+and skips the world, nothing sets it yet); real vanilla clients, headless, on every version family,
+which the e2e bots stand in for today (the 26.x layouts and the known-packs path are verified by
+mineflayer only); the JMH cost measurement; events for the world (none in §9.14, none added).
 
 ### Phase 4: escalation and fleets
 

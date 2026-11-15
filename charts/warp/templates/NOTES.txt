@@ -1,0 +1,31 @@
+Warp {{ include "warp.appVersion" . }} is rolling out as {{ include "warp.fullname" . }} in {{ .Release.Namespace }}.
+
+Players connect to:
+{{- if eq .Values.service.type "LoadBalancer" }}
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "warp.fullname" . }} -w   # the EXTERNAL-IP, port {{ .Values.service.port }}
+{{- else if eq .Values.service.type "NodePort" }}
+  any node's address, port: kubectl -n {{ .Release.Namespace }} get svc {{ include "warp.fullname" . }} -o jsonpath='{.spec.ports[0].nodePort}'
+{{- else }}
+  {{ include "warp.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }} (ClusterIP: inside the cluster only)
+{{- end }}
+
+Backends must accept Velocity modern forwarding with the chart's forwarding secret:
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "warp.secretName" . }} -o jsonpath='{.data.{{ .Values.secrets.forwardingSecretKey }}}' | base64 -d
+
+Stopping a Pod drains it ({{ .Values.drain.mode }} mode, up to {{ include "warp.terminationGracePeriodSeconds" . }}s):
+{{- if .Values.drain.transferTo }}
+  players are transferred to {{ .Values.drain.transferTo }}, the others stay until they leave.
+{{- else }}
+  drain.transferTo is empty, so players stay until they leave (up to drain.timeout = {{ .Values.drain.timeout }}).
+  Set it to the network's public address to move them to the other proxies at once.
+{{- end }}
+
+Check the proxies:
+  helm -n {{ .Release.Namespace }} test {{ .Release.Name }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "warp.managementServiceName" . }} {{ .Values.management.port }}
+  curl -s localhost:{{ .Values.management.port }}/readyz; curl -s localhost:{{ .Values.management.port }}/metrics | head
+{{- if .Values.management.console.enabled }}
+  java -jar warp.jar console attach --url http://localhost:{{ .Values.management.port }} --token-file <token>
+{{- end }}
+
+Documentation: https://github.com/NeosiaNexus/Warp/blob/main/docs/deploy/kubernetes.md

@@ -21,15 +21,19 @@ import dev.warp.protocol.netty.SessionHandler;
 import dev.warp.protocol.packet.Packet;
 import dev.warp.protocol.packet.cookie.CookieRequest;
 import dev.warp.protocol.packet.play.AcknowledgeConfiguration;
+import dev.warp.protocol.packet.play.BlockUpdate;
 import dev.warp.protocol.packet.play.BossBar;
 import dev.warp.protocol.packet.play.BundleDelimiter;
 import dev.warp.protocol.packet.play.ChatAcknowledgement;
 import dev.warp.protocol.packet.play.ChatCommand;
 import dev.warp.protocol.packet.play.ClearDialog;
 import dev.warp.protocol.packet.play.ClearTitles;
+import dev.warp.protocol.packet.play.ClientMovement;
 import dev.warp.protocol.packet.play.DeclareCommands;
 import dev.warp.protocol.packet.play.DeleteChat;
+import dev.warp.protocol.packet.play.EmptyChunk;
 import dev.warp.protocol.packet.play.EntitySoundEffect;
+import dev.warp.protocol.packet.play.GameEvent;
 import dev.warp.protocol.packet.play.JoinGame;
 import dev.warp.protocol.packet.play.KeepAlive;
 import dev.warp.protocol.packet.play.LegacyChatMessage;
@@ -37,7 +41,9 @@ import dev.warp.protocol.packet.play.LegacyPlayerInfo;
 import dev.warp.protocol.packet.play.PlayClientSettings;
 import dev.warp.protocol.packet.play.PlayDisconnect;
 import dev.warp.protocol.packet.play.PlayPacket;
+import dev.warp.protocol.packet.play.PlayPing;
 import dev.warp.protocol.packet.play.PlayPluginMessage;
+import dev.warp.protocol.packet.play.PlayPong;
 import dev.warp.protocol.packet.play.PlayerInfo;
 import dev.warp.protocol.packet.play.PlayerInfoRemove;
 import dev.warp.protocol.packet.play.PlayerInfoUpdate;
@@ -46,17 +52,22 @@ import dev.warp.protocol.packet.play.ResourcePackPush;
 import dev.warp.protocol.packet.play.ResourcePackResponse;
 import dev.warp.protocol.packet.play.Respawn;
 import dev.warp.protocol.packet.play.SetActionBarText;
+import dev.warp.protocol.packet.play.SetDefaultSpawnPosition;
 import dev.warp.protocol.packet.play.SetSubtitleText;
 import dev.warp.protocol.packet.play.SetTitleText;
 import dev.warp.protocol.packet.play.SetTitleTimes;
 import dev.warp.protocol.packet.play.SoundEffect;
 import dev.warp.protocol.packet.play.StartConfiguration;
 import dev.warp.protocol.packet.play.StopSound;
+import dev.warp.protocol.packet.play.SyncPlayerPosition;
 import dev.warp.protocol.packet.play.SystemChatMessage;
 import dev.warp.protocol.packet.play.TabCompleteRequest;
 import dev.warp.protocol.packet.play.TabCompleteResponse;
 import dev.warp.protocol.packet.play.TabListHeaderFooter;
+import dev.warp.protocol.packet.play.TeleportConfirm;
+import dev.warp.protocol.packet.play.TickEnd;
 import dev.warp.protocol.packet.play.Transfer;
+import dev.warp.protocol.packet.play.WindowConfirmation;
 import dev.warp.proxy.logging.LogCode;
 
 import java.nio.charset.StandardCharsets;
@@ -206,6 +217,18 @@ final class BackendPlaySessionHandler implements SessionHandler {
       case StopSound stop -> forwardToClient(stop);
       case DeleteChat deletion -> forwardToClient(deletion);
       case ClearDialog clear -> forwardToClient(clear);
+      // The virtual world's packets, encode-only: never decoded from a server.
+      case ClientMovement _,
+          TeleportConfirm _,
+          PlayPing _,
+          PlayPong _,
+          WindowConfirmation _,
+          TickEnd _,
+          SyncPlayerPosition _,
+          SetDefaultSpawnPosition _,
+          GameEvent _,
+          BlockUpdate _,
+          EmptyChunk _ -> {}
       // Decoded, to know which packs the client holds and keep the proxy's.
       case ResourcePackPush push -> {
         if (player.isPlayingOn(backendConnection)) {

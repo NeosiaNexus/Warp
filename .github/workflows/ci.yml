@@ -144,6 +144,136 @@ jobs:
           if-no-files-found: warn
           retention-days: ${{ github.event_name == 'push' && 30 || 7 }}
 
+  # The container image, from the jar `build` assembled: built for the runner, started, probed,
+  # pinged, drained and scanned (.github/workflows/_container.yml), never pushed.
+  container:
+    name: Container image
+    needs: [changes, build]
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    permissions:
+      contents: read # check out the code
+    uses: $/.github/workflows/_container.yml
+    with:
+      ref: ${{ github.sha }}
+      version: ci
+      jar-artifact: warp-jar
+      # The jar `build` assembled has this runner's libdeflate (glibc, x86_64) only: the Alpine
+      # image falls back to Java's zlib here. Release and edge jars carry every platform's.
+      require-natives: false
+
+  # The Helm chart: lint, render with each ci/ values file, validate the manifests against the
+  # Kubernetes API schemas (and the Prometheus Operator's CRDs), and check that its version is
+  # version.txt's.
+  helm:
+    name: Helm chart
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read # check out the code
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      - name: Set up kubeconform
+        env:
+          KUBECONFORM_VERSION: 0.8.0
+          KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+        run: |
+          archive="kubeconform-linux-amd64.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/$archive" "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/$archive"
+          echo "$KUBECONFORM_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --quiet
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" kubeconform
+
+      - name: Chart version matches version.txt
+        run: |
+          version=$(tr -d '[:space:]' < version.txt)
+          chart=$(sed -n 's/^version: *\([^ #]*\).*/\1/p' charts/warp/Chart.yaml)
+          app=$(sed -n 's/^appVersion: *\([^ #]*\).*/\1/p' charts/warp/Chart.yaml)
+          if [ "$chart" != "$version" ] || [ "$app" != "$version" ]; then
+            echo "::error file=charts/warp/Chart.yaml::version ($chart) and appVersion ($app) must be version.txt's ($version)"
+            exit 1
+          fi
+
+      - name: Lint
+        run: |
+          helm lint charts/warp --strict
+          for values in charts/warp/ci/*-values.yaml; do
+            helm lint charts/warp --strict -f "$values"
+          done
+
+      - name: Render and validate
+        run: |
+          mkdir -p "$RUNNER_TEMP/rendered"
+          helm template warp charts/warp > "$RUNNER_TEMP/rendered/default.yaml"
+          for values in charts/warp/ci/*-values.yaml; do
+            helm template warp charts/warp -f "$values" > "$RUNNER_TEMP/rendered/$(basename "$values" .yaml).yaml"
+          done
+          # shellcheck disable=SC2016 # a kubeconform template, not shell expansions
+          "$RUNNER_TEMP/kubeconform" -strict -summary -kubernetes-version 1.31.0 \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            "$RUNNER_TEMP"/rendered/*.yaml
+
+      # The values schema refuses a typo and a bad duration; the templates refuse an impossible
+      # configuration with a message.
+      - name: Refusals
+        run: |
+          ! helm template warp charts/warp --set typo=1 > /dev/null 2>&1 || { echo "::error::an unknown value was accepted"; exit 1; }
+          ! helm template warp charts/warp --set drain.timeout=soon > /dev/null 2>&1 || { echo "::error::a bad duration was accepted"; exit 1; }
+          ! helm template warp charts/warp --set config.proxyProtocol.enabled=true > /dev/null 2>&1 || { echo "::error::the PROXY protocol without trusted proxies was accepted"; exit 1; }
+          ! helm template warp charts/warp --set drain.timeout=0 > /dev/null 2>&1 || { echo "::error::drain.timeout=0, which Warp refuses, was accepted"; exit 1; }
+          ! helm template warp charts/warp --set 'management.console.tokens[0].name=ops' --set 'management.console.tokens[0].scopes[0]=commands' \
+              --set 'management.console.tokens[0].secretKey=ops-token' > /dev/null 2>&1 \
+            || { echo "::error::a console token neither generated nor from existingSecret was accepted"; exit 1; }
+          helm template warp charts/warp --set 'management.console.tokens[0].name=ops' --set 'management.console.tokens[0].scopes[0]=commands' \
+              --set 'management.console.tokens[0].secretKey=ops-token' --set secrets.existingSecret=warp-secrets > /dev/null \
+            || { echo "::error::a console token from existingSecret was refused"; exit 1; }
+          ! helm template warp charts/warp --namespace minecraft --set management.metrics.serviceMonitor.enabled=true \
+              --set management.metrics.serviceMonitor.namespace=monitoring --set management.metrics.requireToken=true > /dev/null 2>&1 \
+            || { echo "::error::a ServiceMonitor in another namespace with the bearer token was accepted"; exit 1; }
+          helm template warp charts/warp --namespace minecraft --set management.metrics.serviceMonitor.enabled=true \
+              --set management.metrics.serviceMonitor.namespace=monitoring > /dev/null \
+            || { echo "::error::a ServiceMonitor in another namespace without Secrets was refused"; exit 1; }
+          helm template warp charts/warp --set drain.timeout=10m --set drain.propagationDelay=5s --set drain.gracePeriodMargin=30 \
+            | grep -q 'terminationGracePeriodSeconds: 635' || { echo "::error::the grace period is not derived from the drain settings"; exit 1; }
+
+      # The Pods roll when the configuration or the Secret changes, and TLS clients inside the
+      # cluster meet the certificate by the name it is issued for.
+      - name: Rollouts and names
+        run: |
+          rendered=$(helm template warp charts/warp --namespace minecraft --set secrets.forwardingSecret=one)
+          grep -q 'checksum/secret: ' <<< "$rendered" || { echo "::error::the Secret is not hashed into the Pod template"; exit 1; }
+          one=$(grep 'checksum/secret: ' <<< "$rendered")
+          two=$(helm template warp charts/warp --namespace minecraft --set secrets.forwardingSecret=two | grep 'checksum/secret: ')
+          [ "$one" != "$two" ] || { echo "::error::a changed forwarding secret does not roll the Pods"; exit 1; }
+          rendered=$(helm template warp charts/warp --namespace minecraft --set drain.mode=preStop \
+            --set management.tls.enabled=true --set management.tls.secretName=warp-tls)
+          grep -q 'https://127.0.0.1:9901' <<< "$rendered" || { echo "::error::the preStop drain does not go over loopback"; exit 1; }
+          grep -q 'https://warp-management.minecraft.svc:9901/readyz' <<< "$rendered" || { echo "::error::the helm test does not use the certificate's name"; exit 1; }
+
+      # The ServiceMonitor verifies the management server's certificate against the TLS Secret's
+      # CA by default; skipping the verification is an opt-in, refused with the bearer token.
+      - name: ServiceMonitor TLS
+        run: |
+          tls=(--set management.tls.enabled=true --set management.tls.secretName=warp-tls
+               --set management.metrics.serviceMonitor.enabled=true --namespace minecraft)
+          rendered=$(helm template warp charts/warp "${tls[@]}" --set management.metrics.requireToken=true)
+          grep -q 'serverName: warp-management.minecraft.svc' <<< "$rendered" || { echo "::error::the ServiceMonitor does not verify the server's name"; exit 1; }
+          grep -q 'key: ca.crt' <<< "$rendered" || { echo "::error::the ServiceMonitor does not use the TLS Secret's CA"; exit 1; }
+          ! grep -q 'insecureSkipVerify' <<< "$rendered" || { echo "::error::the ServiceMonitor skips verification by default"; exit 1; }
+          rendered=$(helm template warp charts/warp "${tls[@]}" --set management.metrics.serviceMonitor.insecureSkipVerify=true)
+          grep -q 'insecureSkipVerify: true' <<< "$rendered" || { echo "::error::the explicit opt-out of verification is ignored"; exit 1; }
+          ! helm template warp charts/warp "${tls[@]}" --set management.metrics.serviceMonitor.insecureSkipVerify=true \
+              --set management.metrics.requireToken=true > /dev/null 2>&1 \
+            || { echo "::error::skipping verification was accepted together with the bearer token"; exit 1; }
+
   # actionlint (syntax, expressions, shellcheck on `run:` scripts) and zizmor (workflow security,
   # strictest persona). Findings show up as annotations on the PR.
   lint-workflows:
@@ -273,9 +403,11 @@ jobs:
       modules: ${{ needs.changes.outputs.mutation }}
       since: ${{ github.event.pull_request.base.sha }}
       # A few changed classes take minutes, but a pull request that changes most classes mutates
-      # nearly all of them: the integration branch's 140 classes of proxy took 45 minutes. So a pull
-      # request gets the nightly full run's limit (mutation.yml); a small one finishes long before.
-      timeout-minutes: 90
+      # nearly all of them: an integration branch of seven pull requests (70 classes of proxy, with
+      # the tests of each) ran past 90 minutes, where its pull requests took two hours between
+      # them. So a pull request gets the nightly full run's limit (mutation.yml); a small one
+      # finishes long before.
+      timeout-minutes: 240
 
   # The only check to mark as required: it fails if any job above failed or was cancelled, and
   # passes when they succeeded or were skipped on purpose.

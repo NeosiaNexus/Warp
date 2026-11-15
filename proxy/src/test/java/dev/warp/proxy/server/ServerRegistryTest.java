@@ -463,6 +463,23 @@ class ServerRegistryTest {
     }
 
     @Test
+    @DisplayName("should give a handed-off player its server only while it is here and healthy")
+    void handoffServer() {
+      ServerRegistry registry = registry(List.of("lobby"));
+
+      BackendServer found = registry.handoffServer("Survival");
+
+      assertNotNull(found);
+      assertEquals("survival", found.name());
+      assertNull(registry.handoffServer("skyblock"));
+      for (int i = 0; i < 20; i++) {
+        registry.health().connectFailed("survival");
+      }
+      assertFalse(registry.health().allows("survival"), "breaker open");
+      assertNull(registry.handoffServer("survival"));
+    }
+
+    @Test
     @DisplayName("should find a registered server only for its exact name and address")
     void registeredMatchesAddress() {
       ServerRegistry registry = registry(List.of("lobby"));

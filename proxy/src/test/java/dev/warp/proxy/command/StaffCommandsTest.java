@@ -25,6 +25,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import dev.warp.api.permission.Tristate;
+import dev.warp.api.player.ClientPlatform;
 import dev.warp.api.player.ConnectionResult;
 import dev.warp.api.player.Player;
 import dev.warp.api.server.RegisteredServer;
@@ -59,6 +60,29 @@ class StaffCommandsTest {
       proxy.run(source, "find steve");
 
       assertEquals("Steve is on lobby (34 ms, 1.21.4)", source.last());
+    }
+
+    @Test
+    @DisplayName("should name a Bedrock player's platform and device next to the version")
+    void bedrock() {
+      Player steve = proxy.player("Steve", lobby);
+      org.mockito.Mockito.lenient()
+          .when(steve.platform())
+          .thenReturn(
+              new ClientPlatform.Bedrock(
+                  1L,
+                  "Steve",
+                  ClientPlatform.DeviceOs.XBOX,
+                  ClientPlatform.InputMode.CONTROLLER,
+                  ClientPlatform.UiProfile.CLASSIC,
+                  "en_US",
+                  java.util.Optional.empty(),
+                  java.net.InetAddress.getLoopbackAddress()));
+      AdminFixture.Source source = AdminFixture.granted(FindCommand.PERMISSION);
+
+      proxy.run(source, "find steve");
+
+      assertEquals("Steve is on lobby (34 ms, 1.21.4, Bedrock on Xbox)", source.last());
     }
 
     @Test

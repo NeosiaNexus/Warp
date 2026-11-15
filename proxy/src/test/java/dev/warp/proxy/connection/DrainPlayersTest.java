@@ -164,6 +164,7 @@ class DrainPlayersTest {
     when(context.logging()).thenReturn(LoggingConfig.DEFAULTS);
     when(context.timeouts()).thenReturn(TimeoutsConfig.DEFAULTS);
     when(context.antiBot()).thenReturn(TestLoginContexts.calmAntiBot());
+    when(context.handoff()).thenReturn(dev.warp.proxy.transfer.TransferHandoff.disabled());
     when(context.playerRegistry()).thenReturn(registry);
     when(context.events()).thenReturn(events);
     when(context.channels()).thenReturn(new ChannelRegistry());

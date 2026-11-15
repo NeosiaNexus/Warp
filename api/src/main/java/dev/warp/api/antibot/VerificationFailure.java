@@ -35,6 +35,15 @@ public enum VerificationFailure {
   /** The client returned a cookie the proxy stored with other contents. */
   COOKIE_MISMATCH,
 
+  /** The client's first position after the world's teleport was not the teleport target. */
+  WRONG_POSITION,
+
+  /**
+   * The client's fall in the world did not follow the gravity, twice: never a strike against its
+   * address, since real clients have stumbled on it at version edges before.
+   */
+  PHYSICS,
+
   /** The client did not answer, or did not send its brand and settings, before the deadline. */
   TIMED_OUT,
 

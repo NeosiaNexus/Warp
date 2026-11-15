@@ -28,7 +28,6 @@ import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
@@ -102,8 +101,7 @@ public final class ClientLimits {
   private final AuthenticationLane lane;
   private final @Nullable Blocklist blocklist;
   private volatile RefusalListener listener = (reason, address) -> {};
-  private final int maxPending;
-  private final AtomicInteger pending = new AtomicInteger();
+  private final PendingConnections pending;
   private final Duration loginTimeout;
   private final Duration handshakeTimeout;
   private final Duration statusTimeout;
@@ -177,7 +175,9 @@ public final class ClientLimits {
             config.authenticationQueueWait(),
             nanoClock);
     this.blocklist = enabled ? blocklist : null;
-    this.maxPending = enabled ? config.maxPendingConnections() : 0;
+    this.pending =
+        new PendingConnections(
+            enabled ? config.maxPendingConnections() : 0, config.pendingEvictionAfter(), nanoClock);
     this.loginTimeout = enabled ? config.loginTimeout() : Duration.ZERO;
     this.handshakeTimeout = enabled ? config.handshakeTimeout() : Duration.ZERO;
     this.statusTimeout = enabled ? config.statusTimeout() : Duration.ZERO;
@@ -230,16 +230,16 @@ public final class ClientLimits {
   }
 
   /**
-   * Counts a connection the proxy accepted among those not logged in yet, if it holds fewer than
-   * the cap. Every successful call must be followed by exactly one {@link #endPending()}, once the
-   * client is logged in or the connection closed.
+   * Counts a connection the proxy accepted among those not logged in yet. At the cap, the
+   * connection that has kept the proxy waiting the longest is closed to make room ({@link
+   * PendingConnections}); the new one is refused only if none may be. Every successful call must be
+   * followed by exactly one {@link #endPending()}, once the client is logged in or the connection
+   * closed. Called on the connection's event loop.
    *
    * @return {@code false}, counted as a refusal, to reset the connection without reading it
    */
   public boolean tryStartPending() {
-    int now = pending.incrementAndGet();
-    if (maxPending != 0 && now > maxPending) {
-      pending.decrementAndGet();
+    if (!pending.tryStart()) {
       refused(Refusal.PENDING_CONNECTIONS);
       return false;
     }
@@ -249,7 +249,17 @@ public final class ClientLimits {
 
   /** Ends the count of a connection started by {@link #tryStartPending()}. */
   public void endPending() {
-    pending.decrementAndGet();
+    pending.end();
+  }
+
+  /**
+   * Returns the connections not logged in: their count, and which of them may be closed to make
+   * room for a new one.
+   *
+   * @return the table
+   */
+  public PendingConnections pending() {
+    return pending;
   }
 
   /**
@@ -258,7 +268,7 @@ public final class ClientLimits {
    * @return the count
    */
   public int pendingConnections() {
-    return pending.get();
+    return pending.count();
   }
 
   /**
@@ -267,7 +277,7 @@ public final class ClientLimits {
    * @return the cap, or 0 for none
    */
   public int maxPendingConnections() {
-    return maxPending;
+    return pending.max();
   }
 
   /**

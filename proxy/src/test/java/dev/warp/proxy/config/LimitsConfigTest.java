@@ -93,6 +93,8 @@ class LimitsConfigTest {
       LimitsConfig defaults = LimitsConfig.DEFAULTS;
 
       assertEquals(8192, defaults.maxPendingConnections());
+      assertEquals(Duration.ofMillis(250), defaults.pendingEvictionAfter());
+      assertEquals(Duration.ZERO, LimitsConfig.DISABLED.pendingEvictionAfter());
       assertEquals(Duration.ofSeconds(5), defaults.handshakeTimeout());
       assertEquals(Duration.ofSeconds(5), defaults.statusTimeout());
     }
@@ -126,6 +128,7 @@ class LimitsConfigTest {
                 }
                 report-interval = 5m
                 max-pending-connections = 1000
+                evict-pending-after = 100ms
                 handshake-timeout = 3s
                 status-timeout = 0
               }
@@ -133,6 +136,7 @@ class LimitsConfigTest {
 
       LimitsConfig limits = config.limits();
       assertEquals(1000, limits.maxPendingConnections());
+      assertEquals(Duration.ofMillis(100), limits.pendingEvictionAfter());
       assertEquals(Duration.ofSeconds(3), limits.handshakeTimeout());
       assertEquals(Duration.ZERO, limits.statusTimeout());
       assertEquals(List.of(CidrRange.parse("10.1.0.0/16")), limits.exempt().ranges());
@@ -249,6 +253,57 @@ class LimitsConfigTest {
               ConfigurationException.class, () -> load("limits { exempt = [\"localhost\"] }"));
 
       assertTrue(String.valueOf(error.getMessage()).contains("limits.exempt:"));
+    }
+
+    @Test
+    @DisplayName("should refuse a time before making room it cannot read, naming the key")
+    void badEvictPendingAfter() {
+      ConfigurationException error =
+          assertThrows(
+              ConfigurationException.class, () -> load("limits { evict-pending-after = soon }"));
+
+      assertTrue(
+          String.valueOf(error.getMessage()).contains("limits.evict-pending-after"),
+          error.getMessage());
+    }
+
+    @Test
+    @DisplayName("should refuse a negative time before making room")
+    void negativeEvictPendingAfter() {
+      LimitsConfig d = LimitsConfig.DEFAULTS;
+
+      IllegalArgumentException error =
+          assertThrows(
+              IllegalArgumentException.class,
+              () ->
+                  new LimitsConfig(
+                      true,
+                      d.exempt(),
+                      d.connections(),
+                      d.statusPings(),
+                      d.logins(),
+                      d.maxConcurrentLoginsPerAddress(),
+                      d.maxConcurrentAuthentications(),
+                      d.loginTimeout(),
+                      d.reportInterval(),
+                      d.maxPendingConnections(),
+                      d.handshakeTimeout(),
+                      d.statusTimeout(),
+                      d.authenticationQueue(),
+                      d.authenticationQueueWait(),
+                      d.loginsUnderAttack(),
+                      d.maxConcurrentLoginsPerAddressUnderAttack(),
+                      Duration.ofNanos(-1)));
+
+      assertTrue(String.valueOf(error.getMessage()).endsWith(", PT-0.000000001S"));
+    }
+
+    @Test
+    @DisplayName("should take 0 as never closing a connection to make room")
+    void zeroEvictPendingAfter() throws Exception {
+      assertEquals(
+          Duration.ZERO,
+          load("limits { evict-pending-after = 0 }").limits().pendingEvictionAfter());
     }
 
     @Test

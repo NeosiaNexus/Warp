@@ -34,5 +34,7 @@ Thumbs.db
 
 # Runtime (the README runs Warp from run/: warp.conf, forwarding.secret, logs)
 /run/
+# The verified players file and journal, written when Warp is run from a module directory
+anti-bot/
 logs/
 *.log

@@ -11,6 +11,13 @@ name: Natives (reusable)
 
 on:
   workflow_call:
+    inputs:
+      platforms:
+        description: >-
+          `all` (the release: every platform), or `linux` (the container images: the four Linux
+          builds, which run on Linux runners only).
+        type: string
+        default: all
 
 permissions: {}
 
@@ -27,7 +34,33 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read # check out the code
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
+      # The platforms to build, each on a runner of its own platform; musl builds run in an Alpine
+      # container on the Linux runner of their architecture.
+      - name: Choose the platforms
+        id: matrix
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          all='[
+            {"platform": "linux-x86_64", "runner": "ubuntu-24.04"},
+            {"platform": "linux-aarch64", "runner": "ubuntu-24.04-arm"},
+            {"platform": "linux-x86_64-musl", "runner": "ubuntu-24.04", "alpine": true},
+            {"platform": "linux-aarch64-musl", "runner": "ubuntu-24.04-arm", "alpine": true},
+            {"platform": "macos-x86_64", "runner": "macos-15-intel"},
+            {"platform": "macos-aarch64", "runner": "macos-15"},
+            {"platform": "windows-x86_64", "runner": "windows-2025"}
+          ]'
+          case "$PLATFORMS" in
+            all) matrix=$(jq -c . <<< "$all") ;;
+            linux) matrix=$(jq -c '[.[] | select(.platform | startswith("linux-"))]' <<< "$all") ;;
+            *) echo "::error::platforms must be all or linux, not '$PLATFORMS'"; exit 1 ;;
+          esac
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "Building: $(jq -r '[.[].platform] | join(", ")' <<< "$matrix")"
+
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,23 +104,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: linux-x86_64
-            runner: ubuntu-24.04
-          - platform: linux-aarch64
-            runner: ubuntu-24.04-arm
-          - platform: linux-x86_64-musl
-            runner: ubuntu-24.04
-            alpine: true
-          - platform: linux-aarch64-musl
-            runner: ubuntu-24.04-arm
-            alpine: true
-          - platform: macos-x86_64
-            runner: macos-15-intel
-          - platform: macos-aarch64
-            runner: macos-15
-          - platform: windows-x86_64
-            runner: windows-2025
+        include: ${{ fromJSON(needs.classes.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     permissions:

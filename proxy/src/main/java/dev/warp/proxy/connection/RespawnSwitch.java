@@ -128,6 +128,10 @@ final class RespawnSwitch implements ServerSwitch {
         client.write(leftover);
       }
       writeRejoin(client, joinGame);
+      if (!(client.sessionHandler() instanceof ClientPlaySessionHandler)) {
+        // From the virtual world: its handler goes, the server's comes.
+        client.setSessionHandler(new ClientPlaySessionHandler(player));
+      }
     } else {
       spawned = true;
       client.setSessionHandler(new ClientPlaySessionHandler(player));
@@ -153,6 +157,20 @@ final class RespawnSwitch implements ServerSwitch {
       client.write(joinGame);
     }
     client.write(Respawn.of(spawn));
+  }
+
+  /**
+   * Returns whether the client has a world: a server's or the virtual world.
+   *
+   * @return {@code true} once a Join Game reached the client
+   */
+  boolean isSpawned() {
+    return spawned;
+  }
+
+  /** The virtual world gave the client a Join Game: the next server is a respawn. */
+  void spawnedInWorld() {
+    spawned = true;
   }
 
   // ---------------------------------------------------------------------------

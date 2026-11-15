@@ -2,6 +2,7 @@
 // mineflayer no longer loads. Every packet a bot receives is fully parsed against the protocol
 // definition of its version: a packet the proxy corrupted or mis-framed surfaces as an 'error' or a
 // disconnect, which fails the scenario.
+import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 
 import * as legacy from './legacy.js';
@@ -124,6 +125,37 @@ export function answerCookies(client) {
   const cookies = new Map();
   client.on('store_cookie', (packet) => cookies.set(packet.key, packet.value));
   client.on('cookie_request', (packet) => client.write('cookie_response', { key: packet.cookie, value: cookies.get(packet.cookie) }));
+}
+
+/**
+ * Opens a new chat session at every Join Game after the first, as the vanilla client does from
+ * 1.19.3 (its `handleLogin` drops the session, the messages it has seen and its signature cache,
+ * then sends a Player Session again): a Join Game is a new server, which knows nothing of the
+ * session the last one took. minecraft-protocol 1.68 opens one at the first Join Game only, so a bot
+ * the proxy moved (a server switch, or Warp's virtual world before the first server) would chat on
+ * unsigned where a real client signs.
+ *
+ * @param {object} client the bot's minecraft-protocol client, with `profileKeys`
+ */
+export function renewChatSessions(client) {
+  let joined = false;
+  client.on('login', () => {
+    // The first session is minecraft-protocol's; without one (no encryption, another profile) there is none to renew.
+    if (!joined || !client._session) {
+      joined = true;
+      return;
+    }
+    client._session = { index: 0, uuid: randomUUID() };
+    client._lastChatSignature = null;
+    if (client._lastSeenMessages) client._lastSeenMessages = new client._lastSeenMessages.constructor();
+    if (client._signatureCache) client._signatureCache = new client._signatureCache.constructor();
+    client.write('chat_session_update', {
+      sessionUUID: client._session.uuid,
+      expireTime: BigInt(client.profileKeys.expiresOn.getTime()),
+      publicKey: client.profileKeys.public.export({ type: 'spki', format: 'der' }),
+      signature: client.profileKeys.signatureV2,
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +414,7 @@ function keyedAuth(profileKeys) {
     // Undashed: minecraft-protocol compares it so with the UUID the server announced.
     client.session = { selectedProfile: { id: profileKeys.uuid.replace(/-/g, ''), name: options.username } };
     client.profileKeys = profileKeys;
+    renewChatSessions(client);
     options.connect(client);
   };
 }

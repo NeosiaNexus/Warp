@@ -112,6 +112,19 @@ final class LibraryCache {
     byte[] digest = sha256(library);
     Path target = realDirectory.resolve(fileName);
 
+    // A directory this process cannot write to, such as a container image's layer under a
+    // read-only root filesystem: the library installed there when the image was built is used as
+    // it is, provided the directory is private to its owner (who alone could have written the
+    // file) and the file holds exactly the bundled library.
+    if (!Files.isWritable(realDirectory)) {
+      UserPrincipal owner = Files.getOwner(realDirectory, LinkOption.NOFOLLOW_LINKS);
+      checkPrivate(realDirectory, owner);
+      if (holds(target, owner, digest, library.length)) {
+        return target;
+      }
+      throw new IOException(realDirectory + " is read-only and does not hold the library");
+    }
+
     // Created exclusively under a random name: also tells which user this process writes files as.
     Path temporary = Files.createTempFile(realDirectory, ".install-", ".tmp", ownerOnlyFile());
     try {

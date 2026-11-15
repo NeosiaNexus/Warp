@@ -33,6 +33,8 @@ import dev.warp.protocol.packet.login.LoginPluginResponse;
 import dev.warp.protocol.packet.login.LoginStart;
 import dev.warp.protocol.packet.login.LoginSuccess;
 import dev.warp.protocol.packet.login.SetCompression;
+import dev.warp.proxy.bedrock.BedrockIdentity;
+import dev.warp.proxy.bedrock.FloodgateService;
 import dev.warp.proxy.logging.LogCode;
 
 import java.net.InetSocketAddress;
@@ -96,9 +98,7 @@ final class BackendLoginSessionHandler implements SessionHandler {
   public void activated() {
     // Send Handshake + LoginStart to initiate login with the backend.
     ProtocolVersion version = player.protocolVersion();
-    // A modded client's marker (\0FML2\0, \0FORGE...) travels with the host: a Forge backend
-    // treats a player without it as vanilla.
-    String host = serverAddress.getHostString() + player.clientConnection().handshakeMarker();
+    String host = backendHost(player, server, serverAddress.getHostString());
     int port = serverAddress.getPort();
 
     if (forwardingSecret.length > 0 && backendConnection.isPacketLevel()) {
@@ -120,6 +120,28 @@ final class BackendLoginSessionHandler implements SessionHandler {
 
     backendConnection.setState(ProtocolState.LOGIN);
     backendConnection.writeAndFlush(new LoginStart(player.username(), player.uuid()));
+  }
+
+  /**
+   * Builds the host name of the backend's handshake: the address, then what travels with it. A
+   * modded client's marker ({@code \0FML2\0}, {@code \0FORGE...}), since a Forge backend treats a
+   * player without it as vanilla; or, for a Bedrock player and a backend that runs Floodgate, the
+   * player's Floodgate data re-encrypted under a fresh IV, so that Floodgate on the backend sees
+   * the player as Geyser presented it (device, language, linked account), with the from-proxy flag
+   * set. The Velocity forwarding payload carries the profile either way.
+   *
+   * @param player the player logging in
+   * @param server the backend
+   * @param address the backend's host name or address
+   * @return the host field of the handshake
+   */
+  static String backendHost(ConnectedPlayer player, ServerInfo server, String address) {
+    BedrockIdentity bedrock = player.clientConnection().bedrock();
+    FloodgateService floodgate = player.loginContext().floodgate();
+    if (bedrock != null && floodgate.forwardsTo(server.name())) {
+      return address + '\0' + floodgate.encodeForBackend(bedrock.data());
+    }
+    return address + player.clientConnection().handshakeMarker();
   }
 
   // ---------------------------------------------------------------------------

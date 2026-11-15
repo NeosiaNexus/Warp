@@ -224,7 +224,10 @@ final class RoutingConfig {
         host = HostRoutes.parseKey(written);
       } catch (IllegalArgumentException e) {
         throw ConfigurationException.at(
-            key, e.getMessage() + ": a host such as play.example.com or *.example.com");
+            key,
+            e.getMessage()
+                + ": a host such as play.example.com or *.example.com, with :port or @bedrock"
+                + " after it");
       }
       String target = WarpConfig.stringValue(entry.getValue(), "").trim().toLowerCase(Locale.ROOT);
       if (target.isEmpty()) {
@@ -243,8 +246,7 @@ final class RoutingConfig {
       } else if (checkNames && !targets.contains(target)) {
         throw unknown(key, target, targets, "servers and groups");
       }
-      String normalized = host.pattern() + (host.port() < 0 ? "" : ":" + host.port());
-      String previous = routes.put(normalized, target);
+      String previous = routes.put(host.text(), target);
       if (previous != null) {
         throw ConfigurationException.at(
             key, "is the same host as another entry (hosts are case-insensitive): keep one");

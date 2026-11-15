@@ -21,6 +21,8 @@ import dev.warp.proxy.management.console.RemoteConsole;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetAddress;
+import java.net.Socket;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -32,14 +34,19 @@ import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
 import java.security.cert.Certificate;
+import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.Map;
 import java.util.StringJoiner;
 import java.util.concurrent.CompletableFuture;
 
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509ExtendedTrustManager;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -215,7 +222,8 @@ final class ConsoleHttp {
 
   /**
    * Creates the TLS context: the JDK's trusted authorities, or only those of a PEM file (a private
-   * authority, or a self-signed certificate).
+   * authority, or a self-signed certificate). The certificate must name the host connected to,
+   * except over loopback (see {@link #loopback(String)}).
    *
    * @param caFile the PEM file, or {@code null}
    * @return the context
@@ -223,27 +231,130 @@ final class ConsoleHttp {
    * @throws GeneralSecurityException if it holds no valid certificate
    */
   static SSLContext ssl(@Nullable Path caFile) throws IOException, GeneralSecurityException {
-    if (caFile == null) {
-      return SSLContext.getDefault();
-    }
-    KeyStore trusted = KeyStore.getInstance(KeyStore.getDefaultType());
-    trusted.load(null, null);
-    try (InputStream in = Files.newInputStream(caFile)) {
-      int index = 0;
-      for (Certificate certificate :
-          CertificateFactory.getInstance("X.509").generateCertificates(in)) {
-        trusted.setCertificateEntry("ca-" + index++, certificate);
-      }
-      if (index == 0) {
-        throw new GeneralSecurityException("no certificate in " + caFile);
+    KeyStore trusted = null;
+    if (caFile != null) {
+      trusted = KeyStore.getInstance(KeyStore.getDefaultType());
+      trusted.load(null, null);
+      try (InputStream in = Files.newInputStream(caFile)) {
+        int index = 0;
+        for (Certificate certificate :
+            CertificateFactory.getInstance("X.509").generateCertificates(in)) {
+          trusted.setCertificateEntry("ca-" + index++, certificate);
+        }
+        if (index == 0) {
+          throw new GeneralSecurityException("no certificate in " + caFile);
+        }
       }
     }
     TrustManagerFactory trust =
         TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
     trust.init(trusted);
+    X509ExtendedTrustManager manager = null;
+    for (TrustManager candidate : trust.getTrustManagers()) {
+      if (candidate instanceof X509ExtendedTrustManager extended) {
+        manager = extended;
+        break;
+      }
+    }
+    if (manager == null) {
+      throw new GeneralSecurityException("no X.509 trust manager");
+    }
     SSLContext context = SSLContext.getInstance("TLS");
-    context.init(null, trust.getTrustManagers(), null);
+    context.init(null, new TrustManager[] {new LoopbackTrustManager(manager)}, null);
     return context;
+  }
+
+  /**
+   * Tells whether a host is {@code localhost} or a literal loopback address (127.0.0.0/8 or ::1,
+   * with or without brackets). Names are not resolved: a name that would resolve to loopback is not
+   * trusted as such.
+   *
+   * @param host the host, as a URI or an {@link SSLEngine} gives it
+   * @return true for a loopback host
+   */
+  static boolean loopback(@Nullable String host) {
+    if (host == null) {
+      return false;
+    }
+    if (host.equalsIgnoreCase("localhost")) {
+      return true;
+    }
+    if (host.startsWith("[") && host.endsWith("]")) {
+      host = host.substring(1, host.length() - 1);
+    }
+    try {
+      return InetAddress.ofLiteral(host).isLoopbackAddress();
+    } catch (IllegalArgumentException e) {
+      return false;
+    }
+  }
+
+  /**
+   * The JDK's trust manager, with its HTTPS endpoint identification (the certificate must name the
+   * host) except toward a loopback address, where only the chain is verified.
+   *
+   * <p>Loopback traffic never leaves the host (in Kubernetes, the Pod), so the peer is the local
+   * proxy, whose certificate is issued for its Service's name and not for 127.0.0.1: a preStop
+   * hook's {@code warp drain --url https://127.0.0.1:9901} and a port-forwarded console would
+   * otherwise fail on the name.
+   */
+  private static final class LoopbackTrustManager extends X509ExtendedTrustManager {
+
+    private final X509ExtendedTrustManager delegate;
+
+    LoopbackTrustManager(X509ExtendedTrustManager delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public void checkServerTrusted(X509Certificate[] chain, String authType, SSLEngine engine)
+        throws CertificateException {
+      if (loopback(engine.getPeerHost())) {
+        delegate.checkServerTrusted(chain, authType);
+      } else {
+        delegate.checkServerTrusted(chain, authType, engine);
+      }
+    }
+
+    @Override
+    public void checkServerTrusted(X509Certificate[] chain, String authType, Socket socket)
+        throws CertificateException {
+      InetAddress address = socket.getInetAddress();
+      if (address != null && address.isLoopbackAddress()) {
+        delegate.checkServerTrusted(chain, authType);
+      } else {
+        delegate.checkServerTrusted(chain, authType, socket);
+      }
+    }
+
+    @Override
+    public void checkServerTrusted(X509Certificate[] chain, String authType)
+        throws CertificateException {
+      delegate.checkServerTrusted(chain, authType);
+    }
+
+    @Override
+    public void checkClientTrusted(X509Certificate[] chain, String authType, SSLEngine engine)
+        throws CertificateException {
+      delegate.checkClientTrusted(chain, authType, engine);
+    }
+
+    @Override
+    public void checkClientTrusted(X509Certificate[] chain, String authType, Socket socket)
+        throws CertificateException {
+      delegate.checkClientTrusted(chain, authType, socket);
+    }
+
+    @Override
+    public void checkClientTrusted(X509Certificate[] chain, String authType)
+        throws CertificateException {
+      delegate.checkClientTrusted(chain, authType);
+    }
+
+    @Override
+    public X509Certificate[] getAcceptedIssuers() {
+      return delegate.getAcceptedIssuers();
+    }
   }
 
   /**

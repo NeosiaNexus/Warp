@@ -22,10 +22,13 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.warp.api.player.ClientPlatform;
 import dev.warp.api.server.Route;
 
+import java.net.InetAddress;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -87,6 +90,84 @@ class HostRoutesTest {
       assertEquals("", HostRoutes.clean(""));
       assertEquals("", HostRoutes.clean("\0FML\0"));
       assertEquals("", HostRoutes.clean("..."));
+    }
+  }
+
+  @Nested
+  @DisplayName("platform conditions")
+  class Platforms {
+
+    private static final ClientPlatform BEDROCK =
+        new ClientPlatform.Bedrock(
+            1L,
+            "Steve",
+            ClientPlatform.DeviceOs.ANDROID,
+            ClientPlatform.InputMode.TOUCH,
+            ClientPlatform.UiProfile.CLASSIC,
+            "en_US",
+            Optional.empty(),
+            InetAddress.getLoopbackAddress());
+
+    private static final ClientPlatform FORGE =
+        new ClientPlatform.Forge(ClientPlatform.ForgeEra.MODERN, 0);
+
+    private static String target(HostRoutes routes, String host, ClientPlatform platform) {
+      Route route = routes.match(HostRoutes.clean(host), PORT, platform);
+      return route == null ? "<default>" : route.target();
+    }
+
+    @Test
+    @DisplayName("should parse @bedrock after the host, with or without a space or a port")
+    void parses() {
+      assertEquals(
+          HostRoutes.Condition.BEDROCK, HostRoutes.parseKey("play.example.com@bedrock").platform());
+      assertEquals(
+          HostRoutes.Condition.BEDROCK,
+          HostRoutes.parseKey("play.example.com @bedrock").platform());
+      assertEquals(
+          HostRoutes.Condition.FORGE, HostRoutes.parseKey("*.example.com:25566 @Forge").platform());
+      assertEquals(25566, HostRoutes.parseKey("play.example.com:25566@java").port());
+      assertNull(HostRoutes.parseKey("play.example.com").platform());
+      assertEquals(
+          "play.example.com:25566@bedrock",
+          HostRoutes.parseKey("Play.Example.com:25566 @BEDROCK").text());
+      assertThrows(
+          IllegalArgumentException.class, () -> HostRoutes.parseKey("play.example.com@xbox"));
+      assertThrows(IllegalArgumentException.class, () -> HostRoutes.parseKey("@bedrock"));
+    }
+
+    @Test
+    @DisplayName("should send a platform to its own entry and the others to the plain one")
+    void matchesPlatform() {
+      HostRoutes routes =
+          routes(
+              "play.example.com",
+              "lobby",
+              "play.example.com@bedrock",
+              "bedrock-lobby",
+              "*@forge",
+              "modded");
+
+      assertEquals("bedrock-lobby", target(routes, "play.example.com", BEDROCK));
+      assertEquals("lobby", target(routes, "play.example.com", ClientPlatform.JAVA));
+      assertEquals("lobby", target(routes, "play.example.com", FORGE));
+      assertEquals("modded", target(routes, "other.example.com", FORGE));
+      assertEquals("<default>", target(routes, "other.example.com", BEDROCK));
+      Route bedrockRoute = routes.match("play.example.com", PORT, BEDROCK);
+      assertNotNull(bedrockRoute);
+      assertEquals("play.example.com@bedrock", bedrockRoute.host());
+    }
+
+    @Test
+    @DisplayName("should keep an entry with a condition apart from the same host without one")
+    void distinctKeys() {
+      HostRoutes routes = routes("play.example.com@bedrock", "a", "play.example.com", "b");
+
+      assertEquals(2, routes.entries().size());
+      assertEquals("play.example.com@bedrock", routes.entries().get(0).getKey());
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> routes("play.example.com@bedrock", "a", "play.example.com @Bedrock", "b"));
     }
   }
 

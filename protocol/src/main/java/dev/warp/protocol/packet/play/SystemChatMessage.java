@@ -60,10 +60,10 @@ import net.kyori.adventure.text.Component;
 public record SystemChatMessage(byte[] rawContent, boolean overlay) implements PlayPacket {
 
   /** Chat position (until 1.18.2) and chat type (1.19) of a message shown in the chat box. */
-  private static final int SYSTEM = 1;
+  public static final int SYSTEM = 1;
 
   /** Chat position (until 1.18.2) and chat type (1.19) of a message shown in the action bar. */
-  private static final int GAME_INFO = 2;
+  public static final int GAME_INFO = 2;
 
   /** Codec for reading and writing system chat message packets. */
   public static final PacketCodec<SystemChatMessage> CODEC =
