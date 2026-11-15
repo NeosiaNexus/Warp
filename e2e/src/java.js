@@ -13,24 +13,28 @@ const ADOPTIUM = 'https://api.adoptium.net/v3';
 /** Lookups by major version: the server and Warp may both need Java 25, and must share one install. */
 const lookups = new Map();
 
-/** Returns the `java` executable of the requested major version. */
-export function findJava(major, cacheDir) {
-  const key = `${major}:${cacheDir}`;
-  if (!lookups.has(key)) lookups.set(key, locateJava(major, cacheDir).catch((e) => { lookups.delete(key); throw e; }));
+/**
+ * Returns the `java` executable of the requested major version. With `tools`, only a full JDK will
+ * do (one that has `jcmd` next to `java`): the benchmark asks a running JVM for its heap with it.
+ */
+export function findJava(major, cacheDir, { tools = false } = {}) {
+  const key = `${major}:${cacheDir}:${tools}`;
+  if (!lookups.has(key)) lookups.set(key, locateJava(major, cacheDir, tools).catch((e) => { lookups.delete(key); throw e; }));
   return lookups.get(key);
 }
 
-async function locateJava(major, cacheDir) {
+async function locateJava(major, cacheDir, tools) {
+  const usable = (java) => existsSync(java) && (!tools || existsSync(join(java, '..', 'jcmd')));
   const fromEnv = [process.env[`WARP_E2E_JAVA_${major}`], process.env[`JAVA_HOME_${major}_X64`], process.env[`JAVA_HOME_${major}_ARM64`]]
     .filter(Boolean)
     .map((home) => (home.endsWith('/java') ? home : join(home, 'bin', 'java')));
   for (const java of fromEnv) {
-    if (existsSync(java)) return java;
+    if (usable(java)) return java;
   }
   for (const home of candidateHomes(cacheDir)) {
-    if (javaMajor(home) === major && existsSync(join(home, 'bin', 'java'))) return join(home, 'bin', 'java');
+    if (javaMajor(home) === major && usable(join(home, 'bin', 'java'))) return join(home, 'bin', 'java');
   }
-  return join(await installTemurin(major, cacheDir), 'bin', 'java');
+  return join(await installTemurin(major, cacheDir, tools ? 'jdk' : 'jre'), 'bin', 'java');
 }
 
 function candidateHomes(cacheDir) {
@@ -65,18 +69,18 @@ export function javaMajor(home) {
   }
 }
 
-async function installTemurin(major, cacheDir) {
-  const target = join(cacheDir, 'jdks', `temurin-${major}`);
+async function installTemurin(major, cacheDir, image = 'jre') {
+  const target = join(cacheDir, 'jdks', image === 'jre' ? `temurin-${major}` : `temurin-${major}-${image}`);
   if (javaMajor(target) === major) return target;
   const os = platform() === 'darwin' ? 'mac' : platform();
   const arch = { x64: 'x64', arm64: 'aarch64' }[osArch()] ?? osArch();
-  const query = `os=${os}&architecture=${arch}&image_type=jre&jvm_impl=hotspot&vendor=eclipse`;
+  const query = `os=${os}&architecture=${arch}&image_type=${image}&jvm_impl=hotspot&vendor=eclipse`;
   const response = await fetch(`${ADOPTIUM}/assets/latest/${major}/hotspot?${query}`);
-  if (!response.ok) throw new Error(`Adoptium: no Temurin ${major} JRE for ${os}/${arch} (HTTP ${response.status})`);
+  if (!response.ok) throw new Error(`Adoptium: no Temurin ${major} ${image} for ${os}/${arch} (HTTP ${response.status})`);
   const [asset] = await response.json();
   const pkg = asset?.binary?.package;
-  if (!pkg) throw new Error(`Adoptium: no Temurin ${major} JRE for ${os}/${arch}`);
-  console.log(`Downloading Temurin ${asset.version.semver} (${os}/${arch}): no local Java ${major} found`);
+  if (!pkg) throw new Error(`Adoptium: no Temurin ${major} ${image} for ${os}/${arch}`);
+  console.log(`Downloading Temurin ${asset.version.semver} ${image} (${os}/${arch}): no local Java ${major} found`);
   const archive = await download(pkg.link, join(cacheDir, 'downloads', pkg.name), { sha256: pkg.checksum });
   const staging = `${target}.tmp`;
   rmSync(staging, { recursive: true, force: true });

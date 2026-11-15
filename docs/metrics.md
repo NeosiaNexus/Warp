@@ -61,7 +61,7 @@ Histogram buckets are fixed per metric. Durations use one of three sets: `fast` 
 | `warp_connections_active` | gauge | `state` (`handshake`, `status`, `login`, `configuration`, `play`) | Live client connections by protocol state. |
 | `warp_connections_pending` | gauge | | Connections not logged in yet (anti-bot). |
 | `warp_connections_pending_max` | gauge | | The cap on connections not logged in; 0 for none. |
-| `warp_connections_refused_total` | counter | `reason` | Connections refused or closed before login, by reason (anti-bot and limits). |
+| `warp_connections_refused_total` | counter | `reason` | Connections refused or closed before login, by reason (anti-bot and limits). At `limits.max-pending-connections`, `pending_evicted` counts the stalled connections closed to give their place to new ones, and `pending_connections` the new ones refused because none could be closed. |
 | `warp_logins_total` | counter | `outcome` (`success`, `refused_antibot`, `refused_duplicate`, `refused_full`, `auth_failed`, `auth_timeout`, `protocol_unsupported`, `cancelled_plugin`, `disconnected`, `other`) | One per login attempt. |
 | `warp_login_duration_seconds` | histogram (`network`) | `outcome` (`success`, `failed`) | From the handshake to the login's end. |
 | `warp_status_pings_total` | counter | `cached` (`true`, `false`) | Server list pings: answered from the cache, or built for a plugin listening to `ProxyPingEvent`. |
@@ -109,6 +109,9 @@ backend towards the client. The blind ratio of a proxy is
 | `warp_drain_players_remaining` | gauge | | Players the drain still waits for. |
 | `warp_drain_duration_seconds` | gauge | | How long the current or last drain has run. |
 | `warp_drain_transfers_total` | counter | `outcome` (`sent`, `unsupported`, `not_ready`, `disconnected`) | Transfers the drain attempted, by `TransferResult`. |
+| `warp_transfers_total` | counter | `direction` (`out`, `in`), `handoff` (`used`, `absent`, `invalid`) | Transfers sent to another server (out) and logins that arrived by one (in), by whether a handoff ticket went with them. See [transfers](transfers.md). |
+| `warp_transfer_handoffs_rejected_total` | counter | `reason` (`malformed`, `version`, `key`, `tampered`, `expired`, `clock`, `restart`, `target`, `protocol`, `address`, `name`, `uuid`, `replayed`, `busy`, `proof`) | Handoff tickets a transferred client presented and the proxy did not use. |
+| `warp_transfer_handoff_login_duration_seconds` | histogram (`network`) | | From the handshake to Login Success, for the logins a handoff ticket carried. |
 | `warp_plugin_event_duration_seconds` | histogram (`fast`) | `event` (the API event's name) | Time one handler took on one event. |
 | `warp_plugin_handler_errors_total` | counter | `plugin` | Uncaught exceptions from event handlers. |
 | `warp_query_requests_total` | counter | `type` (`handshake`, `basic`, `full`, `unknown`), `outcome` (`answered`, `no_token`, `rate_limited`, `malformed`, `ignored`) | GS4 query datagrams. `unknown` is a datagram dropped before its type was read: over a rate limit, too short or with a wrong magic. `ignored` is a stat dropped while a plugin hides the proxy from pings. |

@@ -1,0 +1,265 @@
+{
+  "id": "gate",
+  "label": "Gate 0.76.3",
+  "forwarding": "modern",
+  "metrics": {
+    "idle": {
+      "levels": [
+        {
+          "level": 50,
+          "online": 50,
+          "failures": 0,
+          "rssMiB": 30.6,
+          "heapMiB": null,
+          "fds": 108,
+          "cpuPct": 0,
+          "reps": [
+            {
+              "online": 50,
+              "failures": 0,
+              "failureSample": null,
+              "rssMiB": 30.6,
+              "fds": 108,
+              "cpuPct": 0,
+              "proxyClients": 50,
+              "heapMiB": null,
+              "lagP99Ms": 11.3,
+              "backends": [
+                {
+                  "name": "stub",
+                  "kind": "stub",
+                  "players": 50,
+                  "refused": 0,
+                  "keepAliveTimeouts": 0,
+                  "lagP99Ms": 11.25
+                }
+              ],
+              "reasons": []
+            }
+          ],
+          "validity": {
+            "valid": true,
+            "reasons": []
+          }
+        },
+        {
+          "level": 100,
+          "online": 100,
+          "failures": 0,
+          "rssMiB": 34.1,
+          "heapMiB": null,
+          "fds": 208,
+          "cpuPct": 0,
+          "reps": [
+            {
+              "online": 100,
+              "failures": 0,
+              "failureSample": null,
+              "rssMiB": 34.1,
+              "fds": 208,
+              "cpuPct": 0,
+              "proxyClients": 100,
+              "heapMiB": null,
+              "lagP99Ms": 10.47,
+              "backends": [
+                {
+                  "name": "stub",
+                  "kind": "stub",
+                  "players": 100,
+                  "refused": 0,
+                  "keepAliveTimeouts": 0,
+                  "lagP99Ms": 10.37
+                }
+              ],
+              "reasons": []
+            }
+          ],
+          "validity": {
+            "valid": true,
+            "reasons": []
+          }
+        }
+      ]
+    },
+    "traffic": {
+      "bots": 10,
+      "online": 10,
+      "failures": 0,
+      "bytesPerSec": 20740,
+      "deliveredBytesPerSec": 20334,
+      "chunkFramesPerSec": 69,
+      "cpuPct": 8,
+      "cpuPerMb": 3.075562125665077,
+      "rssMiB": 48.6,
+      "heapMiB": null,
+      "backendTps": 20,
+      "reps": [
+        {
+          "online": 10,
+          "failures": 0,
+          "failureSample": null,
+          "bytesPerSec": 20740,
+          "deliveredBytesPerSec": 20334,
+          "framesPerSec": 710,
+          "chunkFramesPerSec": 69,
+          "corrections": 0,
+          "cpuPct": 8,
+          "cpuPerMb": 3.075562125665077,
+          "rssMiB": 48.6,
+          "heapMiB": null,
+          "lagP99Ms": 10.99,
+          "backends": [
+            {
+              "name": "lobby",
+              "kind": "paper",
+              "tps": 20,
+              "msptAvg": 5.3,
+              "msptMax": 66.7,
+              "overloads": 0,
+              "errors": 0
+            }
+          ],
+          "reasons": []
+        }
+      ],
+      "validity": {
+        "valid": true,
+        "reasons": []
+      }
+    },
+    "latency": {
+      "viaProxy": {
+        "p50": 0.582,
+        "p90": 0.726,
+        "p99": 2.138,
+        "max": 3.69,
+        "n": 100,
+        "timeouts": 0,
+        "settled": true,
+        "background": 5,
+        "backends": [
+          {
+            "name": "lobby",
+            "kind": "paper",
+            "tps": 20,
+            "msptAvg": 4.4,
+            "msptMax": 166.6,
+            "overloads": 0,
+            "errors": 0
+          }
+        ],
+        "reasons": []
+      },
+      "direct": {
+        "p50": 0.366,
+        "p90": 0.45,
+        "p99": 1.334,
+        "max": 4.141,
+        "n": 100,
+        "timeouts": 0,
+        "settled": true,
+        "background": 5,
+        "backends": [
+          {
+            "name": "direct",
+            "kind": "paper",
+            "tps": 20,
+            "msptAvg": 5.8,
+            "msptMax": 105.5,
+            "overloads": 0,
+            "errors": 0
+          }
+        ],
+        "reasons": []
+      },
+      "added": {
+        "p50": 0.216,
+        "p90": 0.276,
+        "p99": 0.804
+      },
+      "samples": 100,
+      "warmup": 20,
+      "timeoutMs": 2000,
+      "backgroundBots": 5,
+      "validity": {
+        "valid": true,
+        "reasons": []
+      }
+    },
+    "switch": {
+      "bots": 4,
+      "online": 4,
+      "connectFailures": 0,
+      "failureSample": null,
+      "switches": 39,
+      "switchesPerSec": 2.6,
+      "failures": 0,
+      "firstChunkP50Ms": 333.2,
+      "firstChunkP99Ms": 624,
+      "p50Ms": 561.9,
+      "p99Ms": 878.3,
+      "heapMiB": null,
+      "lagP99Ms": 14.19,
+      "backends": [
+        {
+          "name": "lobby",
+          "kind": "paper",
+          "tps": 20,
+          "msptAvg": 2.1,
+          "msptMax": 18,
+          "overloads": 0,
+          "errors": 0
+        },
+        {
+          "name": "survival",
+          "kind": "paper",
+          "tps": 20,
+          "msptAvg": 3.1,
+          "msptMax": 54.7,
+          "overloads": 0,
+          "errors": 0
+        },
+        {
+          "name": "mini",
+          "kind": "paper",
+          "tps": 20,
+          "msptAvg": 3.7,
+          "msptMax": 40.5,
+          "overloads": 0,
+          "errors": 0
+        }
+      ],
+      "validity": {
+        "valid": true,
+        "reasons": []
+      }
+    },
+    "storm": {
+      "rates": [
+        {
+          "rate": 500,
+          "attempted": 3998,
+          "opened": 3998,
+          "joined": true,
+          "joinError": null,
+          "cpuPct": 39,
+          "cpuPeakPct": 44,
+          "rssMiB": 88.7,
+          "validity": {
+            "valid": true,
+            "reasons": []
+          }
+        }
+      ]
+    }
+  },
+  "errors": [],
+  "natives": {
+    "ok": true,
+    "checked": false,
+    "notes": [
+      "listening: 2026-11-12T22:02:35.662Z\tINFO\tjava\tproxy/proxy.go:741\tlistening for connections\t{\"addr\": \"127.0.0.1:25565\"}"
+    ]
+  },
+  "proxyFailures": []
+}

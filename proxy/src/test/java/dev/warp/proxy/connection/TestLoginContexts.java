@@ -39,6 +39,7 @@ import dev.warp.proxy.player.PlayerRegistry;
 import dev.warp.proxy.server.ServerRegistry;
 import dev.warp.proxy.status.ServerList;
 import dev.warp.proxy.status.StatusSettings;
+import dev.warp.proxy.transfer.TransferHandoff;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -403,7 +404,8 @@ final class TestLoginContexts {
         PlayerMessages.bundled(),
         new ProxyMetrics(metrics),
         FleetService.singleNode(players, registry, events, metrics, policy, onlineMode),
-        floodgate);
+        floodgate,
+        TransferHandoff.disabled());
   }
 
   /**
@@ -430,6 +432,7 @@ final class TestLoginContexts {
                 new MetricRegistry(0),
                 DuplicateLoginPolicy.AUTO,
                 false));
+    org.mockito.Mockito.when(context.handoff()).thenReturn(TransferHandoff.disabled());
     return context;
   }
 
@@ -474,6 +477,120 @@ final class TestLoginContexts {
       ServerRegistry servers,
       TimeoutsConfig timeouts,
       LoggingConfig logging) {
+    return rebuild(base, servers, timeouts, logging, base.acceptsTransfers(), base.handoff());
+  }
+
+  /**
+   * A context that accepts transfers, with a seamless handoff and servers of its own.
+   *
+   * @param onlineMode whether players authenticate
+   * @param sessionService the session service, usually a mock
+   * @param events the event bus
+   * @param servers the servers players join and fall back to
+   * @param handoff the handoff
+   * @return the context
+   */
+  static ServerLoginContext acceptingHandoffs(
+      boolean onlineMode,
+      MojangSessionService sessionService,
+      WarpEventBus events,
+      ServerRegistry servers,
+      TransferHandoff handoff) {
+    return acceptingHandoffs(
+        context(
+            onlineMode,
+            -1,
+            sessionService,
+            ProfileKeys.mojang(),
+            DuplicateLoginPolicy.AUTO,
+            events,
+            true,
+            StatusSettings.defaults(),
+            ClientLimits.unlimited(),
+            servers,
+            ForwardingMode.NONE,
+            new byte[0],
+            NioSocketChannel.class),
+        handoff);
+  }
+
+  /**
+   * Returns a context like {@code base} that accepts transfers, with a seamless handoff.
+   *
+   * @param base the context to copy
+   * @param handoff the handoff
+   * @return the context
+   */
+  static ServerLoginContext acceptingHandoffs(ServerLoginContext base, TransferHandoff handoff) {
+    return rebuild(base, base.serverRegistry(), base.timeouts(), base.logging(), true, handoff);
+  }
+
+  /**
+   * Returns a context like {@code base}, with another seamless handoff and other servers.
+   *
+   * @param base the context to copy
+   * @param servers the servers players join and fall back to
+   * @param handoff the handoff
+   * @return the context
+   */
+  static ServerLoginContext withHandoff(
+      ServerLoginContext base, ServerRegistry servers, TransferHandoff handoff) {
+    return rebuild(
+        base, servers, base.timeouts(), base.logging(), base.acceptsTransfers(), handoff);
+  }
+
+  /**
+   * Returns a context like {@code base} whose accounts {@code fleet} settles across proxies, under
+   * the duplicate login policy {@code policy}.
+   *
+   * @param base the context to copy
+   * @param policy what happens to a second login of an account
+   * @param fleet the fleet
+   * @return the context
+   */
+  static ServerLoginContext withFleet(
+      ServerLoginContext base, DuplicateLoginPolicy policy, FleetService fleet) {
+    return rebuild(
+        base,
+        base.serverRegistry(),
+        base.timeouts(),
+        base.logging(),
+        base.acceptsTransfers(),
+        base.handoff(),
+        policy,
+        base.antiBot(),
+        fleet);
+  }
+
+  private static ServerLoginContext rebuild(
+      ServerLoginContext base,
+      ServerRegistry servers,
+      TimeoutsConfig timeouts,
+      LoggingConfig logging,
+      boolean acceptsTransfers,
+      TransferHandoff handoff) {
+    return rebuild(
+        base,
+        servers,
+        timeouts,
+        logging,
+        acceptsTransfers,
+        handoff,
+        base.duplicateLoginPolicy(),
+        base.antiBot(),
+        base.fleet());
+  }
+
+  private static ServerLoginContext rebuild(
+      ServerLoginContext base,
+      ServerRegistry servers,
+      TimeoutsConfig timeouts,
+      LoggingConfig logging,
+      boolean acceptsTransfers,
+      TransferHandoff handoff,
+      DuplicateLoginPolicy policy,
+      AntiBotService antiBot,
+      FleetService fleet) {
     return new ServerLoginContext(
         base.rsaKeyPair(),
         base.onlineMode(),
@@ -486,7 +603,7 @@ final class TestLoginContexts {
         servers,
         base.playerRegistry(),
         base.serverList(),
-        base.duplicateLoginPolicy(),
+        policy,
         base.events(),
         base.channels(),
         base.commands(),
@@ -494,17 +611,18 @@ final class TestLoginContexts {
         base.forwardingMode(),
         base.forwardingSecret(),
         base.channelClass(),
-        base.acceptsTransfers(),
+        acceptsTransfers,
         base.limits(),
         timeouts,
         logging,
         base.tcpFastOpen(),
-        base.antiBot(),
+        antiBot,
         base.pipelines(),
         base.messages(),
         base.metrics(),
-        base.fleet(),
-        base.floodgate());
+        fleet,
+        base.floodgate(),
+        handoff);
   }
 
   /**
@@ -531,6 +649,27 @@ final class TestLoginContexts {
         ForwardingMode.VELOCITY,
         secret,
         NioSocketChannel.class);
+  }
+
+  /**
+   * Returns a context like {@code base} whose anti-bot is {@code antiBot}, which must be built on
+   * {@code base}'s limits.
+   *
+   * @param base the context to copy
+   * @param antiBot the anti-bot
+   * @return the context
+   */
+  static ServerLoginContext withAntiBot(ServerLoginContext base, AntiBotService antiBot) {
+    return rebuild(
+        base,
+        base.serverRegistry(),
+        base.timeouts(),
+        base.logging(),
+        base.acceptsTransfers(),
+        base.handoff(),
+        base.duplicateLoginPolicy(),
+        antiBot,
+        base.fleet());
   }
 
   /**

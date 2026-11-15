@@ -35,6 +35,16 @@ describe('Warp config', () => {
     assert.match(cfg, /dev\.warp\.proxy\.compression\.Compression" = debug/);
   });
   it('uses modern forwarding', () => assert.equal(make('warp').forwarding, 'modern'));
+  it('turns the anti-bot and its verification off, as no other proxy has an equivalent', () => {
+    assert.match(cfg, /anti-bot \{\n  enabled = false\n  verification \{\n    offline-mode = "never"\n    online-mode = "never"/);
+  });
+  it('treats a tripped circuit breaker or an anti-bot reaction as a protection', () => {
+    const proxy = make('warp');
+    proxy.process = { alive: true, lines: ['ok', "Server 'lobby' is skipped by the balancers: it refused the logins of 3 players in a row", 'Bot attack detected: logins of unknown identities at 200/s'] };
+    assert.equal(proxy.protections(0).protections, 2);
+    assert.match(proxy.protections(0).protectionSample, /skipped by the balancers/);
+    assert.equal(proxy.protections(2).protections, 1, 'only lines after the mark count');
+  });
 });
 
 describe('Velocity config', () => {

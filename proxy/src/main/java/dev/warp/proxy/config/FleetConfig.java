@@ -170,7 +170,7 @@ public record FleetConfig(
     }
     String publicAddress = blankToNull(WarpConfig.stringValue(node.node("public-address"), ""));
     if (publicAddress != null) {
-      var _ = DrainConfig.parseTarget(publicAddress); // validates host:port
+      var _ = DrainConfig.parseTarget("fleet.public-address", publicAddress); // validates host:port
     }
     Duration heartbeat = duration(node, "heartbeat", DEFAULT_HEARTBEAT);
     Duration heartbeatTtl = duration(node, "heartbeat-ttl", DEFAULT_HEARTBEAT_TTL);

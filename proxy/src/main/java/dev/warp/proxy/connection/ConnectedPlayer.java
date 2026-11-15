@@ -79,6 +79,7 @@ import dev.warp.proxy.metrics.ProxyMetrics;
 import dev.warp.proxy.metrics.ServerConnectOutcome;
 import dev.warp.proxy.server.BackendServer;
 import dev.warp.proxy.server.ServerRegistry;
+import dev.warp.proxy.transfer.TransferHandoff;
 import dev.warp.proxy.world.ProxyWorld;
 
 import java.net.InetSocketAddress;
@@ -167,7 +168,7 @@ public final class ConnectedPlayer {
   public static final String LOG_SESSION = "session";
 
   /** Interval between KeepAlive packets sent to the client. */
-  private static final long KEEP_ALIVE_INTERVAL_MS = 15_000;
+  private static final long KEEP_ALIVE_INTERVAL_MS = KeepAliveWheel.INTERVAL_MS;
 
   /** Maximum time to wait for a KeepAlive response before disconnecting. */
   private static final long KEEP_ALIVE_TIMEOUT_MS = 30_000;
@@ -234,6 +235,22 @@ public final class ConnectedPlayer {
 
   /** Whether this player was authenticated with Mojang. */
   private volatile boolean onlineMode;
+
+  /**
+   * The server another Warp proxy handed this player off from, which it joins first if this proxy
+   * has it and it is healthy; {@code null} without a handoff.
+   */
+  private volatile @Nullable String handoffServer;
+
+  /** Whether another Warp proxy handed this player off with a valid ticket. */
+  private volatile boolean handedOff;
+
+  /**
+   * The profile the login authenticated as, before plugins changed it: what a handoff ticket
+   * carries, so that the next proxy starts from what Mojang said. The player's profile until the
+   * login says otherwise.
+   */
+  private volatile GameProfile authenticatedProfile;
 
   /** Whether {@link PostLoginEvent} was fired: a {@link DisconnectEvent} must follow. */
   private volatile boolean sessionStarted;
@@ -351,7 +368,12 @@ public final class ConnectedPlayer {
 
   private boolean keepAliveStale;
   private volatile long clientLatencyNanos;
-  private volatile @Nullable ScheduledFuture<?> keepAliveTask;
+
+  /**
+   * The player's seat in the keep-alive wheel of its event loop, while its keep-alive task runs.
+   * Read and written on the event loop only.
+   */
+  private KeepAliveWheel.@Nullable Seat keepAliveSeat;
 
   // Virtual world: whether the player stands in it, and the hold for want of a server.
   private volatile boolean inWorld;
@@ -392,6 +414,7 @@ public final class ConnectedPlayer {
     this.uuid = profile.uuid();
     this.username = profile.name();
     this.profileProperties = profile.properties();
+    this.authenticatedProfile = profile;
     this.remoteAddress = remoteAddress;
     this.loginContext = loginContext;
     this.serverSwitch = ServerSwitch.of(this);
@@ -769,13 +792,65 @@ public final class ConnectedPlayer {
         && !(clientConnection.sessionHandler() instanceof SwitchWaitSessionHandler)) {
       clientConnection.setSessionHandler(new SwitchWaitSessionHandler(this));
     }
-    BackendServer proposed = loginContext.serverRegistry().initialServer(clientConnection.route());
+    BackendServer proposed = handedOffServer();
+    if (proposed == null) {
+      proposed = loginContext.serverRegistry().initialServer(clientConnection.route());
+    }
     WarpEventBus events = loginContext.events();
     if (!events.hasHandlers(PlayerChooseInitialServerEventImpl.class)) {
       joinServer(proposed);
       return;
     }
     holdFor(new PlayerChooseInitialServerEventImpl(api, proposed), this::joinChosen);
+  }
+
+  /**
+   * The server a handoff named, if this proxy has it and its breaker is closed: proposed first, to
+   * plugins as to the player, so that a drain leaves the player where it played.
+   */
+  private @Nullable BackendServer handedOffServer() {
+    String server = handoffServer;
+    if (server == null) {
+      return null;
+    }
+    BackendServer found = loginContext.serverRegistry().handoffServer(server);
+    if (found == null) {
+      logger.debug(
+          "{} was handed off from server {}, which is not here or not healthy: the default instead",
+          username,
+          server);
+    }
+    return found;
+  }
+
+  /**
+   * Records a handoff and the server it named: the player joins it first. Called once, by the
+   * login.
+   *
+   * @param server the server's name on the proxy the player came from, or {@code null}
+   */
+  void handedOffFrom(@Nullable String server) {
+    this.handedOff = true;
+    this.handoffServer = server;
+  }
+
+  /**
+   * Returns whether another Warp proxy handed this player off with a valid ticket.
+   *
+   * @return {@code true} for a handoff
+   */
+  public boolean isHandedOff() {
+    return handedOff;
+  }
+
+  /**
+   * Records the profile the login authenticated as, before plugins changed it. Called once, by the
+   * login.
+   *
+   * @param profile Mojang's profile, a handoff's, or the offline one
+   */
+  void authenticatedAs(GameProfile profile) {
+    this.authenticatedProfile = profile;
   }
 
   /** Applies the result {@link PlayerChooseInitialServerEvent} settled on. Client event loop. */
@@ -2668,24 +2743,33 @@ public final class ConnectedPlayer {
    * keep-alive every {@value #KEEP_ALIVE_INTERVAL_MS} ms once the previous one was answered, the
    * client timed out when an answer is more than {@value #KEEP_ALIVE_TIMEOUT_MS} ms late. Called
    * once the client reads configuration or play packets; does nothing if the task runs already.
+   * Safe from any thread.
+   *
+   * <p>The task is not a timer of its own: the player takes a seat in the {@link KeepAliveWheel} of
+   * its event loop, which serves every player of the loop from one tick. Its first keep-alive
+   * leaves within the interval, the following ones exactly one interval apart.
    *
    * <p>The task runs whoever the client waits for, a server or plugins: a vanilla client drops a
    * connection that sent it nothing for 30 s ({@code ReadTimeoutHandler(30)} on its channel, in
    * every state), and no server sends it anything while it waits between two.
    */
   void startKeepAliveTask() {
-    if (keepAliveTask != null || disconnected.get()) {
-      return;
+    onEventLoop(this::joinKeepAliveWheel);
+  }
+
+  private void joinKeepAliveWheel() {
+    if (keepAliveSeat == null && !disconnected.get()) {
+      keepAliveSeat =
+          KeepAliveWheel.of(clientConnection.channel().eventLoop())
+              .join(this::sendKeepAlive, this::keepAliveFailed);
     }
-    keepAliveTask =
-        clientConnection
-            .channel()
-            .eventLoop()
-            .scheduleAtFixedRate(
-                this::sendKeepAlive,
-                KEEP_ALIVE_INTERVAL_MS,
-                KEEP_ALIVE_INTERVAL_MS,
-                TimeUnit.MILLISECONDS);
+  }
+
+  /**
+   * A failure of the keep-alive task ends the connection like any other failure in its pipeline.
+   */
+  private void keepAliveFailed(RuntimeException failure) {
+    var _ = clientConnection.channel().pipeline().fireExceptionCaught(failure);
   }
 
   /**
@@ -2717,11 +2801,16 @@ public final class ConnectedPlayer {
     clientConnection.setState(state);
   }
 
-  /** Cancels the KeepAlive task. */
+  /** Cancels the KeepAlive task. Safe from any thread. */
   void cancelKeepAliveTask() {
-    if (keepAliveTask != null) {
-      keepAliveTask.cancel(false);
-      keepAliveTask = null;
+    onEventLoop(this::leaveKeepAliveWheel);
+  }
+
+  private void leaveKeepAliveWheel() {
+    KeepAliveWheel.Seat seat = keepAliveSeat;
+    if (seat != null) {
+      seat.leave();
+      keepAliveSeat = null;
     }
   }
 
@@ -2977,8 +3066,62 @@ public final class ConnectedPlayer {
       // Inside an open bundle, the client would only act on it once the bundle closes.
       closeBundle();
     }
-    logger.info("Transferring {} to {}:{}", username, packet.host(), packet.port());
+    boolean handedOff = storeHandoff(packet.host(), packet.port());
+    loginContext
+        .metrics()
+        .transfer(
+            ProxyMetrics.TransferDirection.OUT,
+            handedOff ? ProxyMetrics.HandoffUse.USED : ProxyMetrics.HandoffUse.ABSENT);
+    logger.info(
+        "Transferring {} to {}:{}{}",
+        username,
+        packet.host(),
+        packet.port(),
+        handedOff ? " with a handoff" : "");
     clientConnection.writeWhenSettled(packet, promise);
+  }
+
+  /**
+   * Stores the handoff cookies before a transfer to a peer: the sealed ticket, and its proof for a
+   * player whose connection is encrypted. Written ahead of the Transfer packet, in order, so the
+   * client holds them when it connects to the peer. On the client event loop.
+   *
+   * @return whether the cookies were stored
+   */
+  private boolean storeHandoff(String host, int port) {
+    TransferHandoff handoff = loginContext.handoff();
+    if (!handoff.isPeer(host, port) || !cookies.supported()) {
+      return false;
+    }
+    if (clientConnection.bedrock() != null) {
+      // A Bedrock player logs in again through Geyser, with Floodgate's data: no ticket stands in
+      // for it, and none is read from a connection that carries it.
+      return false;
+    }
+    GameProfile original = authenticatedProfile;
+    boolean authenticated = onlineMode;
+    TransferHandoff.Issued issued =
+        handoff.issue(
+            new TransferHandoff.Subject(
+                original.uuid(),
+                original.name(),
+                original.properties(),
+                protocolVersion().protocol(),
+                remoteAddress().getAddress(),
+                currentServerName,
+                authenticated,
+                authenticated && loginContext.antiBot().trustsAccount(original.uuid())),
+            host,
+            port);
+    if (issued == null) {
+      return false;
+    }
+    cookies.store(TransferHandoff.TICKET_COOKIE, issued.ticket());
+    byte[] proof = issued.proof();
+    if (proof != null) {
+      cookies.store(TransferHandoff.PROOF_COOKIE, proof);
+    }
+    return true;
   }
 
   /**

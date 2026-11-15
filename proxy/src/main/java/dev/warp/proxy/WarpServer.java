@@ -51,6 +51,7 @@ import dev.warp.proxy.config.AntiBotConfig;
 import dev.warp.proxy.config.DrainConfig;
 import dev.warp.proxy.config.FleetConfig;
 import dev.warp.proxy.config.GroupConfig;
+import dev.warp.proxy.config.HandoffConfig;
 import dev.warp.proxy.config.WarpConfig;
 import dev.warp.proxy.connection.BackendPinger;
 import dev.warp.proxy.connection.ConnectedPlayer;
@@ -106,6 +107,7 @@ import dev.warp.proxy.server.ServerGroupRegistry;
 import dev.warp.proxy.server.ServerHealth;
 import dev.warp.proxy.server.ServerRegistry;
 import dev.warp.proxy.status.ServerList;
+import dev.warp.proxy.transfer.TransferHandoff;
 
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
@@ -1013,6 +1015,10 @@ public final class WarpServer implements Warp {
     if (token != null) {
       secrets.add(token);
     }
+    String handoffSecret = System.getenv(HandoffConfig.ENV_VARIABLE);
+    if (handoffSecret != null && !handoffSecret.isBlank()) {
+      secrets.add(handoffSecret.strip());
+    }
     return new RemoteConsole(
         config.management().console(), commands, config::messages, WarpBuildInfo.VERSION, secrets);
   }
@@ -1448,7 +1454,55 @@ public final class WarpServer implements Warp {
         config.messages(),
         proxyMetrics,
         fleet,
-        new FloodgateService(config.bedrock()));
+        new FloodgateService(config.bedrock()),
+        loadHandoff());
+  }
+
+  /**
+   * Loads the seamless handoff between Warp proxies: its key, from {@code WARP_TRANSFER_SECRET} or
+   * its file (generated when absent), and its peers.
+   *
+   * @throws IllegalStateException if the key file cannot be read or created, or if the key is the
+   *     forwarding secret
+   */
+  private TransferHandoff loadHandoff() {
+    try {
+      TransferHandoff handoff =
+          TransferHandoff.load(
+              config.handoff(),
+              config.drain().transferTo(),
+              directory,
+              System::getenv,
+              config.forwardingSecret(),
+              nodeId(),
+              System::currentTimeMillis);
+      if (handoff.enabled()) {
+        logger.info("Transfers: seamless handoff {}", config.handoff());
+      }
+      return handoff;
+    } catch (IOException e) {
+      throw new IllegalStateException(
+          "Cannot load the transfer handoff key: "
+              + e.getMessage()
+              + " (or turn transfers.handoff.enabled off)",
+          e);
+    }
+  }
+
+  /**
+   * What names this proxy in the handoff tickets it writes, for the logs of the proxies that read
+   * them: the machine's (or the pod's) host name and the port players reach this proxy on.
+   */
+  private String nodeId() {
+    String host = System.getenv("HOSTNAME");
+    if (host == null || host.isBlank()) {
+      host = System.getenv("COMPUTERNAME");
+    }
+    if (host == null || host.isBlank()) {
+      host = "warp";
+    }
+    String id = host.strip() + ":" + config.bind().getPort();
+    return id.length() > 64 ? id.substring(0, 64) : id;
   }
 
   /**

@@ -492,6 +492,25 @@ class FleetServiceTest {
     }
 
     @Test
+    @DisplayName("should let a handed-off player take its account over under the same policy")
+    void handoffTakesOver() {
+      Node a = new Node("a", null, DuplicateLoginPolicy.REFUSE_NEW, FleetConfig.OnStoreDown.ALLOW);
+      Node b = new Node("b", null, DuplicateLoginPolicy.REFUSE_NEW, FleetConfig.OnStoreDown.ALLOW);
+      ConnectedPlayer onA = a.login(STEVE, "Steve");
+      await(() -> b.fleet.node("a").isPresent());
+      ConnectedPlayer onB = mock(ConnectedPlayer.class);
+      when(onB.uuid()).thenReturn(STEVE);
+      when(onB.username()).thenReturn("Steve");
+      b.players.register(onB, false);
+
+      FleetService.Claim claim = b.fleet.claim(onB, true).join();
+
+      assertEquals(new FleetService.Claim.Allowed(), claim);
+      verify(onA, timeout(TIMEOUT.toMillis())).disconnectDuplicate();
+      assertEquals("b", b.fleet.player(STEVE).orElseThrow().proxyId());
+    }
+
+    @Test
     @DisplayName("should follow on-store-down while the store is unreachable")
     void storeDown() {
       Node allow = node("a");

@@ -596,7 +596,8 @@ class ConnectionLimitsTest {
         d.authenticationQueue(),
         d.authenticationQueueWait(),
         d.loginsUnderAttack(),
-        d.maxConcurrentLoginsPerAddressUnderAttack());
+        d.maxConcurrentLoginsPerAddressUnderAttack(),
+        d.pendingEvictionAfter());
   }
 
   private static LimitsConfig withLogins(
@@ -617,7 +618,8 @@ class ConnectionLimitsTest {
         LimitsConfig.DEFAULTS.authenticationQueue(),
         LimitsConfig.DEFAULTS.authenticationQueueWait(),
         LimitsConfig.DEFAULTS.loginsUnderAttack(),
-        LimitsConfig.DEFAULTS.maxConcurrentLoginsPerAddressUnderAttack());
+        LimitsConfig.DEFAULTS.maxConcurrentLoginsPerAddressUnderAttack(),
+        LimitsConfig.DEFAULTS.pendingEvictionAfter());
   }
 
   private static List<String> info(LogCapture log) {
@@ -689,8 +691,8 @@ class ConnectionLimitsTest {
     return frame(body);
   }
 
-  private static byte[] rsaEncrypt(EncryptionRequest request, byte[] data)
-      throws GeneralSecurityException {
+  /** Encrypts as a vanilla client does: PKCS#1 v1.5, which the protocol mandates. Shared. */
+  static byte[] rsaEncrypt(EncryptionRequest request, byte[] data) throws GeneralSecurityException {
     PublicKey proxyKey =
         KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(request.publicKey()));
     Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");

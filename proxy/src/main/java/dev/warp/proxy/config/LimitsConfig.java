@@ -51,6 +51,9 @@ import java.util.List;
  *     place of {@code logins}: strict, as calm-mode budgets are generous to shared addresses
  * @param maxConcurrentLoginsPerAddressUnderAttack logins one address may have in progress at once
  *     during an attack; 0 for no limit
+ * @param pendingEvictionAfter how long a connection that is not logged in must have kept the proxy
+ *     waiting before it may be closed to give its place to a new one, once {@code
+ *     maxPendingConnections} is reached; zero to never close one and refuse the new ones instead
  */
 public record LimitsConfig(
     boolean enabled,
@@ -68,7 +71,8 @@ public record LimitsConfig(
     int authenticationQueue,
     Duration authenticationQueueWait,
     Rate loginsUnderAttack,
-    int maxConcurrentLoginsPerAddressUnderAttack) {
+    int maxConcurrentLoginsPerAddressUnderAttack,
+    Duration pendingEvictionAfter) {
 
   /** The limits Warp applies when the configuration does not say otherwise. */
   public static final LimitsConfig DEFAULTS =
@@ -88,7 +92,8 @@ public record LimitsConfig(
           1024,
           Duration.ofSeconds(10),
           new Rate(2, Duration.ofSeconds(3)),
-          2);
+          2,
+          Duration.ofMillis(250));
 
   /** No limit at all. */
   public static final LimitsConfig DISABLED =
@@ -108,7 +113,8 @@ public record LimitsConfig(
           0,
           Duration.ofSeconds(10),
           Rate.UNLIMITED,
-          0);
+          0,
+          Duration.ZERO);
 
   /**
    * Checks the values.
@@ -128,14 +134,19 @@ public record LimitsConfig(
       throw new IllegalArgumentException(
           "authenticationQueueWait must be positive, got " + authenticationQueueWait);
     }
-    if (loginTimeout.isNegative() || handshakeTimeout.isNegative() || statusTimeout.isNegative()) {
+    if (loginTimeout.isNegative()
+        || handshakeTimeout.isNegative()
+        || statusTimeout.isNegative()
+        || pendingEvictionAfter.isNegative()) {
       throw new IllegalArgumentException(
           "timeouts must not be negative, got "
               + loginTimeout
               + ", "
               + handshakeTimeout
               + ", "
-              + statusTimeout);
+              + statusTimeout
+              + ", "
+              + pendingEvictionAfter);
     }
     if (reportInterval.isNegative() || reportInterval.isZero()) {
       throw new IllegalArgumentException("reportInterval must be positive, got " + reportInterval);

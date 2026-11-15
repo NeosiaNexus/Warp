@@ -393,6 +393,19 @@ public final class ServerRegistry implements dev.warp.api.server.ServerRegistry 
   }
 
   /**
+   * Returns the server a player handed off by another proxy was on, if this proxy has it and its
+   * circuit breaker is closed: the player joins it first rather than the default. A group of that
+   * name does not count: the player was on one server, not on whichever a balancer would pick.
+   *
+   * @param name the server's name, as the other proxy calls it
+   * @return the server, or {@code null} if it is not registered here, or not healthy
+   */
+  public @Nullable BackendServer handoffServer(String name) {
+    String key = name.toLowerCase(Locale.ROOT);
+    return getServer(key) == null ? null : resolve(key, Set.of(), true);
+  }
+
+  /**
    * Returns the first server of the fallback order that is registered and not excluded, preferring
    * those whose circuit breaker is closed, and taking any when none is. A group of the fallback
    * order stands for the server its balancer picks.

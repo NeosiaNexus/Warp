@@ -26,6 +26,7 @@ import dev.warp.protocol.ProtocolState;
 import dev.warp.protocol.ProtocolVersion;
 import dev.warp.protocol.netty.TrafficObserver;
 import dev.warp.proxy.connection.HandshakeIntent;
+import dev.warp.proxy.transfer.HandoffRejection;
 
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
@@ -75,6 +76,9 @@ public final class ProxyMetrics {
   // Internals
   private final Histogram.Child eventLoopLag;
   private final Counter.Child[] drainTransfers;
+  private final Counter.Child[][] transfers;
+  private final Counter.Child[] handoffRejections;
+  private final Histogram.Child handoffLoginDuration;
   private final Histogram pluginEventDuration;
   private final ClassValue<Histogram.Child> eventChildren;
   private final Counter pluginHandlerErrors;
@@ -219,6 +223,40 @@ public final class ProxyMetrics {
     for (TransferResult result : TransferResult.values()) {
       drainTransfers[result.ordinal()] = transfers.labels(lower(result));
     }
+    Counter handoffs =
+        metrics.counter(
+            "warp_transfers_total",
+            "Transfers sent to another server (out) and logins that arrived by one (in), by"
+                + " whether a handoff ticket went with them.",
+            "direction",
+            "handoff");
+    this.transfers = new Counter.Child[TransferDirection.values().length][];
+    for (TransferDirection direction : TransferDirection.values()) {
+      Counter.Child[] row = new Counter.Child[HandoffUse.values().length];
+      for (HandoffUse use : HandoffUse.values()) {
+        if (direction == TransferDirection.OUT && use == HandoffUse.INVALID) {
+          continue; // the source never writes an invalid ticket
+        }
+        row[use.ordinal()] = handoffs.labels(lower(direction), lower(use));
+      }
+      this.transfers[direction.ordinal()] = row;
+    }
+    Counter rejected =
+        metrics.counter(
+            "warp_transfer_handoffs_rejected_total",
+            "Handoff tickets a transferred client presented and the proxy did not use, by reason.",
+            "reason");
+    this.handoffRejections = new Counter.Child[HandoffRejection.values().length];
+    for (HandoffRejection reason : HandoffRejection.values()) {
+      handoffRejections[reason.ordinal()] = rejected.labels(reason.label());
+    }
+    this.handoffLoginDuration =
+        metrics
+            .histogram(
+                "warp_transfer_handoff_login_duration_seconds",
+                "From the handshake to Login Success, for the logins a handoff ticket carried.",
+                Buckets.NETWORK)
+            .labels();
     this.pluginEventDuration =
         metrics.histogram(
             "warp_plugin_event_duration_seconds",
@@ -497,6 +535,57 @@ public final class ProxyMetrics {
    */
   public void drainTransfer(TransferResult result) {
     drainTransfers[result.ordinal()].inc();
+  }
+
+  /** Which way a transfer went, in {@code warp_transfers_total}. */
+  public enum TransferDirection {
+    /** A Transfer packet this proxy sent a player. */
+    OUT,
+    /** A login that arrived by a transfer. */
+    IN
+  }
+
+  /** Whether a handoff ticket went with a transfer, in {@code warp_transfers_total}. */
+  public enum HandoffUse {
+    /** Written before the transfer (out), or read and used (in). */
+    USED,
+    /** None: the handoff is off, the target is not a peer, or the client held none. */
+    ABSENT,
+    /** Presented but not used (in only): see {@code warp_transfer_handoffs_rejected_total}. */
+    INVALID
+  }
+
+  /**
+   * Counts a transfer sent or a transferred login.
+   *
+   * @param direction out for a Transfer packet sent, in for a login that arrived by one
+   * @param use whether a handoff ticket went with it
+   * @throws IllegalArgumentException for an invalid ticket going out
+   */
+  public void transfer(TransferDirection direction, HandoffUse use) {
+    Counter.Child child = transfers[direction.ordinal()][use.ordinal()];
+    if (child == null) {
+      throw new IllegalArgumentException("no " + use + " handoff goes " + direction);
+    }
+    child.inc();
+  }
+
+  /**
+   * Counts a handoff ticket not used.
+   *
+   * @param reason why
+   */
+  public void handoffRejected(HandoffRejection reason) {
+    handoffRejections[reason.ordinal()].inc();
+  }
+
+  /**
+   * Records how long a login a handoff carried took, to Login Success.
+   *
+   * @param nanos the duration
+   */
+  public void handoffLogin(long nanos) {
+    handoffLoginDuration.observeNanos(nanos);
   }
 
   /**

@@ -39,4 +39,4 @@ jobs:
       # grows with its tests: by November 2026 the nightly run was cancelled at 90 minutes three
       # days out of four. A scoped run gets as long, as a pull request's does (ci.yml): a revision
       # far enough back makes it a full run.
-      timeout-minutes: 180
+      timeout-minutes: 240

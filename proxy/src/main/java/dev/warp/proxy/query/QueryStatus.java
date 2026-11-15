@@ -344,6 +344,11 @@ public final class QueryStatus {
     }
 
     @Override
+    public boolean isHandedOff() {
+      return false;
+    }
+
+    @Override
     public String toString() {
       return "Query[" + remoteAddress + "]";
     }

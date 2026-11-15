@@ -1,0 +1,159 @@
+{
+  "date": "2026-11-12-21-59-52",
+  "profileName": "smoke",
+  "profile": {
+    "idle": {
+      "levels": [
+        50,
+        100
+      ],
+      "warmupMs": 3000,
+      "measureMs": 8000,
+      "reps": 1,
+      "ratePerSec": 100
+    },
+    "traffic": {
+      "bots": 10,
+      "warmupMs": 4000,
+      "measureMs": 12000,
+      "reps": 1,
+      "ratePerSec": 10
+    },
+    "latency": {
+      "samples": 100,
+      "warmup": 20,
+      "intervalMs": 20,
+      "timeoutMs": 2000,
+      "backgroundBots": 5,
+      "ratePerSec": 10
+    },
+    "switch": {
+      "bots": 4,
+      "durationMs": 15000,
+      "pauseMs": 1000,
+      "ratePerSec": 4
+    },
+    "storm": {
+      "rates": [
+        500
+      ],
+      "durationMs": 8000
+    }
+  },
+  "overrides": [],
+  "scenarios": [
+    "idle",
+    "traffic",
+    "latency",
+    "switch",
+    "storm"
+  ],
+  "proxies": [
+    "warp",
+    "velocity",
+    "gate",
+    "gatelite",
+    "bungeecord"
+  ],
+  "cpuNote": "CPU pinning on (16 cores): proxy on 0-3, backends on 4-11, 3 load worker(s) on 12-14, latency probe on 15; the harness itself runs on the load cores.",
+  "cpuPlan": {
+    "proxy": [
+      "0",
+      "1",
+      "2",
+      "3"
+    ],
+    "backends": [
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "10",
+      "11"
+    ],
+    "bots": [
+      "12",
+      "13",
+      "14",
+      "15"
+    ],
+    "workers": [
+      "12",
+      "13",
+      "14"
+    ],
+    "probe": "15",
+    "note": "CPU pinning on (16 cores): proxy on 0-3, backends on 4-11, 3 load worker(s) on 12-14, latency probe on 15; the harness itself runs on the load cores."
+  },
+  "thresholds": {
+    "minAchievedRatio": 0.995,
+    "minBackendTps": 19,
+    "maxLoadgenLagP99Ms": 50,
+    "maxStubLagP99Ms": 50,
+    "maxDirectP50Ms": 5,
+    "maxSwitchFailureRatio": 0.02,
+    "minStormDelivery": 0.9
+  },
+  "versions": {
+    "_comment": "Pinned artifacts for the macro benchmark. Every download is checked against its sha256 before use. See docs/benchmarks/README.md for how these were chosen and how to update them. BungeeCord publishes no official checksum, so the hash below is one we computed and pin ourselves (noted in the report).",
+    "jdk": {
+      "major": 25,
+      "vendor": "temurin",
+      "_comment": "Downloaded by e2e/src/java.js (Adoptium API), shared by Warp and the Paper backends."
+    },
+    "node": {
+      "major": 22
+    },
+    "backend": {
+      "name": "paper",
+      "type": "paper",
+      "version": "1.21.4",
+      "build": 232,
+      "protocol": 769,
+      "java": 21,
+      "url": "https://fill-data.papermc.io/v1/objects/5ee4f542f628a14c644410b08c94ea42e772ef4d29fe92973636b6813d4eaffc/paper-1.21.4-232.jar",
+      "sha256": "5ee4f542f628a14c644410b08c94ea42e772ef4d29fe92973636b6813d4eaffc"
+    },
+    "proxies": {
+      "warp": {
+        "label": "Warp",
+        "kind": "jvm",
+        "java": 25,
+        "version": "0.1.0-beta.7",
+        "url": "https://github.com/NeosiaNexus/Warp/releases/download/v0.1.0-beta.7/warp-0.1.0-beta.7.jar",
+        "sha256": "75ae9411d15d8429282474c0fd999e5c27d37bcad097b75941a0482dffb7eb6f"
+      },
+      "velocity": {
+        "label": "Velocity 3.4.0",
+        "kind": "jvm",
+        "java": 25,
+        "version": "3.4.0",
+        "build": 566,
+        "url": "https://fill-data.papermc.io/v1/objects/fb599cbda6a6d01decce5e281f71f51cae7cacffcfafca32a09601f407b0583e/velocity-3.4.0-566.jar",
+        "sha256": "fb599cbda6a6d01decce5e281f71f51cae7cacffcfafca32a09601f407b0583e"
+      },
+      "gate": {
+        "label": "Gate 0.76.3",
+        "kind": "native",
+        "version": "0.76.3",
+        "url": "https://github.com/minekube/gate/releases/download/v0.76.3/gate_0.76.3_linux_amd64",
+        "sha256": "35f01a9831594ebfdc0e116bb45d639e2662b34f07c3b2ac76c0ba09222580d2",
+        "lite": true
+      },
+      "bungeecord": {
+        "label": "BungeeCord #2111",
+        "kind": "jvm",
+        "java": 25,
+        "version": "2111",
+        "url": "https://hub.spigotmc.org/jenkins/job/BungeeCord/2111/artifact/bootstrap/target/BungeeCord.jar",
+        "sha256": "1d9dbc31b57b22a37553f160ac1b61762717e9e4a6a1341f3dd27a1f6f2671fd",
+        "checksumNote": "BungeeCord publishes no official checksum. This sha256 was computed from Jenkins build 2111 and is pinned here so the download is still verified."
+      }
+    },
+    "forwardingSecret": "warp-benchmark-forwarding-secret",
+    "compressionThreshold": 256,
+    "compressionLevel": -1
+  }
+}
