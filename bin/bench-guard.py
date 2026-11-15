@@ -5,11 +5,18 @@
     bench-guard.py update RESULTS.json BASELINE.json   # rewrite the baseline from the results
     bench-guard.py timings RESULTS.json CHART.json     # timings for github-action-benchmark
 
-check: allocation is JMH's gc.alloc.rate.norm, the bytes allocated per operation, here per packet.
+check: allocation is JMH's gc.alloc.rate.norm, the bytes allocated per operation, here per packet,
+less the benchmark's share of what JMH itself allocates. JMH allocates a fixed amount around every
+iteration, which the profiler divides by the operations of the iteration like the rest: a benchmark
+that allocates nothing reads as that amount over its operation count, so as more on a slower
+machine. HarnessAllocationBenchmark, which allocates nothing, measures the amount in the same run,
+and each iteration of each benchmark is corrected by it over the operations that iteration ran.
 The minimum over the measured iterations is kept, since transient work (class loading,
-deoptimisation) only ever adds to it. A benchmark fails when it allocates more than its baseline
-plus the larger of the two tolerances, or when it is in only one of the results and the baseline.
-Exits with 1 on failure.
+deoptimisation, the end of the run in the last iteration) only ever adds to it. A benchmark fails
+when it allocates more than its baseline plus the larger of the two tolerances, or when it is in
+only one of the results and the baseline. The run fails when JMH's own allocation is more than
+twice the baseline's: the correction then needs a look before it is trusted (a JMH or JDK update:
+measure the baseline again). Exits with 1 on failure.
 
 update: the baseline keeps its tolerance, or gets the default one when it has none or does not
 exist yet.
@@ -29,6 +36,9 @@ import sys
 
 ALLOCATION = "gc.alloc.rate.norm"
 DEFAULT_TOLERANCE = {"absolute": 2, "relative": 0.01}  # bytes per packet, fraction of the baseline
+HARNESS = "HarnessAllocationBenchmark.idle"  # allocates nothing: what it reads is JMH's own
+HARNESS_LIMIT = 2  # times the baseline's harness allocation
+NANOSECONDS = {"ns": 1, "us": 1e3, "ms": 1e6, "s": 1e9, "min": 60e9}
 
 
 # ---------------------------------------------------------------------------
@@ -51,14 +61,35 @@ def columns(bench_key):
     return f"`{method}`", params.rstrip("]").replace(",", ", ")
 
 
+def iterations(result):
+    """(operations run, bytes allocated per operation) of each measured iteration."""
+    metric = result["secondaryMetrics"].get(ALLOCATION)
+    if metric is None:
+        sys.exit(f"{key(result)}: no {ALLOCATION} in the results (run JMH with -prof gc)")
+    unit = result["primaryMetric"]["scoreUnit"].removesuffix("/op")
+    amount, _, time_unit = result["measurementTime"].partition(" ")
+    if result["mode"] != "avgt" or unit not in NANOSECONDS or time_unit not in NANOSECONDS:
+        sys.exit(f"{key(result)}: the guard reads average times (mode avgt), not mode "
+                 f"{result['mode']} in {unit}/op over {result['measurementTime']}")
+    # Average time is the iteration's length times its threads, over its operations.
+    budget = float(amount) * NANOSECONDS[time_unit] * result["threads"] / NANOSECONDS[unit]
+    times = (time for fork in result["primaryMetric"]["rawData"] for time in fork)
+    allocations = (value for fork in metric["rawData"] for value in fork)
+    return [(budget / time, allocated) for time, allocated in zip(times, allocations, strict=True)]
+
+
 def allocation(results):
+    """Bytes JMH allocates per iteration, and bytes each benchmark allocates per operation."""
+    by_key = {key(result): result for result in results}
+    if HARNESS not in by_key:
+        sys.exit(f"{HARNESS} is not in the results: without it JMH's own allocation cannot be "
+                 "told from the benchmarks'")
+    harness = min(operations * allocated for operations, allocated in iterations(by_key.pop(HARNESS)))
     measured = {}
-    for result in results:
-        metric = result["secondaryMetrics"].get(ALLOCATION)
-        if metric is None:
-            sys.exit(f"{key(result)}: no {ALLOCATION} in the results (run JMH with -prof gc)")
-        measured[key(result)] = min(value for fork in metric["rawData"] for value in fork)
-    return measured
+    for bench, result in by_key.items():
+        measured[bench] = min(max(allocated - harness / operations, 0.0)
+                              for operations, allocated in iterations(result))
+    return harness, measured
 
 
 def jdk(results):
@@ -94,6 +125,7 @@ def load_baseline(path):
     return {
         "tolerance": DEFAULT_TOLERANCE | baseline.get("tolerance", {}),
         "jdk": baseline.get("jdk"),
+        "harness": baseline.get("harness"),
         "benchmarks": baseline.get("benchmarks", {}),
     }
 
@@ -113,9 +145,29 @@ def set_output(name, value):
 
 def check(results, baseline_path):
     baseline = load_baseline(baseline_path)
-    expected, measured = baseline["benchmarks"], allocation(results)
+    expected, (harness, measured) = baseline["benchmarks"], allocation(results)
     absolute, relative = baseline["tolerance"]["absolute"], baseline["tolerance"]["relative"]
     rows, failures, moved = [], 0, 0
+    harness_base = baseline["harness"]
+    harness_note = f"JMH itself allocated {harness:,.0f} B per iteration"
+    if harness_base is None:
+        failures += 1
+        harness_note += ", which the baseline does not record: ❌ measure the baseline again"
+        annotate("error", "Baseline without JMH's own allocation",
+                 f"{baseline_path} does not record what JMH itself allocates per iteration: "
+                 "run bin/bench-guard.sh --update and commit the baseline.")
+    elif harness > HARNESS_LIMIT * harness_base:
+        failures += 1
+        moved += 1
+        harness_note += f", against {harness_base:,.0f} B in the baseline: ❌ too far from it"
+        annotate("error", "JMH's own allocation moved",
+                 f"JMH itself allocated {harness:,.0f} B per iteration, more than "
+                 f"{HARNESS_LIMIT} times the {harness_base:,.0f} B of the baseline. The guard "
+                 "subtracts it from every benchmark: check why it moved (a JMH or JDK update, a "
+                 f"change to {HARNESS}), then run bin/bench-guard.sh --update and commit the "
+                 "baseline.")
+    else:
+        harness_note += f" ({harness_base:,.0f} B in the baseline)"
     for bench in sorted(expected.keys() | measured.keys()):
         base, actual = expected.get(bench), measured.get(bench)
         if base is None:
@@ -152,7 +204,8 @@ def check(results, baseline_path):
 
     print("### Allocation per packet\n")
     print(f"Bytes allocated per packet with escape analysis off, against `{baseline_path}`. "
-          f"A benchmark fails above its baseline plus the larger of {absolute} B and {relative:.0%}.\n")
+          f"A benchmark fails above its baseline plus the larger of {absolute} B and {relative:.0%}. "
+          f"{harness_note}; each benchmark is shown without its share of it.\n")
     if moved and baseline.get("jdk") != jdk(results):
         print(f"> [!NOTE]\n> The baseline was measured on JDK {baseline.get('jdk')}, this run on "
               f"JDK {jdk(results)}: a JDK update can move allocation.\n")
@@ -164,11 +217,12 @@ def check(results, baseline_path):
 
 
 def update(results, baseline_path):
-    measured = allocation(results)
+    harness, measured = allocation(results)
     baseline = {
         "tolerance": load_baseline(baseline_path)["tolerance"],
         "jdk": jdk(results),
-        "benchmarks": {bench: round(value, 1) for bench, value in sorted(measured.items())},
+        "harness": int(round(harness, -2)),
+        "benchmarks": {bench: round(value, 1) or 0.0 for bench, value in sorted(measured.items())},
     }
     with open(baseline_path, "w") as f:
         json.dump(baseline, f, indent=2, ensure_ascii=False)

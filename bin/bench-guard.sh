@@ -9,14 +9,19 @@
 # passthrough, Warp's default, peeking at the packet id of a compressed frame, compressing and
 # decompressing with Warp's native libdeflate, which runs for every packet Warp compresses itself,
 # and encrypting and decrypting a frame of an online-mode connection. The cipher's 1 KiB frame
-# stands for every size: a 16 KiB frame runs so few times per iteration that JMH's own allocation
-# shows in its count.
+# stands for every size.
 #
 # Allocation guard: JMH's GC profiler counts the bytes allocated per packet, with escape analysis
 # off so that the count covers every allocation the code makes, not those the JIT happened to keep
-# in this run. Counted this way it moves by less than 0.3% from one run or machine to the next, so
-# it can gate pull requests on shared runners where timings cannot. It must stay within the
-# tolerance of protocol/src/jmh/alloc-baseline.json; bench-guard.py reports the comparison.
+# in this run. The profiler counts every thread, JMH's included, and JMH allocates about 7 KiB
+# around each iteration whatever the iteration runs: divided by the packets of the iteration, that
+# is nothing where millions run and several bytes where a thousand do (compressing chunks with the
+# JDK: 3.6 to 6.9 B per packet on fifteen runs of CI, by the speed of the runner alone). So the
+# run includes HarnessAllocationBenchmark, which allocates nothing and so measures what JMH does,
+# and bench-guard.py takes each benchmark's share of it off. What is left is what the code
+# allocates per packet: it does not depend on the machine's speed, so it can gate pull requests on
+# shared runners where timings cannot. It must stay within the tolerance of
+# protocol/src/jmh/alloc-baseline.json; bench-guard.py reports the comparison.
 #
 # Smoke test: every benchmark runs one short iteration in a fork of its own, with its JVM settings,
 # so that a broken benchmark fails here and not on the day someone needs it.
@@ -41,6 +46,8 @@ guarded=(
   'ForwardingPathBenchmark\.relayClientbound$|WatchedPacketsBenchmark\.relayClientbound$|PacketIdPeekBenchmark\.peek$|CodecCostBenchmark\.(deflate|inflate)$|CipherBenchmark\.(encrypt|decrypt)$'
   -p mode=PASSTHROUGH -p implementation=JDK,WARP_NATIVE -p frameSize=1024
 )
+# What JMH itself allocates per iteration: measured with the guarded benchmarks, never timed.
+harness='HarnessAllocationBenchmark\.idle$'
 
 # Collapsible sections in the Actions log, headings elsewhere.
 group() { if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::group::$1"; else echo "== $1"; fi; }
@@ -77,7 +84,7 @@ fi
 group "Allocation per packet: GC profiler, escape analysis off"
 # Without escape analysis the count does not depend on what the JIT compiled, so one fork and one
 # warm-up iteration are enough; the guard keeps the lowest of three iterations.
-jmh "${guarded[@]}" -f 1 -wi 1 -w 1s -i 3 -r 1s -prof gc -jvmArgsPrepend -XX:-DoEscapeAnalysis \
+jmh "${guarded[@]}" "$harness" -f 1 -wi 1 -w 1s -i 3 -r 1s -prof gc -jvmArgsPrepend -XX:-DoEscapeAnalysis \
   -rf json -rff "$results/allocation.json"
 endgroup
 
