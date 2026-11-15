@@ -10,7 +10,7 @@ jline = "4.4.8"
 # The lowest Guava any configuration resolves (warp.java-conventions), for the libraries and build
 # tools that bring an older one (Error Prone, Checkstyle, Velocity's natives), and the Guava the via
 # plugin bundles for ViaVersion.
-guava = "33.7.2-jre"
+guava = "33.8.0-jre"
 
 # Utilities
 caffeine = "3.3.1"
