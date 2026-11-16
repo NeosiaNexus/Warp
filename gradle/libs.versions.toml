@@ -1,6 +1,6 @@
 [versions]
 # Core
-netty = "4.2.19.Final"
+netty = "4.2.20.Final"
 adventure = "5.2.0"
 brigadier = "1.3.10"
 log4j = "2.26.1"
@@ -29,7 +29,7 @@ viabackwards = "5.12.2"
 viarewind = "4.2.0"
 
 # Native
-netty-tcnative = "2.0.84.Final"
+netty-tcnative = "2.0.85.Final"
 
 # Code quality
 errorprone-core = "2.51.0"
