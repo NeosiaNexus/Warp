@@ -5,8 +5,8 @@ description: >-
   that lets a rolling update move players without disconnecting them.
 type: application
 # Both follow Warp's releases (release-please updates them from version.txt).
-version: 0.1.0-beta.8 # x-release-please-version
-appVersion: 0.1.0-beta.8 # x-release-please-version
+version: 0.1.0-beta.9 # x-release-please-version
+appVersion: 0.1.0-beta.9 # x-release-please-version
 kubeVersion: '>=1.26.0-0'
 home: https://github.com/NeosiaNexus/Warp
 sources:

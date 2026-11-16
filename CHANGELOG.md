@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.0-beta.9](https://github.com/NeosiaNexus/Warp/compare/v0.1.0-beta.8...v0.1.0-beta.9) (2026-11-16)
+
+
+### Bug Fixes
+
+* **ci:** log cosign in to GHCR before signing the Helm chart ([#223](https://github.com/NeosiaNexus/Warp/issues/223)) ([b7cec47](https://github.com/NeosiaNexus/Warp/commit/b7cec47bb38ecbdfd5d275f2703935414bfe88b6))
+
 ## [0.1.0-beta.8](https://github.com/NeosiaNexus/Warp/compare/v0.1.0-beta.7...v0.1.0-beta.8) (2026-11-15)
 
 
