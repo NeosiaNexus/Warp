@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.1.0-beta.8](https://github.com/NeosiaNexus/Warp/compare/v0.1.0-beta.7...v0.1.0-beta.8) (2026-11-15)
+
+
+### Features
+
+* **bench:** macro benchmark harness against Velocity, Gate and BungeeCord ([#203](https://github.com/NeosiaNexus/Warp/issues/203)) ([e696473](https://github.com/NeosiaNexus/Warp/commit/e696473b8a3498d209fe175d1e421e815d384765))
+* **deploy:** container image and Helm chart with drain-aware rolling updates ([#201](https://github.com/NeosiaNexus/Warp/issues/201)) ([e696473](https://github.com/NeosiaNexus/Warp/commit/e696473b8a3498d209fe175d1e421e815d384765))
+* **fleet:** add a Valkey fleet store on an in-house RESP3 Netty client ([#204](https://github.com/NeosiaNexus/Warp/issues/204)) ([e696473](https://github.com/NeosiaNexus/Warp/commit/e696473b8a3498d209fe175d1e421e815d384765))
+* **fleet:** fleet API, single-node store and proxy wiring ([#200](https://github.com/NeosiaNexus/Warp/issues/200)) ([e696473](https://github.com/NeosiaNexus/Warp/commit/e696473b8a3498d209fe175d1e421e815d384765))
+* **proxy:** add a GS4 Query listener, off by default, bounded and rate limited ([#199](https://github.com/NeosiaNexus/Warp/issues/199)) ([e696473](https://github.com/NeosiaNexus/Warp/commit/e696473b8a3498d209fe175d1e421e815d384765))
+* **proxy:** make room for new connections by closing silent ones when the pre-login table is full ([#211](https://github.com/NeosiaNexus/Warp/issues/211)) ([e696473](https://github.com/NeosiaNexus/Warp/commit/e696473b8a3498d209fe175d1e421e815d384765))
+* **proxy:** native Floodgate support for Bedrock players ([#202](https://github.com/NeosiaNexus/Warp/issues/202)) ([e696473](https://github.com/NeosiaNexus/Warp/commit/e696473b8a3498d209fe175d1e421e815d384765))
+* **proxy:** seamless handoff between sibling proxies on drain ([#207](https://github.com/NeosiaNexus/Warp/issues/207)) ([e696473](https://github.com/NeosiaNexus/Warp/commit/e696473b8a3498d209fe175d1e421e815d384765))
+* **proxy:** virtual world with the anti-bot world check, the hold for players without a server and a plugin API ([#205](https://github.com/NeosiaNexus/Warp/issues/205)) ([e696473](https://github.com/NeosiaNexus/Warp/commit/e696473b8a3498d209fe175d1e421e815d384765))
+
+
+### Bug Fixes
+
+* **bench:** validity gate, stub backend, pinned load workers and a fair configuration ([#210](https://github.com/NeosiaNexus/Warp/issues/210)) ([e696473](https://github.com/NeosiaNexus/Warp/commit/e696473b8a3498d209fe175d1e421e815d384765))
+* **ci:** take JMH's own allocation out of the allocation guard ([#213](https://github.com/NeosiaNexus/Warp/issues/213)) ([b8623df](https://github.com/NeosiaNexus/Warp/commit/b8623df97229a79ab33cd95644f2c1d0ea62a698))
+* **proxy:** clearer anti-bot, drain and health messages, and a startup that does not wait for ping timeouts ([#206](https://github.com/NeosiaNexus/Warp/issues/206)) ([e696473](https://github.com/NeosiaNexus/Warp/commit/e696473b8a3498d209fe175d1e421e815d384765))
+* **proxy:** create secret files readable by their owner only from the start ([#209](https://github.com/NeosiaNexus/Warp/issues/209)) ([e696473](https://github.com/NeosiaNexus/Warp/commit/e696473b8a3498d209fe175d1e421e815d384765))
+
+
+### Performance
+
+* **proxy:** one keep-alive wheel per event loop and one inflate scratch state per thread ([#212](https://github.com/NeosiaNexus/Warp/issues/212)) ([e696473](https://github.com/NeosiaNexus/Warp/commit/e696473b8a3498d209fe175d1e421e815d384765))
+
+
+### CI
+
+* give mutation testing 240 minutes, on pull requests and nightly ([e696473](https://github.com/NeosiaNexus/Warp/commit/e696473b8a3498d209fe175d1e421e815d384765))
+
 ## [0.1.0-beta.7](https://github.com/NeosiaNexus/Warp/compare/v0.1.0-beta.6...v0.1.0-beta.7) (2026-11-09)
 
 
