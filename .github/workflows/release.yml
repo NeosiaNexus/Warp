@@ -212,10 +212,15 @@ jobs:
           helm lint charts/warp --strict
           helm package charts/warp --destination "$RUNNER_TEMP/chart"
 
+      # Two logins: `helm registry login` writes Helm's own registry config, which cosign never
+      # reads, so `cosign sign` pushed the signature unauthenticated and the beta.8 chart job
+      # failed with UNAUTHORIZED after the chart itself was pushed.
       - name: Log in to GHCR
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$GITHUB_TOKEN"
+        run: |
+          helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$GITHUB_TOKEN"
+          cosign login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$GITHUB_TOKEN"
 
       # Verify with: cosign verify ghcr.io/neosianexus/charts/warp:<version> \
       #   --certificate-identity-regexp 'https://github.com/NeosiaNexus/Warp/' \
