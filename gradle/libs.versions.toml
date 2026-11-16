@@ -32,10 +32,10 @@ viarewind = "4.2.0"
 netty-tcnative = "2.0.84.Final"
 
 # Code quality
-errorprone-core = "2.51.0"
+errorprone-core = "2.52.0"
 errorprone-plugin = "5.2.0"
 nullaway = "0.14.3"
-spotless = "8.10.4"
+spotless = "8.11.0"
 checkstyle = "14.4.0"
 jacoco = "0.8.16"
 
